@@ -20,9 +20,14 @@
 
 import type {
   Conversation,
+  CorpusDiffDto,
   CorpusStats,
+  ExportPlan,
+  ExportResult,
+  FullIpcClient,
+  GraphSnapshot,
   HealthInfo,
-  IpcClient,
+  RollupTable,
   RootsParams,
   SearchHit,
   SearchParams,
@@ -31,6 +36,7 @@ import type {
   Subtree,
   ThreadMeta,
   ThreadNode,
+  Timeline,
 } from "./types";
 
 /** Raw thread row: a superset of the wire node, before graph fields are computed. */
@@ -412,6 +418,127 @@ export class MockGraph {
   allEdges(): SpawnEdge[] {
     return this.edges;
   }
+
+  /** The node's own token count, or 0 for a dangling id with no thread row. */
+  private tokensOf(tid: string): number {
+    return this.byId.get(tid)?.tokens ?? 0;
+  }
+
+  /**
+   * BFS descendant walk mirroring `aisr/rollup.py`'s `_walk`: the count of DISTINCT
+   * subtree nodes (root included), the sum of their self_tokens, and the greatest
+   * SHORTEST-path depth reached. The visited-set makes it cycle-safe and dedupes a
+   * diamond's shared node; FIFO order dequeues each node at its shortest depth.
+   */
+  private walkSubtree(root: string): { count: number; tokens: number; maxDepth: number } {
+    const seen = new Set<string>();
+    let tokens = 0;
+    let maxDepth = 0;
+    const frontier: Array<[string, number]> = [[root, 0]];
+    while (frontier.length > 0) {
+      const [tid, level] = frontier.shift() as [string, number];
+      if (seen.has(tid)) continue; // back-edge / already-reached node
+      seen.add(tid);
+      tokens += this.tokensOf(tid);
+      if (level > maxDepth) maxDepth = level;
+      for (const c of this.childrenOf(tid)) frontier.push([c, level + 1]);
+    }
+    return { count: seen.size, tokens, maxDepth };
+  }
+
+  /**
+   * Per-node {@link RollupMetrics} over EVERY graph node, keyed in sorted-id order — a
+   * faithful port of `aisr/rollup.py`'s `rollup` (self vs whole-subtree token/count,
+   * diamond-deduped, cycle-safe). A dangling id contributes 0 self_tokens.
+   */
+  rollup(): RollupTable {
+    const table: RollupTable = {};
+    for (const tid of this.nodeIds().sort()) {
+      const { count, tokens, maxDepth } = this.walkSubtree(tid);
+      table[tid] = {
+        self_tokens: this.tokensOf(tid),
+        subtree_tokens: tokens,
+        self_count: 1,
+        subtree_count: count,
+        max_depth: maxDepth,
+        child_count: this.fanOut(tid),
+      };
+    }
+    return table;
+  }
+
+  /**
+   * The node-creation event axis: the sorted DISTINCT dated timestamps, their range, and
+   * the count of undated (dangling, row-less) nodes that float outside the axis.
+   */
+  timeline(): Timeline {
+    const dated = new Set<number>();
+    let undated = 0;
+    for (const id of this.nodeIds()) {
+      const ms = this.byId.get(id)?.created_at_ms;
+      if (ms === undefined) undated += 1; // a dangling edge endpoint has no row/date
+      else dated.add(ms);
+    }
+    const events = [...dated].sort((a, b) => a - b);
+    return {
+      events,
+      min_ms: events.length > 0 ? events[0] : null,
+      max_ms: events.length > 0 ? events[events.length - 1] : null,
+      undated_count: undated,
+    };
+  }
+
+  /** Whether a node exists as-of `t`: dated on/before `t`, or undated (always present). */
+  private presentAsOf(tid: string, t: number): boolean {
+    const ms = this.byId.get(tid)?.created_at_ms;
+    return ms === undefined || ms <= t;
+  }
+
+  /**
+   * The graph AS-OF `t`: the node ids (sorted) present as-of `t`, and the edges (sorted
+   * by parent,child) whose CHILD is present as-of `t` (an edge's time is its child's
+   * spawn time). Edges keep their status; an undated node/child is always present.
+   */
+  snapshotAt(t: number): { nodeIds: string[]; edges: SpawnEdge[] } {
+    const nodeIds = this.nodeIds()
+      .filter((id) => this.presentAsOf(id, t))
+      .sort();
+    const edges = this.edges
+      .filter((e) => this.presentAsOf(e.child, t))
+      .slice()
+      .sort(compareEdges);
+    return { nodeIds, edges };
+  }
+
+  /**
+   * The structural {@link CorpusDiffDto} between the as-of-`a` and as-of-`b` snapshots.
+   * Edge deltas are status-free (edge identity is the (parent, child) pair); every list
+   * is sorted. `changed_nodes` is always empty — both snapshots view this one immutable
+   * corpus, so a node present in both is byte-identical — carried for shape parity.
+   */
+  diffAsOf(a: number, b: number): CorpusDiffDto {
+    const snapA = this.snapshotAt(a);
+    const snapB = this.snapshotAt(b);
+    const nodesA = new Set(snapA.nodeIds);
+    const nodesB = new Set(snapB.nodeIds);
+    const key = (e: SpawnEdge): string => JSON.stringify([e.parent, e.child]);
+    const edgesA = new Map(snapA.edges.map((e) => [key(e), e]));
+    const edgesB = new Map(snapB.edges.map((e) => [key(e), e]));
+    const bare = (e: SpawnEdge): SpawnEdge => ({ parent: e.parent, child: e.child });
+    return {
+      added_nodes: snapB.nodeIds.filter((n) => !nodesA.has(n)),
+      removed_nodes: snapA.nodeIds.filter((n) => !nodesB.has(n)),
+      added_edges: [...edgesB.values()]
+        .filter((e) => !edgesA.has(key(e)))
+        .map(bare)
+        .sort(compareEdges),
+      removed_edges: [...edgesA.values()]
+        .filter((e) => !edgesB.has(key(e)))
+        .map(bare)
+        .sort(compareEdges),
+      changed_nodes: {},
+    };
+  }
 }
 
 function orderNodes(nodes: ThreadNode[], order: RootsParams["order"]): ThreadNode[] {
@@ -438,14 +565,23 @@ function orderNodes(nodes: ThreadNode[], order: RootsParams["order"]): ThreadNod
   return copy.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
 }
 
+/** Stable edge order by (parent, child) — the order graph.at / graph.diff emit. */
+function compareEdges(a: SpawnEdge, b: SpawnEdge): number {
+  if (a.parent !== b.parent) return a.parent < b.parent ? -1 : 1;
+  if (a.child !== b.child) return a.child < b.child ? -1 : 1;
+  return 0;
+}
+
 /**
- * Build a mock {@link IpcClient} over the given data. The default export uses the
- * built-in synthetic forest; the factory is exported so tests can drive tiny graphs.
+ * Build a mock IPC client over the given data. The default export uses the built-in
+ * synthetic forest; the factory is exported so tests can drive tiny graphs. The return
+ * type is {@link FullIpcClient} — the mock implements the full Phase-3 surface, so the
+ * six time-travel/export methods are callable without an optional-chaining dance.
  */
 export function createMockIpc(
   threads: RawThread[] = RAW_THREADS,
   edges: SpawnEdge[] = RAW_EDGES,
-): IpcClient {
+): FullIpcClient {
   const graph = new MockGraph(threads, edges);
 
   function runSearch(params: SearchParams): SearchResult {
@@ -577,11 +713,58 @@ export function createMockIpc(
         ],
       };
     },
+
+    async graphRollup(): Promise<RollupTable> {
+      return graph.rollup();
+    },
+
+    async graphTimeline(): Promise<Timeline> {
+      return graph.timeline();
+    },
+
+    async graphAt(asOfMs: number): Promise<GraphSnapshot> {
+      const snap = graph.snapshotAt(asOfMs);
+      return { nodes: snap.nodeIds.map((id) => graph.node(id)), edges: snap.edges };
+    },
+
+    async graphDiff(asOfA?: number, asOfB?: number): Promise<CorpusDiffDto> {
+      // An omitted operand is "now" (the full corpus), mirroring the sidecar's
+      // graph.diff, so graphDiff() is the empty self-diff.
+      return graph.diffAsOf(
+        asOfA ?? Number.POSITIVE_INFINITY,
+        asOfB ?? Number.POSITIVE_INFINITY,
+      );
+    },
+
+    async exportPlan(): Promise<ExportPlan> {
+      // A dry run: tally the graph the sidecar would serialize; est_bytes is the summed
+      // synthetic content size (== corpus.stats bytes). No filesystem access.
+      let estBytes = 0;
+      for (const t of threads) estBytes += t.char_count ?? 0;
+      return {
+        node_count: graph.nodeIds().length,
+        edge_count: edges.length,
+        conversation_count: threads.length,
+        est_bytes: estBytes,
+      };
+    },
+
+    async exportRun(destPath: string): Promise<ExportResult> {
+      // The mock forest is self-consistent, so both fidelity gates trivially pass, and
+      // the mock performs NO filesystem write — it returns the verdict a faithful export
+      // of a self-consistent corpus would yield, echoing a valid dest as written_path.
+      const graph_gate = true;
+      const transcript_gate = true;
+      const ok = destPath.trim() !== "" && graph_gate && transcript_gate;
+      const result: ExportResult = { ok, graph_gate, transcript_gate };
+      if (ok) result.written_path = destPath;
+      return result;
+    },
   };
 }
 
 /** The default mock client over the built-in synthetic forest. */
-export const mockIpc: IpcClient = createMockIpc();
+export const mockIpc: FullIpcClient = createMockIpc();
 
 /** Exposed so tests can assert against the same data the default client serves. */
 export const MOCK_THREADS = RAW_THREADS;
