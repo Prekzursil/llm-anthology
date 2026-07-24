@@ -374,4 +374,190 @@ mod tests {
         drop(client);
         let _ = std::fs::remove_file(&index_path);
     }
+
+    /// END-TO-END over the REAL wire for the Phase-3 TIME-TRAVEL + EXPORT surface: build
+    /// the same SYNTHETIC index (its thread births SPAN TIME and carry differing tokens),
+    /// spawn the ACTUAL `python -m aisr.sidecar` process through [`SidecarClient`], and
+    /// round-trip the SIX new methods over genuine OS stdio NDJSON pipes —
+    /// `graph.timeline`, `graph.at`, `graph.rollup`, `graph.diff` (the as-of DELTA form),
+    /// `export.plan`, and a POSITIVE `export.run` that writes a real artifact to a temp
+    /// path (asserted present on disk AND re-parsed to prove the graph round-trips).
+    ///
+    /// It also asserts the NEGATIVE path-guard end to end: an unsafe (relative / UNC)
+    /// `export.run` dest is rejected over the wire with NO file written. The FIDELITY-gate
+    /// block (ok:false + a diff report) is NOT exercised here on purpose: the graph
+    /// serialize<->parse round-trip is faithful by construction and the sidecar bundles no
+    /// transcripts, so a corpus alone can never trip the gate across the wire — that
+    /// negative is proven at the dispatch/gate layer (tests/test_sidecar.py::
+    /// test_e2e_export_run_negative_gate_* and tests/test_export.py).
+    #[test]
+    fn e2e_timetravel_export_roundtrip_real_python_sidecar() {
+        use super::SidecarClient;
+        use std::path::PathBuf;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root is two levels above the crate manifest")
+            .to_path_buf();
+        std::env::set_var("PYTHONPATH", &repo_root);
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let index_path = std::env::temp_dir()
+            .join(format!("aisr_e2e_tt_{}_{}.db", std::process::id(), nanos));
+
+        let fixture = manifest
+            .join("tests")
+            .join("fixtures")
+            .join("build_synth_index.py");
+        let built = Command::new("python")
+            .arg(&fixture)
+            .arg(&index_path)
+            .output()
+            .expect("failed to launch python to build the synthetic index (python on PATH?)");
+        assert!(
+            built.status.success(),
+            "synthetic-index builder failed: status={:?}\nstdout={}\nstderr={}",
+            built.status,
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        assert!(index_path.exists(), "builder did not create {index_path:?}");
+
+        let index_str = index_path.to_str().expect("temp index path is valid UTF-8");
+        let mut client = SidecarClient::spawn(index_str).expect("spawn real python sidecar");
+
+        // 1) graph.timeline — the three dated births, their range, no undated threads.
+        let tl = client
+            .call("graph.timeline", &json!({}))
+            .expect("graph.timeline call");
+        assert_eq!(tl["events"], json!([1000, 1100, 1200]), "timeline: {tl}");
+        assert_eq!(tl["min_ms"], json!(1000), "timeline: {tl}");
+        assert_eq!(tl["max_ms"], json!(1200), "timeline: {tl}");
+        assert_eq!(tl["undated_count"], json!(0), "timeline: {tl}");
+
+        // 2) graph.at(1100) — a coherent snapshot: child-c (born 1200) is NOT yet present,
+        //    and root-a's fan-out matches the edges visible as-of the moment (just child-b).
+        let at = client
+            .call("graph.at", &json!({ "as_of_ms": 1100 }))
+            .expect("graph.at call");
+        let at_nodes = at["nodes"].as_array().expect("graph.at nodes array");
+        let at_ids: Vec<&str> = at_nodes
+            .iter()
+            .map(|n| n["id"].as_str().expect("node id"))
+            .collect();
+        assert_eq!(at_ids, vec!["child-b", "root-a"], "as-of 1100 nodes: {at}");
+        assert_eq!(at_nodes[1]["id"], json!("root-a"), "at: {at}");
+        assert_eq!(at_nodes[1]["child_count"], json!(1), "root-a fan-out as-of 1100: {at}");
+        assert_eq!(at_nodes[1]["depth"], json!(0), "at: {at}");
+        assert_eq!(at_nodes[0]["id"], json!("child-b"), "at: {at}");
+        assert_eq!(at_nodes[0]["child_count"], json!(0), "at: {at}");
+        assert_eq!(at_nodes[0]["depth"], json!(1), "at: {at}");
+        assert_eq!(at_nodes[0]["tokens"], json!(20), "child-b tokens survive the wire: {at}");
+        let at_edges = at["edges"].as_array().expect("graph.at edges array");
+        assert_eq!(at_edges.len(), 1, "only root-a->child-b is born as-of 1100: {at}");
+        assert_eq!(at_edges[0]["parent"], json!("root-a"), "at: {at}");
+        assert_eq!(at_edges[0]["child"], json!("child-b"), "at: {at}");
+        assert_eq!(at_edges[0]["status"], json!("completed"), "at: {at}");
+
+        // 3) graph.rollup — the subtree SUM aggregates tokens up each branch: root-a's
+        //    subtree total is 100 + 20 + 3 = 123 over 3 nodes, deduped and cycle-safe.
+        let rollup = client
+            .call("graph.rollup", &json!({}))
+            .expect("graph.rollup call");
+        assert_eq!(rollup["root-a"]["self_tokens"], json!(100), "rollup: {rollup}");
+        assert_eq!(
+            rollup["root-a"]["subtree_tokens"],
+            json!(123),
+            "root-a subtree sum = 100+20+3: {rollup}"
+        );
+        assert_eq!(rollup["root-a"]["subtree_count"], json!(3), "rollup: {rollup}");
+        assert_eq!(rollup["root-a"]["max_depth"], json!(1), "rollup: {rollup}");
+        assert_eq!(rollup["root-a"]["child_count"], json!(2), "rollup: {rollup}");
+        assert_eq!(rollup["child-b"]["subtree_tokens"], json!(20), "rollup: {rollup}");
+        assert_eq!(rollup["child-c"]["subtree_tokens"], json!(3), "rollup: {rollup}");
+
+        // 4) graph.diff(as_of_a=1000, as_of_b=1100) — the time-travel DELTA: child-b was
+        //    born (with its edge) between the two moments; nothing removed or changed.
+        let diff = client
+            .call("graph.diff", &json!({ "as_of_a": 1000, "as_of_b": 1100 }))
+            .expect("graph.diff call");
+        assert_eq!(diff["added_nodes"], json!(["child-b"]), "diff delta: {diff}");
+        assert_eq!(diff["removed_nodes"], json!([]), "diff: {diff}");
+        assert_eq!(
+            diff["added_edges"],
+            json!([{ "parent": "root-a", "child": "child-b" }]),
+            "diff: {diff}"
+        );
+        assert_eq!(diff["removed_edges"], json!([]), "diff: {diff}");
+        assert_eq!(diff["changed_nodes"], json!({}), "diff: {diff}");
+
+        // 5) export.plan — a dry-run tally, no filesystem access.
+        let plan = client
+            .call("export.plan", &json!({}))
+            .expect("export.plan call");
+        assert_eq!(plan["node_count"], json!(3), "plan: {plan}");
+        assert_eq!(plan["edge_count"], json!(2), "plan: {plan}");
+        assert_eq!(plan["conversation_count"], json!(3), "plan: {plan}");
+        assert_eq!(plan["est_bytes"], json!(14), "plan: {plan}");
+
+        // 6a) export.run POSITIVE — writes a real artifact to a temp path and passes both
+        //     gates; the file lands on disk and its graph re-parses to the three threads.
+        let export_path = std::env::temp_dir()
+            .join(format!("aisr_e2e_export_{}_{}.json", std::process::id(), nanos));
+        let export_str = export_path.to_str().expect("export path is valid UTF-8");
+        let run = client
+            .call("export.run", &json!({ "dest_path": export_str }))
+            .expect("export.run call");
+        assert_eq!(run["ok"], json!(true), "export.run positive: {run}");
+        assert_eq!(run["graph_gate"], json!(true), "export.run: {run}");
+        assert_eq!(run["transcript_gate"], json!(true), "export.run: {run}");
+        assert_eq!(run["written_path"], json!(export_str), "written_path echoes dest: {run}");
+        assert!(
+            export_path.exists(),
+            "export.run must write the artifact to disk: {export_path:?}"
+        );
+        let artifact = std::fs::read_to_string(&export_path).expect("read export artifact");
+        let doc: Value = serde_json::from_str(&artifact).expect("artifact is valid JSON");
+        assert_eq!(doc["aisr_export_version"], json!(1), "artifact: {doc}");
+        assert_eq!(doc["conversations"], json!([]), "graph-only export bundles no transcripts");
+        let graph: Value = serde_json::from_str(
+            doc["graph"].as_str().expect("artifact graph is a JSON string"),
+        )
+        .expect("artifact graph parses");
+        let graph_ids: Vec<&str> = graph["nodes"]
+            .as_array()
+            .expect("artifact nodes array")
+            .iter()
+            .map(|n| n["id"].as_str().expect("artifact node id"))
+            .collect();
+        assert_eq!(
+            graph_ids,
+            vec!["child-b", "child-c", "root-a"],
+            "the written artifact round-trips to the full spawn graph: {graph}"
+        );
+
+        // 6b) export.run NEGATIVE (path guard, over the real wire): an unsafe dest is
+        //     rejected as a JSON-RPC error (Err) BEFORE any write, so no file is created.
+        let rel = client.call("export.run", &json!({ "dest_path": "relative/out.json" }));
+        assert!(
+            rel.is_err(),
+            "a relative dest_path must be rejected over the wire, got: {rel:?}"
+        );
+        let unc = client.call("export.run", &json!({ "dest_path": r"\\evil\share\out.json" }));
+        assert!(
+            unc.is_err(),
+            "a UNC dest_path must be rejected over the wire, got: {unc:?}"
+        );
+
+        drop(client);
+        let _ = std::fs::remove_file(&index_path);
+        let _ = std::fs::remove_file(&export_path);
+    }
 }

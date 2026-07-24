@@ -20,7 +20,7 @@ import sys
 
 import pytest
 
-from aisr import corpus, ir, sidecar
+from aisr import corpus, ir, render_html, sidecar
 from aisr.corpus import SpawnEdge, ThreadMeta
 
 # A zero-width space (U+200B, category Cf) — a hidden-unicode smuggling payload that
@@ -1056,6 +1056,8 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
         '{"jsonrpc":"2.0","id":6,"method":"graph.timeline","params":{}}\n'
         '{"jsonrpc":"2.0","id":7,"method":"graph.at","params":{"as_of_ms":1150}}\n'
         '{"jsonrpc":"2.0","id":8,"method":"export.plan","params":{}}\n'
+        '{"jsonrpc":"2.0","id":10,"method":"graph.diff",'
+        '"params":{"as_of_a":1000,"as_of_b":1150}}\n'
         + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "export.run",
                       "params": {"dest_path": export_dest}}) + "\n")
     proc = subprocess.Popen(
@@ -1066,7 +1068,7 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert proc.returncode == 0, "sidecar exited %s; stderr=%r" % (proc.returncode, err)
 
     replies = {r["id"]: r for r in (json.loads(ln) for ln in out.splitlines() if ln.strip())}
-    assert set(replies) == set(range(1, 10)), "expected 9 framed replies, got %r" % (out,)
+    assert set(replies) == set(range(1, 11)), "expected 10 framed replies, got %r" % (out,)
 
     health = replies[1]["result"]
     assert health["ok"] is True and health["corpus_ready"] is True
@@ -1088,6 +1090,13 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert diff_res == {"added_nodes": [], "removed_nodes": [], "added_edges": [],
                         "removed_edges": [], "changed_nodes": {}}
 
+    tt_diff = replies[10]["result"]       # time-travel DELTA: t2,t4 born between 1000..1150
+    assert tt_diff["added_nodes"] == ["t2", "t4"]
+    assert tt_diff["added_edges"] == [{"parent": "t1", "child": "t2"},
+                                      {"parent": "t1", "child": "t4"}]
+    assert tt_diff["removed_nodes"] == [] and tt_diff["removed_edges"] == []
+    assert tt_diff["changed_nodes"] == {}
+
     timeline_res = replies[6]["result"]   # the four dated thread births, sorted
     assert timeline_res == {"events": [1000, 1100, 1150, 1200], "min_ms": 1000,
                             "max_ms": 1200, "undated_count": 0}
@@ -1103,3 +1112,62 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert run_res["ok"] is True and run_res["written_path"] == export_dest
     assert run_res["graph_gate"] is True and run_res["transcript_gate"] is True
     assert os.path.isfile(export_dest)
+
+
+def test_e2e_export_run_negative_gate_blocks_corrupted_corpus(tmp_path, monkeypatch):
+    """NEGATIVE e2e: the fidelity gate BLOCKS a corrupted export -> NOTHING is written and
+    the result carries a diff/report of what was lost. Two independent failure modes:
+
+      (a) export.run RPC handler surfaces a GRAPH-gate failure. A serializer that silently
+          drops an isolated node makes the round-trip oracle report a removed node, so the
+          `export.run` reply is ``{ok:false, graph_gate:false, transcript_gate:true}`` with
+          NO written_path and no file on disk; the underlying gate report names the removed
+          node exactly (the concrete diff report).
+      (b) the REAL token-multiset TRANSCRIPT gate (NO monkeypatch) blocks a conversation
+          whose rendered HTML dropped a prose word, returning the concrete missing-token
+          report and writing nothing.
+
+    Why this lives at the dispatch/gate layer and not over the subprocess wire: a corpus
+    LOADED from an index can NEVER trip the graph gate -- serialize<->parse is faithful by
+    construction (see test_export.py::test_graph_fidelity_gate_passes_for_faithful_roundtrip),
+    and export.run bundles no transcripts -- so corpus content alone cannot block the gate
+    across the pipe. The gate code exercised here IS the exact code the subprocess runs."""
+    # (a) RPC layer: a lossy serializer -> the graph gate fires, export.run writes nothing.
+    srv = _mem_server()
+    srv.corpus = corpus.Corpus(
+        threads={"root": ThreadMeta(id="root"), "orphan": ThreadMeta(id="orphan")},
+        edges=[])
+    dest = str(tmp_path / "blocked.json")
+    real = sidecar.export.serialize_graph
+
+    def lossy(cc):
+        doc = json.loads(real(cc))
+        doc["nodes"] = [n for n in doc["nodes"] if n["id"] != "orphan"]
+        return json.dumps(doc)
+
+    monkeypatch.setattr(sidecar.export, "serialize_graph", lossy)
+    res = srv.dispatch("export.run", {"dest_path": dest})
+    assert res["ok"] is False and res["graph_gate"] is False
+    assert res["transcript_gate"] is True and "written_path" not in res
+    assert not os.path.isfile(dest)
+    # the underlying gate report names EXACTLY what the round-trip lost (the diff report)
+    report = sidecar.export.export_with_gate(
+        srv.corpus, dest, root=os.path.dirname(dest))
+    assert report["ok"] is False and report["removed"]["nodes"] == ["orphan"]
+    assert not os.path.isfile(dest)
+
+    # (b) gate layer, the REAL verify() (monkeypatch undone): a garbled transcript is
+    #     blocked with a missing-token report and nothing is written, even though the
+    #     graph itself round-trips faithfully.
+    monkeypatch.undo()
+    conv = ir.Conversation(id="c-neg", title="t", provider="claude",
+                           turns=[ir.Turn("assistant",
+                                          [ir.Block("text", "alpha beta gamma")])])
+    garbled = render_html.render_conversation_html(conv).replace("beta", "")
+    dest2 = str(tmp_path / "blocked2.json")
+    rep2 = sidecar.export.export_with_gate(
+        corpus.Corpus(threads={"only": ThreadMeta(id="only")}), dest2,
+        conversations=[(conv, garbled)], root=os.path.dirname(dest2))
+    assert rep2["ok"] is False and rep2["missing_tokens"]["c-neg"] == ["beta"]
+    assert rep2["removed"] == {"nodes": [], "edges": []}   # the graph was faithful
+    assert not os.path.isfile(dest2)
