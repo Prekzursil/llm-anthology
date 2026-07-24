@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install build
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}          # no token at all; nothing to steal, nothing to push
     steps:
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v8
