@@ -11,6 +11,8 @@
  * node vitest — the tested logic is the pure mapping in `./layout.ts`.
  */
 
+import type { RollupTable } from "../ipc/types";
+import { DIFF_STYLES, edgeKey, type DiffOverlay } from "./diffOverlay";
 import type { LayoutEdge, LayoutNode, PositionedGraph } from "./layout";
 import {
   CROSS_EDGE_COLOR,
@@ -32,6 +34,9 @@ const ZOOM_SENSITIVITY = 0.0016;
 const CLICK_SLOP_PX = 4; // pointer travel under this still counts as a click
 const LABEL_MIN_SCALE = 0.45; // hide labels when zoomed out past this
 const NODE_RADIUS = 8;
+const BADGE_FONT = "11px ui-monospace, Menlo, monospace";
+const BADGE_GAP = 10; // px reserved between the label and a rollup badge
+const GHOST_ALPHA = 0.4; // opacity of a "removed" ghost node/edge in a diff overlay
 
 export class SpawnTreeCanvas {
   private readonly ctx: CanvasRenderingContext2D;
@@ -40,6 +45,11 @@ export class SpawnTreeCanvas {
   private tf: Transform = { scale: 1, offsetX: 0, offsetY: 0 };
   private selectedId: string | null = null;
   private onSelect: SelectHandler | null = null;
+
+  /** Per-node subtree aggregates for the count badges; null = no badges. */
+  private rollup: RollupTable | null = null;
+  /** Diff-mode per-node/per-edge tint classes; null = no diff overlay. */
+  private diffOverlay: DiffOverlay | null = null;
 
   private dpr = 1;
   private cssWidth = 0;
@@ -95,6 +105,33 @@ export class SpawnTreeCanvas {
   select(nodeId: string | null): void {
     this.selectedId = nodeId !== null && this.nodeIndex.has(nodeId) ? nodeId : null;
     this.scheduleRender();
+  }
+
+  /**
+   * Attach (or clear) the per-node rollup aggregates. When present, a node with a
+   * subtree of more than one member draws a `Σ<subtree_count>` count badge — the
+   * Langfuse-style fan-out weight — right-aligned inside the node box.
+   */
+  setRollup(rollup: RollupTable | null): void {
+    this.rollup = rollup;
+    this.scheduleRender();
+  }
+
+  /**
+   * Attach (or clear) a diff overlay. When present, each classified node/edge is
+   * tinted with its {@link DIFF_STYLES} colour (added = green, changed = amber,
+   * removed = a faded red ghost) on top of the base provider tint.
+   */
+  setDiffOverlay(overlay: DiffOverlay | null): void {
+    this.diffOverlay = overlay;
+    this.scheduleRender();
+  }
+
+  /** The `Σ<n>` badge for a node with descendants, or null (leaf / no rollup). */
+  private rollupBadge(nodeId: string): string | null {
+    const metrics = this.rollup?.[nodeId];
+    if (metrics === undefined || metrics.subtree_count <= 1) return null;
+    return `Σ${metrics.subtree_count}`;
   }
 
   /** Center + scale the whole graph within the viewport with padding. */
@@ -240,22 +277,35 @@ export class SpawnTreeCanvas {
 
   private drawEdge(ctx: CanvasRenderingContext2D, edge: LayoutEdge): void {
     if (edge.points.length < 2) return;
+    // Colour precedence: base (cross/normal) < failed status < diff-overlay class.
+    const diffKind = this.diffOverlay?.edgeClass[edgeKey(edge.parent, edge.child)];
+    let color = edge.cross ? CROSS_EDGE_COLOR : EDGE_COLOR;
+    if (edge.status === "failed") color = "#c0392b";
+    const ghost = diffKind !== undefined && DIFF_STYLES[diffKind].ghost;
+    if (diffKind !== undefined) color = DIFF_STYLES[diffKind].color;
+
     ctx.beginPath();
     ctx.moveTo(edge.points[0].x, edge.points[0].y);
     for (let i = 1; i < edge.points.length; i++) {
       ctx.lineTo(edge.points[i].x, edge.points[i].y);
     }
     ctx.lineWidth = edge.cross ? 2 : 1.25;
-    ctx.strokeStyle = edge.cross ? CROSS_EDGE_COLOR : EDGE_COLOR;
-    if (edge.cross) ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = ghost ? GHOST_ALPHA : 1;
+    if (ghost) ctx.setLineDash([4, 3]);
+    else if (edge.cross) ctx.setLineDash([6, 4]);
     else ctx.setLineDash([]);
-    if (edge.status === "failed") ctx.strokeStyle = "#c0392b";
     ctx.stroke();
     ctx.setLineDash([]);
-    this.drawArrowHead(ctx, edge);
+    this.drawArrowHead(ctx, edge, color);
+    ctx.globalAlpha = 1;
   }
 
-  private drawArrowHead(ctx: CanvasRenderingContext2D, edge: LayoutEdge): void {
+  private drawArrowHead(
+    ctx: CanvasRenderingContext2D,
+    edge: LayoutEdge,
+    color: string,
+  ): void {
     const n = edge.points.length;
     const tip = edge.points[n - 1];
     const prev = edge.points[n - 2];
@@ -272,7 +322,7 @@ export class SpawnTreeCanvas {
       tip.y - size * Math.sin(angle + Math.PI / 7),
     );
     ctx.closePath();
-    ctx.fillStyle = edge.cross ? CROSS_EDGE_COLOR : EDGE_COLOR;
+    ctx.fillStyle = color;
     ctx.fill();
   }
 
@@ -283,19 +333,51 @@ export class SpawnTreeCanvas {
   ): void {
     const tint = providerTint(node.node.provider);
     const selected = node.id === this.selectedId;
+    const diffKind = this.diffOverlay?.nodeClass[node.id];
+    const ghost = diffKind !== undefined && DIFF_STYLES[diffKind].ghost;
+
     roundRect(ctx, node.x, node.y, node.width, node.height, NODE_RADIUS);
+    ctx.globalAlpha = ghost ? GHOST_ALPHA : 1;
     ctx.fillStyle = tint.fill;
     ctx.fill();
-    ctx.lineWidth = selected ? 3 : 1.5;
-    ctx.strokeStyle = selected ? "#ffd54a" : tint.stroke;
+    ctx.globalAlpha = 1;
+
+    // A selection ring wins over a diff tint; a diff class otherwise recolours the border.
+    ctx.lineWidth = selected ? 3 : diffKind !== undefined ? 2.5 : 1.5;
+    ctx.strokeStyle = selected
+      ? "#ffd54a"
+      : diffKind !== undefined
+        ? DIFF_STYLES[diffKind].color
+        : tint.stroke;
+    if (ghost) ctx.setLineDash([5, 3]);
     ctx.stroke();
+    ctx.setLineDash([]);
 
     if (!showLabels) return;
+
+    // Reserve room for the rollup badge (if any) so the label never overlaps it.
+    const badge = this.rollupBadge(node.id);
+    let badgeWidth = 0;
+    if (badge !== null) {
+      ctx.font = BADGE_FONT;
+      badgeWidth = ctx.measureText(badge).width + BADGE_GAP;
+    }
+
     ctx.fillStyle = tint.text;
     ctx.font = "13px Inter, system-ui, sans-serif";
     ctx.textBaseline = "middle";
-    const label = clipText(ctx, node.node.title || node.id, node.width - 20);
+    ctx.textAlign = "left";
+    const label = clipText(ctx, node.node.title || node.id, node.width - 20 - badgeWidth);
     ctx.fillText(label, node.x + 10, node.y + node.height / 2);
+
+    if (badge !== null) {
+      ctx.font = BADGE_FONT;
+      ctx.textAlign = "right";
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(badge, node.x + node.width - 8, node.y + node.height / 2);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "left"; // restore for the next node's label
+    }
   }
 }
 

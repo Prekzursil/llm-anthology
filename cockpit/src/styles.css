@@ -275,6 +275,126 @@ body,
   font-size: 12px;
 }
 
+/* -- time scrubber --------------------------------------------------------- */
+#scrubber:empty {
+  display: none;
+}
+
+.scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.scrubber-play {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.scrubber-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.scrubber-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.scrubber-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.scrubber-tick {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.scrubber-range {
+  width: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.scrubber-undated {
+  flex: 0 0 auto;
+}
+
+/* -- export panel ---------------------------------------------------------- */
+#export-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-dest {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.export-dest:focus {
+  border-color: var(--accent);
+}
+
+.export-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.export-actions button {
+  flex: 1 1 0;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.export-actions button:hover {
+  border-color: var(--accent);
+}
+
+.export-output {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
 /* -- dark theme ------------------------------------------------------------ */
 @media (prefers-color-scheme: dark) {
   :root {

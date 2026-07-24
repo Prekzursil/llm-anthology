@@ -21,15 +21,21 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   Conversation,
+  CorpusDiffDto,
   CorpusStats,
+  ExportPlan,
+  ExportResult,
+  GraphSnapshot,
   HealthInfo,
   IpcClient,
+  RollupTable,
   RootsParams,
   SearchParams,
   SearchResult,
   Subtree,
   ThreadMeta,
   ThreadNode,
+  Timeline,
 } from "./types";
 
 /**
@@ -70,5 +76,35 @@ export const realIpc: IpcClient = {
   },
   conversationGet(id: string): Promise<Conversation> {
     return cmd<Conversation>("conversation_get", { id });
+  },
+
+  // -- Phase-3 time-travel + export surface --------------------------------------
+  // Each proxies one JSON-RPC method through its matching Rust command (see
+  // `src-tauri/src/lib.rs`), mirroring the `graph.*` / `export.*` param names the
+  // sidecar (`aisr/sidecar.py`) requires. The mock implements the same six.
+  graphRollup(): Promise<RollupTable> {
+    return cmd<RollupTable>("graph_rollup");
+  },
+  graphTimeline(): Promise<Timeline> {
+    return cmd<Timeline>("graph_timeline");
+  },
+  graphAt(asOfMs: number): Promise<GraphSnapshot> {
+    return cmd<GraphSnapshot>("graph_at", { as_of_ms: asOfMs });
+  },
+  graphDiff(asOfA?: number, asOfB?: number): Promise<CorpusDiffDto> {
+    // An omitted operand means "now" (the full corpus) — mirroring the sidecar's
+    // `_diff_operand`, so `graphDiff()` is the empty self-diff.
+    const params: Record<string, unknown> = {};
+    if (asOfA !== undefined) params.as_of_a = asOfA;
+    if (asOfB !== undefined) params.as_of_b = asOfB;
+    return cmd<CorpusDiffDto>("graph_diff", params);
+  },
+  exportPlan(_dest?: string): Promise<ExportPlan> {
+    // `export.plan` is a dry run over the loaded corpus and takes no params (the
+    // sidecar ignores any dest); the optional arg is kept for contract parity.
+    return cmd<ExportPlan>("export_plan");
+  },
+  exportRun(destPath: string): Promise<ExportResult> {
+    return cmd<ExportResult>("export_run", { dest_path: destPath });
   },
 };

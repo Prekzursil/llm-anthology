@@ -106,6 +106,40 @@ fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Res
     forward(state.inner(), "conversation.get", params.unwrap_or_else(|| json!({})))
 }
 
+// -- Phase-3 time-travel + export surface -------------------------------------------
+// Each mirrors the `forward(state, method, params)` pattern above, proxying one
+// `graph.*` / `export.*` JSON-RPC method the sidecar (`aisr/sidecar.py`) serves. The
+// TS `real.ts` adapter targets these command names.
+#[tauri::command]
+fn graph_rollup(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "graph.rollup", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn graph_timeline(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "graph.timeline", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn graph_at(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "graph.at", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn graph_diff(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "graph.diff", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn export_plan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "export.plan", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "export.run", params.unwrap_or_else(|| json!({})))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -123,6 +157,12 @@ pub fn run() {
             search_query,
             thread_get,
             conversation_get,
+            graph_rollup,
+            graph_timeline,
+            graph_at,
+            graph_diff,
+            export_plan,
+            export_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

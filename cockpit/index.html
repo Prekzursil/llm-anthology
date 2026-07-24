@@ -25,16 +25,22 @@
         <input id="search-input" type="search" placeholder="Search conversations…" autocomplete="off" />
         <div id="search-status" class="muted"></div>
         <div id="search-results" class="list-viewport"></div>
+
+        <div class="panel-title">Export</div>
+        <div id="export-panel"></div>
       </aside>
 
       <main id="graph-pane">
         <div id="graph-toolbar">
           <button id="btn-forest" type="button">Full forest</button>
           <button id="btn-fit" type="button">Fit</button>
+          <button id="btn-aggregate" type="button" aria-pressed="false">Aggregated</button>
+          <button id="btn-diff" type="button" aria-pressed="false">Diff mode</button>
           <span id="graph-status" class="muted"></span>
           <span class="spacer"></span>
           <span id="legend"></span>
         </div>
+        <div id="scrubber"></div>
         <canvas id="tree-canvas"></canvas>
       </main>
 
