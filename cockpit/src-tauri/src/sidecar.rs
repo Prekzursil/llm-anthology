@@ -17,9 +17,14 @@
 //!   correlation is trivially satisfied.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
+
+// Windows-only: the raw `CreateProcessW` hardening (KILL_ON_JOB_CLOSE Job Object
+// reap + AppContainer network membrane + CREATE_NO_WINDOW) that backs
+// `SidecarClient::spawn` on Windows. Non-Windows falls back to `std::process`.
+#[cfg(windows)]
+mod hardened_spawn;
 
 /// Perform ONE JSON-RPC 2.0 request/response round trip over an NDJSON stream pair.
 ///
@@ -27,17 +32,13 @@ use serde_json::{json, Value};
 /// `writer`, then reads exactly one line from `reader` and parses it as a JSON-RPC
 /// response, returning the `result` value or a stringified error. Generic over the
 /// stream types so the framing can be tested against in-memory buffers.
-fn jsonrpc_roundtrip<W, R>(
-    writer: &mut W,
-    reader: &mut R,
+fn jsonrpc_roundtrip(
+    writer: &mut dyn Write,
+    reader: &mut dyn BufRead,
     id: u64,
     method: &str,
     params: &Value,
-) -> Result<Value, String>
-where
-    W: Write,
-    R: BufRead,
-{
+) -> Result<Value, String> {
     // --- frame + write the request: one compact line, \n-terminated, flushed ---
     let request = json!({
         "jsonrpc": "2.0",
@@ -88,19 +89,64 @@ where
 }
 
 /// A spawned engine sidecar and its stdio JSON-RPC transport.
+///
+/// On Windows the child is launched through [`hardened_spawn`] — ONE raw
+/// `CreateProcessW` that places the engine under a `KILL_ON_JOB_CLOSE` Job
+/// Object (a guaranteed reap of the whole subtree even on an ABRUPT app death,
+/// which the previous `Drop::kill` missed) with `CREATE_NO_WINDOW`, and
+/// optionally inside an AppContainer network membrane. The transport itself is
+/// unchanged across platforms: `stdin`/`stdout` are the parent-side pipe ends
+/// held behind trait objects so the framing code is identical everywhere.
 pub struct SidecarClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdin: Box<dyn Write + Send>,
+    stdout: Box<dyn BufRead + Send>,
+    /// Windows: holds the process + Job Object handles; dropping it reaps the
+    /// engine (the Job Object close is the hard guarantee).
+    #[cfg(windows)]
+    _reaper: hardened_spawn::Reaper,
+    /// Windows: the child's stderr pipe (parent end), held un-drained so it never
+    /// fills — the sidecar keeps stderr near-empty (mirrors the prior transport).
+    #[cfg(windows)]
+    _stderr: std::fs::File,
+    /// Non-Windows: the std child, reaped by [`SidecarClient`]'s `Drop`.
+    #[cfg(not(windows))]
+    _child: std::process::Child,
     next_id: u64,
 }
 
 impl SidecarClient {
     /// Spawn `python -m aisr.sidecar --index <index_path>` with stdin/stdout/stderr
     /// piped, ready to answer JSON-RPC requests.
+    ///
+    /// Windows: raw `CreateProcessW` under a `KILL_ON_JOB_CLOSE` Job Object +
+    /// `CREATE_NO_WINDOW` — the reliable reap + no-window core. The AppContainer
+    /// network membrane is a first-class, tested spawn mode
+    /// ([`SidecarClient::spawn_membrane`]); it is left opt-in HERE because a
+    /// sandboxed engine also needs its export DESTINATION granted to the package
+    /// SID, an export-lifecycle concern rather than a fixed spawn concern.
     pub fn spawn(index_path: &str) -> Result<Self, String> {
-        let mut command = Command::new("python");
-        command
+        Self::spawn_platform(index_path)
+    }
+
+    #[cfg(windows)]
+    fn spawn_platform(index_path: &str) -> Result<Self, String> {
+        use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
+        let args = ["-m", "aisr.sidecar", "--index", index_path];
+        let HardenedSpawn { stdin, stdout, stderr, reaper } =
+            spawn_hardened("python", &args, &SpawnOpts::job_only())?;
+        Ok(Self {
+            stdin: Box::new(stdin),
+            stdout: Box::new(BufReader::new(stdout)),
+            _reaper: reaper,
+            _stderr: stderr,
+            next_id: 1,
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn spawn_platform(index_path: &str) -> Result<Self, String> {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("python")
             .arg("-m")
             .arg("aisr.sidecar")
             .arg("--index")
@@ -109,26 +155,8 @@ impl SidecarClient {
             .stdout(Stdio::piped())
             // stderr is piped per the transport contract. It is NOT drained here; the
             // sidecar reports operational failures as JSON-RPC error responses on
-            // stdout and keeps stderr near-empty, so a plain pipe is safe for this
-            // basic transport. A stderr drain thread is left to the e2e/hardening bite.
-            .stderr(Stdio::piped());
-
-        // Suppress the transient console window the child would otherwise flash on
-        // Windows. This is the ONLY platform-specific spawn hardening here.
-        //
-        // TODO(hardening): BASIC spawn only. A Windows Job Object (kill-on-close, so
-        // no orphaned engine can outlive the app) and an AppContainer sandbox
-        // membrane around the engine process are BOTH a DEFERRED hardening spike —
-        // see `cockpit/src-tauri/binaries/README.md` ("Lifecycle + isolation") and
-        // the SOTA-DECISIONS record. Do not implement them in this transport.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = command
+            // stdout and keeps stderr near-empty, so a plain pipe is safe here.
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("failed to spawn sidecar (python -m aisr.sidecar): {e}"))?;
         let stdin = child
@@ -140,9 +168,9 @@ impl SidecarClient {
             .take()
             .ok_or_else(|| "sidecar stdout was not piped".to_string())?;
         Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            stdin: Box::new(stdin),
+            stdout: Box::new(BufReader::new(stdout)),
+            _child: child,
             next_id: 1,
         })
     }
@@ -152,17 +180,17 @@ impl SidecarClient {
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        jsonrpc_roundtrip(&mut self.stdin, &mut self.stdout, id, method, params)
+        jsonrpc_roundtrip(&mut *self.stdin, &mut *self.stdout, id, method, params)
     }
 }
 
+#[cfg(not(windows))]
 impl Drop for SidecarClient {
     fn drop(&mut self) {
-        // Best-effort reap so a replaced/closed client does not leak the engine
-        // process. NOTE: this is a plain kill, NOT the guaranteed kill-on-close of a
-        // Windows Job Object — see the TODO(hardening) in `spawn`.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Non-Windows: a std `Child` does NOT reap on drop, so kill+wait explicitly.
+        // (Windows reaping is owned by the Job Object held inside `Reaper`.)
+        let _ = self._child.kill();
+        let _ = self._child.wait();
     }
 }
 
@@ -504,8 +532,15 @@ mod tests {
             .expect("export.plan call");
         assert_eq!(plan["node_count"], json!(3), "plan: {plan}");
         assert_eq!(plan["edge_count"], json!(2), "plan: {plan}");
-        assert_eq!(plan["conversation_count"], json!(3), "plan: {plan}");
-        assert_eq!(plan["est_bytes"], json!(14), "plan: {plan}");
+        // export is GRAPH-ONLY (the sidecar bundles no transcripts — see the
+        // export.run artifact assertion below and `Sidecar._export_plan`), so
+        // conversation_count is 0 and est_bytes is the serialized-graph byte size,
+        // NOT a transcript Σ(char_count). (Corrects a stale pre-existing assertion
+        // that predated the graph-only export contract; cross-checked against the
+        // artifact the run writes, further down.)
+        assert_eq!(plan["conversation_count"], json!(0), "plan: {plan}");
+        let plan_est_bytes = plan["est_bytes"].as_u64().expect("est_bytes must be numeric");
+        assert!(plan_est_bytes > 0, "graph-only est_bytes is a positive size: {plan}");
 
         // 6a) export.run POSITIVE — writes a real artifact to a temp path and passes both
         //     gates; the file lands on disk and its graph re-parses to the three threads.
@@ -531,6 +566,14 @@ mod tests {
             doc["graph"].as_str().expect("artifact graph is a JSON string"),
         )
         .expect("artifact graph parses");
+        // The dry-run est_bytes must equal the EXACT serialized-graph size the run
+        // wrote (both sides call serialize_graph over the same corpus) — a stronger
+        // check than the old hardcoded constant it replaces.
+        assert_eq!(
+            plan_est_bytes,
+            doc["graph"].as_str().unwrap().len() as u64,
+            "export.plan est_bytes must equal the serialized graph export.run writes"
+        );
         let graph_ids: Vec<&str> = graph["nodes"]
             .as_array()
             .expect("artifact nodes array")
@@ -560,4 +603,285 @@ mod tests {
         let _ = std::fs::remove_file(&index_path);
         let _ = std::fs::remove_file(&export_path);
     }
+
+    // === Windows hardening proofs (raw CreateProcessW spawn) =====================
+
+    /// FORCE-KILL, BOTH STATES — proves the Job Object's `KILL_ON_JOB_CLOSE` flag is
+    /// what reaps the engine subtree when the app dies abruptly. Closing the LAST
+    /// job handle is the EXACT kernel event the OS triggers when the app process is
+    /// force-killed (its handle table is torn down by the kernel, running no Rust
+    /// `Drop`), so this reproduces an abrupt death faithfully WITHOUT the test
+    /// killing itself. WITH the flag the sleeping child is reaped; WITHOUT it the
+    /// child is orphaned and survives — silence in one state alone proves nothing,
+    /// so both are asserted (the flag is shown to be load-bearing).
+    #[cfg(windows)]
+    #[test]
+    fn job_object_kill_on_close_reaps_child_both_states() {
+        use super::hardened_spawn::{spawn_hardened, Membrane, SpawnOpts};
+
+        let sleeper = ["-c", "import time; time.sleep(120)"];
+
+        // --- WITH KILL_ON_JOB_CLOSE: closing the job handle reaps the child. ---
+        let opts_on = SpawnOpts {
+            membrane: Membrane::JobOnly,
+            kill_on_job_close: true,
+        };
+        let mut with_flag = spawn_hardened("python", &sleeper, &opts_on)
+            .expect("spawn sleeper under kill-on-close job");
+        assert!(
+            !with_flag.reaper.wait_exit(500),
+            "child must be alive before the job handle closes (pid {})",
+            with_flag.reaper.pid()
+        );
+        with_flag.reaper.close_job(); // == the app process dying abruptly
+        assert!(
+            with_flag.reaper.wait_exit(5000),
+            "WITH KILL_ON_JOB_CLOSE the child MUST be reaped when the last job handle \
+             closes (pid {})",
+            with_flag.reaper.pid()
+        );
+
+        // --- WITHOUT the flag: the SAME handle-close leaves the child ORPHANED. ---
+        let opts_off = SpawnOpts {
+            membrane: Membrane::JobOnly,
+            kill_on_job_close: false,
+        };
+        let mut without_flag = spawn_hardened("python", &sleeper, &opts_off)
+            .expect("spawn sleeper under plain job");
+        assert!(
+            !without_flag.reaper.wait_exit(500),
+            "control child must be alive before the job handle closes"
+        );
+        without_flag.reaper.close_job();
+        assert!(
+            !without_flag.reaper.wait_exit(1500),
+            "WITHOUT KILL_ON_JOB_CLOSE the child MUST survive the job-handle close \
+             (this is what proves the flag — not the spawn — does the reaping)"
+        );
+        // Dropping `without_flag` now TerminateProcess-reaps the orphan (cleanup).
+        drop(without_flag);
+    }
+
+    /// MEMBRANE, BOTH STATES — proves the AppContainer network membrane blocks the
+    /// engine's outbound network at the WFP layer WITHOUT breaking the legitimate
+    /// stdio + corpus-read channel. Two independent proofs:
+    ///   (1) the REAL sidecar runs INSIDE the AppContainer and still answers
+    ///       health.ping + corpus.stats over stdio (the membrane doesn't break the
+    ///       wire, and CPython genuinely runs in a regular AppContainer here);
+    ///   (2) a socket probe to a loopback listener CONNECTS when spawned normally
+    ///       (JobOnly) but is BLOCKED when spawned in the AppContainer — both states,
+    ///       so the block is attributable to the membrane and not a dead network.
+    ///
+    /// Grants the fixed container's package SID read+execute on the interpreter dir,
+    /// the `aisr` source tree, and a dedicated index/probe dir (idempotent, benign RX
+    /// ACEs for one stable SID — exactly the icacls step a production install runs).
+    /// If CPython cannot run in a regular AppContainer on this host, proof (1) FAILS
+    /// LOUDLY rather than silently skipping.
+    #[cfg(windows)]
+    #[test]
+    fn appcontainer_membrane_blocks_egress_but_not_stdio_or_corpus() {
+        use super::hardened_spawn::{
+            ensure_container_sid, grant_modify, grant_read, spawn_hardened, Membrane, SpawnOpts,
+        };
+        use super::jsonrpc_roundtrip;
+        use std::io::{BufReader, Read};
+        use std::path::PathBuf;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let python_home = probe_python_home();
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root two levels above crate")
+            .to_path_buf();
+        let aisr_dir = repo_root.join("aisr");
+        std::env::set_var("PYTHONPATH", &repo_root);
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work = std::env::temp_dir()
+            .join(format!("aisr_membrane_{}_{}", std::process::id(), nanos));
+        std::fs::create_dir_all(&work).expect("create membrane work dir");
+        let index_path = work.join("index.db");
+
+        // Build the KNOWN synthetic corpus (same fixture the e2e round-trip uses).
+        let fixture = manifest.join("tests").join("fixtures").join("build_synth_index.py");
+        let built = Command::new("python")
+            .arg(&fixture)
+            .arg(&index_path)
+            .output()
+            .expect("launch python to build the synth index");
+        assert!(
+            built.status.success(),
+            "synth index build failed: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+
+        // --- ONE-TIME provisioning: grant the FIXED container SID read+execute on
+        //     JUST the stdlib (NOT the ~120k-file site-packages — the sidecar is
+        //     pure stdlib + aisr), plus the aisr tree, the repo root (traverse), and
+        //     the dedicated work dir. Once (not per-spawn), so the test stays fast. ---
+        let sid = ensure_container_sid(Membrane::AppContainer).expect("ensure AppContainer profile");
+        grant_stdlib_read(&sid, &python_home);
+        grant_read(&sid, &aisr_dir.to_string_lossy(), true);
+        grant_read(&sid, &repo_root.to_string_lossy(), false);
+        // The index dir needs WRITE: SQLite's WAL journal (open_index sets
+        // journal_mode=WAL) creates `-wal`/`-shm` sidecars even for read queries.
+        grant_modify(&sid, &work.to_string_lossy(), true);
+
+        let index_str = index_path.to_str().expect("index path is UTF-8");
+
+        // (1) REAL sidecar INSIDE the AppContainer: stdio + corpus read must work.
+        //     `-S` keeps the engine off site.py / site-packages entirely.
+        {
+            let opts = SpawnOpts { membrane: Membrane::AppContainer, kill_on_job_close: true };
+            let mut sc = spawn_hardened(
+                "python",
+                &["-S", "-m", "aisr.sidecar", "--index", index_str],
+                &opts,
+            )
+            .expect("spawn the real sidecar inside a regular AppContainer");
+            // ONE persistent reader so pipe buffering carries across both calls.
+            let mut reader = BufReader::new(sc.stdout);
+            let health = match jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 1, "health.ping", &json!({})) {
+                Ok(v) => v,
+                Err(e) => {
+                    let mut err = String::new();
+                    let _ = sc.stderr.read_to_string(&mut err);
+                    panic!(
+                        "sidecar failed health.ping INSIDE the AppContainer ({e}) — CPython could \
+                         not run/answer over stdio in a regular AppContainer here.\n\
+                         --- child stderr ---\n{err}\n--- end child stderr ---"
+                    );
+                }
+            };
+            assert_eq!(health["ok"], json!(true), "health through membrane: {health}");
+            assert_eq!(
+                health["corpus_ready"],
+                json!(true),
+                "corpus must be readable through the membrane: {health}"
+            );
+            let stats = jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 2, "corpus.stats", &json!({}))
+                .expect("corpus.stats over stdio THROUGH the membrane");
+            assert_eq!(stats["conversations"], json!(3), "corpus read through membrane: {stats}");
+            assert_eq!(stats["threads"], json!(3), "corpus read through membrane: {stats}");
+            assert_eq!(stats["edges"], json!(2), "corpus read through membrane: {stats}");
+            // `reader` (stdout) then `sc` (stdin→EOF, stderr, reaper) drop here → reaped.
+        }
+
+        // (2) Egress both-states against a loopback listener we control.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let port = listener.local_addr().unwrap().port();
+
+        let probe_py = work.join("probe.py");
+        std::fs::write(&probe_py, PROBE_SRC).expect("write socket probe");
+        let probe_path = probe_py.to_str().expect("probe path is UTF-8").to_string();
+        let port_str = port.to_string();
+
+        let read_probe = |membrane: Membrane| -> String {
+            let opts = SpawnOpts { membrane, kill_on_job_close: true };
+            let mut spawn = spawn_hardened("python", &["-S", &probe_path, &port_str], &opts)
+                .expect("spawn the socket probe");
+            let mut out = String::new();
+            spawn.stdout.read_to_string(&mut out).ok(); // probe prints one line then exits → EOF
+            out
+        };
+
+        // Control: NOT sandboxed → the probe CAN reach loopback.
+        let normal = read_probe(Membrane::JobOnly);
+        assert!(
+            normal.contains("CONNECT_OK"),
+            "un-sandboxed control probe must connect to loopback, got: {normal:?}"
+        );
+
+        // Membrane: AppContainer (same provisioned SID) → the SAME connect is BLOCKED.
+        let sandboxed = read_probe(Membrane::AppContainer);
+        eprintln!("[membrane] egress both-states: JobOnly={normal:?} AppContainer={sandboxed:?}");
+        assert!(
+            sandboxed.contains("CONNECT_FAIL"),
+            "AppContainer probe must be network-BLOCKED (got: {sandboxed:?}); \
+             un-sandboxed control was: {normal:?}"
+        );
+        assert!(
+            !sandboxed.contains("CONNECT_OK"),
+            "AppContainer probe must NOT connect, got: {sandboxed:?}"
+        );
+
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Grant the AppContainer package `sid` read+execute on JUST the CPython
+    /// standard library (root binaries, DLLs, and every `Lib` child EXCEPT the
+    /// huge `site-packages` tree — the sidecar imports only stdlib + aisr). This
+    /// keeps the AppContainer grant fast (~8k files, not ~130k).
+    #[cfg(windows)]
+    fn grant_stdlib_read(sid: &str, python_home: &std::path::Path) {
+        use super::hardened_spawn::grant_read;
+        // Fast path: grants persist for the FIXED container SID, so if a prior run
+        // (or a production installer) already granted the interpreter, skip the slow
+        // ~8k-file re-walk. `python.exe` is the sentinel.
+        let sentinel = python_home.join("python.exe");
+        if let Ok(o) = std::process::Command::new("icacls").arg(&sentinel).output() {
+            if String::from_utf8_lossy(&o.stdout).contains(sid) {
+                return;
+            }
+        }
+        let ph = python_home.to_string_lossy();
+        grant_read(sid, &format!("{ph}\\*"), false); // python.exe + *.dll + immediate folder objects
+        grant_read(sid, &format!("{ph}\\DLLs"), true); // native ext modules (_socket, _sqlite3, ...)
+        let lib = python_home.join("Lib");
+        grant_read(sid, &format!("{}\\*", lib.to_string_lossy()), false); // Lib top-level .py + folders
+        if let Ok(entries) = std::fs::read_dir(&lib) {
+            for e in entries.flatten() {
+                if e.file_name() == std::ffi::OsStr::new("site-packages") {
+                    continue;
+                }
+                if e.path().is_dir() {
+                    grant_read(sid, &e.path().to_string_lossy(), true);
+                }
+            }
+        }
+    }
+
+    /// The PATH directory holding `python.exe` — its interpreter home, which the
+    /// AppContainer must be `icacls`-granted so the sandboxed engine can load CPython.
+    #[cfg(windows)]
+    fn probe_python_home() -> std::path::PathBuf {
+        if let Some(paths) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&paths) {
+                if dir.join("python.exe").is_file() {
+                    return dir;
+                }
+            }
+        }
+        panic!("python.exe not found on PATH");
+    }
+
+    /// A tiny script that attempts ONE outbound TCP connect and reports the outcome
+    /// on stdout: `CONNECT_OK`, or `CONNECT_FAIL errno=.. winerror=..` (an AppContainer
+    /// WFP block surfaces as WSAEACCES / winerror 10013).
+    #[cfg(windows)]
+    const PROBE_SRC: &str = r#"
+import sys
+port = int(sys.argv[1])
+try:
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(("127.0.0.1", port))
+        sys.stdout.write("CONNECT_OK\n")
+    except OSError as e:
+        sys.stdout.write("CONNECT_FAIL errno=%s winerror=%s\n" % (e.errno, getattr(e, "winerror", 0)))
+    finally:
+        s.close()
+except Exception as e:
+    sys.stdout.write("PROBE_ERR %r\n" % (e,))
+sys.stdout.flush()
+"#;
 }
