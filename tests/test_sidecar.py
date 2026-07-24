@@ -15,6 +15,8 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -626,7 +628,7 @@ def test_main_with_argv_index_serves(tmp_path):
     path = _disk_index(tmp_path)
     stdin = io.StringIO('{"jsonrpc":"2.0","id":1,"method":"corpus.stats","params":{}}\n')
     stdout = io.StringIO()
-    rc = sidecar.main(argv=[path], stdin=stdin, stdout=stdout)
+    rc = sidecar.main(argv=["--index", path], stdin=stdin, stdout=stdout)
     assert rc == 0
     resp = json.loads(stdout.getvalue().strip())
     assert resp["result"]["conversations"] == 3
@@ -655,9 +657,57 @@ def test_main_reads_index_from_env(tmp_path, monkeypatch):
 
 def test_main_defaults_to_sys_streams(tmp_path, monkeypatch):
     path = _disk_index(tmp_path)
-    monkeypatch.setattr(sidecar.sys, "argv", ["prog", path])
+    monkeypatch.setattr(sidecar.sys, "argv", ["prog", "--index", path])
     monkeypatch.setattr(sidecar.sys, "stdin", io.StringIO(""))   # empty -> loop no-op
     out = io.StringIO()
     monkeypatch.setattr(sidecar.sys, "stdout", out)
     assert sidecar.main() == 0            # argv/stdin/stdout all default to sys.*
     assert out.getvalue() == ""
+
+
+# ------------------------------------------------------ e2e over real stdio (subprocess)
+
+def _repo_root():
+    """Directory holding the importable ``aisr`` package (aisr/sidecar.py -> up two)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(sidecar.__file__)))
+
+
+def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
+    """Spawn the REAL `python -m aisr.sidecar --index <synthetic>` process and
+    round-trip health.ping + corpus.stats + graph.roots over actual OS stdio pipes
+    (not in-memory StringIO), asserting the replies match the synthetic corpus. This is
+    the Python-side complement to the Rust cargo e2e that proves the SAME wire.
+
+    The index is built from SYNTHETIC fixtures only (`_populate`) — never $CODEX_HOME —
+    and its builder connection is CLOSED before the subprocess opens the file."""
+    path = str(tmp_path / "e2e.db")
+    conn = corpus.open_index(path)
+    _populate(conn)
+    conn.commit()
+    conn.close()                          # release before the sidecar subprocess opens it
+
+    requests = (
+        '{"jsonrpc":"2.0","id":1,"method":"health.ping"}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"corpus.stats","params":{}}\n'
+        '{"jsonrpc":"2.0","id":3,"method":"graph.roots","params":{}}\n')
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "aisr.sidecar", "--index", path],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=_repo_root(), text=True, encoding="utf-8")
+    out, err = proc.communicate(requests, timeout=30)   # closing stdin -> clean EOF exit
+    assert proc.returncode == 0, "sidecar exited %s; stderr=%r" % (proc.returncode, err)
+
+    replies = {r["id"]: r for r in (json.loads(ln) for ln in out.splitlines() if ln.strip())}
+    assert set(replies) == {1, 2, 3}, "expected 3 framed replies, got %r" % (out,)
+
+    health = replies[1]["result"]
+    assert health["ok"] is True and health["corpus_ready"] is True
+    assert health["engine_version"] and health["ir_version"] == ir.IR_VERSION
+
+    stats = replies[2]["result"]          # _populate: 3 convs / 4 threads / 5 edges
+    assert stats["conversations"] == 3 and stats["threads"] == 4 and stats["edges"] == 5
+    assert stats["providers"] == {"codex": 2, "claude": 1}
+
+    roots = replies[3]["result"]          # roots by created order: t1 (1000) then ghost (None)
+    assert [n["id"] for n in roots] == ["t1", "ghost"]
+    assert roots[0]["child_count"] == 2   # t1 -> {t2, t4}

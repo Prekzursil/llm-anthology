@@ -46,6 +46,7 @@ prompt-injection channel in the corpus cannot be relayed into the next agent. ``
 and ``graph.*`` are aggregate/metadata only; a full transcript crosses only for the one
 conversation the user explicitly opened, and even then it is sanitized.
 """
+import argparse
 import json
 import os
 import sqlite3
@@ -471,11 +472,26 @@ class Sidecar:
 
 # -------------------------------------------------------------------- entrypoint
 
+def _parse_args(args):
+    """Parse the sidecar CLI: an optional ``--index <path>`` that falls back to
+    ``$AISR_INDEX`` then to no corpus. Kept tiny (no branches) so ``main`` stays
+    fully covered by its four in-process tests."""
+    parser = argparse.ArgumentParser(
+        prog="aisr.sidecar",
+        description="stdio NDJSON JSON-RPC 2.0 engine over an aisr corpus index")
+    parser.add_argument(
+        "--index", default=None,
+        help="path to the corpus index (SQLite); falls back to $AISR_INDEX, then "
+             "serves with no corpus attached (health.ping still answers)")
+    return parser.parse_args(args)
+
+
 def main(argv=None, stdin=None, stdout=None):
-    """Open the index (from argv[0] or $AISR_INDEX; None -> no corpus) and serve on the
-    given streams (defaulting to the real stdio)."""
+    """Open the index (from ``--index`` or $AISR_INDEX; None -> no corpus) and serve on
+    the given streams (defaulting to the real stdio). This is the entrypoint the cockpit
+    launches as ``python -m aisr.sidecar --index <path>``."""
     args = sys.argv[1:] if argv is None else list(argv)
-    path = args[0] if args else os.environ.get("AISR_INDEX")
+    path = _parse_args(args).index or os.environ.get("AISR_INDEX")
     conn = corpus.open_index(path) if path else None
     try:
         Sidecar(conn).serve(stdin if stdin is not None else sys.stdin,

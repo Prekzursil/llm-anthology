@@ -16,7 +16,7 @@ import { mockIpc } from "./mock";
 import { realIpc } from "./real";
 import type { IpcClient } from "./types";
 
-const USE_REAL_IPC: boolean = false;
+const USE_REAL_IPC: boolean = true;
 
 export const ipc: IpcClient = USE_REAL_IPC ? realIpc : mockIpc;
 

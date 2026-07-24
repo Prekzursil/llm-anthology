@@ -284,4 +284,94 @@ mod tests {
             assert_eq!(v["jsonrpc"], "2.0");
         }
     }
+
+    /// END-TO-END over the REAL wire: build a SYNTHETIC corpus index with a committed
+    /// Python fixture, then spawn the ACTUAL `python -m aisr.sidecar --index <path>`
+    /// process through the production [`SidecarClient`] and round-trip health.ping +
+    /// corpus.stats + graph.roots over genuine OS stdio pipes. This is the Rust<->Python
+    /// proof the unit tests above (in-memory `Cursor` mocks) cannot give: it exercises
+    /// process spawn, real NDJSON framing across a pipe, and the sidecar's own engine.
+    ///
+    /// `aisr` is a source tree at the repo root (not pip-installed), so the repo root is
+    /// put on PYTHONPATH for both the builder and the spawned sidecar. Assertions match
+    /// the fixture's known corpus EXACTLY.
+    #[test]
+    fn e2e_roundtrip_real_python_sidecar() {
+        use super::SidecarClient;
+        use std::path::PathBuf;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // <manifest> = cockpit/src-tauri  ->  up two  ->  repo root (holds `aisr/`).
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root is two levels above the crate manifest")
+            .to_path_buf();
+        // Both subprocesses need `import aisr` to resolve. `Command` inherits this.
+        // (`std::env::set_var` is safe under this crate's 2021 edition.)
+        std::env::set_var("PYTHONPATH", &repo_root);
+
+        // A unique temp index so parallel/repeat runs never collide.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let index_path =
+            std::env::temp_dir().join(format!("aisr_e2e_{}_{}.db", std::process::id(), nanos));
+
+        // Build the KNOWN synthetic corpus (3 convs / 3 threads / 2 edges / 1 root).
+        let fixture = manifest
+            .join("tests")
+            .join("fixtures")
+            .join("build_synth_index.py");
+        let built = Command::new("python")
+            .arg(&fixture)
+            .arg(&index_path)
+            .output()
+            .expect("failed to launch python to build the synthetic index (python on PATH?)");
+        assert!(
+            built.status.success(),
+            "synthetic-index builder failed: status={:?}\nstdout={}\nstderr={}",
+            built.status,
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        assert!(index_path.exists(), "builder did not create {index_path:?}");
+
+        let index_str = index_path.to_str().expect("temp index path is valid UTF-8");
+        let mut client = SidecarClient::spawn(index_str).expect("spawn real python sidecar");
+
+        // 1) health.ping — the corpus IS attached, so corpus_ready must be true.
+        let health = client.call("health.ping", &json!({})).expect("health.ping call");
+        assert_eq!(health["ok"], json!(true), "health payload: {health}");
+        assert_eq!(health["corpus_ready"], json!(true), "corpus must be ready: {health}");
+        assert!(
+            health["engine_version"].as_str().is_some_and(|s| !s.is_empty()),
+            "engine_version must be a non-empty string: {health}"
+        );
+        assert!(health["ir_version"].is_number(), "ir_version must be numeric: {health}");
+
+        // 2) corpus.stats — must equal the fixture's known aggregates.
+        let stats = client.call("corpus.stats", &json!({})).expect("corpus.stats call");
+        assert_eq!(stats["conversations"], json!(3), "stats: {stats}");
+        assert_eq!(stats["threads"], json!(3), "stats: {stats}");
+        assert_eq!(stats["edges"], json!(2), "stats: {stats}");
+        assert_eq!(stats["records"], json!(6), "records = SUM(turn_count): {stats}");
+        assert_eq!(stats["providers"]["codex"], json!(2), "stats: {stats}");
+        assert_eq!(stats["providers"]["claude"], json!(1), "stats: {stats}");
+
+        // 3) graph.roots — exactly one root (root-a), fan-out 2, provider codex.
+        let roots = client.call("graph.roots", &json!({})).expect("graph.roots call");
+        let arr = roots.as_array().expect("graph.roots returns an array");
+        assert_eq!(arr.len(), 1, "exactly one root expected: {roots}");
+        assert_eq!(arr[0]["id"], json!("root-a"), "roots: {roots}");
+        assert_eq!(arr[0]["child_count"], json!(2), "roots: {roots}");
+        assert_eq!(arr[0]["provider"], json!("codex"), "roots: {roots}");
+
+        // Dropping the client kills+reaps the process; then best-effort clean the temp.
+        drop(client);
+        let _ = std::fs::remove_file(&index_path);
+    }
 }

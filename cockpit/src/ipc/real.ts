@@ -1,16 +1,20 @@
 /**
- * REAL implementation of {@link IpcClient}, backed by a Tauri command that proxies a
- * single JSON-RPC call through to the Python sidecar (`aisr/sidecar.py`) over stdio.
+ * REAL implementation of {@link IpcClient}, backed by the Tauri commands the Rust side
+ * (`src-tauri/src/lib.rs`) exposes. Each command proxies ONE JSON-RPC call through to
+ * the Python sidecar (`aisr/sidecar.py`, launched as `python -m aisr.sidecar --index
+ * <path>`) over stdio and returns the sidecar's JSON-RPC `result` verbatim.
  *
- * INTEGRATION SEAM. The Rust work-unit owns `src-tauri/` and exposes the command
- * named {@link RPC_COMMAND}; it must accept `{ method: string, params: object }` and
- * return the sidecar's JSON-RPC `result` verbatim. If the Rust side lands a different
- * command name or per-method commands, this ONE file is where the integrate stage
- * adapts — the rest of the app is unaffected, and the mock <-> real choice stays the
- * single flag flip in `./index.ts`.
+ * INTEGRATION SEAM. The Rust work-unit landed PER-METHOD commands (`health_ping`,
+ * `corpus_stats`, `graph_roots`, `graph_children`, `graph_subtree`, `graph_ancestors`,
+ * `search_query`, `thread_get`, `conversation_get`), each taking a single `params`
+ * argument (`Option<Value>`) that it forwards to the matching JSON-RPC method. This ONE
+ * file adapts the {@link IpcClient} surface onto those command names; the rest of the
+ * app is unaffected, and the mock <-> real choice stays the single flag flip in
+ * `./index.ts`. (The corpus must first be attached engine-side via the Rust
+ * `open_corpus` command — a launch/settings concern outside this data surface.)
  *
- * Nothing here runs until `USE_REAL_IPC` is flipped: `invoke` only reaches a backend
- * inside the Tauri webview, so importing this module in a plain browser/build is inert.
+ * `invoke` only reaches a backend inside the Tauri webview, so importing this module in
+ * a plain browser/build is inert until `USE_REAL_IPC` is flipped.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -28,47 +32,43 @@ import type {
   ThreadNode,
 } from "./types";
 
-/** The Tauri command the Rust side exposes to bridge one JSON-RPC request. */
-export const RPC_COMMAND = "sidecar_rpc";
-
 /**
- * Issue one JSON-RPC method call and return its typed `result`. `params` is `unknown`
- * (not `Record<string, unknown>`) so an interface-typed argument passes without the
- * missing-index-signature friction; it is wrapped in a fresh object literal for
- * `invoke`, which is assignable to Tauri's `InvokeArgs`.
+ * Invoke one per-method Tauri command, wrapping `params` in the `{ params }` shape the
+ * Rust command signature expects. `params` is `unknown` (not `Record<string, unknown>`)
+ * so an interface-typed argument passes without missing-index-signature friction.
  */
-async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
-  return invoke<T>(RPC_COMMAND, { method, params });
+async function cmd<T>(command: string, params: unknown = {}): Promise<T> {
+  return invoke<T>(command, { params });
 }
 
 export const realIpc: IpcClient = {
   healthPing(): Promise<HealthInfo> {
-    return rpc<HealthInfo>("health.ping");
+    return cmd<HealthInfo>("health_ping");
   },
   corpusStats(): Promise<CorpusStats> {
-    return rpc<CorpusStats>("corpus.stats");
+    return cmd<CorpusStats>("corpus_stats");
   },
   graphRoots(params: RootsParams = {}): Promise<ThreadNode[]> {
-    return rpc<ThreadNode[]>("graph.roots", params);
+    return cmd<ThreadNode[]>("graph_roots", params);
   },
   graphChildren(threadId: string): Promise<ThreadNode[]> {
-    return rpc<ThreadNode[]>("graph.children", { thread_id: threadId });
+    return cmd<ThreadNode[]>("graph_children", { thread_id: threadId });
   },
   graphSubtree(threadId: string, depth?: number): Promise<Subtree> {
     const params: Record<string, unknown> = { thread_id: threadId };
     if (depth !== undefined) params.depth = depth;
-    return rpc<Subtree>("graph.subtree", params);
+    return cmd<Subtree>("graph_subtree", params);
   },
   graphAncestors(threadId: string): Promise<ThreadNode[]> {
-    return rpc<ThreadNode[]>("graph.ancestors", { thread_id: threadId });
+    return cmd<ThreadNode[]>("graph_ancestors", { thread_id: threadId });
   },
   searchQuery(params: SearchParams): Promise<SearchResult> {
-    return rpc<SearchResult>("search.query", params);
+    return cmd<SearchResult>("search_query", params);
   },
   threadGet(threadId: string): Promise<ThreadMeta> {
-    return rpc<ThreadMeta>("thread.get", { thread_id: threadId });
+    return cmd<ThreadMeta>("thread_get", { thread_id: threadId });
   },
   conversationGet(id: string): Promise<Conversation> {
-    return rpc<Conversation>("conversation.get", { id });
+    return cmd<Conversation>("conversation_get", { id });
   },
 };

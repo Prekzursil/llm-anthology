@@ -96,6 +96,16 @@ fn thread_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
     forward(state.inner(), "thread.get", params.unwrap_or_else(|| json!({})))
 }
 
+#[tauri::command]
+fn graph_ancestors(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "graph.ancestors", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "conversation.get", params.unwrap_or_else(|| json!({})))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -109,8 +119,10 @@ pub fn run() {
             graph_roots,
             graph_children,
             graph_subtree,
+            graph_ancestors,
             search_query,
             thread_get,
+            conversation_get,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
