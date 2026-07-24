@@ -36,15 +36,16 @@ cyclic or corrupt spawn data cannot make it recurse. The conversation IR carries
 millisecond birth time, so conversations are carried through unchanged (on a new list).
 
 TIMELINE (timeline). The scrubber needs the set of moments it can snap to and the range
-it spans: `events` is the sorted, de-duplicated list of every dated thread's
-created_at_ms (an edge is born with its child, so child births are already among these
-thread births and contribute no new moment); `min_ms`/`max_ms` are the first/last event,
-or None when there is no dated thread (an empty or all-undated corpus has no range —
-None rather than a fabricated 0, mirroring corpus.py's schema-tolerant Optional[int]
-convention); and `undated_count` is how many threads are undated (the ones always
-present in every snapshot). It is scoped to corpus.threads — the records that carry a
-birth time — so a dangling edge endpoint (no ThreadMeta, no birth) is not a timeline
-entry.
+it spans: `events` is the sorted, de-duplicated list of every DATED node's created_at_ms
+(an edge is born with its child, so child births are already among these births and
+contribute no new moment; an undated node has no birth, so it adds no moment either);
+`min_ms`/`max_ms` are the first/last event, or None when there is no dated node (an empty
+or all-undated corpus has no range — None rather than a fabricated 0, mirroring corpus.py's
+schema-tolerant Optional[int] convention); and `undated_count` is how many graph NODES are
+undated (the ones always present in every snapshot). The node set is the SAME one
+corpus_as_of / graph.at view — threads UNION every edge endpoint — so a dangling edge
+endpoint (no ThreadMeta, hence no birth) IS an undated node and IS counted, exactly as the
+frozen wire contract (cockpit types.ts `Timeline.undated_count`) documents.
 
 PRIVACY: this module reads birth-time ints and graph shape only; it never touches
 conversation content. Tests use synthetic fixtures exclusively.
@@ -90,16 +91,19 @@ def corpus_as_of(corpus: Corpus, as_of_ms: int) -> Corpus:
 
 
 def timeline(corpus: Corpus) -> dict:
-    """The birth-time timeline of the corpus's threads for a time-travel scrubber:
-    `{events, min_ms, max_ms, undated_count}`. See the module docstring for the
-    contract; scoped to corpus.threads (the records that carry a birth time)."""
+    """The birth-time timeline of the corpus's spawn graph for a time-travel scrubber:
+    `{events, min_ms, max_ms, undated_count}`. `events`/`min_ms`/`max_ms` cover the DATED
+    births; `undated_count` counts every undated NODE over the SAME node set graph.at
+    views — threads UNION every edge endpoint — so a dangling endpoint (no ThreadMeta,
+    hence no birth) counts as undated. See the module docstring for the full contract."""
     dated: set = set()
     undated_count = 0
-    for meta in corpus.threads.values():
-        if meta.created_at_ms is None:
+    for tid in corpus._nodes():
+        birth = _birth(corpus, tid)
+        if birth is None:
             undated_count += 1
         else:
-            dated.add(meta.created_at_ms)
+            dated.add(birth)
     events = sorted(dated)
     return {
         "events": events,

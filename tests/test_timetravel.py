@@ -19,7 +19,8 @@ What is pinned:
   * conversations are carried through unchanged on a fresh list;
   * timeline(corpus) reports the sorted DISTINCT dated births (events), the first/last
     of them (min_ms/max_ms, or None when there is no dated thread — never a fabricated
-    0), and the count of undated threads.
+    0), and the count of undated NODES over the SAME node set graph.at views (threads
+    UNION edge endpoints), so a dangling edge endpoint counts as undated.
 """
 from aisr import corpus, timetravel
 
@@ -275,3 +276,15 @@ def test_timeline_of_an_all_undated_corpus_has_no_range_but_counts_them():
     assert tl["events"] == []
     assert tl["min_ms"] is None and tl["max_ms"] is None     # no dated thread -> no range
     assert tl["undated_count"] == 3
+
+
+def test_timeline_counts_dangling_edge_endpoints_as_undated_nodes():
+    """A dangling edge endpoint (an id on an edge with no ThreadMeta, hence no birth) is an
+    always-present node, so timeline counts it as undated over the SAME node set graph.at /
+    corpus_as_of view — threads UNION edge endpoints — NOT scoped to the threads table."""
+    c = _corpus(threads=[_tm("a", created_at_ms=100)],
+                edges=[_edge("a", "ghost"), _edge("ghost", "g2")])  # ghost, g2: no rows
+    tl = timetravel.timeline(c)
+    assert tl["events"] == [100]                       # only the dated thread contributes
+    assert tl["min_ms"] == 100 and tl["max_ms"] == 100
+    assert tl["undated_count"] == 2                    # ghost + g2, both row-less endpoints

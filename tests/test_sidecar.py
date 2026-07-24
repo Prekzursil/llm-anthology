@@ -557,9 +557,23 @@ def test_graph_diff_bad_as_of_type_rejects():
 
 def test_graph_timeline_events_range_and_undated_count():
     tl = _mem_server().dispatch("graph.timeline", {})
-    # scoped to the threads table: t1..t4 are dated, ghost/g2 (edge-only) are not entries
+    # events are the dated thread births t1..t4; undated_count spans the SAME node set
+    # graph.at views (threads UNION edge endpoints), so the dangling ghost/g2 pair — which
+    # carry no ThreadMeta and thus no birth — are counted as the two undated nodes.
     assert tl == {"events": [1000, 1100, 1150, 1200], "min_ms": 1000,
-                  "max_ms": 1200, "undated_count": 0}
+                  "max_ms": 1200, "undated_count": 2}
+
+
+def test_graph_timeline_counts_a_dangling_edge_endpoint_as_undated():
+    """A dangling edge endpoint (an id on an edge with no ThreadMeta, hence no birth) is an
+    always-present graph node, so timeline counts it as undated — the SAME node set graph.at
+    views (threads UNION edge endpoints), matching the frozen wire contract."""
+    srv = _mem_server()
+    srv.corpus = corpus.Corpus(
+        threads={"a": ThreadMeta(id="a", created_at_ms=100)},
+        edges=[SpawnEdge("a", "ghost")])       # ghost has no ThreadMeta -> undated node
+    tl = srv.dispatch("graph.timeline", {})
+    assert tl == {"events": [100], "min_ms": 100, "max_ms": 100, "undated_count": 1}
 
 
 def test_graph_timeline_counts_undated_threads():
@@ -634,13 +648,18 @@ def test_graph_at_requires_corpus():
 # ------------------------------------------------------------------- export.plan
 
 def test_export_plan_dry_run_tally():
-    plan = _mem_server().dispatch("export.plan", {})
+    srv = _mem_server()
+    plan = srv.dispatch("export.plan", {})
     assert plan["node_count"] == 6          # t1..t4 + the dangling ghost/g2 pair
     assert plan["edge_count"] == 5
-    assert plan["conversation_count"] == 3
-    assert plan["est_bytes"] == (len("rocket rocket moon alpha")
-                                 + len("rocket beta notes here")
-                                 + len("a boat that mentions rocket once"))
+    # export.run writes the GRAPH only this bite (no transcripts), so the dry-run tally
+    # reports 0 conversations and the serialized graph artifact's own byte size — NOT the
+    # conversation Σ(char_count), which nothing writes. This keeps the preview honest and
+    # matching the file run.
+    assert plan["conversation_count"] == 0
+    assert plan["est_bytes"] == len(
+        sidecar.export.serialize_graph(srv.corpus).encode("utf-8"))
+    assert plan["est_bytes"] > 0
 
 
 def test_export_plan_requires_corpus():
@@ -1097,16 +1116,17 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert tt_diff["removed_nodes"] == [] and tt_diff["removed_edges"] == []
     assert tt_diff["changed_nodes"] == {}
 
-    timeline_res = replies[6]["result"]   # the four dated thread births, sorted
+    timeline_res = replies[6]["result"]   # 4 dated thread births; ghost/g2 are undated nodes
     assert timeline_res == {"events": [1000, 1100, 1150, 1200], "min_ms": 1000,
-                            "max_ms": 1200, "undated_count": 0}
+                            "max_ms": 1200, "undated_count": 2}
 
     at_res = replies[7]["result"]         # the spawn graph as-of 1150 (t3 not yet born)
     assert [n["id"] for n in at_res["nodes"]] == ["g2", "ghost", "t1", "t2", "t4"]
 
     plan_res = replies[8]["result"]       # dry-run tally survives real-stdio JSON
     assert plan_res["node_count"] == 6 and plan_res["edge_count"] == 5
-    assert plan_res["conversation_count"] == 3 and plan_res["est_bytes"] > 0
+    # graph-only write this bite: 0 conversations, est_bytes = serialized graph size (>0)
+    assert plan_res["conversation_count"] == 0 and plan_res["est_bytes"] > 0
 
     run_res = replies[9]["result"]        # a real file is written by the sidecar process
     assert run_res["ok"] is True and run_res["written_path"] == export_dest

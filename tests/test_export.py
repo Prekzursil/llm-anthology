@@ -199,6 +199,24 @@ def test_export_rejects_unc_root(tmp_path):
                                 tmp_path / "out.json", root=r"\\evil\share")
 
 
+def test_export_unc_guard_rejects_a_unc_dest_confined_to_a_unc_root():
+    """ISOLATES the UNC guard (mutation-proof). The two tests above trip the UNC guard
+    only incidentally — with the guard stubbed to `if False:` they STILL raise, caught by
+    the `is_relative_to` confinement check (a UNC dest is not relative to a local root, and
+    a local dest is not relative to a UNC root). So confinement, not the guard, is what
+    makes them green, and the guard is untested.
+
+    Here the destination `\\\\server\\share\\out.json` IS lexically within the (UNC) root
+    `\\\\server\\share`: it carries no `..` and is_relative_to(root) is True, so BOTH
+    confinement checks PASS. Only the UNC guard in `_norm_local` can reject it. `match="UNC"`
+    pins that it is the guard (its message names UNC), not confinement, that fires — so
+    stubbing the guard to `if False:` makes this test go RED. Guards the Windows SMB/NTLM
+    hash-leak class (a crafted `\\\\host\\share` coerces an outbound authentication)."""
+    with pytest.raises(export.ExportPathError, match="UNC"):
+        export.export_with_gate(_corpus(threads=[_tm("x")]),
+                                r"\\server\share\out.json", root=r"\\server\share")
+
+
 def test_export_rejects_parent_traversal(tmp_path):
     dest = str(tmp_path) + "/../escape.json"           # normalizes to a `..` component
     with pytest.raises(export.ExportPathError):

@@ -44,15 +44,20 @@ Method status (all implemented; honest caveats inline)
                          diamond-deduped and cycle-safe (see ``aisr.rollup``). Counts and
                          graph shape only; no conversation text crosses.
 * ``graph.timeline``   — FULL. ``{events, min_ms, max_ms, undated_count}`` — the sorted
-                         distinct dated thread births, their range, and the undated count
-                         (see ``aisr.timetravel.timeline``). Ints/None only.
+                         distinct dated node births, their range, and the undated-NODE
+                         count over the SAME node set graph.at views (threads UNION edge
+                         endpoints, so a dangling endpoint counts as undated — matching the
+                         frozen contract; see ``aisr.timetravel.timeline``). Ints/None only.
 * ``graph.at``         — FULL. The spawn graph AS-OF ``as_of_ms`` (a time-travel snapshot):
                          nodes born by T (undated/dangling always present) + edges whose
                          CHILD is born by T, projected exactly like graph.subtree.
                          child_count/depth are computed OVER THE SNAPSHOT, so the moment is
                          internally coherent (a node's fan-out matches its visible edges).
 * ``export.plan``      — FULL. A dry-run tally ``{node_count, edge_count,
-                         conversation_count, est_bytes}`` — no filesystem access.
+                         conversation_count, est_bytes}`` of what ``export.run`` ACTUALLY
+                         writes — the GRAPH only, so ``conversation_count`` is 0 and
+                         ``est_bytes`` is the serialized graph's byte size (NOT a transcript
+                         Σ char_count that this bite never bundles). No filesystem access.
 * ``export.run``       — FULL. Writes the spawn-graph artifact to a drive-absolute-local
                          ``dest_path`` (UNC/network + relative + parent-traversal rejected)
                          and returns ``{ok, graph_gate, transcript_gate, written_path?}``,
@@ -383,7 +388,8 @@ class Sidecar:
     def _graph_timeline(self, params):
         """The node-creation event axis for a time scrubber: ``{events, min_ms, max_ms,
         undated_count}`` from ``aisr.timetravel.timeline`` (sorted distinct dated births,
-        their range, and the count of undated threads). Ints/None only — no free text."""
+        their range, and the count of undated NODES — threads UNION edge endpoints, so a
+        dangling endpoint counts as undated). Ints/None only — no free text."""
         self._require_corpus()
         return timetravel.timeline(self.corpus)
 
@@ -399,18 +405,21 @@ class Sidecar:
         return self._project_snapshot(timetravel.corpus_as_of(self.corpus, as_of))
 
     def _export_plan(self, params):
-        """A dry-run tally of a full export — no filesystem access. Distinct graph nodes
-        (threads UNION edge endpoints), spawn edges, indexed conversations, and a
-        content-byte estimate (SUM of char_count, the same aggregate corpus.stats
-        reports). Ints only, so no sanitization is needed."""
+        """A dry-run tally of what ``export.run`` ACTUALLY writes — the spawn GRAPH only
+        (this bite bundles NO transcripts, so ``export.run`` writes zero conversations and
+        its ``transcript_gate`` is vacuously true). Distinct graph nodes (threads UNION edge
+        endpoints), spawn edges, ``conversation_count`` = 0 (none are written), and
+        ``est_bytes`` = the serialized graph artifact's UTF-8 byte size — so the dry-run
+        preview matches the file run instead of overstating a Σ(char_count) of transcripts
+        that never leave the index. No filesystem access; ints only, so no sanitization is
+        needed. [Wiring transcript bundling is a later bite; when it lands, this tally grows
+        the conversation_count/bytes it will then actually write — settle by mirroring
+        export.run's conversation set here.]"""
         self._require_corpus()
-        conversations = self.conn.execute(
-            "SELECT COUNT(*) FROM conversations").fetchone()[0]
-        est_bytes = self.conn.execute(
-            "SELECT COALESCE(SUM(char_count), 0) FROM conversations").fetchone()[0]
+        est_bytes = len(export.serialize_graph(self.corpus).encode("utf-8"))
         return {"node_count": len(self.corpus._nodes()),
                 "edge_count": len(self.corpus.edges),
-                "conversation_count": conversations, "est_bytes": est_bytes}
+                "conversation_count": 0, "est_bytes": est_bytes}
 
     def _export_run(self, params):
         """Write the spawn-graph export to ``dest_path`` and return the fidelity verdict.
