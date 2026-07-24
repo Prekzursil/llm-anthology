@@ -4,15 +4,43 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cockpit</title>
+    <title>aisr cockpit</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-    <main class="container">
-      <h1>Cockpit</h1>
-      <p>Offline cockpit for the AI-session corpus — scaffold.</p>
-      <p id="status">Loading&hellip;</p>
-    </main>
+    <div id="app">
+      <header id="topbar">
+        <h1>aisr cockpit</h1>
+        <span id="stats" class="muted"></span>
+        <span class="spacer"></span>
+        <span id="health" class="muted"></span>
+      </header>
+
+      <aside id="sidebar">
+        <div class="panel-title">Threads</div>
+        <div id="roots-list" class="list-viewport"></div>
+
+        <div class="panel-title">Search</div>
+        <input id="search-input" type="search" placeholder="Search conversations…" autocomplete="off" />
+        <div id="search-status" class="muted"></div>
+        <div id="search-results" class="list-viewport"></div>
+      </aside>
+
+      <main id="graph-pane">
+        <div id="graph-toolbar">
+          <button id="btn-forest" type="button">Full forest</button>
+          <button id="btn-fit" type="button">Fit</button>
+          <span id="graph-status" class="muted"></span>
+          <span class="spacer"></span>
+          <span id="legend"></span>
+        </div>
+        <canvas id="tree-canvas"></canvas>
+      </main>
+
+      <section id="detail">
+        <p class="muted">Select a node to inspect a thread.</p>
+      </section>
+    </div>
   </body>
 </html>

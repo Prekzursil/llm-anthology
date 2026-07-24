@@ -1,30 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
-
-/** Shape returned by the Rust `app_info` command. */
-interface AppInfo {
-  name: string;
-  version: string;
-  engine: string;
-}
-
 /**
- * Fetch basic cockpit metadata from the Rust backend and render it into the
- * status line. The engine sidecar is not yet wired, so `engine` reports its
- * deferred state (see src-tauri/binaries/README.md).
+ * Cockpit entry point. Boots the {@link CockpitApp} once the document is ready; any
+ * boot failure is surfaced in the health line rather than swallowed.
  */
-async function renderStatus(): Promise<void> {
-  const statusEl = document.querySelector<HTMLElement>("#status");
-  if (!statusEl) {
-    return;
-  }
+
+import { CockpitApp } from "./app";
+
+function boot(): void {
   try {
-    const info = await invoke<AppInfo>("app_info");
-    statusEl.textContent = `${info.name} v${info.version} — engine: ${info.engine}`;
+    const app = new CockpitApp();
+    void app.init();
   } catch (err) {
-    statusEl.textContent = `Cockpit (engine status unavailable: ${String(err)})`;
+    const health = document.getElementById("health");
+    if (health !== null) health.textContent = `cockpit failed to start: ${String(err)}`;
+    // Re-throw so it also lands in the devtools console during development.
+    throw err;
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  void renderStatus();
-});
+if (document.readyState === "loading") {
+  window.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}
