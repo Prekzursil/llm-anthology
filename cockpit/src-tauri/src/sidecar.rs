@@ -121,7 +121,7 @@ impl SidecarClient {
     /// Windows: raw `CreateProcessW` under a `KILL_ON_JOB_CLOSE` Job Object +
     /// `CREATE_NO_WINDOW` — the reliable reap + no-window core. The AppContainer
     /// network membrane is a first-class, tested spawn mode
-    /// ([`SidecarClient::spawn_membrane`]); it is left opt-in HERE because a
+    /// (via `spawn_hardened` with `Membrane::AppContainer`); it is left opt-in HERE because a
     /// sandboxed engine also needs its export DESTINATION granted to the package
     /// SID, an export-lifecycle concern rather than a fixed spawn concern.
     pub fn spawn(index_path: &str) -> Result<Self, String> {
