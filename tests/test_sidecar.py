@@ -222,6 +222,27 @@ def test_req_str_valid_and_rejects():
         assert ei.value.code == -32602
 
 
+def test_req_int_valid_and_rejects():
+    assert sidecar._req_int({"as_of_ms": 100}, "as_of_ms") == 100
+    assert sidecar._req_int({"as_of_ms": 0}, "as_of_ms") == 0   # zero is a valid cutoff
+    # missing key, non-int string, a bool (int subclass), and a float are all rejected
+    for bad in ({}, {"as_of_ms": "5"}, {"as_of_ms": True}, {"as_of_ms": 1.5}):
+        with pytest.raises(sidecar.RpcError) as ei:
+            sidecar._req_int(bad, "as_of_ms")
+        assert ei.value.code == -32602
+
+
+def test_reject_nonlocal_dest_unc_and_relative_and_ok():
+    # an absolute local path passes silently; UNC/protocol-relative and any relative
+    # path are rejected before a single filesystem byte is touched.
+    sidecar._reject_nonlocal_dest(os.path.join(os.getcwd(), "ok.json"))
+    for bad in (r"\\host\share\x.json", "//host/share/x.json",
+                "relative/x.json", "x.json"):
+        with pytest.raises(sidecar.RpcError) as ei:
+            sidecar._reject_nonlocal_dest(bad)
+        assert ei.value.code == -32602
+
+
 # --------------------------------------------------------- construction + health
 
 def test_construct_without_conn_is_empty_corpus():
@@ -480,6 +501,220 @@ def test_graph_diff_requires_corpus():
     with pytest.raises(sidecar.RpcError) as ei:
         sidecar.Sidecar(None).dispatch("graph.diff", {})
     assert ei.value.code == -32000
+
+
+# ------------------------------------------------- graph.diff (time-travel variant)
+
+def test_graph_diff_time_travel_between_two_as_of_cutoffs():
+    # as-of 1000 -> only t1 born (plus the always-present dangling ghost->g2); as-of
+    # 1150 -> t1,t2,t4 born with their edges. The delta is pure ADDs, and a node in
+    # BOTH snapshots (t1) is byte-identical, so changed_nodes stays empty.
+    res = _mem_server().dispatch("graph.diff", {"as_of_a": 1000, "as_of_b": 1150})
+    assert res["added_nodes"] == ["t2", "t4"]
+    assert res["removed_nodes"] == []
+    assert res["added_edges"] == [{"parent": "t1", "child": "t2"},
+                                  {"parent": "t1", "child": "t4"}]
+    assert res["removed_edges"] == []
+    assert res["changed_nodes"] == {}
+
+
+def test_graph_diff_time_travel_reverse_swaps_added_and_removed():
+    res = _mem_server().dispatch("graph.diff", {"as_of_a": 1150, "as_of_b": 1000})
+    assert res["added_nodes"] == [] and res["removed_nodes"] == ["t2", "t4"]
+    assert res["added_edges"] == []
+    assert res["removed_edges"] == [{"parent": "t1", "child": "t2"},
+                                    {"parent": "t1", "child": "t4"}]
+    assert res["changed_nodes"] == {}
+
+
+def test_graph_diff_time_travel_omitted_operand_is_now():
+    # as_of_b omitted -> the b-side is the full loaded corpus ("now"), so every later
+    # node/edge shows as an ADD against the as-of-1000 snapshot.
+    res = _mem_server().dispatch("graph.diff", {"as_of_a": 1000})
+    assert res["added_nodes"] == ["t2", "t3", "t4"]
+    assert res["added_edges"] == [{"parent": "t1", "child": "t2"},
+                                  {"parent": "t1", "child": "t4"},
+                                  {"parent": "t2", "child": "t3"},
+                                  {"parent": "t4", "child": "t3"}]
+    assert res["removed_nodes"] == [] and res["changed_nodes"] == {}
+
+
+def test_graph_diff_index_and_as_of_are_mutually_exclusive():
+    srv = _mem_server()
+    with pytest.raises(sidecar.RpcError) as ei:
+        srv.dispatch("graph.diff", {"old_index": "whatever.db", "as_of_a": 5})
+    assert ei.value.code == -32602
+
+
+def test_graph_diff_bad_as_of_type_rejects():
+    srv = _mem_server()
+    with pytest.raises(sidecar.RpcError) as ei:
+        srv.dispatch("graph.diff", {"as_of_a": "not-an-int"})
+    assert ei.value.code == -32602
+
+
+# --------------------------------------------------------------- graph.timeline
+
+def test_graph_timeline_events_range_and_undated_count():
+    tl = _mem_server().dispatch("graph.timeline", {})
+    # scoped to the threads table: t1..t4 are dated, ghost/g2 (edge-only) are not entries
+    assert tl == {"events": [1000, 1100, 1150, 1200], "min_ms": 1000,
+                  "max_ms": 1200, "undated_count": 0}
+
+
+def test_graph_timeline_counts_undated_threads():
+    srv = _mem_server()                         # conn present; inject an undated node
+    srv.corpus = corpus.Corpus(
+        threads={"a": ThreadMeta(id="a", created_at_ms=100),
+                 "u": ThreadMeta(id="u")},      # created_at_ms defaults None -> undated
+        edges=[])
+    tl = srv.dispatch("graph.timeline", {})
+    assert tl == {"events": [100], "min_ms": 100, "max_ms": 100, "undated_count": 1}
+
+
+def test_graph_timeline_requires_corpus():
+    with pytest.raises(sidecar.RpcError) as ei:
+        sidecar.Sidecar(None).dispatch("graph.timeline", {})
+    assert ei.value.code == -32000
+
+
+# --------------------------------------------------------------------- graph.at
+
+def test_graph_at_snapshot_is_coherent_and_sanitized():
+    at = _mem_server().dispatch("graph.at", {"as_of_ms": 1150})
+    # nodes = every id present as-of 1150, sorted by stable id (t3 not yet born)
+    assert [n["id"] for n in at["nodes"]] == ["g2", "ghost", "t1", "t2", "t4"]
+    by_id = {n["id"]: n for n in at["nodes"]}
+
+    # child_count/depth are SNAPSHOT-relative: at 1150 t1 has spawned t2+t4 but neither
+    # has spawned t3 yet, so t2 is a childless leaf in this moment.
+    assert by_id["t1"]["child_count"] == 2 and by_id["t1"]["depth"] == 0
+    assert by_id["t2"]["child_count"] == 0 and by_id["t2"]["depth"] == 1
+    assert by_id["t4"]["child_count"] == 0 and by_id["t4"]["depth"] == 1
+    # the free-text title is sanitized on the way out, exactly as graph.roots does
+    assert by_id["t1"]["title"] == "root alpha" and ZW not in by_id["t1"]["title"]
+    # a dangling (row-less) endpoint is synthesized as a bare node, always present
+    assert by_id["ghost"]["provider"] == "" and by_id["ghost"]["created_at_ms"] is None
+    assert by_id["ghost"]["child_count"] == 1 and by_id["g2"]["depth"] == 1
+
+    # edges are the snapshot's, sorted by (parent, child), status preserved/omitted
+    assert at["edges"] == [{"parent": "ghost", "child": "g2", "status": "completed"},
+                           {"parent": "t1", "child": "t2", "status": "completed"},
+                           {"parent": "t1", "child": "t4", "status": "failed"}]
+
+
+def test_graph_at_before_time_begins_keeps_only_the_undated_dangling_edge():
+    at = _mem_server().dispatch("graph.at", {"as_of_ms": 0})
+    assert [n["id"] for n in at["nodes"]] == ["g2", "ghost"]   # no dated thread born yet
+    assert at["edges"] == [{"parent": "ghost", "child": "g2", "status": "completed"}]
+
+
+def test_graph_at_far_future_is_the_whole_graph():
+    at = _mem_server().dispatch("graph.at", {"as_of_ms": 10_000})
+    assert [n["id"] for n in at["nodes"]] == ["g2", "ghost", "t1", "t2", "t3", "t4"]
+    by_id = {n["id"]: n for n in at["nodes"]}
+    # once t3 is born the diamond is complete, so t2 regains its child (contrast 1150)
+    assert by_id["t2"]["child_count"] == 1 and by_id["t1"]["child_count"] == 2
+
+
+def test_graph_at_bad_as_of_and_missing_reject():
+    srv = _mem_server()
+    for bad in ({}, {"as_of_ms": "x"}, {"as_of_ms": True}):
+        with pytest.raises(sidecar.RpcError) as ei:
+            srv.dispatch("graph.at", bad)
+        assert ei.value.code == -32602
+
+
+def test_graph_at_requires_corpus():
+    with pytest.raises(sidecar.RpcError) as ei:
+        sidecar.Sidecar(None).dispatch("graph.at", {"as_of_ms": 1})
+    assert ei.value.code == -32000
+
+
+# ------------------------------------------------------------------- export.plan
+
+def test_export_plan_dry_run_tally():
+    plan = _mem_server().dispatch("export.plan", {})
+    assert plan["node_count"] == 6          # t1..t4 + the dangling ghost/g2 pair
+    assert plan["edge_count"] == 5
+    assert plan["conversation_count"] == 3
+    assert plan["est_bytes"] == (len("rocket rocket moon alpha")
+                                 + len("rocket beta notes here")
+                                 + len("a boat that mentions rocket once"))
+
+
+def test_export_plan_requires_corpus():
+    with pytest.raises(sidecar.RpcError) as ei:
+        sidecar.Sidecar(None).dispatch("export.plan", {})
+    assert ei.value.code == -32000
+
+
+# -------------------------------------------------------------------- export.run
+
+def test_export_run_writes_graph_artifact_and_passes_gates(tmp_path):
+    srv = _mem_server()
+    dest = str(tmp_path / "export.json")
+    res = srv.dispatch("export.run", {"dest_path": dest})
+    assert res["ok"] is True
+    assert res["graph_gate"] is True and res["transcript_gate"] is True
+    assert res["written_path"] == dest
+    assert os.path.isfile(dest)
+    # the written artifact round-trips to the same spawn graph (sanitized)
+    doc = json.loads(open(dest, encoding="utf-8").read())
+    reparsed = sidecar.export.parse_graph(doc["graph"])
+    assert sorted(reparsed.threads) == ["t1", "t2", "t3", "t4"]
+    assert reparsed.threads["t1"].title == "root alpha"   # ZW stripped in the artifact
+
+
+def test_export_run_gate_blocks_a_dropped_node(tmp_path, monkeypatch):
+    """A serializer that silently drops an ISOLATED node -> the graph gate fires, so
+    ok/written are False, no written_path is emitted, and nothing lands on disk."""
+    srv = _mem_server()
+    srv.corpus = corpus.Corpus(
+        threads={"root": ThreadMeta(id="root"), "orphan": ThreadMeta(id="orphan")},
+        edges=[])
+    dest = str(tmp_path / "blocked.json")
+    real = sidecar.export.serialize_graph
+
+    def lossy(cc):
+        doc = json.loads(real(cc))
+        doc["nodes"] = [n for n in doc["nodes"] if n["id"] != "orphan"]
+        return json.dumps(doc)
+
+    monkeypatch.setattr(sidecar.export, "serialize_graph", lossy)
+    res = srv.dispatch("export.run", {"dest_path": dest})
+    assert res["ok"] is False and res["graph_gate"] is False
+    assert res["transcript_gate"] is True
+    assert "written_path" not in res
+    assert not os.path.isfile(dest)
+
+
+def test_export_run_rejects_unc_and_relative_dest():
+    srv = _mem_server()
+    for bad in (r"\\evil\share\out.json", "relative/out.json"):
+        with pytest.raises(sidecar.RpcError) as ei:
+            srv.dispatch("export.run", {"dest_path": bad})
+        assert ei.value.code == -32602
+
+
+def test_export_run_rejects_parent_traversal_dest(tmp_path):
+    # absolute + local + non-UNC, so it clears the sidecar's own check and is caught by
+    # export_with_gate's confinement guard (the ExportPathError branch -> -32602).
+    dest = str(tmp_path) + "/../escape.json"
+    with pytest.raises(sidecar.RpcError) as ei:
+        _mem_server().dispatch("export.run", {"dest_path": dest})
+    assert ei.value.code == -32602
+
+
+def test_export_run_missing_dest_and_requires_corpus(tmp_path):
+    srv = _mem_server()
+    with pytest.raises(sidecar.RpcError) as ei:
+        srv.dispatch("export.run", {})                       # no dest_path
+    assert ei.value.code == -32602
+    with pytest.raises(sidecar.RpcError) as ei2:
+        sidecar.Sidecar(None).dispatch(
+            "export.run", {"dest_path": str(tmp_path / "x.json")})
+    assert ei2.value.code == -32000
 
 
 # ------------------------------------------------------------------ search.query
@@ -811,12 +1046,18 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     conn.commit()
     conn.close()                          # release before the sidecar subprocess opens it
 
+    export_dest = str(tmp_path / "e2e-export.json")
     requests = (
         '{"jsonrpc":"2.0","id":1,"method":"health.ping"}\n'
         '{"jsonrpc":"2.0","id":2,"method":"corpus.stats","params":{}}\n'
         '{"jsonrpc":"2.0","id":3,"method":"graph.roots","params":{}}\n'
         '{"jsonrpc":"2.0","id":4,"method":"graph.rollup","params":{}}\n'
-        '{"jsonrpc":"2.0","id":5,"method":"graph.diff","params":{}}\n')
+        '{"jsonrpc":"2.0","id":5,"method":"graph.diff","params":{}}\n'
+        '{"jsonrpc":"2.0","id":6,"method":"graph.timeline","params":{}}\n'
+        '{"jsonrpc":"2.0","id":7,"method":"graph.at","params":{"as_of_ms":1150}}\n'
+        '{"jsonrpc":"2.0","id":8,"method":"export.plan","params":{}}\n'
+        + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "export.run",
+                      "params": {"dest_path": export_dest}}) + "\n")
     proc = subprocess.Popen(
         [sys.executable, "-m", "aisr.sidecar", "--index", path],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -825,7 +1066,7 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert proc.returncode == 0, "sidecar exited %s; stderr=%r" % (proc.returncode, err)
 
     replies = {r["id"]: r for r in (json.loads(ln) for ln in out.splitlines() if ln.strip())}
-    assert set(replies) == {1, 2, 3, 4, 5}, "expected 5 framed replies, got %r" % (out,)
+    assert set(replies) == set(range(1, 10)), "expected 9 framed replies, got %r" % (out,)
 
     health = replies[1]["result"]
     assert health["ok"] is True and health["corpus_ready"] is True
@@ -846,3 +1087,19 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     diff_res = replies[5]["result"]       # {} -> the loaded corpus vs itself -> empty
     assert diff_res == {"added_nodes": [], "removed_nodes": [], "added_edges": [],
                         "removed_edges": [], "changed_nodes": {}}
+
+    timeline_res = replies[6]["result"]   # the four dated thread births, sorted
+    assert timeline_res == {"events": [1000, 1100, 1150, 1200], "min_ms": 1000,
+                            "max_ms": 1200, "undated_count": 0}
+
+    at_res = replies[7]["result"]         # the spawn graph as-of 1150 (t3 not yet born)
+    assert [n["id"] for n in at_res["nodes"]] == ["g2", "ghost", "t1", "t2", "t4"]
+
+    plan_res = replies[8]["result"]       # dry-run tally survives real-stdio JSON
+    assert plan_res["node_count"] == 6 and plan_res["edge_count"] == 5
+    assert plan_res["conversation_count"] == 3 and plan_res["est_bytes"] > 0
+
+    run_res = replies[9]["result"]        # a real file is written by the sidecar process
+    assert run_res["ok"] is True and run_res["written_path"] == export_dest
+    assert run_res["graph_gate"] is True and run_res["transcript_gate"] is True
+    assert os.path.isfile(export_dest)

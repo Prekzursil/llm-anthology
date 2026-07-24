@@ -26,21 +26,39 @@ Method status (all implemented; honest caveats inline)
 * ``graph.children``   — FULL.
 * ``graph.subtree``    — FULL. Optional ``depth`` cap; cycle/diamond-safe.
 * ``graph.ancestors``  — FULL. All spawn-ancestors, nearest first.
-* ``graph.diff``       — FULL. Structural delta between two corpora. ``old_index`` /
-                         ``new_index`` are OPTIONAL paths to other on-disk index files;
-                         an omitted side defaults to the corpus this sidecar already holds
-                         (so ``{}`` is the empty self-diff, ``{new_index}`` diffs the
-                         loaded corpus against a snapshot, ``{old_index,new_index}`` diffs
-                         two snapshots). A named path must already exist (a diff never
-                         creates one) and is read via SELECT only, so the corpus data it
-                         holds is never modified. The DTO carries added/removed node-id +
-                         edge sets and a
-                         per-field changed-node map; changed ``rollout_path``s are
-                         basenamed and every changed free-text value is sanitized.
+* ``graph.diff``       — FULL. Structural delta between two corpora. Each side is an
+                         on-disk index path (``old_index`` / ``new_index``), a time-travel
+                         snapshot of the loaded corpus as-of a birth ms (``as_of_a`` /
+                         ``as_of_b``, via ``aisr.timetravel.corpus_as_of``), or — when
+                         neither is given — the corpus this sidecar already holds (so
+                         ``{}`` is the empty self-diff). A named path must already exist (a
+                         diff never creates one) and is read via SELECT only, so the corpus
+                         data it holds is never modified; supplying a path AND an as-of for
+                         one side is ambiguous (-32602). The DTO carries added/removed
+                         node-id + edge sets and a per-field changed-node map; changed
+                         ``rollout_path``s are basenamed and every changed free-text value
+                         is sanitized. In the time-travel form ``changed_nodes`` is always
+                         empty — both snapshots view one immutable corpus.
 * ``graph.rollup``     — FULL. ``{thread_id: RollupMetrics}`` over every graph node — the
                          node's own plus its whole-subtree token/count/depth totals,
                          diamond-deduped and cycle-safe (see ``aisr.rollup``). Counts and
                          graph shape only; no conversation text crosses.
+* ``graph.timeline``   — FULL. ``{events, min_ms, max_ms, undated_count}`` — the sorted
+                         distinct dated thread births, their range, and the undated count
+                         (see ``aisr.timetravel.timeline``). Ints/None only.
+* ``graph.at``         — FULL. The spawn graph AS-OF ``as_of_ms`` (a time-travel snapshot):
+                         nodes born by T (undated/dangling always present) + edges whose
+                         CHILD is born by T, projected exactly like graph.subtree.
+                         child_count/depth are computed OVER THE SNAPSHOT, so the moment is
+                         internally coherent (a node's fan-out matches its visible edges).
+* ``export.plan``      — FULL. A dry-run tally ``{node_count, edge_count,
+                         conversation_count, est_bytes}`` — no filesystem access.
+* ``export.run``       — FULL. Writes the spawn-graph artifact to a drive-absolute-local
+                         ``dest_path`` (UNC/network + relative + parent-traversal rejected)
+                         and returns ``{ok, graph_gate, transcript_gate, written_path?}``,
+                         gate-enforced by ``aisr.export.export_with_gate``. This bite
+                         exports the GRAPH only (the sidecar holds no rendered transcripts),
+                         so ``transcript_gate`` is vacuously true.
 * ``search.query``     — FULL match/provider-filter/paging. ``snippet`` comes from the
                          (sanitized) title — the FTS index is CONTENTLESS so no body
                          span is retrievable — and ``score`` is POSITIONAL because
@@ -70,7 +88,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 
-from aisr import __version__, corpus, diff, ir, rollup, sanitize
+from aisr import __version__, corpus, diff, export, ir, rollup, sanitize, timetravel
 from aisr.adapters import codex_rollout
 
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
@@ -172,6 +190,30 @@ def _req_str(params, key):
     return value
 
 
+def _req_int(params, key):
+    """A required integer param; missing / non-int / bool -> -32602. Booleans are
+    rejected even though ``bool`` is an ``int`` subclass, and a float is rejected too —
+    a birth cutoff is an epoch-ms integer."""
+    if key not in params:
+        raise RpcError(-32602, "%s must be an integer" % key)
+    value = params[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RpcError(-32602, "%s must be an integer" % key)
+    return value
+
+
+def _reject_nonlocal_dest(dest_path):
+    """Guard an export destination BEFORE any filesystem access: reject a UNC / network
+    path (``\\\\host\\share`` — a crafted target coerces an outbound SMB/NTLM auth, the
+    Windows hash-leak class) and any non-absolute path. Drive-absolute local paths only;
+    ``aisr.export`` then re-checks UNC + parent-traversal + confinement as defence in
+    depth."""
+    if dest_path.replace("/", "\\").startswith("\\\\"):
+        raise RpcError(-32602, "dest_path must be a local path, not a UNC/network path")
+    if not os.path.isabs(dest_path):
+        raise RpcError(-32602, "dest_path must be an absolute local path")
+
+
 # -------------------------------------------------------------------- the engine
 
 class Sidecar:
@@ -191,6 +233,10 @@ class Sidecar:
             "graph.ancestors": self._graph_ancestors,
             "graph.diff": self._graph_diff,
             "graph.rollup": self._graph_rollup,
+            "graph.timeline": self._graph_timeline,
+            "graph.at": self._graph_at,
+            "export.plan": self._export_plan,
+            "export.run": self._export_run,
             "search.query": self._search_query,
             "thread.get": self._thread_get,
             "conversation.get": self._conversation_get,
@@ -314,13 +360,16 @@ class Sidecar:
         return [self._thread_node(i) for i in self._collect_ancestors(tid)]
 
     def _graph_diff(self, params):
-        """The structural CorpusDiff between two corpora. Each operand is either a path to
-        another index (``old_index`` / ``new_index``) or, when that param is omitted, the
-        corpus this sidecar already holds — see ``_diff_operand``. The result is projected
-        to the wire with rollout paths basenamed and changed free-text sanitized."""
+        """The structural CorpusDiff between two corpora. Each operand is a path to another
+        index (``old_index`` / ``new_index``), a time-travel snapshot of the loaded corpus
+        as-of a birth ms (``as_of_a`` / ``as_of_b``), or — when neither is given — the
+        corpus this sidecar already holds (see ``_diff_operand``). The result is projected
+        to the wire with rollout paths basenamed and changed free-text sanitized. In the
+        time-travel form ``changed_nodes`` is always empty: both snapshots view one
+        immutable corpus, so a node present in both is byte-identical."""
         self._require_corpus()
-        old = self._diff_operand(params, "old_index")
-        new = self._diff_operand(params, "new_index")
+        old = self._diff_operand(params, "old_index", "as_of_a")
+        new = self._diff_operand(params, "new_index", "as_of_b")
         return self._project_diff(diff.diff_corpus(old, new))
 
     def _graph_rollup(self, params):
@@ -330,6 +379,60 @@ class Sidecar:
         self._require_corpus()
         return {tid: asdict(metrics)
                 for tid, metrics in rollup.rollup(self.corpus).items()}
+
+    def _graph_timeline(self, params):
+        """The node-creation event axis for a time scrubber: ``{events, min_ms, max_ms,
+        undated_count}`` from ``aisr.timetravel.timeline`` (sorted distinct dated births,
+        their range, and the count of undated threads). Ints/None only — no free text."""
+        self._require_corpus()
+        return timetravel.timeline(self.corpus)
+
+    def _graph_at(self, params):
+        """The spawn graph AS-OF a birth timestamp — a time-travel snapshot.
+        ``timetravel.corpus_as_of`` selects the nodes born by ``as_of_ms`` (an undated /
+        dangling node is always present) and the edges whose CHILD is born by then, and
+        the result is projected exactly like graph.subtree. child_count/depth are computed
+        over the SNAPSHOT, so a node's fan-out matches the edges visible as-of T (a
+        coherent moment) rather than the final graph."""
+        self._require_corpus()
+        as_of = _req_int(params, "as_of_ms")
+        return self._project_snapshot(timetravel.corpus_as_of(self.corpus, as_of))
+
+    def _export_plan(self, params):
+        """A dry-run tally of a full export — no filesystem access. Distinct graph nodes
+        (threads UNION edge endpoints), spawn edges, indexed conversations, and a
+        content-byte estimate (SUM of char_count, the same aggregate corpus.stats
+        reports). Ints only, so no sanitization is needed."""
+        self._require_corpus()
+        conversations = self.conn.execute(
+            "SELECT COUNT(*) FROM conversations").fetchone()[0]
+        est_bytes = self.conn.execute(
+            "SELECT COALESCE(SUM(char_count), 0) FROM conversations").fetchone()[0]
+        return {"node_count": len(self.corpus._nodes()),
+                "edge_count": len(self.corpus.edges),
+                "conversation_count": conversations, "est_bytes": est_bytes}
+
+    def _export_run(self, params):
+        """Write the spawn-graph export to ``dest_path`` and return the fidelity verdict.
+        ``dest_path`` is drive-absolute-local-only (UNC/network and relative paths ->
+        -32602, the SMB hash-leak class) and the write is confined to its own parent
+        directory; ``aisr.export.export_with_gate`` then enforces the structural
+        round-trip gate (and rejects parent-traversal) and writes ONLY if it passes.
+
+        This bite exports the GRAPH artifact — the sidecar holds the spawn graph, not
+        rendered transcripts — so ``transcript_gate`` is vacuously true: no conversation
+        body is bundled, so none can be lost. [UNVERIFIED: bundling + per-conversation
+        token gating is a later bite; settle by wiring conversation.get -> render_html ->
+        verify per row and passing the pairs to export_with_gate.]"""
+        self._require_corpus()
+        dest_path = _req_str(params, "dest_path")
+        _reject_nonlocal_dest(dest_path)
+        try:
+            report = export.export_with_gate(
+                self.corpus, dest_path, root=os.path.dirname(dest_path))
+        except export.ExportPathError as e:
+            raise RpcError(-32602, "unsafe dest_path: %s" % e)
+        return self._project_export_run(report)
 
     def _search_query(self, params):
         self._require_corpus()
@@ -384,16 +487,19 @@ class Sidecar:
 
     # -- projections --------------------------------------------------------------
 
-    def _thread_node(self, tid):
+    def _thread_node(self, tid, cx=None):
         """A lean ThreadNode. An id present only on an edge (a dangling parent/child)
-        has no threads-table row, so a bare node is synthesized for it."""
-        meta = self.corpus.threads.get(tid)
+        has no threads-table row, so a bare node is synthesized for it. ``cx`` is the
+        graph to read from — defaulting to the loaded corpus, but graph.at passes a
+        time-travel snapshot so child_count/depth are computed as-of that moment."""
+        cx = self.corpus if cx is None else cx
+        meta = cx.threads.get(tid)
         if meta is None:
             meta = corpus.ThreadMeta(id=tid)
         node = {"id": meta.id, "title": _clean(meta.title),
                 "provider": meta.model_provider, "created_at_ms": meta.created_at_ms,
-                "child_count": self.corpus.fan_out(tid),
-                "depth": self.corpus.depth(tid)}
+                "child_count": cx.fan_out(tid),
+                "depth": cx.depth(tid)}
         if meta.tokens_used:
             node["tokens"] = meta.tokens_used
         if meta.updated_at_ms is not None:
@@ -459,18 +565,30 @@ class Sidecar:
         return [e.parent_thread_id for e in self.corpus.edges
                 if e.child_thread_id == tid]
 
-    def _diff_operand(self, params, key):
-        """Resolve one operand of graph.diff. An ABSENT ``key`` -> the corpus this sidecar
-        already holds (``self.corpus``). A PRESENT ``key`` -> a filesystem path to another
-        corpus index that must already exist (a diff never creates a file). The index is
-        opened and read WITHOUT applying the schema DDL — ``load_corpus`` issues only
-        SELECTs, so the operand's corpus data is never modified — and the connection is
-        closed before returning; the Corpus it yields is a self-contained in-memory graph."""
-        if key not in params:
+    def _diff_operand(self, params, path_key, time_key):
+        """Resolve one side of graph.diff — three mutually-exclusive forms:
+
+        * ``time_key`` present (e.g. ``as_of_a``) -> the time-travel snapshot
+          ``timetravel.corpus_as_of(self.corpus, T)`` as-of that birth ms.
+        * ``path_key`` present (e.g. ``old_index``) -> another on-disk corpus index that
+          must already exist (a diff never creates a file). It is opened and read WITHOUT
+          applying the schema DDL — ``load_corpus`` issues only SELECTs, so the operand's
+          data is never modified — and the connection is closed before returning.
+        * NEITHER present -> the corpus this sidecar already holds (``self.corpus``).
+
+        Supplying BOTH a path and an as-of for one side is ambiguous -> -32602."""
+        has_path = path_key in params
+        has_time = time_key in params
+        if has_path and has_time:
+            raise RpcError(-32602, "%s and %s are mutually exclusive"
+                           % (path_key, time_key))
+        if has_time:
+            return timetravel.corpus_as_of(self.corpus, _req_int(params, time_key))
+        if not has_path:
             return self.corpus
-        path = _req_str(params, key)
+        path = _req_str(params, path_key)
         if not os.path.isfile(path):
-            raise RpcError(-32602, "%s not found: %s" % (key, path))
+            raise RpcError(-32602, "%s not found: %s" % (path_key, path))
         conn = sqlite3.connect(path)
         try:
             conn.row_factory = sqlite3.Row
@@ -504,6 +622,30 @@ class Sidecar:
                 projected[name] = [_sanitize_tree(old), _sanitize_tree(new)]
             out[tid] = projected
         return out
+
+    def _project_snapshot(self, cx):
+        """A time-travel Corpus snapshot -> the ``{nodes, edges}`` GraphSnapshot DTO.
+        Nodes are every id in the snapshot (threads UNION edge endpoints) in sorted-id
+        order, each a lean ThreadNode projected over the snapshot; edges are the
+        snapshot's already-(parent,child)-sorted spawn edges, status preserved. Both are
+        byte-stable, and each node's free text is sanitized by ``_thread_node``."""
+        return {"nodes": [self._thread_node(tid, cx) for tid in sorted(cx._nodes())],
+                "edges": [_spawn_edge(e) for e in cx.edges]}
+
+    def _project_export_run(self, report):
+        """export_with_gate's report -> the ExportResult DTO ``{ok, graph_gate,
+        transcript_gate, written_path?}``. ``graph_gate`` is the structural round-trip
+        verdict (no node/edge add/remove and no changed field); ``transcript_gate`` is
+        the token-fidelity verdict (no missing tokens); ``written_path`` is present only
+        on a successful write, and is sanitized like any wire string."""
+        graph_gate = not (report["added"]["nodes"] or report["added"]["edges"]
+                          or report["removed"]["nodes"] or report["removed"]["edges"]
+                          or report["changed"])
+        result = {"ok": report["ok"], "graph_gate": graph_gate,
+                  "transcript_gate": not report["missing_tokens"]}
+        if report["ok"]:
+            result["written_path"] = _clean(report["path"])
+        return result
 
     def _run_search(self, query, limit, offset, provider):
         """Mirror corpus.search's contentless-FTS JOIN, adding the offset/provider/total
