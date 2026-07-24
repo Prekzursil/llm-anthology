@@ -118,6 +118,18 @@ def _disk_index(tmp_path):
     return path
 
 
+def _operand_index(tmp_path, name, build):
+    """Build a standalone on-disk corpus index for a graph.diff operand from SYNTHETIC
+    threads/edges (`build(conn)` does the upserts), then CLOSE the builder connection so
+    the file is a settled snapshot the diff handler opens on its own — never $CODEX_HOME."""
+    path = str(tmp_path / name)
+    conn = corpus.open_index(path)
+    build(conn)
+    conn.commit()
+    conn.close()
+    return path
+
+
 def _rollout_file(tmp_path):
     """A minimal synthetic Codex rollout: session_meta + one user + one assistant
     turn, each carrying a hidden ZW that must be stripped on the way out."""
@@ -355,6 +367,119 @@ def test_graph_ancestors_chain_root_and_bad_param():
     with pytest.raises(sidecar.RpcError) as ei:
         srv.dispatch("graph.ancestors", {})
     assert ei.value.code == -32602
+
+
+# ------------------------------------------------------------------- graph.rollup
+
+def test_graph_rollup_over_synthetic_diamond_and_dangling():
+    res = _mem_server().dispatch("graph.rollup", {})
+    # keyed in sorted-id order over EVERY node, the dangling ghost/g2 pair included
+    assert list(res) == ["g2", "ghost", "t1", "t2", "t3", "t4"]
+    # t1's subtree is the whole diamond {t1,t2,t3,t4}: t3 counted ONCE despite two parents
+    assert res["t1"] == {"self_tokens": 1000, "subtree_tokens": 1000, "self_count": 1,
+                         "subtree_count": 4, "max_depth": 2, "child_count": 2}
+    # ghost is an edge-only node (no ThreadMeta, self_tokens 0) that still roots g2
+    assert res["ghost"] == {"self_tokens": 0, "subtree_tokens": 0, "self_count": 1,
+                            "subtree_count": 2, "max_depth": 1, "child_count": 1}
+    assert res["g2"] == {"self_tokens": 0, "subtree_tokens": 0, "self_count": 1,
+                         "subtree_count": 1, "max_depth": 0, "child_count": 0}
+    assert res["t3"]["subtree_count"] == 1 and res["t3"]["max_depth"] == 0
+
+
+def test_graph_rollup_aggregates_tokens_up_each_subtree():
+    srv = _mem_server()                       # conn present; inject a pure synthetic graph
+    srv.corpus = corpus.Corpus(
+        threads={"a": ThreadMeta(id="a", tokens_used=100),
+                 "b": ThreadMeta(id="b", tokens_used=20),
+                 "c": ThreadMeta(id="c", tokens_used=3)},
+        edges=[SpawnEdge("a", "b"), SpawnEdge("b", "c")])
+    res = srv.dispatch("graph.rollup", {})
+    # the rollup sums descendants UP the chain: a totals 100+20+3, not just its own 100
+    assert res["a"]["self_tokens"] == 100 and res["a"]["subtree_tokens"] == 123
+    assert res["a"]["subtree_count"] == 3 and res["a"]["max_depth"] == 2
+    assert res["b"]["subtree_tokens"] == 23 and res["c"]["subtree_tokens"] == 3
+
+
+def test_graph_rollup_requires_corpus():
+    with pytest.raises(sidecar.RpcError) as ei:
+        sidecar.Sidecar(None).dispatch("graph.rollup", {})
+    assert ei.value.code == -32000
+
+
+# --------------------------------------------------------------------- graph.diff
+
+def test_graph_diff_no_args_is_the_empty_self_diff():
+    # both operands omitted -> the loaded corpus vs itself -> structurally identical
+    res = _mem_server().dispatch("graph.diff", {})
+    assert res == {"added_nodes": [], "removed_nodes": [], "added_edges": [],
+                   "removed_edges": [], "changed_nodes": {}}
+
+
+def test_graph_diff_old_operand_defaults_to_loaded_corpus(tmp_path):
+    srv = _mem_server()
+    srv.corpus = corpus.Corpus(threads={"x": ThreadMeta(id="x", tokens_used=5)}, edges=[])
+
+    def _build_new(conn):
+        _mk_thread(conn, "x", tokens_used=5)       # a byte-identical, unchanged node
+        _mk_thread(conn, "y")                       # a new node
+        _mk_edge(conn, "x", "y")                    # a new edge
+
+    new_path = _operand_index(tmp_path, "new.db", _build_new)
+    res = srv.dispatch("graph.diff", {"new_index": new_path})   # old omitted -> loaded
+    assert res["added_nodes"] == ["y"] and res["removed_nodes"] == []
+    assert res["added_edges"] == [{"parent": "x", "child": "y"}]
+    assert res["removed_edges"] == [] and res["changed_nodes"] == {}
+
+
+def test_graph_diff_two_paths_full_delta_privacy_and_field_order(tmp_path):
+    def _build_old(conn):
+        _mk_thread(conn, "a", title="alpha", tokens_used=10,
+                   rollout_path="/old/rollout-a.jsonl")
+        _mk_thread(conn, "b", title="beta")
+        _mk_edge(conn, "a", "b")
+
+    def _build_new(conn):
+        _mk_thread(conn, "a", title="alpha2" + ZW, tokens_used=99,
+                   rollout_path="/new/rollout-a.jsonl")
+        _mk_thread(conn, "c", title="gamma")
+        _mk_edge(conn, "a", "c")
+
+    old_path = _operand_index(tmp_path, "old.db", _build_old)
+    new_path = _operand_index(tmp_path, "new.db", _build_new)
+    res = _mem_server().dispatch(
+        "graph.diff", {"old_index": old_path, "new_index": new_path})
+
+    assert res["added_nodes"] == ["c"] and res["removed_nodes"] == ["b"]
+    assert res["added_edges"] == [{"parent": "a", "child": "c"}]
+    assert res["removed_edges"] == [{"parent": "a", "child": "b"}]
+
+    changed = res["changed_nodes"]["a"]
+    # ThreadMeta declaration order preserved on the wire: title, tokens_used, rollout_path
+    assert list(changed) == ["title", "tokens_used", "rollout_path"]
+    # a hidden-unicode payload in the NEW title is stripped before it crosses the wire
+    assert changed["title"] == ["alpha", "alpha2"] and ZW not in changed["title"][1]
+    # ints survive the [old, new] projection unchanged
+    assert changed["tokens_used"] == [10, 99]
+    # the absolute rollout path is withheld — only its basename crosses, no FS layout
+    assert changed["rollout_path"] == ["rollout-a.jsonl", "rollout-a.jsonl"]
+    assert "/" not in changed["rollout_path"][0] + changed["rollout_path"][1]
+
+
+def test_graph_diff_bad_index_params_reject(tmp_path):
+    srv = _mem_server()
+    missing = str(tmp_path / "gone.db")
+    with pytest.raises(sidecar.RpcError) as ei:
+        srv.dispatch("graph.diff", {"old_index": missing})        # path is not a file
+    assert ei.value.code == -32602
+    with pytest.raises(sidecar.RpcError) as ei2:
+        srv.dispatch("graph.diff", {"new_index": 123})            # path is not a string
+    assert ei2.value.code == -32602
+
+
+def test_graph_diff_requires_corpus():
+    with pytest.raises(sidecar.RpcError) as ei:
+        sidecar.Sidecar(None).dispatch("graph.diff", {})
+    assert ei.value.code == -32000
 
 
 # ------------------------------------------------------------------ search.query
@@ -689,7 +814,9 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     requests = (
         '{"jsonrpc":"2.0","id":1,"method":"health.ping"}\n'
         '{"jsonrpc":"2.0","id":2,"method":"corpus.stats","params":{}}\n'
-        '{"jsonrpc":"2.0","id":3,"method":"graph.roots","params":{}}\n')
+        '{"jsonrpc":"2.0","id":3,"method":"graph.roots","params":{}}\n'
+        '{"jsonrpc":"2.0","id":4,"method":"graph.rollup","params":{}}\n'
+        '{"jsonrpc":"2.0","id":5,"method":"graph.diff","params":{}}\n')
     proc = subprocess.Popen(
         [sys.executable, "-m", "aisr.sidecar", "--index", path],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -698,7 +825,7 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     assert proc.returncode == 0, "sidecar exited %s; stderr=%r" % (proc.returncode, err)
 
     replies = {r["id"]: r for r in (json.loads(ln) for ln in out.splitlines() if ln.strip())}
-    assert set(replies) == {1, 2, 3}, "expected 3 framed replies, got %r" % (out,)
+    assert set(replies) == {1, 2, 3, 4, 5}, "expected 5 framed replies, got %r" % (out,)
 
     health = replies[1]["result"]
     assert health["ok"] is True and health["corpus_ready"] is True
@@ -711,3 +838,11 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
     roots = replies[3]["result"]          # roots by created order: t1 (1000) then ghost (None)
     assert [n["id"] for n in roots] == ["t1", "ghost"]
     assert roots[0]["child_count"] == 2   # t1 -> {t2, t4}
+
+    rollup_res = replies[4]["result"]     # the whole rollup table survives real-stdio JSON
+    assert rollup_res["t1"]["subtree_count"] == 4      # the diamond deduped over the wire
+    assert rollup_res["ghost"]["child_count"] == 1     # dangling node rolled up too
+
+    diff_res = replies[5]["result"]       # {} -> the loaded corpus vs itself -> empty
+    assert diff_res == {"added_nodes": [], "removed_nodes": [], "added_edges": [],
+                        "removed_edges": [], "changed_nodes": {}}

@@ -26,6 +26,21 @@ Method status (all implemented; honest caveats inline)
 * ``graph.children``   — FULL.
 * ``graph.subtree``    — FULL. Optional ``depth`` cap; cycle/diamond-safe.
 * ``graph.ancestors``  — FULL. All spawn-ancestors, nearest first.
+* ``graph.diff``       — FULL. Structural delta between two corpora. ``old_index`` /
+                         ``new_index`` are OPTIONAL paths to other on-disk index files;
+                         an omitted side defaults to the corpus this sidecar already holds
+                         (so ``{}`` is the empty self-diff, ``{new_index}`` diffs the
+                         loaded corpus against a snapshot, ``{old_index,new_index}`` diffs
+                         two snapshots). A named path must already exist (a diff never
+                         creates one) and is read via SELECT only, so the corpus data it
+                         holds is never modified. The DTO carries added/removed node-id +
+                         edge sets and a
+                         per-field changed-node map; changed ``rollout_path``s are
+                         basenamed and every changed free-text value is sanitized.
+* ``graph.rollup``     — FULL. ``{thread_id: RollupMetrics}`` over every graph node — the
+                         node's own plus its whole-subtree token/count/depth totals,
+                         diamond-deduped and cycle-safe (see ``aisr.rollup``). Counts and
+                         graph shape only; no conversation text crosses.
 * ``search.query``     — FULL match/provider-filter/paging. ``snippet`` comes from the
                          (sanitized) title — the FTS index is CONTENTLESS so no body
                          span is retrievable — and ``score`` is POSITIONAL because
@@ -52,9 +67,10 @@ import os
 import sqlite3
 import sys
 import time
+from dataclasses import asdict
 from datetime import datetime
 
-from aisr import __version__, corpus, ir, sanitize
+from aisr import __version__, corpus, diff, ir, rollup, sanitize
 from aisr.adapters import codex_rollout
 
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
@@ -173,6 +189,8 @@ class Sidecar:
             "graph.children": self._graph_children,
             "graph.subtree": self._graph_subtree,
             "graph.ancestors": self._graph_ancestors,
+            "graph.diff": self._graph_diff,
+            "graph.rollup": self._graph_rollup,
             "search.query": self._search_query,
             "thread.get": self._thread_get,
             "conversation.get": self._conversation_get,
@@ -294,6 +312,24 @@ class Sidecar:
         self._require_corpus()
         tid = _req_str(params, "thread_id")
         return [self._thread_node(i) for i in self._collect_ancestors(tid)]
+
+    def _graph_diff(self, params):
+        """The structural CorpusDiff between two corpora. Each operand is either a path to
+        another index (``old_index`` / ``new_index``) or, when that param is omitted, the
+        corpus this sidecar already holds — see ``_diff_operand``. The result is projected
+        to the wire with rollout paths basenamed and changed free-text sanitized."""
+        self._require_corpus()
+        old = self._diff_operand(params, "old_index")
+        new = self._diff_operand(params, "new_index")
+        return self._project_diff(diff.diff_corpus(old, new))
+
+    def _graph_rollup(self, params):
+        """``{thread_id: RollupMetrics}`` over every node, keyed in sorted-id order. Each
+        value is the flat RollupMetrics dataclass (all non-negative ints: self/subtree
+        tokens+counts, max_depth, child_count), so no sanitization is needed."""
+        self._require_corpus()
+        return {tid: asdict(metrics)
+                for tid, metrics in rollup.rollup(self.corpus).items()}
 
     def _search_query(self, params):
         self._require_corpus()
@@ -422,6 +458,52 @@ class Sidecar:
     def _parents_of(self, tid):
         return [e.parent_thread_id for e in self.corpus.edges
                 if e.child_thread_id == tid]
+
+    def _diff_operand(self, params, key):
+        """Resolve one operand of graph.diff. An ABSENT ``key`` -> the corpus this sidecar
+        already holds (``self.corpus``). A PRESENT ``key`` -> a filesystem path to another
+        corpus index that must already exist (a diff never creates a file). The index is
+        opened and read WITHOUT applying the schema DDL — ``load_corpus`` issues only
+        SELECTs, so the operand's corpus data is never modified — and the connection is
+        closed before returning; the Corpus it yields is a self-contained in-memory graph."""
+        if key not in params:
+            return self.corpus
+        path = _req_str(params, key)
+        if not os.path.isfile(path):
+            raise RpcError(-32602, "%s not found: %s" % (key, path))
+        conn = sqlite3.connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            return corpus.load_corpus(conn)
+        finally:
+            conn.close()
+
+    def _project_diff(self, d):
+        """A CorpusDiff -> its wire DTO. Node ids pass through as the graph's structural
+        keys (as everywhere else on this surface); edges become ``{parent,child}`` objects
+        exactly like graph.subtree; changed fields are privacy-projected. Every list is
+        already sorted by ``diff_corpus``, so the DTO is byte-stable across runs."""
+        return {"added_nodes": d.added_nodes,
+                "removed_nodes": d.removed_nodes,
+                "added_edges": [{"parent": p, "child": c} for p, c in d.added_edges],
+                "removed_edges": [{"parent": p, "child": c} for p, c in d.removed_edges],
+                "changed_nodes": self._project_changed(d.changed_nodes)}
+
+    def _project_changed(self, changed):
+        """``{id: {field: (old, new)}}`` -> the wire form ``{id: {field: [old, new]}}``, in
+        the same sorted-id / declaration order ``diff_corpus`` produced. A changed
+        ``rollout_path`` is reduced to its basename on both sides (the absolute FS layout
+        never crosses the wire), and every value is run through the shared sanitizer so a
+        hidden-unicode payload in a changed title/preview/cwd cannot be relayed onward."""
+        out = {}
+        for tid, field_diffs in changed.items():
+            projected = {}
+            for name, (old, new) in field_diffs.items():
+                if name == "rollout_path":
+                    old, new = os.path.basename(old), os.path.basename(new)
+                projected[name] = [_sanitize_tree(old), _sanitize_tree(new)]
+            out[tid] = projected
+        return out
 
     def _run_search(self, query, limit, offset, provider):
         """Mirror corpus.search's contentless-FTS JOIN, adding the offset/provider/total
