@@ -17,10 +17,11 @@ import os
 import sqlite3
 import subprocess
 import sys
+from dataclasses import asdict
 
 import pytest
 
-from aisr import corpus, ir, render_html, sidecar
+from aisr import corpus, ir, redact, render_html, research, sidecar
 from aisr.corpus import SpawnEdge, ThreadMeta
 
 # A zero-width space (U+200B, category Cf) — a hidden-unicode smuggling payload that
@@ -1191,3 +1192,184 @@ def test_e2e_export_run_negative_gate_blocks_corrupted_corpus(tmp_path, monkeypa
     assert rep2["ok"] is False and rep2["missing_tokens"]["c-neg"] == ["beta"]
     assert rep2["removed"] == {"nodes": [], "edges": []}   # the graph was faithful
     assert not os.path.isfile(dest2)
+
+
+# ====================================================== research plane (Phase-4 privacy)
+#
+# TWO-TIER synthesis + the ACL split. SYNTHETIC data only. The three poison tokens are
+# the Phase-4 canaries: RAWBODY stands in for a raw message body, SSN for PII, USERNAME
+# for a local-path component. The corpus-blind CLOUD research plane must NEVER see any of
+# them; the LOCAL tier deliberately DOES (it stays on-box), which is exactly what makes
+# the cloud leak-hunt a real both-states detector instead of a vacuous one.
+
+R_RAWBODY = "RAWBODY_SECRET_DO_NOT_LEAK"
+R_SSN = "123-45-6789"
+R_USERNAME = "Prekzursil"
+
+
+def _research_index(convs):
+    """A tracked in-memory index populated from (cid, provider, title, body,
+    rollout_path, nturns) tuples."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    corpus.init_index(conn)
+    _track(conn)
+    for cid, provider, title, body, rollout_path, nturns in convs:
+        _mk_conv(conn, cid, provider, title, body, rollout_path=rollout_path,
+                 nturns=nturns)
+    conn.commit()
+    return conn
+
+
+def _raw_rollout(tmp_path, name, user_text, asst_text):
+    """A synthetic Codex rollout whose RAW transcript text is fully caller-controlled —
+    used to plant a body secret that ONLY the local tier is permitted to read."""
+    lines = [
+        {"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z",
+         "payload": {"session_id": name, "cwd": "/work", "model_provider": "openai",
+                     "git": {"branch": "main"}}},
+        {"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
+         "payload": {"type": "message", "role": "user",
+                     "content": [{"type": "input_text", "text": user_text}]}},
+        {"type": "response_item", "timestamp": "2026-01-01T00:00:02Z",
+         "payload": {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": asst_text}]}},
+    ]
+    path = tmp_path / name
+    path.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+    return str(path)
+
+
+def _leaky_conv(cid="c-leak"):
+    """One conversation whose FTS body carries a body-secret + PII and whose row carries
+    a local rollout_path with a username — the worst places a projection could slurp
+    from — plus a clean, allowlisted title that SHOULD cross."""
+    return (cid, "claude", "Patient Intake",
+            f"{R_RAWBODY} and my ssn {R_SSN}",
+            rf"C:\Users\{R_USERNAME}\sessions\x.jsonl", 2)
+
+
+# --- cloud tier: metadata-only --------------------------------------------------------
+
+def test_research_synthesize_cloud_is_metadata_only():
+    conn = _research_index([_leaky_conv()])
+    backend = research.MockBackend(response="THE SUMMARY")
+    out = sidecar.Sidecar(conn, research_backend=backend).dispatch(
+        "research.synthesize", {})
+    assert out == {"tier": "cloud", "summary": "THE SUMMARY", "conversation_count": 1}
+    # exactly ONE metadata-only prompt reached the (would-be cloud) backend ...
+    assert len(backend.prompts) == 1
+    prompt = backend.prompts[0]
+    for token in (R_RAWBODY, R_SSN, R_USERNAME):
+        assert token not in prompt, f"LEAK: {token!r} crossed to the research plane"
+    # ... yet the allowlisted metadata DID cross, proving a real prompt was built.
+    assert "Patient Intake" in prompt
+
+
+def test_research_synthesize_cloud_default_backend_is_no_network_placeholder():
+    """An unconfigured host synthesizes nothing (the default MockBackend returns "")
+    rather than reaching the network — and still counts every conversation."""
+    out = _mem_server().dispatch("research.synthesize", {})
+    assert out["tier"] == "cloud"
+    assert out["summary"] == ""
+    assert out["conversation_count"] == 3        # the standard synthetic corpus
+
+
+def test_research_synthesize_explicit_cloud_tier():
+    conn = _research_index([_leaky_conv()])
+    backend = research.MockBackend(response="S")
+    out = sidecar.Sidecar(conn, research_backend=backend).dispatch(
+        "research.synthesize", {"tier": "cloud"})
+    assert out["tier"] == "cloud" and out["summary"] == "S"
+
+
+# --- extract_entities: metadata-only --------------------------------------------------
+
+def test_research_extract_entities_is_metadata_only_and_output_sanitized():
+    conn = _research_index([_leaky_conv()])
+    # the backend's own output carries a hidden ZW in an entity -> stripped on the way out
+    backend = research.MockBackend(response="Al" + ZW + "pha\nBeta")
+    out = sidecar.Sidecar(conn, research_backend=backend).dispatch(
+        "research.extract_entities", {})
+    assert out == {"entities": ["Alpha", "Beta"], "conversation_count": 1}
+    prompt = backend.prompts[0]
+    for token in (R_RAWBODY, R_SSN, R_USERNAME):
+        assert token not in prompt
+    assert "Patient Intake" in prompt
+
+
+# --- local tier: over RAW content, stays on-box ---------------------------------------
+
+def test_research_synthesize_local_tier_reads_raw_and_never_calls_cloud(tmp_path):
+    path = _raw_rollout(tmp_path, "r1.jsonl", user_text="hello",
+                        asst_text=f"note {R_RAWBODY} ssn {R_SSN}")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    corpus.init_index(conn)
+    _track(conn)
+    # (a) a conversation WITH a readable rollout carrying the raw secret ...
+    _mk_conv(conn, "c-local", "codex", "Local", "fts-body",
+             thread_id="c-local", rollout_path=path, nturns=0)
+    # (b) ... and one with NO rollout, which the local tier must simply skip.
+    _mk_conv(conn, "c-none", "claude", "NoRollout", "fts-body-2", rollout_path="")
+    conn.commit()
+    cloud = research.MockBackend(response="CLOUD")
+    local = research.MockBackend(response="LOCAL")
+    out = sidecar.Sidecar(conn, research_backend=cloud, local_backend=local).dispatch(
+        "research.synthesize", {"tier": "local"})
+    assert out == {"tier": "local", "summary": "LOCAL", "conversation_count": 1}
+    # tier-1 genuinely operated over the RAW transcript (secret + PII present locally) ...
+    assert R_RAWBODY in local.prompts[0]
+    assert R_SSN in local.prompts[0]
+    # ... and the corpus-blind cloud plane was NEVER invoked for the local tier.
+    assert cloud.prompts == []
+
+
+def test_research_synthesize_rejects_unknown_tier():
+    with pytest.raises(sidecar.RpcError) as ei:
+        _mem_server().dispatch("research.synthesize", {"tier": "bogus"})
+    assert ei.value.code == -32602
+
+
+# --- ACL boundary + both-states leak detector -----------------------------------------
+
+def test_metadata_views_boundary_is_airtight_and_typed():
+    """``_metadata_views`` is the ONLY value handed to the research plane. Even though
+    each row carries a local rollout_path (and sqlite adds a rowid) and the FTS holds the
+    body, the projection is the strict MetadataView allowlist — nothing off-list crosses.
+    """
+    conn = _research_index([_leaky_conv()])
+    views = sidecar.Sidecar(conn)._metadata_views()
+    assert views and all(isinstance(v, redact.MetadataView) for v in views)
+    blob = json.dumps([asdict(v) for v in views])
+    for token in (R_RAWBODY, R_SSN, R_USERNAME):
+        assert token not in blob
+    assert "rollout_path" not in blob and "rowid" not in blob
+
+
+def test_two_tier_both_states_cloud_silent_local_fires(tmp_path):
+    """The both-states discipline: the SAME body secret is ABSENT from the metadata
+    (cloud) prompt AND PRESENT in the raw (local) prompt. The local hit proves the cloud
+    assertion is a genuine detector, not one that would pass on any input."""
+    path = _raw_rollout(tmp_path, "r.jsonl", "hi", f"leak {R_RAWBODY}")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    corpus.init_index(conn)
+    _track(conn)
+    _mk_conv(conn, "c", "codex", "Clean Title", "fts-body",
+             thread_id="c", rollout_path=path, nturns=0)
+    conn.commit()
+    cloud = research.MockBackend()
+    local = research.MockBackend()
+    srv = sidecar.Sidecar(conn, research_backend=cloud, local_backend=local)
+    srv.dispatch("research.synthesize", {})                 # cloud tier
+    srv.dispatch("research.synthesize", {"tier": "local"})  # local tier
+    assert R_RAWBODY not in cloud.prompts[0]                # metadata plane: silent
+    assert R_RAWBODY in local.prompts[0]                    # raw plane: fires
+
+
+def test_research_methods_require_corpus():
+    for method in ("research.synthesize", "research.extract_entities"):
+        with pytest.raises(sidecar.RpcError) as ei:
+            sidecar.Sidecar(None).dispatch(method, {})
+        assert ei.value.code == sidecar.CORPUS_NOT_INDEXED

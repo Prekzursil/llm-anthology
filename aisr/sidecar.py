@@ -76,6 +76,21 @@ Method status (all implemented; honest caveats inline)
                          rollout path is empty, missing, or unreadable (e.g. a
                          non-Codex provider that carries no rollout). Never raises on a
                          bad file — it degrades to the stub.
+* ``research.synthesize``     — FULL. TWO-TIER synthesis over the corpus. The default
+                         tier (``tier:"cloud"``, or absent) redacts EVERY indexed
+                         conversation to a ``redact.MetadataView`` and hands ONLY that
+                         allowlist to the corpus-blind research plane
+                         (``research.synthesize_over_metadata``): a cloud LLM may be the
+                         backend, and it never sees a body/PII/local path — only
+                         sanitized metadata + aggregate counts. ``tier:"local"`` runs the
+                         LOCAL tier instead: it re-parses rollouts to synthesize over RAW
+                         transcript text and feeds a LOCAL backend that never egresses, so
+                         raw content is deliberately kept on-box. Any other ``tier`` ->
+                         -32602. Returns ``{tier, summary, conversation_count}`` (summary
+                         sanitized on the way back out).
+* ``research.extract_entities`` — FULL. Metadata-only, exactly like the cloud tier of
+                         synthesize: redact -> MetadataView -> ``research.extract_entities``.
+                         Returns ``{entities, conversation_count}`` (each entity sanitized).
 
 Privacy (HARD): every free-text field derived from user/model content — a title, a
 preview, a search snippet, a transcript block, a tool payload — passes through
@@ -83,6 +98,18 @@ preview, a search snippet, a transcript block, a tool payload — passes through
 prompt-injection channel in the corpus cannot be relayed into the next agent. ``stats``
 and ``graph.*`` are aggregate/metadata only; a full transcript crosses only for the one
 conversation the user explicitly opened, and even then it is sanitized.
+
+Research plane / ACL split (Phase-4, HARD). ``aisr.research`` is a SEPARATE, corpus-blind
+surface: the ONLY conversation data it may feed a cloud LLM is the sanitized metadata
+allowlist. This sidecar ENFORCES that split BY CONSTRUCTION — the cloud research handlers
+build a ``list[redact.MetadataView]`` via ``_metadata_views`` (``redact.to_metadata_view``
+per row) and pass ONLY that to ``research``; a ``Corpus``, a sqlite row, an FTS body, a
+``rollout_path`` or any raw text is NEVER handed to the research plane. ``research`` itself
+imports ``MetadataView`` for typing only, so it has no runtime path back to the raw corpus.
+The one tier that reads raw content — ``tier:"local"`` — bypasses ``research`` entirely and
+feeds a LOCAL, no-egress backend. Backends are injected at construction (``research_backend``
+/ ``local_backend``); both default to a no-network ``research.MockBackend`` placeholder, so
+an unconfigured host synthesizes nothing rather than reaching the network.
 """
 import argparse
 import json
@@ -93,7 +120,18 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 
-from aisr import __version__, corpus, diff, export, ir, rollup, sanitize, timetravel
+from aisr import (
+    __version__,
+    corpus,
+    diff,
+    export,
+    ir,
+    redact,
+    research,
+    rollup,
+    sanitize,
+    timetravel,
+)
 from aisr.adapters import codex_rollout
 
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
@@ -103,6 +141,14 @@ THREAD_NOT_FOUND = -32001
 DB_BUSY = -32002
 
 _ROOT_ORDERS = ("created", "recent", "title")
+
+# The LOCAL synthesis tier's instruction. This tier reads RAW transcript text and feeds
+# a LOCAL backend only, so the prompt never leaves the machine — it is deliberately NOT
+# the sanitized-metadata prompt the cloud research plane builds.
+_LOCAL_INSTRUCTION = (
+    "LOCAL TIER (stays on this machine, never sent to any cloud backend): summarize "
+    "the following RAW conversation transcripts."
+)
 
 
 class RpcError(Exception):
@@ -219,6 +265,13 @@ def _reject_nonlocal_dest(dest_path):
         raise RpcError(-32602, "dest_path must be an absolute local path")
 
 
+def _raw_transcript(conv):
+    """Every block's RAW text in an ir.Conversation, joined. This is UNSANITIZED,
+    NON-allowlisted body content — it feeds ONLY the LOCAL synthesis tier, which never
+    egresses, so raw bodies/PII are intentionally kept here rather than stripped."""
+    return "\n".join(block.text for turn in conv.turns for block in turn.blocks)
+
+
 # -------------------------------------------------------------------- the engine
 
 class Sidecar:
@@ -226,9 +279,16 @@ class Sidecar:
     JSON-RPC requests. ``conn`` None means no corpus is attached: ``health.ping`` still
     works (reporting ``corpus_ready`` False) while every data method returns -32000."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, research_backend=None, local_backend=None):
         self.conn = conn
         self.corpus = corpus.load_corpus(conn) if conn is not None else corpus.Corpus()
+        # The cloud research plane's egress backend and the LOCAL tier's on-box backend.
+        # Both default to a no-network placeholder, so an unconfigured host reaches the
+        # network for neither; a real cockpit host injects the concrete backends.
+        self.research_backend = (
+            research.MockBackend() if research_backend is None else research_backend)
+        self.local_backend = (
+            research.MockBackend() if local_backend is None else local_backend)
         self._handlers = {
             "health.ping": self._health_ping,
             "corpus.stats": self._corpus_stats,
@@ -245,6 +305,8 @@ class Sidecar:
             "search.query": self._search_query,
             "thread.get": self._thread_get,
             "conversation.get": self._conversation_get,
+            "research.synthesize": self._research_synthesize,
+            "research.extract_entities": self._research_extract_entities,
         }
 
     # -- transport ----------------------------------------------------------------
@@ -485,14 +547,81 @@ class Sidecar:
             "WHERE conversation_id=?", (cid,)).fetchone()
         if row is None:
             raise RpcError(THREAD_NOT_FOUND, "conversation not found: %s" % cid)
-        path = row["rollout_path"]
+        conv, info = self._reparse_rollout(row["rollout_path"])
+        if conv is None:
+            return self._conversation_stub(row, info)
+        return self._serialize_conversation(conv, info)
+
+    def _reparse_rollout(self, path):
+        """Re-parse a rollout file into ``(ir.Conversation, errors)``, or
+        ``(None, reason)`` when the path is empty/missing/unreadable. Never raises —
+        the failure modes degrade to a reason string. Shared by ``conversation.get``
+        (which stubs on None) and the LOCAL research tier (which skips None)."""
         if not path or not os.path.isfile(path):
-            return self._conversation_stub(row, "rollout unavailable")
+            return None, "rollout unavailable"
         try:
             doc, errors = codex_rollout.parse_rollout_file(path)
         except OSError as e:
-            return self._conversation_stub(row, "rollout unreadable: %s" % e)
-        return self._serialize_conversation(doc.conversation, errors)
+            return None, "rollout unreadable: %s" % e
+        return doc.conversation, errors
+
+    # -- research plane (Phase-4 two-tier synthesis) ------------------------------
+
+    def _metadata_views(self):
+        """The ACL boundary: project EVERY indexed conversation row into a
+        ``redact.MetadataView`` (the strict, sanitized allowlist). This is the ONLY
+        value the corpus-blind research plane is ever handed — ``SELECT *`` deliberately
+        pulls the whole row (incl. ``rowid`` and the local ``rollout_path``) to PROVE the
+        projection drops everything off-allowlist, and the FTS body is not a column here,
+        so no raw text can ride along. Sorted by id so the cloud prompt is byte-stable."""
+        rows = self.conn.execute(
+            "SELECT * FROM conversations ORDER BY conversation_id").fetchall()
+        return [redact.to_metadata_view(row) for row in rows]
+
+    def _research_synthesize(self, params):
+        """TWO-TIER synthesis. ``tier`` in {"cloud"(default), "local"}.
+
+        cloud -> redact every conversation to a MetadataView and hand ONLY that allowlist
+        to the corpus-blind ``research.synthesize_over_metadata`` (a cloud LLM backend
+        never sees a body/PII/path). local -> synthesize over RAW transcript text through
+        the on-box ``local_backend``, which never egresses. Any other tier -> -32602."""
+        self._require_corpus()
+        tier = params.get("tier", "cloud")
+        if tier == "local":
+            return self._research_local()
+        if tier != "cloud":
+            raise RpcError(-32602, "tier must be 'cloud' or 'local'")
+        views = self._metadata_views()
+        summary = research.synthesize_over_metadata(views, self.research_backend)
+        return {"tier": "cloud", "summary": _clean(summary),
+                "conversation_count": len(views)}
+
+    def _research_extract_entities(self, params):
+        """Metadata-only entity extraction: redact -> MetadataView -> the corpus-blind
+        ``research.extract_entities``. Each returned entity is sanitized before it
+        crosses the wire back to the UI."""
+        self._require_corpus()
+        views = self._metadata_views()
+        entities = research.extract_entities(views, self.research_backend)
+        return {"entities": [_clean(e) for e in entities],
+                "conversation_count": len(views)}
+
+    def _research_local(self):
+        """The LOCAL tier: re-parse every conversation that has a readable rollout and
+        synthesize over its RAW transcript text via the on-box ``local_backend``. The
+        raw prompt is built here and never reaches ``research`` or the network; a
+        conversation with no readable rollout simply contributes nothing."""
+        transcripts = []
+        for row in self.conn.execute(
+                "SELECT conversation_id, rollout_path FROM conversations "
+                "ORDER BY conversation_id").fetchall():
+            conv, _info = self._reparse_rollout(row["rollout_path"])
+            if conv is not None:
+                transcripts.append(_raw_transcript(conv))
+        prompt = "\n\n".join([_LOCAL_INSTRUCTION, *transcripts])
+        summary = self.local_backend.synthesize(prompt)
+        return {"tier": "local", "summary": _clean(summary),
+                "conversation_count": len(transcripts)}
 
     # -- projections --------------------------------------------------------------
 
