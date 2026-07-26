@@ -1,19 +1,37 @@
 # Cockpit
 
-Tauri v2 desktop shell for **llm-anthology** (`llm_anthology`) — a local, offline
-cockpit for browsing an AI-session corpus (rollouts, state graph, FTS5 search).
+Tauri v2 desktop shell for **LLM Anthology** (`llm_anthology`) — a local, offline cockpit for
+browsing an AI-session corpus: the cross-provider spawn tree, FTS5 search, time-travel, diff,
+fidelity-gated export, and the absorbed session-management layer.
 
-This is the **P2 scaffold**: a bare window that compiles on Windows. The analysis
-engine (a python-build-standalone sidecar spoken to over stdio NDJSON) is **not
-yet wired** — see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md).
+The analysis engine **is** wired: the Rust core spawns `python -m llm_anthology.sidecar` and
+speaks **stdio NDJSON JSON-RPC 2.0** to it — deliberately not a localhost HTTP port, so no
+other process on the machine can talk to the engine.
 
 ## Layout
 
-- `index.html` — app entry document.
-- `src/` — minimal Vite + TypeScript frontend (the bare Cockpit window + a
-  status line fed by the Rust `app_info` command).
-- `src-tauri/` — the Rust crate (Tauri v2 app; one `app_info` command).
-- `src-tauri/binaries/` — documented placeholder for the engine sidecar.
+- `index.html` — app entry document (the three-zone shell: sidebar / graph / detail).
+- `src/graph/` — ELK-in-a-Worker layered layout + the canvas renderer + diff overlay.
+- `src/ui/` — virtualized list, time scrubber, export panel, search.
+- `src/ipc/` — the data surface: `types.ts` (the wire contract), `real.ts` (Tauri commands),
+  `mock.ts` (an in-memory forest), `index.ts` (runtime adapter selection).
+- `src-tauri/` — the Rust crate: the sidecar client, the hardened spawn, Tauri commands.
+- `src-tauri/binaries/` — documented placeholder for a bundled engine (see the caveat below).
+
+## Previewing the UI in a browser
+
+`src/ipc/index.ts` picks its adapter from the ENVIRONMENT, not a compile-time flag: inside
+Tauri it uses the real engine, anywhere else it falls back to the mock forest. So
+
+    npm run dev
+
+serves the full interface — populated spawn tree, thread list, scrubber — with no Rust build
+and no corpus. That is what makes the UI screenshottable, auditable and design-reviewable.
+
+This matters more than it sounds. The flag used to be hard-coded to the real adapter, so
+opening the cockpit in a browser threw `TypeError: Cannot read properties of undefined
+(reading 'invoke')` on first paint and every pane rendered dead — which is a large part of why
+this UI went through four build phases without anyone ever looking at it.
 
 ## Toolchain prerequisites (Windows)
 
@@ -27,8 +45,34 @@ yet wired** — see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.m
     cd cockpit
     npm install
     npm run build          # tsc typecheck + vite build -> dist/
-    cd src-tauri
-    cargo build            # compiles the Tauri app (first build is long)
+    npm run tauri build    # release exe + the NSIS installer
+
+Output: `src-tauri/target/release/cockpit.exe` and
+`src-tauri/target/release/bundle/nsis/LLM Anthology_<version>_x64-setup.exe`.
+
+### Why the bundle target is NSIS and not `"all"`
+
+`bundle.targets` is pinned to `["nsis"]`. `"all"` also builds the WiX/MSI target, which does
+not build on this machine: `light.exe` aborts ICE validation with `LGHT0217` and Windows
+Installer error **2738** — the ICE custom actions cannot reach the VBScript runtime. The
+generated `main.wxs` itself is fine (warnings only, no errors), so this is an environment
+fault rather than a packaging defect. The usual cause — an `HKCU` CLSID entry shadowing the
+machine-wide VBScript/JScript registration — was checked and came back negative for both
+CLSIDs, so the specific origin here is *not* established.
+
+NSIS avoids ICE entirely and is the better fit regardless: a ~2 MB per-user installer that
+needs no administrator.
+
+(This rationale lives here because `tauri.conf.json` is strict JSON — it has no comments, and
+Tauri's config schema hard-fails on an unknown field, so a `"//targets"` pseudo-comment breaks
+the build.)
+
+## Packaging caveat — the engine is not bundled yet
+
+`bundle.externalBin` is still `[]`. An installed cockpit therefore resolves
+`python -m llm_anthology.sidecar` from `PATH`, so the machine needs Python and the
+`llm-anthology` package installed. Bundling a relocatable CPython (python-build-standalone via
+uv) is the documented next step — see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md).
 
 ## Run (dev)
 
@@ -36,5 +80,14 @@ yet wired** — see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.m
     npm install
     npm run tauri dev
 
-`@tauri-apps/cli` is a **per-project devDependency** (invoked via `npm run
-tauri`), never a global install.
+`@tauri-apps/cli` is a **per-project devDependency** (invoked via `npm run tauri`), never a
+global install.
+
+## Tests
+
+    npx tsc --noEmit          # types
+    npx vitest run            # UI logic (graph, ipc, ui modules)
+    cd src-tauri && cargo test # Rust core, incl. e2e round-trips against the REAL sidecar
+
+The Rust suite includes tests that spawn the actual Python engine over stdio, plus both-states
+proofs for the Job-Object reap and the AppContainer egress membrane.
