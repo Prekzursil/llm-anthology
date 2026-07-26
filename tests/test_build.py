@@ -64,14 +64,16 @@ def test_render_corpus_isolates_a_failing_conversation(tmp_path, monkeypatch):
     assert rep["rendered"] == 2                      # the two good ones survived
     assert len(rep["errors"]) == 1
     assert rep["errors"][0]["stage"] == "render"
-    report = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
+    with open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8") as fh:
+        report = json.load(fh)
     assert len(report["errors"]) == 1
 
 
 def test_index_escapes_title_and_cannot_inject_markup(tmp_path):
     out = str(tmp_path)
     build.render_corpus([_conv('</a><script>alert(1)</script>', 1)], out, provider="claude")
-    doc = open(os.path.join(out, "index.html"), encoding="utf-8").read()
+    with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+        doc = fh.read()
     assert "<script>alert(1)</script>" not in doc
 
 
@@ -79,7 +81,8 @@ def test_index_carries_the_per_provider_meta_column(tmp_path):
     out = str(tmp_path)
     build.render_corpus([_conv("t", 1)], out, provider="chatgpt",
                         meta_of=lambda c: "proj-XYZ")
-    doc = open(os.path.join(out, "index.html"), encoding="utf-8").read()
+    with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+        doc = fh.read()
     assert "proj-XYZ" in doc
 
 
@@ -93,7 +96,8 @@ def test_load_errors_are_carried_into_the_report(tmp_path):
 def test_hidden_char_conversations_are_audited(tmp_path):
     out = str(tmp_path)
     rep = build.render_corpus([_conv("t", 1, text="a​b")], out, provider="claude")
-    rows = json.load(open(os.path.join(out, "_hidden-char-audit.json"), encoding="utf-8"))
+    with open(os.path.join(out, "_hidden-char-audit.json"), encoding="utf-8") as fh:
+        rows = json.load(fh)
     assert rep["hidden_char_conversations"] == 1 and len(rows) == 1
 
 
