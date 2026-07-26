@@ -117,6 +117,22 @@ Method status (all implemented; honest caveats inline)
                          ``has_larger_copy`` reports when the canonical copy is a truncated
                          prefix of a sibling it demoted.
 
+* ``maintenance.plan`` / ``maintenance.execute`` / ``maintenance.restore`` /
+  ``maintenance.runs`` — FULL, and the ONLY DESTRUCTIVE surface in the engine. ``plan`` is
+                         PURE (it creates nothing, not even the checkpoint directory) and
+                         returns a preview plus a SINGLE-USE HANDLE. ``execute`` runs the
+                         handle: ``apply`` defaults to False, so the destructive act is
+                         always an explicit second step, and it refuses without the exact
+                         typed confirmation. ``restore`` rolls a checkpoint back (also
+                         dry-run by default). ``runs`` is the audit ledger.
+                         THE CLIENT NEVER SENDS A PREVIEW BACK — see the section comment on
+                         the handlers. ``maintenance`` validates paths against the roots
+                         carried inside the preview, which is sound in-process and unsound
+                         the moment a preview can be rebuilt from client JSON, so the server
+                         keeps its own preview object and the forged-preview class cannot be
+                         expressed at all. Every caller-supplied root is additionally refused
+                         at this edge if UNC (an outbound SMB/NTLM vector) or relative.
+
 Privacy (HARD): every free-text field derived from user/model content — a title, a
 preview, a search snippet, a transcript block, a tool payload — passes through
 ``llm_anthology.sanitize.sanitize_for_copy`` before crossing the wire, so a hidden-unicode
@@ -152,6 +168,7 @@ from llm_anthology import (
     diff,
     export,
     ir,
+    maintenance,
     metadata as metadata_store,
     redact,
     research,
@@ -166,6 +183,10 @@ from llm_anthology.adapters import codex_rollout
 CORPUS_NOT_INDEXED = -32000
 THREAD_NOT_FOUND = -32001
 DB_BUSY = -32002
+# A maintenance request the safety model REFUSED. Distinct from -32602: the params were
+# well-formed, the operation was declined (unconfirmed, out of the store root, a plan that
+# collides with itself, a stale plan). A client must be able to tell those apart.
+MAINTENANCE_REFUSED = -32003
 
 _ROOT_ORDERS = ("created", "recent", "title")
 
@@ -323,6 +344,11 @@ class Sidecar:
         if conn is not None:
             metadata_store.ensure_schema(conn)
             dedup.ensure_schema(conn)
+            maintenance.ensure_schema(conn)
+        # Previews the SERVER produced, held by handle. See _maintenance_plan for why the
+        # client is never allowed to hand a preview back.
+        self._plans = {}
+        self._next_plan_id = 1
         # The cloud research plane's egress backend and the LOCAL tier's on-box backend.
         # Both default to a no-network placeholder, so an unconfigured host reaches the
         # network for neither; a real cockpit host injects the concrete backends.
@@ -355,6 +381,10 @@ class Sidecar:
             "metadata.tags": self._metadata_tags,
             "dedup.scan": self._dedup_scan,
             "dedup.sessions": self._dedup_sessions,
+            "maintenance.plan": self._maintenance_plan,
+            "maintenance.execute": self._maintenance_execute,
+            "maintenance.restore": self._maintenance_restore,
+            "maintenance.runs": self._maintenance_runs,
         }
 
     # -- transport ----------------------------------------------------------------
@@ -820,6 +850,166 @@ class Sidecar:
         than trusting the stored flag, so the rule has exactly one implementation."""
         self._require_corpus()
         return [self._dedup_session(s) for s in dedup.load_sessions(self.conn)]
+
+    # -- maintenance (the ONLY destructive surface) ---------------------------------
+    #
+    # WHY THE CLIENT NEVER SENDS A PREVIEW BACK. `maintenance` validates paths against the
+    # roots carried INSIDE the preview it is given. That is sound while a preview can only
+    # be produced in-process, and it is exactly what breaks if an RPC layer rebuilds one
+    # from client JSON: a forged preview could name its own store/checkpoint/destination
+    # root and the executor would honour them. So `plan` keeps the SERVER's own preview
+    # object under a single-use handle and `execute` runs that object. The forged-preview
+    # class is removed structurally rather than defended against.
+    #
+    # The engine still re-checks everything on its own (a poisoned root is refused, a plan
+    # source outside `preview.allowed` is refused, every path is re-confined), because a
+    # guard that lives only at the RPC edge is one refactor from being bypassed.
+
+    @staticmethod
+    def _copy_dto(copy):
+        return {"session_id": copy.session_id, "file_path": copy.file_path,
+                "store_kind": copy.store_kind.value, "last_write_ms": copy.last_write_ms,
+                "size_bytes": copy.size_bytes, "is_hot": copy.is_hot}
+
+    def _preview_dto(self, plan_id, preview):
+        return {
+            "plan_id": plan_id,
+            "action": preview.action.value,
+            "store_root": preview.store_root,
+            "destination_root": preview.destination_root,
+            "checkpoint_root": preview.checkpoint_root,
+            "allowed": [self._copy_dto(t) for t in preview.allowed],
+            "blocked": [{"target": self._copy_dto(b.target), "reason": b.reason,
+                         "detail": _clean(b.detail)} for b in preview.blocked],
+            "warnings": [{"severity": int(w.severity), "severity_name": w.severity.name,
+                          "message": _clean(w.message)} for w in preview.warnings],
+            "plan": [{"session_id": m.session_id, "source": m.source,
+                      "destination": m.destination} for m in preview.plan],
+            "requires_checkpoint": preview.requires_checkpoint,
+            "requires_typed_confirmation": preview.requires_typed_confirmation,
+            "required_typed_confirmation": preview.required_typed_confirmation,
+        }
+
+    @staticmethod
+    def _result_dto(result):
+        return {
+            "executed": result.executed,
+            "manifest_path": result.manifest_path,
+            "moves": [{"session_id": m.session_id, "source": m.source,
+                       "destination": m.destination} for m in result.moves],
+            "unaccounted": list(result.unaccounted),
+        }
+
+    @staticmethod
+    def _maintenance_call(fn, *args, **kwargs):
+        """Run an engine call, mapping its refusals onto RPC codes.
+
+        MaintenancePathError subclasses BOTH MaintenanceRefused and ValueError, so it is
+        caught FIRST and reported as a param error; a plain refusal is a well-formed request
+        the safety model declined, which is a different thing and gets its own code."""
+        try:
+            return fn(*args, **kwargs)
+        except maintenance.MaintenancePathError as exc:
+            raise RpcError(-32602, str(exc)) from exc
+        except maintenance.MaintenanceRefused as exc:
+            raise RpcError(MAINTENANCE_REFUSED, str(exc)) from exc
+
+    def _maintenance_plan(self, params):
+        """PURE. Build a preview and hold it under a single-use handle; no filesystem
+        mutation happens here. Every caller-supplied root is refused if UNC or relative
+        before it reaches the engine."""
+        self._require_corpus()
+        store_root = _req_str(params, "store_root")
+        checkpoint_root = _req_str(params, "checkpoint_root")
+        destination_root = params.get("destination_root", "")
+        if not isinstance(destination_root, str):
+            raise RpcError(-32602, "destination_root must be a string")
+        for label, value in (("store_root", store_root),
+                             ("checkpoint_root", checkpoint_root)):
+            _reject_nonlocal_path(value, label)
+        if destination_root:
+            _reject_nonlocal_path(destination_root, "destination_root")
+
+        raw_action = _req_str(params, "action")
+        try:
+            action = maintenance.MaintenanceAction(raw_action)
+        except ValueError as exc:
+            raise RpcError(-32602, "action must be one of %s" % ", ".join(
+                a.value for a in maintenance.MaintenanceAction)) from exc
+
+        raw_targets = params.get("targets")
+        if not isinstance(raw_targets, list) or not raw_targets:
+            raise RpcError(-32602, "targets must be a non-empty list")
+        targets = []
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                raise RpcError(-32602, "each target must be an object")
+            file_path = item.get("file_path")
+            if not isinstance(file_path, str) or not file_path:
+                raise RpcError(-32602, "each target needs a non-empty file_path")
+            targets.append(maintenance.SessionCopy(
+                session_id=str(item.get("session_id", "")),
+                file_path=file_path,
+                store_kind=maintenance.SessionStoreKind.UNKNOWN,
+                size_bytes=item.get("size_bytes", 0) or 0))
+
+        request = maintenance.MaintenanceRequest(
+            action=action, targets=tuple(targets), store_root=store_root,
+            checkpoint_root=checkpoint_root, destination_root=destination_root)
+        preview = self._maintenance_call(maintenance.plan_maintenance, request)
+
+        plan_id = "plan-%d" % self._next_plan_id
+        self._next_plan_id += 1
+        self._plans[plan_id] = preview
+        return self._preview_dto(plan_id, preview)
+
+    def _maintenance_execute(self, params):
+        """Run a handle the server issued. ``apply`` defaults to False, so the destructive
+        act is always an explicit second step; the handle is consumed either way so a plan
+        can never be replayed."""
+        self._require_corpus()
+        plan_id = _req_str(params, "plan_id")
+        confirmation = params.get("confirmation", "")
+        if not isinstance(confirmation, str):
+            raise RpcError(-32602, "confirmation must be a string")
+        apply_it = params.get("apply", False)
+        if not isinstance(apply_it, bool):
+            raise RpcError(-32602, "apply must be a boolean")
+        if plan_id not in self._plans:
+            raise RpcError(MAINTENANCE_REFUSED,
+                           "unknown or already-used plan_id %r; re-plan" % plan_id)
+        preview = self._plans[plan_id]
+        result = self._maintenance_call(
+            maintenance.execute_maintenance, preview, confirmation, apply=apply_it)
+        # Consumed only once the engine ACCEPTED it: a refused confirmation must be
+        # correctable without forcing a re-plan, while a completed run cannot be replayed.
+        del self._plans[plan_id]
+        if result.executed and result.manifest_path:
+            maintenance.record_run(self.conn, result.manifest_path)   # commits internally
+        return self._result_dto(result)
+
+    def _maintenance_restore(self, params):
+        """Roll a checkpoint back. ``apply`` defaults to False here too, so a caller can see
+        what a restore would do before doing it."""
+        self._require_corpus()
+        manifest_path = _req_str(params, "manifest_path")
+        _reject_nonlocal_path(manifest_path, "manifest_path")
+        apply_it = params.get("apply", False)
+        if not isinstance(apply_it, bool):
+            raise RpcError(-32602, "apply must be a boolean")
+        skip = params.get("skip_unaccounted", False)
+        if not isinstance(skip, bool):
+            raise RpcError(-32602, "skip_unaccounted must be a boolean")
+        result = self._maintenance_call(
+            maintenance.restore_checkpoint, manifest_path, apply=apply_it,
+            skip_unaccounted=skip)
+        return self._result_dto(result)
+
+    def _maintenance_runs(self, params):
+        """The recorded destructive runs, newest first — the audit trail a UI shows."""
+        self._require_corpus()
+        limit = _opt_int(params, "limit", 50)
+        return [dict(row) for row in maintenance.list_runs(self.conn, limit=limit)]
 
     # -- projections --------------------------------------------------------------
 
