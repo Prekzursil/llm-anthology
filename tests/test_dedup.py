@@ -95,18 +95,40 @@ def test_consolidate_groups_by_session_id_prefers_live_and_preserves_siblings():
     assert backup.file_path in [c.file_path for c in logical.copies]
 
 
-def test_live_wins_even_when_a_backup_is_newer_and_larger():
+def test_live_wins_even_when_a_backup_is_newer_and_larger_but_says_so():
     """store rank is the PRIMARY key (C# `StoreKind is Live ? 0 : 1` sorts first), so a
-    newer/larger backup still loses to the live store."""
+    newer/larger backup still loses to the live store.
+
+    The WINNER assertion is unchanged and still right: the live store is authoritative
+    and must never be demoted behind a mirror. What this test used to get wrong was
+    stopping there — it asserted the pick and said nothing about the 999_989 bytes the
+    pick just dropped out of the view, which is exactly the hole `has_larger_copy`
+    fills. Asserting the pick WITHOUT asserting the signal is what let a 1-turn
+    crash-truncated live file hide a 9-turn sibling."""
     live = _copy("s", "/live/s.jsonl", dedup.STORE_LIVE, last_write_ms=1, size_bytes=10)
     backup = _copy("s", "/bak/s.jsonl", dedup.STORE_BACKUP,
                    last_write_ms=999_999, size_bytes=999_999)
-    assert dedup.consolidate([live, backup])[0].canonical.store_kind == dedup.STORE_LIVE
+    logical = dedup.consolidate([live, backup])[0]
+    assert logical.canonical.store_kind == dedup.STORE_LIVE
+    assert logical.has_larger_copy is True
+    assert logical.duplicate_paths == ("/bak/s.jsonl",)
 
 
 def test_result_is_ordered_by_session_id():
     out = dedup.consolidate([_copy("b", "/x/b.jsonl"), _copy("a", "/x/a.jsonl")])
     assert [s.session_id for s in out] == ["a", "b"]
+
+
+def test_result_order_is_by_session_id_even_when_the_paths_disagree():
+    """`_session_key`'s FIRST term is the session id; the canonical path is only the
+    tiebreak. A fixture whose ids and paths sort the same way cannot tell the two apart
+    (drop the id term and it still passes), so here the path order is the exact REVERSE
+    of the id order."""
+    out = dedup.consolidate([_copy("id-a", "/x/z-sorts-last.jsonl"),
+                             _copy("id-b", "/x/a-sorts-first.jsonl")])
+    assert [s.session_id for s in out] == ["id-a", "id-b"]
+    assert [s.canonical.file_path for s in out] == ["/x/z-sorts-last.jsonl",
+                                                    "/x/a-sorts-first.jsonl"]
 
 
 def test_consolidate_of_nothing_is_empty():
@@ -174,6 +196,20 @@ def test_a_missing_mtime_sorts_last_and_never_crashes_the_sort():
     assert logical.copy_count == 2
 
 
+def test_an_unknown_mtime_loses_to_a_known_mtime_of_zero():
+    """The unknown-mtime sentinel must sort after EVERY known mtime, including 0 — and
+    the paths here are chosen so that a sentinel which merely TIES with 0 would hand the
+    win to the unknown copy. Without that, `(1, 0)` and `(0, 0)` are indistinguishable:
+    for any positive mtime `-ms` is already negative, so a `(0, 0)` sentinel still
+    loses, and with equal paths the tiebreak hides the difference too."""
+    unknown = _copy(UUID_A, "/bak/a-sorts-first.jsonl", last_write_ms=None,
+                    size_bytes=500)
+    known_zero = _copy(UUID_A, "/bak/z-sorts-last.jsonl", last_write_ms=0,
+                       size_bytes=500)
+    logical = dedup.consolidate([unknown, known_zero])[0]
+    assert logical.canonical.file_path == "/bak/z-sorts-last.jsonl"
+
+
 def test_path_breaks_the_final_tie_case_insensitively_and_totally():
     """Last resort key, so the choice is never 'first one found'. Two paths that differ
     ONLY in case still get a total order (the raw path is the final key)."""
@@ -186,6 +222,59 @@ def test_path_breaks_the_final_tie_case_insensitively_and_totally():
     picked = {dedup.consolidate([same_a, same_b])[0].canonical.file_path,
               dedup.consolidate([same_b, same_a])[0].canonical.file_path}
     assert picked == {"/bak/X.jsonl"}
+
+
+# ------------------- nasty case 2b: the canonical is the SMALLER copy — say so
+
+def test_a_truncated_live_copy_is_flagged_when_a_bigger_sibling_is_demoted(tmp_path):
+    """Size-DESC only breaks ties WITHIN a store, so across stores a crash-truncated
+    LIVE rollout stays canonical while its complete backup sibling drops out of
+    `collapse_corpus`'s output. Measured on real files: live 1 turn vs backup 9 turns,
+    same session_id, and the rendered view showed only the 1-turn copy.
+
+    The pick itself is deliberate (the live store is authoritative). The defect was
+    doing it SILENTLY: `never hide one of the owner's conversations` is this module's
+    stated doctrine, so a canonical that is smaller than a copy it demoted must be
+    reported, and `has_larger_copy` is that report."""
+    live_root = os.path.join(str(tmp_path), "sessions")
+    bak_root = os.path.join(str(tmp_path), "sessions_backup")
+    truncated = _write_rollout(live_root, "rollout-%s.jsonl" % UUID_A,
+                               _rollout_lines(UUID_A))
+    complete = _write_rollout(bak_root, "rollout-%s.jsonl" % UUID_A,
+                              _rollout_lines(UUID_A, n_extra=8))
+
+    copies, errors = dedup.scan_stores([(live_root, dedup.STORE_LIVE),
+                                        (bak_root, dedup.STORE_BACKUP)])
+    logical = dedup.consolidate(copies)[0]
+
+    assert errors == []
+    assert os.path.getsize(complete) > os.path.getsize(truncated)
+    assert logical.canonical.file_path == truncated       # live still wins...
+    assert logical.has_larger_copy is True                # ...but never in silence
+    assert complete in logical.duplicate_paths            # and nothing is lost
+
+
+def test_has_larger_copy_is_false_whenever_nothing_was_hidden():
+    """The flag must mean something: it fires ONLY when a demoted copy is strictly
+    bigger than the canonical, never on a lone copy and never on an exact-size tie."""
+    biggest_wins = dedup.consolidate([
+        _copy(UUID_A, "/live/a.jsonl", dedup.STORE_LIVE, 10, 5_000),
+        _copy(UUID_A, "/bak/a.jsonl", dedup.STORE_BACKUP, 20, 100)])[0]
+    assert biggest_wins.has_larger_copy is False
+
+    same_size = dedup.consolidate([
+        _copy(UUID_A, "/live/a.jsonl", dedup.STORE_LIVE, 10, 100),
+        _copy(UUID_A, "/bak/a.jsonl", dedup.STORE_BACKUP, 20, 100)])[0]
+    assert same_size.has_larger_copy is False
+
+    lone = dedup.consolidate([_copy(UUID_A, "/live/only.jsonl")])[0]
+    assert lone.has_larger_copy is False
+
+    # `copies` has a default, so a hand-built session must answer rather than crash on
+    # `max(())`.
+    bare = dedup.LogicalSession(session_id=UUID_A,
+                                canonical=_copy(UUID_A, "/live/bare.jsonl"))
+    assert bare.copies == () and bare.has_larger_copy is False
 
 
 def test_canonical_choice_is_invariant_under_every_input_permutation():
@@ -257,6 +346,23 @@ def test_unidentified_copies_are_each_their_own_session_never_one_blob():
         ["/live/no-uuid-1.jsonl", "/live/no-uuid-2.jsonl", "/live/whitespace-id.jsonl"]
     assert [s.is_identified for s in sessions] == [False, False, False]
     assert all(s.copy_count == 1 for s in sessions)
+
+
+def test_two_whitespace_only_ids_are_two_sessions_not_one_blob():
+    """`_is_blank` strips, so a whitespace-only id is blank and falls back to the path
+    key. Drop the `.strip()` and `"   "` becomes a truthy id that GROUPS: two unrelated
+    files merge into one session and one of them vanishes from the view. Reachable —
+    `codex_rollout._s` returns the raw string, so `"session_id": "   "` arrives here
+    verbatim. One whitespace-id copy cannot show this; it takes two."""
+    a = _copy("   ", "/live/ws-1.jsonl", dedup.STORE_LIVE)
+    b = _copy("   ", "/live/ws-2.jsonl", dedup.STORE_LIVE)
+
+    sessions = dedup.consolidate([a, b])
+
+    assert len(sessions) == 2
+    assert sorted(s.canonical.file_path for s in sessions) == ["/live/ws-1.jsonl",
+                                                               "/live/ws-2.jsonl"]
+    assert [s.is_identified for s in sessions] == [False, False]
 
 
 def test_unidentified_copies_do_not_absorb_identified_ones():
@@ -361,6 +467,87 @@ def test_scan_store_falls_back_to_the_filename_uuid_when_the_header_is_gone(tmp_
     assert len(sessions) == 1
     assert {c.file_path for c in sessions[0].copies} == {full, headerless}
     assert sessions[0].canonical.file_path == full   # larger => not the truncated tail
+
+
+def _meta_id_rollout(session_meta_id):
+    """A rollout whose ONLY identity is `session_meta.payload.id` — no `session_id`
+    key, and the caller gives it a filename with no UUID in it, so `codex_rollout`'s
+    third fallback cannot rescue it either."""
+    return [json.dumps({"type": "session_meta", "timestamp": "2026-03-23T10:00:00Z",
+                        "payload": {"id": session_meta_id, "cwd": "C:/work"}}),
+            json.dumps({"type": "response_item", "timestamp": "2026-03-23T10:00:01Z",
+                        "payload": {"type": "message", "role": "user",
+                                    "content": [{"type": "input_text",
+                                                 "text": "hi"}]}})]
+
+
+def test_scan_store_refuses_to_merge_two_files_on_a_non_uuid_id(tmp_path):
+    """`codex_rollout`'s id chain is session_meta.session_id -> .id -> the FILENAME
+    UUID. The filename fallback is regex-gated to a UUID shape; the `.id` fallback
+    accepts ANY string, so two unrelated rollouts that both carry `id: "shared-nonuuid"`
+    used to collapse into ONE logical session — a real false merge, which hides one of
+    the owner's conversations behind another.
+
+    A derived id that does not look like a Codex session id is therefore treated as no
+    id at all: the same rule the filename fallback already applies, and the safe
+    direction (a false split is a cosmetic duplicate; a false merge hides)."""
+    root = os.path.join(str(tmp_path), "sessions")
+    _write_rollout(root, "rollout-one.jsonl", _meta_id_rollout("shared-nonuuid"))
+    _write_rollout(root, "rollout-two.jsonl", _meta_id_rollout("shared-nonuuid"))
+
+    copies, errors = dedup.scan_store(root, dedup.STORE_LIVE)
+    sessions = dedup.consolidate(copies)
+
+    assert errors == []
+    assert [c.session_id for c in copies] == ["", ""]
+    assert len(sessions) == 2
+    assert [s.is_identified for s in sessions] == [False, False]
+    assert sorted(s.canonical.file_path for s in sessions) == sorted(
+        c.file_path for c in copies)
+
+    # ...and an id that merely CONTAINS a UUID is not one either: the shape check has to
+    # match the whole string, or `session-<uuid>-tmp` sneaks back in as a shared key.
+    embedded = os.path.join(str(tmp_path), "embedded")
+    wrapped = "session-%s-tmp" % UUID_A
+    _write_rollout(embedded, "rollout-three.jsonl", _meta_id_rollout(wrapped))
+    _write_rollout(embedded, "rollout-four.jsonl", _meta_id_rollout(wrapped))
+
+    more, _ = dedup.scan_store(embedded, dedup.STORE_LIVE)
+    assert [c.session_id for c in more] == ["", ""]
+    assert len(dedup.consolidate(more)) == 2
+
+
+def test_scan_store_still_merges_on_a_uuid_shaped_id_fallback(tmp_path):
+    """The gate is on the SHAPE, not on the fallback: a `session_meta.payload.id` that
+    IS a UUID stays a real identity, so the two stores still collapse to one session."""
+    live_root = os.path.join(str(tmp_path), "sessions")
+    bak_root = os.path.join(str(tmp_path), "sessions_backup")
+    _write_rollout(live_root, "rollout-live.jsonl", _meta_id_rollout(UUID_A))
+    _write_rollout(bak_root, "rollout-backup.jsonl", _meta_id_rollout(UUID_A))
+
+    copies, _ = dedup.scan_stores([(live_root, dedup.STORE_LIVE),
+                                   (bak_root, dedup.STORE_BACKUP)])
+    sessions = dedup.consolidate(copies)
+
+    assert len(sessions) == 1
+    assert sessions[0].session_id == UUID_A
+    assert sessions[0].is_identified is True
+    assert sessions[0].copy_count == 2
+
+
+def test_scan_store_records_the_mtime_in_milliseconds_not_seconds(tmp_path):
+    """`last_write_ms` is a MILLISECOND field (the C# `LastWriteTimeUtc` in ms) and the
+    whole preference key's third term depends on the unit: in seconds, every write
+    inside the same second ties and silently falls through to the path tiebreak."""
+    root = os.path.join(str(tmp_path), "sessions")
+    path = _write_rollout(root, "rollout-x-%s.jsonl" % UUID_A, _rollout_lines(UUID_A))
+
+    copies, _ = dedup.scan_store(root, dedup.STORE_LIVE)
+
+    stat = os.stat(path)
+    assert copies[0].last_write_ms == int(stat.st_mtime * 1000)
+    assert copies[0].last_write_ms > int(stat.st_mtime)     # ms, not seconds
+    assert copies[0].size_bytes == stat.st_size
 
 
 def test_scan_store_yields_a_blank_id_for_a_file_with_no_recoverable_identity(tmp_path):
@@ -574,6 +761,35 @@ def test_collapse_corpus_keeps_threads_and_conversations_dedup_never_saw():
     assert [c.id for c in out.conversations] == ["claude-1", "no-meta"]
     assert out.roots() == ["ghost-parent"]
     assert out.depth("claude-1") == 1
+
+
+def test_collapse_corpus_never_repoints_a_thread_from_a_blank_id_session():
+    """`consolidate` keeps every blank-id copy in its own path-keyed singleton, and
+    `collapse_corpus` used to undo that: it keyed `canonical_path` on `session_id`, so
+    EVERY blank-id session collapsed back onto the single key `""` (last one wins) and
+    then rewrote the `rollout_path` of any corpus thread whose own id is blank —
+    pointing a real thread at an unrelated session's file.
+
+    That thread is not hypothetical: `codex_rollout` derives `thread_id == ""` for a
+    rollout with no `session_meta` and no filename UUID, and `loaders` adds it
+    unconditionally. A blank id identifies nothing, so it must map onto nothing —
+    whitespace included, since `is_identified` strips."""
+    src = corpus.Corpus()
+    src.add_thread(corpus.ThreadMeta(id="", rollout_path="/orig/blank.jsonl"))
+    src.add_thread(corpus.ThreadMeta(id="   ", rollout_path="/orig/whitespace.jsonl"))
+    src.conversations.append(_conv("", "/orig/blank.jsonl"))
+    src.conversations.append(_conv("   ", "/orig/whitespace.jsonl"))
+    sessions = dedup.consolidate([_copy("", "/live/m1.jsonl", dedup.STORE_LIVE),
+                                  _copy("", "/live/m2.jsonl", dedup.STORE_LIVE),
+                                  _copy("  ", "/live/m3.jsonl", dedup.STORE_LIVE)])
+    assert len(sessions) == 3            # three singletons, correctly un-merged
+
+    out = dedup.collapse_corpus(src, sessions)
+
+    assert out.threads[""].rollout_path == "/orig/blank.jsonl"
+    assert out.threads["   "].rollout_path == "/orig/whitespace.jsonl"
+    assert [c.meta["rollout_path"] for c in out.conversations] == [
+        "/orig/blank.jsonl", "/orig/whitespace.jsonl"]
 
 
 def test_collapse_corpus_of_an_empty_corpus_is_empty():

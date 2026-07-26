@@ -23,7 +23,10 @@ THE IDENTITY RULE (exact, and deliberately the only one):
 FILENAME -> `""` (that module's `_assemble`, and its trap 6). That chain is what makes the
 rule work in practice: a truncated or resumed copy that lost its `session_meta` header is
 STILL identified by its filename UUID, so it merges with its complete sibling instead of
-masquerading as a separate conversation.
+masquerading as a separate conversation. `scan_store` adds exactly one check to that
+chain — the derived id must be UUID-SHAPED, the same gate the filename link already
+applies — because the `session_meta.id` link accepts any string and a shared non-unique
+value there would merge two unrelated rollouts (see `_trusted_id`).
 
 Why nothing softer: a FALSE MERGE silently hides one of the owner's conversations behind
 another, while a false split only shows a cosmetic duplicate. Every judgement call is
@@ -36,7 +39,9 @@ UNIDENTIFIED COPIES. The C# `Consolidate` DROPS copies whose SessionId is blank
 (`.Where(copy => !string.IsNullOrWhiteSpace(copy.SessionId))`). This port does not: a drop
 is a deletion from the view, and grouping the blanks TOGETHER would be the largest false
 merge available. Each blank-id copy instead becomes its own singleton keyed by its path,
-survives in the output, and reports `is_identified == False` so the UI can flag it.
+survives in the output, and reports `is_identified == False` so the UI can flag it. That
+holds all the way through `collapse_corpus`, which maps only IDENTIFIED sessions onto
+corpus threads — keying its map by a blank id would re-merge them in the last step.
 
 CANONICAL-COPY CHOICE — deterministic, total, and never "first one found". Copies are
 ordered by this key and `copies[0]` becomes `canonical`:
@@ -54,6 +59,12 @@ event log (see `codex_rollout`'s module docstring), so two copies of one session
 prefixes of each other and the larger one CONTAINS everything the smaller one has: size is
 the direct measure of completeness that mtime only proxies. Store rank still outranks it,
 so the authoritative live file is never demoted behind a stale mirror.
+
+That ordering has one honest cost: ACROSS stores a crash-truncated live copy still beats a
+complete backup, and `collapse_corpus` emits only the canonical, so the fuller copy leaves
+the rendered view. The copy is never lost (`duplicate_paths` keeps it), but "never hide one
+of the owner's conversations" means the loss of DETAIL cannot be silent either, so
+`LogicalSession.has_larger_copy` reports it instead of the choice being reversed.
 
 STORAGE. `ensure_schema` creates this module's OWN table (`session_physical_copies`); it
 does not touch `corpus.py`'s schema, and it is safe to call on a live corpus index.
@@ -135,6 +146,23 @@ class LogicalSession:
         which case this session is a path-keyed singleton that was NOT merged."""
         return bool(self.session_id.strip())
 
+    @property
+    def has_larger_copy(self):
+        """True when the canonical copy is SMALLER than one it demoted — i.e. the copy
+        this view puts forward is a truncated prefix of a sibling.
+
+        Store rank outranks size (key 1 beats key 2), which is right — the live store is
+        authoritative and must never be demoted behind a stale mirror — but it means a
+        crash-truncated live rollout can win over a complete backup of the same session.
+        `collapse_corpus` then emits only the canonical, so the fuller copy leaves the
+        rendered view. Nothing is deleted (`duplicate_paths` still lists it), yet a
+        conversation the owner can see in one file and not the other is exactly what
+        this module promises never to hide, so the condition is REPORTED rather than
+        silently resolved. A UI can offer the larger copy; the canonical rule stays
+        single-implementation."""
+        return self.canonical.size_bytes < max(
+            (c.size_bytes for c in self.copies), default=self.canonical.size_bytes)
+
 
 # ----------------------------------------------------------------- the two rules
 
@@ -191,20 +219,43 @@ def consolidate(copies):
 
 # ---------------------------------------------------------------------- scanning
 
+def _trusted_id(derived_id):
+    """A scan-derived id, or `""` when it does not look like a Codex session id.
+
+    `codex_rollout` derives the id from `session_meta.session_id` -> `session_meta.id`
+    -> the UUID in the FILENAME. Only the third link is shape-checked: the second
+    accepts ANY string, so two unrelated rollouts that both carry, say,
+    `"id": "default"` would arrive here with byte-equal ids and MERGE — one of the
+    owner's conversations hidden behind another, the exact failure the identity rule
+    exists to prevent. Requiring the same UUID shape the filename fallback already
+    requires closes that without inventing a new rule (hence `codex_rollout`'s own
+    regex, not a second copy of the pattern that could drift from it).
+
+    A real session id that is not UUID-shaped therefore SPLITS into per-path singletons
+    instead of merging. That is the deliberate direction: a false split shows a cosmetic
+    duplicate, a false merge hides a conversation. The gate lives here, at the
+    derivation boundary, and not in `consolidate` — `consolidate`'s contract is that the
+    CALLER supplies identity and byte-equal ids group, which is what makes it a pure,
+    testable rule.
+    """
+    return derived_id if codex_rollout._UUID.fullmatch(derived_id) else ""
+
+
 def scan_store(sessions_root, store_kind=STORE_UNKNOWN):
     """One store root -> ([PhysicalCopy], errors).
 
-    Identity comes from `codex_rollout.ingest_sessions`, so this inherits its recursive
-    date-nested walk, its skip-and-log of a torn last line, and its filename-UUID
-    fallback. A missing root is an empty result, not an error. `errors` is passed through
-    verbatim so a partial parse is visible without costing the copy.
+    Identity comes from `codex_rollout.ingest_sessions` (see `_trusted_id` for the one
+    thing this does NOT take on faith), so this inherits its recursive date-nested walk,
+    its skip-and-log of a torn last line, and its filename-UUID fallback. A missing root
+    is an empty result, not an error. `errors` is passed through verbatim so a partial
+    parse is visible without costing the copy.
     """
     docs, errors = codex_rollout.ingest_sessions(sessions_root)
     copies = []
     for doc in docs:
         # Only files ingest_sessions could already READ reach here, so stat cannot fail.
         stat = os.stat(doc.rollout_path)
-        copies.append(PhysicalCopy(session_id=doc.thread_id,
+        copies.append(PhysicalCopy(session_id=_trusted_id(doc.thread_id),
                                    file_path=doc.rollout_path,
                                    store_kind=store_kind,
                                    last_write_ms=int(stat.st_mtime * 1000),
@@ -285,7 +336,13 @@ def collapse_corpus(src, sessions):
     ChatGPT conversation, or a blank-id session with no thread to map onto) passes
     through untouched, and `src` itself is not mutated.
     """
-    canonical_path = {s.session_id: s.canonical.file_path for s in sessions}
+    # Blank ids are EXCLUDED. `consolidate` keys them by path precisely so they can
+    # never merge; keying this map by session_id would collapse every one of them back
+    # onto `""` (last one wins) and then repoint any corpus thread whose own id is blank
+    # — and codex_rollout really does derive `thread_id == ""` for a rollout with no
+    # session_meta and no filename UUID. An id that identifies nothing maps onto nothing.
+    canonical_path = {s.session_id: s.canonical.file_path
+                      for s in sessions if s.is_identified}
 
     threads = {}
     for tid, meta in src.threads.items():
