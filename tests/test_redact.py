@@ -1,17 +1,20 @@
 """Contract + airtight leak proof for the metadata allowlist projection.
 
 SAFETY CORE (Phase-4 privacy model). The ONLY data that may cross to any cloud /
-network path is a SANITIZED METADATA/AGGREGATE projection built BY CONSTRUCTION from a
-STRICT ALLOWLIST. Raw message bodies (Block.text / Turn content) and any PII are
-FORBIDDEN to cross, ever.
+network path is a STRUCTURAL METADATA/AGGREGATE projection built BY CONSTRUCTION from a
+STRICT ALLOWLIST. Raw message bodies (Block.text / Turn content), any PII, AND ALL FREE
+TEXT (title / notes / tags / aliases) are FORBIDDEN to cross, ever (owner decision
+2026-07-25: `title` is derived from raw content, and free text can carry PII no regex
+strips — so the cloud plane gets ONLY opaque ids + timestamps + counts + aggregate).
 
 These tests are load-bearing:
-  * the field-set test proves `MetadataView` carries ONLY the allowlisted fields (an
-    added `body`/`rollout_path`/`preview` field turns this red);
+  * the field-set test proves `MetadataView` carries ONLY the allowlisted STRUCTURAL
+    fields (an added `body`/`rollout_path`/`preview`/`title` field turns this red);
   * the airtight tests embed KNOWN sensitive tokens (a fake body secret + a fake SSN +
-    a fake email + a local username in a path) in the WORST places a projection could
-    accidentally read them (block text, block data, a row's extra columns, a thread
-    preview) and assert those tokens appear NOWHERE in the serialized projection;
+    a fake email + a local username) in the WORST places a projection could accidentally
+    read them — INCLUDING the allowlisted free-text fields title/notes/tags/aliases
+    (the finding-#3 blind spot the old tests never exercised) — and assert those tokens
+    appear NOWHERE in the serialized projection;
   * the mutation test proves the airtight detector actually FIRES on a known
     body-passthrough (the both-states discipline) — otherwise a green airtight test
     would be vacuous.
@@ -33,24 +36,30 @@ SECRET = "RAWBODY_SECRET_DO_NOT_LEAK"
 SSN = "123-45-6789"
 EMAIL = "victim@example.com"
 USERNAME = "Prekzursil"                       # a local path component = PII to keep out
+NAME = "Jane Q. Patient"                      # freeform PII no regex reliably catches
 
 # exact block bodies so char_count is deterministic
 BODY1 = f"My SSN is {SSN} and secret {SECRET}"
 BODY2 = f"Reach me at {EMAIL} urgently"
 
-# the full allowlist — the ONLY fields permitted to cross a cloud boundary
+# the full allowlist — the ONLY fields permitted to cross a cloud boundary. STRUCTURAL
+# ONLY: no title, no notes/tags/aliases, no body.
 ALLOWLIST = {
-    "conversation_id", "provider", "account", "title", "created_at", "updated_at",
-    "turn_count", "char_count", "thread_id", "tags", "aliases", "notes",
+    "conversation_id", "provider", "account", "created_at", "updated_at",
+    "turn_count", "char_count", "thread_id",
 }
+
+# The free-text families that USED to cross (sanitized) and now must NOT cross at all.
+FREE_TEXT_FIELDS = ("title", "notes", "tags", "aliases")
 
 
 def _secret_conv(cid="conv-1", provider="claude", account="acct-a"):
     """A Conversation whose bodies (and a tool block's data payload) embed every
-    sensitive token, in the places a careless projection might slurp them."""
+    sensitive token, AND whose allowlisted free-text fields (a content-derived title,
+    tags/aliases/notes) also carry canaries — the projection must read none of them."""
     return ir.Conversation(
         id=cid,
-        title="Patient Intake",
+        title=f"Patient intake {NAME} SSN {SSN} {SECRET}",   # content-derived + poisoned
         provider=provider,
         account=account,
         created_at="2026-01-01T00:00:00Z",
@@ -68,9 +77,9 @@ def _secret_conv(cid="conv-1", provider="claude", account="acct-a"):
         ],
         meta={
             "thread_id": "th-1",
-            "tags": ["oncology"],
-            "aliases": ["case-42"],
-            "notes": "clinician note",
+            "tags": [f"mrn-{SSN}"],            # free text -> must NOT cross
+            "aliases": [NAME],                 # free text -> must NOT cross
+            "notes": f"contact {EMAIL}",       # free text -> must NOT cross
             # a body snippet parked in meta must NOT be read by the projection
             "preview": f"user said {SECRET}",
         },
@@ -80,9 +89,13 @@ def _secret_conv(cid="conv-1", provider="claude", account="acct-a"):
 # --------------------------------------------------------------- structural allowlist
 
 def test_metadata_view_carries_only_allowlisted_fields():
-    """BY CONSTRUCTION: the dataclass exposes EXACTLY the allowlist — no body, no
-    rollout_path, no preview. Adding a forbidden field turns this red immediately."""
+    """BY CONSTRUCTION: the dataclass exposes EXACTLY the STRUCTURAL allowlist — no body,
+    no rollout_path, no preview, and no free text (title/notes/tags/aliases). Adding a
+    forbidden field turns this red immediately."""
     assert {f.name for f in fields(MetadataView)} == ALLOWLIST
+    # the free-text families are gone from the wire contract entirely
+    names = {f.name for f in fields(MetadataView)}
+    assert names.isdisjoint(FREE_TEXT_FIELDS)
 
 
 # ------------------------------------------------------------- Conversation input
@@ -93,27 +106,25 @@ def test_to_metadata_view_from_conversation_maps_named_fields():
     assert view.conversation_id == "conv-1"
     assert view.provider == "claude"
     assert view.account == "acct-a"
-    assert view.title == "Patient Intake"
     assert view.created_at == "2026-01-01T00:00:00Z"
     assert view.updated_at == "2026-01-02T00:00:00Z"
     assert view.turn_count == 2
     # char_count is a COUNT of body text, never the text itself
     assert view.char_count == len(BODY1) + len(BODY2)
     assert view.thread_id == "th-1"
-    assert view.tags == ("oncology",)
-    assert view.aliases == ("case-42",)
-    assert view.notes == "clinician note"
+    # free text (incl. the content-derived title) is NOT part of the structural view
+    for gone in FREE_TEXT_FIELDS:
+        assert not hasattr(view, gone)
 
 
 def test_conversation_without_meta_uses_safe_defaults():
     conv = ir.Conversation(id="c0", title="t", provider="gemini")
     view = to_metadata_view(conv)
     assert view.thread_id == ""
-    assert view.tags == ()
-    assert view.aliases == ()
-    assert view.notes == ""
     assert view.turn_count == 0
     assert view.char_count == 0
+    for gone in FREE_TEXT_FIELDS:
+        assert not hasattr(view, gone)
 
 
 def test_char_count_counts_body_across_turns_and_empty_blocks():
@@ -141,7 +152,7 @@ def _full_row():
         "conversation_id": "row-1",
         "provider": "chatgpt",
         "account": "acct-b",
-        "title": "Row Title",
+        "title": f"Row {SSN}",
         "created_at": "2026-02-01",
         "updated_at": "2026-02-02",
         "turn_count": 5,
@@ -151,10 +162,10 @@ def _full_row():
         "rollout_path": rf"C:\Users\{USERNAME}\sessions\x.jsonl",
         "preview": f"assistant said {SECRET}",
         "extra_pii": SSN,
-        # forward-looking optional metadata the row may carry:
-        "tags": ["t1", "t2"],
-        "aliases": ["alias-1"],
-        "notes": "row note",
+        # free-text metadata the row may carry — now dropped entirely:
+        "tags": [f"mrn-{SSN}"],
+        "aliases": [NAME],
+        "notes": f"note {EMAIL}",
     }
 
 
@@ -163,26 +174,27 @@ def test_to_metadata_view_from_row_maps_named_fields():
     assert view.conversation_id == "row-1"
     assert view.provider == "chatgpt"
     assert view.account == "acct-b"
-    assert view.title == "Row Title"
     assert view.created_at == "2026-02-01"
     assert view.updated_at == "2026-02-02"
     assert view.turn_count == 5
     assert view.char_count == 4242
     assert view.thread_id == "th-2"
-    assert view.tags == ("t1", "t2")
-    assert view.aliases == ("alias-1",)
-    assert view.notes == "row note"
+    for gone in FREE_TEXT_FIELDS:
+        assert not hasattr(view, gone)
 
 
 def test_row_extra_and_forbidden_columns_never_cross():
-    """A row may carry rollout_path / preview / arbitrary extra columns. None of them
-    may appear in the projection — the allowlist is by construction, not passthrough."""
+    """A row may carry title / rollout_path / preview / tags / arbitrary extra columns.
+    None of them may appear in the projection — the allowlist is by construction, not
+    passthrough, and free text is dropped whole."""
     blob = json.dumps(asdict(to_metadata_view(_full_row())))
-    assert USERNAME not in blob        # rollout_path username
+    assert USERNAME not in blob        # rollout_path username + aliases
     assert SECRET not in blob          # preview body snippet
-    assert SSN not in blob             # extra_pii column
-    assert "rollout_path" not in blob
-    assert "preview" not in blob
+    assert SSN not in blob             # extra_pii column + title + tags
+    assert EMAIL not in blob           # notes
+    assert NAME not in blob            # aliases (freeform name)
+    for col in ("rollout_path", "preview", "title", "tags", "aliases", "notes"):
+        assert col not in blob
 
 
 def test_row_without_optional_fields_uses_safe_defaults():
@@ -190,7 +202,6 @@ def test_row_without_optional_fields_uses_safe_defaults():
         "conversation_id": "row-2",
         "provider": "gemini",
         "account": "",
-        "title": "",
         "created_at": "",
         "updated_at": "",
         "turn_count": 0,
@@ -198,14 +209,14 @@ def test_row_without_optional_fields_uses_safe_defaults():
         "thread_id": "",
     }
     view = to_metadata_view(row)
-    assert view.tags == ()
-    assert view.aliases == ()
-    assert view.notes == ""
+    assert view.thread_id == ""
+    assert view.turn_count == 0
+    assert view.char_count == 0
 
 
 def test_to_metadata_view_from_real_sqlite_row():
     """The production row shape: a sqlite3.Row from the conversations table. dict(row)
-    carries rowid + rollout_path; neither may cross."""
+    carries rowid + rollout_path + title; none may cross."""
     conn = corpus.open_index(":memory:")
     try:
         conv = _secret_conv("conv-db")
@@ -225,32 +236,50 @@ def test_to_metadata_view_from_real_sqlite_row():
     blob = json.dumps(asdict(view))
     assert USERNAME not in blob        # rollout_path must not cross
     assert "rowid" not in blob         # sqlite artefact must not cross
+    assert "title" not in blob         # the content-derived title must not cross
     assert SECRET not in blob
+    assert SSN not in blob
 
 
-# --------------------------------------------------------------------- sanitization
+# --------------------------------------------------------------------- no free text
 
-def test_free_text_fields_are_sanitized():
-    """title / notes / aliases / tags cross as free text, so hidden-unicode
-    smuggling payloads must be stripped (aisr.sanitize.sanitize_for_copy)."""
+def test_free_text_fields_never_cross():
+    """Owner decision 2026-07-25 (Phase-4 grill): NO free text crosses. `title` (which is
+    RAW-CONTENT-DERIVED), notes, tags and aliases are dropped from the projection BY
+    CONSTRUCTION, so PII placed in them — which the old 'sanitize only' model let through
+    — cannot reach the cloud. This is the finding-#3 blind spot made explicit: poison in
+    an ALLOWLISTED field, not merely in a body / preview / rollout_path."""
     conv = ir.Conversation(
-        id="c-s",
-        title="Onc\u200bology",                       # zero-width space
-        provider="claude",
+        id="c-ft", provider="claude", account="a",
+        title=f"Chemo plan for {NAME} SSN {SSN}",          # hostile content-derived title
         meta={
-            "tags": ["ta\u200bg"],
-            "aliases": ["ali\u202eas"],               # RTL override
-            "notes": "no\u200bte",
+            "thread_id": "t",
+            "tags": [f"mrn-{SSN}"],
+            "aliases": [NAME],
+            "notes": f"reach {EMAIL}",
         },
     )
     view = to_metadata_view(conv)
-    assert view.title == "Oncology"
-    assert view.tags == ("tag",)
-    assert view.aliases == ("alias",)
-    assert view.notes == "note"
-    # no flagged invisible survives anywhere in the serialized view
+    # the fields themselves are gone from the wire contract ...
+    for gone in FREE_TEXT_FIELDS:
+        assert not hasattr(view, gone)
+    # ... so no token placed in them can appear anywhere in the serialization.
     blob = json.dumps(asdict(view))
-    for ch in ("\u200b", "\u202e"):
+    for token in (SSN, NAME, EMAIL):
+        assert token not in blob, f"LEAK: {token!r} crossed via a free-text field"
+    assert "title" not in blob and "tags" not in blob
+
+
+def test_hidden_unicode_in_free_text_cannot_ride_across_either():
+    """Belt-and-braces: even a hidden-unicode smuggle in a free-text field is moot now,
+    because the whole field is dropped. (The old model relied on sanitize_for_copy here;
+    dropping the field is strictly stronger.)"""
+    conv = ir.Conversation(
+        id="c-zw", title="Onc\u200bology", provider="claude",
+        meta={"tags": ["ta\u200bg"], "aliases": ["ali\u202eas"], "notes": "no\u200bte"},
+    )
+    blob = json.dumps(asdict(to_metadata_view(conv)))
+    for ch in ("\u200b", "\u202e", "Oncology", "note"):
         assert ch not in blob
 
 
@@ -317,11 +346,11 @@ def test_aggregate_stats_empty_corpus():
 # ---------------------------------------------------- AIRTIGHT: nothing sensitive crosses
 
 def test_metadata_payload_is_airtight():
-    """The full object the research plane may send. No body text, no PII, no local
-    path component appears anywhere in its JSON serialization."""
+    """The full object the research plane may send. No body text, no PII, no free text,
+    no local path component appears anywhere in its JSON serialization."""
     cor = _mixed_corpus()
     blob = json.dumps(metadata_payload(cor))
-    for token in (SECRET, SSN, EMAIL, USERNAME):
+    for token in (SECRET, SSN, EMAIL, USERNAME, NAME):
         assert token not in blob, f"LEAK: {token!r} crossed the boundary"
     # sanity: the payload is non-trivial (it really did project the conversations)
     payload = metadata_payload(cor)
@@ -331,7 +360,7 @@ def test_metadata_payload_is_airtight():
 
 def test_single_view_json_is_airtight():
     blob = json.dumps(asdict(to_metadata_view(_secret_conv())))
-    for token in (SECRET, SSN, EMAIL):
+    for token in (SECRET, SSN, EMAIL, USERNAME, NAME):
         assert token not in blob
 
 
@@ -344,16 +373,19 @@ def test_metadata_payload_empty_corpus():
 # ------------------------------------------------- MUTATION / both-states detector proof
 
 def _leaky_projection(conv):
-    """A DELIBERATELY broken projection that passes body text through — the mutant
-    `to_metadata_view` the airtight test MUST be able to catch."""
+    """A DELIBERATELY broken projection that passes body text AND the content-derived
+    title through — the mutant `to_metadata_view` the airtight test MUST be able to
+    catch."""
     d = asdict(to_metadata_view(conv))
     d["body"] = "\n".join(b.text for t in conv.turns for b in t.blocks)
+    d["title"] = conv.title
     return d
 
 
-def test_mutation_body_passthrough_is_detected():
+def test_mutation_body_and_title_passthrough_is_detected():
     """Both-states proof: the airtight detector is silent on the real projection AND
-    FIRES on a known body-passthrough. A detector silent in both states proves nothing.
+    FIRES on a known body/title passthrough. A detector silent in both states proves
+    nothing.
     """
     conv = _secret_conv()
     real = json.dumps(asdict(to_metadata_view(conv)))
@@ -361,6 +393,8 @@ def test_mutation_body_passthrough_is_detected():
     # real projection is clean ...
     assert SECRET not in real
     assert SSN not in real
-    # ... and the SAME detector catches the mutant that leaks the body
-    assert SECRET in leaky
-    assert SSN in leaky
+    assert NAME not in real            # freeform name in the title does NOT cross
+    # ... and the SAME detector catches the mutant that leaks the body + title
+    assert SECRET in leaky             # body secret
+    assert SSN in leaky                # body/title SSN
+    assert NAME in leaky               # title freeform name

@@ -1262,8 +1262,11 @@ def test_research_synthesize_cloud_is_metadata_only():
     prompt = backend.prompts[0]
     for token in (R_RAWBODY, R_SSN, R_USERNAME):
         assert token not in prompt, f"LEAK: {token!r} crossed to the research plane"
-    # ... yet the allowlisted metadata DID cross, proving a real prompt was built.
-    assert "Patient Intake" in prompt
+    # ... the content-derived TITLE must not cross either (Phase-4: no free text at
+    # all -- a title is built from raw message content, so it is raw content) ...
+    assert "Patient Intake" not in prompt
+    # ... yet the allowlisted STRUCTURAL metadata DID cross, proving a real prompt.
+    assert "c-leak" in prompt and "claude" in prompt
 
 
 def test_research_synthesize_cloud_default_backend_is_no_network_placeholder():
@@ -1295,7 +1298,8 @@ def test_research_extract_entities_is_metadata_only_and_output_sanitized():
     prompt = backend.prompts[0]
     for token in (R_RAWBODY, R_SSN, R_USERNAME):
         assert token not in prompt
-    assert "Patient Intake" in prompt
+    assert "Patient Intake" not in prompt        # no free text crosses to the cloud
+    assert "c-leak" in prompt                    # structural metadata did (non-vacuous)
 
 
 # --- local tier: over RAW content, stays on-box ---------------------------------------

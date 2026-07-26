@@ -4,23 +4,29 @@ This is the ONLY component permitted to feed conversation data to a cloud LLM, s
 it is corpus-blind BY TYPE and BY CONSTRUCTION:
 
   * BY TYPE -- every public function takes ONLY ``MetadataView`` objects (the
-    sanitized metadata projection built by :mod:`aisr.redact`). It never imports
+    structural metadata projection built by :mod:`aisr.redact`). It never imports
     or accepts a ``Corpus``, an ``ir.Conversation``, a sqlite connection, or raw
     text. The sole reference to ``MetadataView`` is a typing-only import, so this
     module has NO runtime dependency on the redaction layer and cannot reach back
     into the raw corpus even by accident.
 
   * BY CONSTRUCTION -- the prompt handed to the backend is assembled from a STRICT
-    ALLOWLIST of attribute names (:data:`_ID_FIELDS`, :data:`_TEXT_FIELDS`,
-    :data:`_LIST_FIELDS`, :data:`_COUNT_FIELDS`) plus aggregate counts. The
-    projection reads EXACTLY those names and nothing else, so a raw message body,
-    a preview, a rollout path, or any PII the handed object might ALSO carry can
-    never reach a prompt. It is a positive emit-list, not a blocklist that could
-    miss a field.
+    ALLOWLIST of attribute names (:data:`_ID_FIELDS` + :data:`_COUNT_FIELDS`) plus
+    aggregate counts. It is a positive emit-list, not a blocklist that could miss a
+    field: a raw message body, a ``title``, ``notes``/``tags``/``aliases``, a
+    preview, a rollout path, or any PII the handed object might ALSO carry can
+    never reach a prompt.
 
-Free text that crosses to the cloud (title, notes, tags, aliases) is passed
-through :func:`aisr.sanitize.sanitize_for_copy` at this boundary -- the agent-feed
-surface -- so a hidden-unicode smuggle in a label cannot re-inject downstream.
+STRUCTURAL / AGGREGATE ONLY -- NO FREE TEXT crosses to the cloud. In particular the
+conversation ``title`` is NOT emitted: titles are derived from raw message content
+(the Codex adapter builds one from the first user line; other providers auto-summarize
+the content), and free text can carry PII no regex reliably strips. This is the owner's
+Phase-4 decision (2026-07-25) after an adversarial leak-hunt proved the previous
+"sanitize the free text" model carried an SSN, an email, a freeform patient name and a
+drug name into a live cloud prompt. The cloud plane sees only opaque identifiers,
+timestamps, counts, and aggregate histograms; content-aware, per-conversation synthesis
+lives on the on-box LOCAL tier only (aisr/sidecar.py ``_research_local``), which never
+egresses.
 
 The backend is a pluggable :class:`LLMBackend` (one ``synthesize(prompt) -> str``
 method); :class:`MockBackend` is a deterministic, no-network implementation that
@@ -33,8 +39,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from aisr.sanitize import sanitize_for_copy
-
 if TYPE_CHECKING:  # pragma: no cover - typing-only; keeps the plane corpus-blind
     from collections.abc import Iterable
 
@@ -42,13 +46,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing-only; keeps the plane corpus-blin
 
 
 # --- the STRICT allowlist: the ONLY MetadataView attributes that may cross -----
-# Opaque identifiers + timestamps (emitted as text, never parsed or split).
+# Opaque identifiers + timestamps (emitted as text, never parsed or split). There is
+# deliberately NO free-text family here (no title / notes / tags / aliases) and nothing
+# derived from raw message content -- see the module docstring (owner decision
+# 2026-07-25). Re-adding one re-opens a CONFIRMED medical-PII leak.
 _ID_FIELDS = ("conversation_id", "provider", "account", "thread_id",
               "created_at", "updated_at")
-# Human/model-authored free text (sanitized for the cloud agent-feed surface).
-_TEXT_FIELDS = ("title", "notes")
-# Lists of free-text labels (each element sanitized).
-_LIST_FIELDS = ("tags", "aliases")
 # Integer aggregates.
 _COUNT_FIELDS = ("turn_count", "char_count")
 
@@ -112,35 +115,19 @@ def _as_int(value):
     return 0
 
 
-def _as_list(value):
-    """A list/tuple of labels, or an empty tuple for anything else."""
-    if isinstance(value, (list, tuple)):
-        return value
-    return ()
-
-
-def _clean(value):
-    """Sanitize one free-text value for the cloud agent-feed surface."""
-    return sanitize_for_copy(value if isinstance(value, str) else "")
-
-
 # --- projection: read ONLY the allowlist ---------------------------------------
 
 def _project(view: "MetadataView") -> dict:
-    """Project ONE view onto the strict allowlist.
+    """Project ONE view onto the strict, STRUCTURAL allowlist.
 
-    Reads EXACTLY the allowlisted attribute names; nothing else on ``view`` is
-    accessed, so a raw body / preview / PII field it may also carry cannot reach
-    the result. A missing attribute defaults to empty (a leaner view still
-    projects cleanly), and free text is sanitized.
+    Reads EXACTLY the allowlisted attribute names (opaque ids/timestamps + integer
+    counts); nothing else on ``view`` is accessed, so a raw body / title / preview /
+    PII field it may also carry cannot reach the result. A missing attribute defaults
+    to empty (a leaner view still projects cleanly).
     """
     projected = {}
     for name in _ID_FIELDS:
         projected[name] = _as_text(getattr(view, name, ""))
-    for name in _TEXT_FIELDS:
-        projected[name] = _clean(getattr(view, name, ""))
-    for name in _LIST_FIELDS:
-        projected[name] = [_clean(item) for item in _as_list(getattr(view, name, ()))]
     for name in _COUNT_FIELDS:
         projected[name] = _as_int(getattr(view, name, 0))
     return projected
@@ -172,7 +159,11 @@ def _hist(counts):
 
 
 def _render_view(p):
-    """Render one projected view as allowlisted ``key: value`` lines."""
+    """Render one projected view as allowlisted ``key: value`` lines (structural only).
+
+    Adding a free-text line here re-opens the CONFIRMED leak — the mutation check
+    (_p4_mutation_check.py) exists to make that turn the suite red.
+    """
     return "\n".join((
         "- conversation_id: %s" % p["conversation_id"],
         "  provider: %s" % p["provider"],
@@ -182,22 +173,19 @@ def _render_view(p):
         "  updated_at: %s" % p["updated_at"],
         "  turn_count: %d" % p["turn_count"],
         "  char_count: %d" % p["char_count"],
-        "  title: %s" % p["title"],
-        "  notes: %s" % p["notes"],
-        "  tags: %s" % ", ".join(p["tags"]),
-        "  aliases: %s" % ", ".join(p["aliases"]),
     ))
 
 
 def _build_prompt(views: "Iterable[MetadataView]", instruction: str) -> str:
-    """Build the FULL prompt from ONLY allowlisted metadata + aggregate stats."""
+    """Build the FULL prompt from ONLY allowlisted structural metadata + aggregate."""
     projections = [_project(v) for v in views]
     stats = _aggregate(projections)
     lines = [
         instruction,
         "",
-        "You are given ONLY sanitized conversation METADATA -- no message bodies, "
-        "no personal data. Base your answer solely on the fields below.",
+        "You are given ONLY sanitized, STRUCTURAL conversation METADATA -- no message "
+        "bodies, no titles, no free text, no personal data. Base your answer solely on "
+        "the identifiers, timestamps, and counts below.",
         "",
         "## Aggregate",
         "conversations: %d" % stats["conversations"],
@@ -227,13 +215,13 @@ def _parse_entities(raw):
 
 def synthesize_over_metadata(views: "Iterable[MetadataView]",
                              backend: LLMBackend) -> str:
-    """Summarize a set of conversations from ONLY their sanitized metadata."""
+    """Summarize a set of conversations from ONLY their structural metadata."""
     return backend.synthesize(_build_prompt(views, _SUMMARY_INSTRUCTION))
 
 
 def extract_entities(views: "Iterable[MetadataView]",
                      backend: LLMBackend) -> "list[str]":
-    """Extract salient entities/topics from ONLY sanitized metadata.
+    """Extract salient entities/topics from ONLY structural metadata.
 
     Returns the ordered, de-duplicated list of entity strings the backend
     produced from the metadata-only prompt.

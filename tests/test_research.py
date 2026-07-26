@@ -2,18 +2,29 @@
 
 PRIVACY-CRITICAL (Phase-4). The research plane is the ONLY component allowed to
 feed conversation data to a cloud LLM, so it must be corpus-blind BY
-CONSTRUCTION: it reads ONLY the allowlisted ``MetadataView`` fields
-(conversation_id, provider, account, title, created_at/updated_at, turn_count,
-char_count, thread_id, tags, aliases, notes + aggregate stats) and NEVER a raw
-body, a preview, a rollout path, or any PII -- even when the object it is handed
-also carries one.
+CONSTRUCTION: it reads ONLY the allowlisted STRUCTURAL ``MetadataView`` fields
+(conversation_id, provider, account, thread_id, created_at/updated_at,
+turn_count, char_count + aggregate stats) and NEVER a raw body, a title, any
+free text (notes/tags/aliases), a preview, a rollout path, or any PII -- even
+when the object it is handed also carries one.
 
-SYNTHETIC fixtures ONLY -- nothing here is a real conversation. Two poison tokens
-are embedded in NON-allowlisted fields of the adversarial fixtures and must never
-surface in a prompt / backend input (the leak-hunt oracle):
+NO FREE TEXT CROSSES. This is stricter than "sanitize the free text" and it is
+deliberate (owner decision 2026-07-25): a conversation ``title`` is derived from
+raw message content, and free text can carry PII no regex reliably strips. An
+earlier iteration allowed sanitized free text and was PROVEN in a live probe to
+carry an SSN, an email, a freeform patient name and a drug name into the cloud
+prompt.
+
+SYNTHETIC fixtures ONLY -- nothing here is a real conversation. The poison tokens
+are embedded BOTH in non-allowlisted fields AND in the free-text fields that used
+to cross, and must never surface in a prompt / backend input (the leak-hunt
+oracle):
 
   * ``RAWBODY_SECRET_DO_NOT_LEAK`` -- stands in for a raw message body.
-  * ``123-45-6789``                -- stands in for PII (a fake SSN).
+  * ``123-45-6789``                -- PII: a fake SSN.
+  * ``victim@example.com``         -- PII: a fake email.
+  * ``Jane Q. Patient``            -- PII: a freeform name no regex catches.
+  * ``Zynflaxen-250``              -- sensitive non-PII content (a drug name).
 """
 from types import SimpleNamespace
 
@@ -21,33 +32,44 @@ from aisr import research
 
 RAWBODY = "RAWBODY_SECRET_DO_NOT_LEAK"
 SSN = "123-45-6789"
+EMAIL = "victim@example.com"
+NAME = "Jane Q. Patient"
+COMPOUND = "Zynflaxen-250"
+
+SENSITIVE = (RAWBODY, SSN, EMAIL, NAME, COMPOUND)
 
 # The full contract allowlist, stated INDEPENDENTLY of the module so a drift in
-# either direction (a new leaky field, a dropped one) is caught.
+# either direction (a new leaky field, a dropped one) is caught. STRUCTURAL ONLY.
 ALLOWLIST = {
     "conversation_id", "provider", "account", "thread_id",
     "created_at", "updated_at", "turn_count", "char_count",
-    "title", "notes", "tags", "aliases",
 }
 
 
 def _view(**kw):
-    """A synthetic MetadataView-shaped object (duck-typed by attribute name)."""
+    """A synthetic MetadataView-shaped object (duck-typed by attribute name),
+    carrying ONLY the structural allowlist -- the real crossing surface."""
     base = dict(
         conversation_id="c1", provider="claude", account="alice",
         thread_id="t1", created_at="2026-01-01", updated_at="2026-01-02",
-        turn_count=3, char_count=100, title="Weekly sync", notes="follow up",
-        tags=["work", "sync"], aliases=["standup"],
+        turn_count=3, char_count=100,
     )
     base.update(kw)
     return SimpleNamespace(**base)
 
 
 def _poison_view(**kw):
-    """A view whose ALLOWLISTED fields are clean but which ALSO carries a raw
-    body / preview / PII in NON-allowlisted attributes -- exactly the shape the
-    plane must be blind to."""
+    """A view whose STRUCTURAL fields are clean but which ALSO carries a raw
+    body / preview / PII in non-allowlisted attributes AND in the free-text
+    family (title/notes/tags/aliases) that must no longer cross -- exactly the
+    shape the plane must be blind to."""
     v = _view(**kw)
+    # the leak class that actually shipped: free text, incl. a content-derived title
+    v.title = f"Chemo plan {COMPOUND} for {NAME} SSN {SSN}"
+    v.notes = f"reach {EMAIL}"
+    v.tags = [f"mrn-{SSN}", COMPOUND]
+    v.aliases = [NAME]
+    # and the raw-body / path family
     v.body = RAWBODY
     v.raw_body = RAWBODY
     v.preview = RAWBODY
@@ -57,6 +79,12 @@ def _poison_view(**kw):
     v.pii = SSN
     v.turns = [SimpleNamespace(blocks=[SimpleNamespace(text=SSN)])]
     return v
+
+
+def _leaks_in(haystack):
+    """The ONE oracle: the set of canaries present in a prompt/response."""
+    blob = haystack if isinstance(haystack, str) else repr(haystack)
+    return {t for t in SENSITIVE if t in blob}
 
 
 # --------------------------------------------------------------- LLM backend
@@ -85,18 +113,27 @@ def test_synthesize_returns_backend_output():
     assert research.synthesize_over_metadata([_view()], mb) == "THE SUMMARY"
 
 
-def test_summary_prompt_contains_allowlisted_values():
+def test_summary_prompt_contains_allowlisted_structural_values():
     mb = research.MockBackend()
     research.synthesize_over_metadata([
         _view(conversation_id="cid9", provider="claude", account="alice",
-              thread_id="th9", title="Weekly sync", notes="ping the team",
-              tags=["work", "sync"], aliases=["standup"], turn_count=7,
-              char_count=4242),
+              thread_id="th9", created_at="2026-05-05", updated_at="2026-05-06",
+              turn_count=7, char_count=4242),
     ], mb)
     p = mb.prompts[0]
-    for token in ("cid9", "claude", "alice", "th9", "Weekly sync",
-                  "ping the team", "work", "sync", "standup", "7", "4242"):
+    for token in ("cid9", "claude", "alice", "th9", "2026-05-05", "2026-05-06",
+                  "7", "4242"):
         assert token in p
+
+
+def test_summary_prompt_declares_no_free_text_and_emits_none():
+    """The prompt must neither claim nor carry free text: no title/notes/tags/
+    aliases key is rendered at all."""
+    mb = research.MockBackend()
+    research.synthesize_over_metadata([_poison_view()], mb)
+    p = mb.prompts[0]
+    for key in ("title:", "notes:", "tags:", "aliases:"):
+        assert key not in p, f"free-text key {key!r} rendered into the cloud prompt"
 
 
 def test_summary_prompt_contains_aggregate_stats():
@@ -144,44 +181,60 @@ def test_extract_entities_uses_metadata_only_prompt():
     mb = research.MockBackend(response="Alpha")
     research.extract_entities([_poison_view()], mb)
     p = mb.prompts[0]
-    assert RAWBODY not in p and SSN not in p
-    assert "Weekly sync" in p                          # a real prompt was built
+    assert _leaks_in(p) == set()
+    assert "c1" in p                                   # a real prompt was built
 
 
 # ------------------------------------------------- leak-hunt / adversarial (crux)
 
-def test_no_raw_body_or_pii_in_summary_prompt():
+def test_no_raw_body_pii_or_free_text_in_summary_prompt():
     mb = research.MockBackend()
     research.synthesize_over_metadata([_poison_view()], mb)
     p = mb.prompts[0]
-    assert RAWBODY not in p
-    assert SSN not in p
-    # ...yet the allowlisted metadata IS present, proving a real prompt was built.
-    assert "Weekly sync" in p and "claude" in p
+    assert _leaks_in(p) == set(), "a canary crossed to the cloud research plane"
+    # ...yet the structural metadata IS present, proving a real prompt was built.
+    assert "c1" in p and "claude" in p
 
 
 def test_projection_keys_are_exactly_the_allowlist_and_carry_no_secret():
     proj = research._project(_poison_view())
     assert set(proj) == ALLOWLIST
-    blob = repr(proj)
-    assert RAWBODY not in blob
-    assert SSN not in blob
+    assert _leaks_in(proj) == set()
 
 
 def test_conversation_like_object_leaks_no_raw_content():
-    # A full conversation-shaped object (turns/blocks/body) that also happens to
-    # expose the allowlisted metadata must still project to metadata ONLY.
+    # A full conversation-shaped object (turns/blocks/body/title) that also happens
+    # to expose the allowlisted metadata must still project to structural data ONLY.
     convo = SimpleNamespace(
         conversation_id="c1", provider="claude", account="alice", thread_id="t1",
         created_at="2026-01-01", updated_at="2026-01-02", turn_count=2,
-        char_count=50, title="Sync", notes="", tags=[], aliases=[],
+        char_count=50,
+        title=f"{NAME} — {COMPOUND}", notes=EMAIL, tags=[SSN], aliases=[NAME],
         body=RAWBODY,
         turns=[SimpleNamespace(blocks=[SimpleNamespace(text=RAWBODY + " " + SSN)])],
     )
     mb = research.MockBackend()
     research.synthesize_over_metadata([convo], mb)
-    assert RAWBODY not in mb.prompts[0]
-    assert SSN not in mb.prompts[0]
+    assert _leaks_in(mb.prompts[0]) == set()
+
+
+def test_both_states_control_detector_fires_on_a_leaky_render():
+    """Both-states discipline: the SAME oracle that reads zero on every real path
+    MUST fire when free text actually crosses. A detector that can never fire makes
+    every airtight assertion above unciteable."""
+    v = _poison_view()
+    clean_mb = research.MockBackend()
+    research.synthesize_over_metadata([v], clean_mb)
+    # a DELIBERATELY leaky renderer: the pre-fix behaviour (free text emitted)
+    leaky_prompt = "\n".join((
+        "  title: %s" % v.title,
+        "  notes: %s" % v.notes,
+        "  tags: %s" % ", ".join(v.tags),
+        "  aliases: %s" % ", ".join(v.aliases),
+        "  body: %s" % v.body,
+    ))
+    assert _leaks_in(clean_mb.prompts[0]) == set()      # silent on the real path
+    assert _leaks_in(leaky_prompt) == set(SENSITIVE)    # fires on the leak
 
 
 # ------------------------------------------------------- robustness / coercion
@@ -193,23 +246,6 @@ def test_missing_optional_fields_default_safely():
     p = mb.prompts[0]
     assert "only-id" in p and "claude" in p
     assert "turn_count: 0" in p and "char_count: 0" in p
-
-
-def test_free_text_is_sanitized_at_the_boundary():
-    # A zero-width space (U+200B) hidden in a title must be STRIPPED before it
-    # can cross to the cloud agent-feed surface.
-    mb = research.MockBackend()
-    research.synthesize_over_metadata([_view(title="Plan​ning")], mb)
-    p = mb.prompts[0]
-    assert "​" not in p
-    assert "Planning" in p
-
-
-def test_non_string_free_text_becomes_empty():
-    mb = research.MockBackend(response="OK")
-    out = research.synthesize_over_metadata([_view(title=None, notes=None)], mb)
-    assert out == "OK"
-    assert "title: \n" in mb.prompts[0]                # empty, no crash
 
 
 def test_non_integer_counts_become_zero():
@@ -233,16 +269,6 @@ def test_none_timestamp_becomes_empty():
     assert "updated_at: \n" in mb.prompts[0]
 
 
-def test_tags_tuple_supported_and_non_list_becomes_empty():
-    mb = research.MockBackend()
-    research.synthesize_over_metadata([
-        _view(tags=("alpha", "beta"), aliases=None),
-    ], mb)
-    p = mb.prompts[0]
-    assert "tags: alpha, beta" in p
-    assert p.endswith("aliases: ")                     # None -> empty list (last line)
-
-
 def test_empty_view_set_aggregates_to_zero():
     mb = research.MockBackend(response="EMPTY")
     out = research.synthesize_over_metadata([], mb)
@@ -250,4 +276,5 @@ def test_empty_view_set_aggregates_to_zero():
     p = mb.prompts[0]
     assert "conversations: 0" in p
     assert "total_turns: 0" in p and "total_chars: 0" in p
+    assert "by_provider: \n" in p                        # empty histogram renders ""
     assert len(mb.prompts) == 1                          # backend still called once
