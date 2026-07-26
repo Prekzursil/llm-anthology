@@ -106,6 +106,17 @@ Method status (all implemented; honest caveats inline)
                          plane. ``metadata`` never opens a session file, so no annotation
                          write can mutate the owner's originals.
 
+* ``dedup.scan`` / ``dedup.sessions`` — FULL. The Codex physical-copy -> logical-session
+                         collapse absorbed from codex-session-manager. ``scan`` walks the
+                         known stores under an EXPLICIT ``codex_home`` (required, and
+                         refused if UNC or relative — a UNC root would emit outbound
+                         SMB/NTLM), consolidates, persists, and returns counts including
+                         ``flagged_truncated``. ``sessions`` returns the view, re-deriving
+                         the canonical choice rather than trusting the stored flag. A VIEW,
+                         never a delete: every copy stays listed in ``duplicate_paths``, and
+                         ``has_larger_copy`` reports when the canonical copy is a truncated
+                         prefix of a sibling it demoted.
+
 Privacy (HARD): every free-text field derived from user/model content — a title, a
 preview, a search snippet, a transcript block, a tool payload — passes through
 ``llm_anthology.sanitize.sanitize_for_copy`` before crossing the wire, so a hidden-unicode
@@ -137,6 +148,7 @@ from datetime import datetime
 from llm_anthology import (
     __version__,
     corpus,
+    dedup,
     diff,
     export,
     ir,
@@ -268,16 +280,25 @@ def _req_int(params, key):
     return value
 
 
+def _reject_nonlocal_path(path, label):
+    """Guard ANY caller-supplied filesystem path BEFORE any filesystem access: reject a
+    UNC / network path (``\\\\host\\share`` — a crafted target coerces an outbound SMB/NTLM
+    auth, the Windows hash-leak class) and any non-absolute path. Drive-absolute local
+    paths only.
+
+    Labelled so every path-bearing method reports in its own terms; the concrete modules
+    (``export``, ``maintenance``) then re-check UNC + parent-traversal + confinement as
+    defence in depth, because a guard that lives only at the RPC edge is one refactor away
+    from being bypassed."""
+    if path.replace("/", "\\").startswith("\\\\"):
+        raise RpcError(-32602, "%s must be a local path, not a UNC/network path" % label)
+    if not os.path.isabs(path):
+        raise RpcError(-32602, "%s must be an absolute local path" % label)
+
+
 def _reject_nonlocal_dest(dest_path):
-    """Guard an export destination BEFORE any filesystem access: reject a UNC / network
-    path (``\\\\host\\share`` — a crafted target coerces an outbound SMB/NTLM auth, the
-    Windows hash-leak class) and any non-absolute path. Drive-absolute local paths only;
-    ``llm_anthology.export`` then re-checks UNC + parent-traversal + confinement as defence in
-    depth."""
-    if dest_path.replace("/", "\\").startswith("\\\\"):
-        raise RpcError(-32602, "dest_path must be a local path, not a UNC/network path")
-    if not os.path.isabs(dest_path):
-        raise RpcError(-32602, "dest_path must be an absolute local path")
+    """The export-destination spelling of :func:`_reject_nonlocal_path`."""
+    _reject_nonlocal_path(dest_path, "dest_path")
 
 
 def _raw_transcript(conv):
@@ -301,6 +322,7 @@ class Sidecar:
         # corpus.py's schema, so the annotation store is additive over any existing index.
         if conn is not None:
             metadata_store.ensure_schema(conn)
+            dedup.ensure_schema(conn)
         # The cloud research plane's egress backend and the LOCAL tier's on-box backend.
         # Both default to a no-network placeholder, so an unconfigured host reaches the
         # network for neither; a real cockpit host injects the concrete backends.
@@ -331,6 +353,8 @@ class Sidecar:
             "metadata.clear": self._metadata_clear,
             "metadata.search": self._metadata_search,
             "metadata.tags": self._metadata_tags,
+            "dedup.scan": self._dedup_scan,
+            "dedup.sessions": self._dedup_sessions,
         }
 
     # -- transport ----------------------------------------------------------------
@@ -739,6 +763,63 @@ class Sidecar:
         self._require_corpus()
         return [{"tag": _clean(tag), "count": count}
                 for tag, count in metadata_store.tag_counts(self.conn).items()]
+
+    # -- dedup (Codex physical copies -> one logical session) ----------------------
+    #
+    # A VIEW, never a delete: `dedup` contains no write/delete/move call, so nothing here
+    # can remove one of the owner's files. The paths it returns are LOCAL filesystem paths
+    # (a rollout_path embeds the owner's username), so they travel only over this stdio
+    # wire to the UI and are absent from `redact.MetadataView`.
+
+    def _dedup_session(self, session):
+        """One `dedup.LogicalSession` as a wire dict.
+
+        ``has_larger_copy`` is deliberately on the wire: the canonical rule prefers the LIVE
+        store over a mirror, which is correct, but that means a crash-truncated live rollout
+        can outrank a complete backup of the same session. Nothing is lost on disk, yet the
+        view would show the shorter conversation — so the condition is REPORTED and the UI
+        can offer the fuller copy."""
+        canonical = session.canonical
+        return {
+            "session_id": session.session_id,
+            "canonical_path": canonical.file_path,
+            "store_kind": canonical.store_kind,
+            "size_bytes": canonical.size_bytes,
+            "last_write_ms": canonical.last_write_ms,
+            "copy_count": session.copy_count,
+            "duplicate_paths": list(session.duplicate_paths),
+            "is_identified": session.is_identified,
+            "has_larger_copy": session.has_larger_copy,
+        }
+
+    def _dedup_scan(self, params):
+        """Scan the known Codex stores under an EXPLICIT ``codex_home``, consolidate, persist.
+
+        ``codex_home`` is REQUIRED and never defaulted. That is a deliberate safety choice,
+        not ceremony: ``loaders.load_corpus`` with no ``codex_home`` falls back to the LIVE
+        Codex store, and an automated probe really did read the owner's real sessions that
+        way. A scan of private data must be something the caller asked for by name."""
+        self._require_corpus()
+        home = _req_str(params, "codex_home")
+        _reject_nonlocal_path(home, "codex_home")
+        copies, errors = dedup.scan_stores(dedup.known_store_roots(home))
+        sessions = dedup.consolidate(copies)
+        dedup.save_sessions(self.conn, sessions)
+        self.conn.commit()
+        return {
+            "session_count": len(sessions),
+            "copy_count": sum(s.copy_count for s in sessions),
+            "duplicate_count": sum(s.copy_count - 1 for s in sessions),
+            "flagged_truncated": sum(1 for s in sessions if s.has_larger_copy),
+            "unidentified": sum(1 for s in sessions if not s.is_identified),
+            "errors": [str(e) for e in errors],
+        }
+
+    def _dedup_sessions(self, params):
+        """The persisted dedup view. ``load_sessions`` re-derives the canonical choice rather
+        than trusting the stored flag, so the rule has exactly one implementation."""
+        self._require_corpus()
+        return [self._dedup_session(s) for s in dedup.load_sessions(self.conn)]
 
     # -- projections --------------------------------------------------------------
 
