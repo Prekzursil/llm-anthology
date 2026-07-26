@@ -1,7 +1,7 @@
 /**
  * Hidden-unicode neutralizer + HTML escaping + link-scheme allowlist.
  *
- * A 1:1 port of aisr/sanitize.py. Policy:
+ * A 1:1 port of llm_anthology/sanitize.py. Policy:
  *
  * - PRESERVE the evidence but NEUTRALIZE it: every flagged codepoint becomes a
  *   VISIBLE, inert badge, never the raw invisible char, so a reader (and a diff)
@@ -183,7 +183,7 @@ export function isSafeUrl(u: unknown): boolean {
  *
  * Allowlist, not blocklist: normalise separators FIRST (the browser will), then
  * require a relative path with no scheme, root anchor, drive letter or traversal.
- * Mirrors aisr/sanitize.py::is_local_media_path -- keep both rails in step.
+ * Mirrors llm_anthology/sanitize.py::is_local_media_path -- keep both rails in step.
  */
 export function isLocalMediaPath(p: unknown): boolean {
   const s = typeof p === "string" ? p : "";

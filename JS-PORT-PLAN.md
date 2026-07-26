@@ -1,4 +1,4 @@
-# JS/TypeScript Port Plan — ai-sessions-render
+# JS/TypeScript Port Plan — llm-anthology
 
 **Status: DESIGN ONLY. Nothing here is built.** This document maps the Python implementation
 (read in full, cited by `file:line`) to a TypeScript port, module by module, with library
@@ -141,7 +141,7 @@ explanation consistent with pure UCD-version skew; any other disagreement fails 
 Proposed layout:
 
 ```
-aisr-js/
+llm_anthology-js/
   src/
     ir.ts              sanitize.ts        verify.ts         audit.ts
     render_html.ts     render_md.ts
@@ -254,7 +254,7 @@ bits beyond `_s()` coercion. 9 tests port 1:1.
 - `_defang_images` (render_html.py:88-102), `_pre` (126-127), `_citations_html` (130-142),
   `_block_html` (145-209), `_turn_html` (212-219), `render_conversation_html` (222-236):
   mechanical string assembly; JSON bodies via `pyshim.pyJsonDumps` (§5.4).
-- Theme CSS (render_html.py:27, 40-45): copy `aisr/themes/claude.css` (3,476 B) into the
+- Theme CSS (render_html.py:27, 40-45): copy `llm_anthology/themes/claude.css` (3,476 B) into the
   package; load with `fs.readFileSync(new URL("./themes/claude.css", import.meta.url))`
   inside try/catch → `""` on failure, matching `_load_theme`'s OSError → `""`.
 

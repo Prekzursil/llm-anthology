@@ -17,8 +17,8 @@ snapshot whose bodies live one nesting level below `contents`.
 import json
 import os
 
-from aisr import build, cli, ir, loaders, render_html, render_md
-from aisr.adapters import codex
+from llm_anthology import build, cli, ir, loaders, render_html, render_md
+from llm_anthology.adapters import codex
 
 
 # --------------------------------------------------------------------- fixtures

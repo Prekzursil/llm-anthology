@@ -1,6 +1,6 @@
 """index.py — build & query the contentless FTS5 conversation index.
 
-`aisr.corpus` owns the on-disk CONTRACT: the INDEX_SCHEMA (a contentless FTS5 table +
+`llm_anthology.corpus` owns the on-disk CONTRACT: the INDEX_SCHEMA (a contentless FTS5 table +
 threads/edges/checkpoint tables) and the thin row<->dataclass primitives
 (add_conversation / set_checkpoint / get_checkpoint / search / open_index). This module
 is the BUILDER that drives those primitives over a whole corpus of source files, adding

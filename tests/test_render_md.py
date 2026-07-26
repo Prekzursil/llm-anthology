@@ -2,7 +2,7 @@
 is STRIPPED here (this file may be re-fed to a model — no live injection payload)."""
 import re
 
-from aisr import render_md, ir
+from llm_anthology import render_md, ir
 
 
 def _forged_turn_lines(md):

@@ -5,7 +5,7 @@ prompt-injection. The renderer must PRESERVE evidence (visible inert badge) but
 NEUTRALIZE it (never emit the raw invisible; never let it reach a copy surface),
 while never breaking legitimate emoji (VS16 / in-sequence ZWJ).
 """
-from aisr import sanitize
+from llm_anthology import sanitize
 
 
 # --- HTML escaping (raw HTML in message bodies must be inert, matching real UIs) ---

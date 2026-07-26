@@ -2,7 +2,7 @@
  * IPC wire contract (engine <-> UI).
  *
  * These interfaces mirror, field-for-field, the DTOs the committed Python sidecar
- * (`aisr/sidecar.py`) emits over stdio NDJSON JSON-RPC 2.0. Optional fields marked
+ * (`llm_anthology/sidecar.py`) emits over stdio NDJSON JSON-RPC 2.0. Optional fields marked
  * `?` are the ones the sidecar OMITS when empty/falsy (see `_thread_node` /
  * `_search_query`); fields typed `| null` are always present but may be null
  * (see `_thread_meta`). Keeping the shapes exact is what lets the integrate stage
@@ -161,7 +161,7 @@ export interface SearchParams {
 }
 
 /**
- * `graph.rollup` value: per-node subtree aggregates, mirroring `aisr/rollup.py`'s
+ * `graph.rollup` value: per-node subtree aggregates, mirroring `llm_anthology/rollup.py`'s
  * `RollupMetrics` (every value a non-negative int; `self_count` is always 1). The wire
  * form is the flat dataclass `asdict`, so the field names are snake_case.
  */

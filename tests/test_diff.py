@@ -18,7 +18,7 @@ What is pinned:
   * purity + cycle-safety — the diff mutates neither input and never traverses the
     graph, so cyclic/corrupt spawn data cannot make it recurse.
 """
-from aisr import corpus, diff
+from llm_anthology import corpus, diff
 
 
 # --------------------------------------------------------------------- fixtures

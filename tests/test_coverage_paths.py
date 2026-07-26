@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from aisr import audit, build, ir, loaders, render_html, render_md, verify
-from aisr.adapters import chatgpt, claude, gemini
+from llm_anthology import audit, build, ir, loaders, render_html, render_md, verify
+from llm_anthology.adapters import chatgpt, claude, gemini
 
 
 # --------------------------------------------------------------------- loaders

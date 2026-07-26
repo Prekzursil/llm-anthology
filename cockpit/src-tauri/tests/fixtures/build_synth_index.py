@@ -5,7 +5,7 @@ touches the real $CODEX_HOME. Invoked by the Rust test as::
 
     python build_synth_index.py <out_index_path>
 
-(with the repo root on PYTHONPATH so ``import aisr`` resolves). It writes a corpus of:
+(with the repo root on PYTHONPATH so ``import llm_anthology`` resolves). It writes a corpus of:
 
   * 3 threads   -- root-a (codex, born 1000, 100 tok), child-b (codex, 1100, 20 tok),
                    child-c (claude, 1200, 3 tok)   -- births SPAN TIME so the time-travel
@@ -33,8 +33,8 @@ real stdio JSON-RPC transport):
 """
 import sys
 
-from aisr import corpus, ir
-from aisr.corpus import SpawnEdge, ThreadMeta
+from llm_anthology import corpus, ir
+from llm_anthology.corpus import SpawnEdge, ThreadMeta
 
 
 def _add_conv(conn, cid, provider, title, thread_id, nturns):

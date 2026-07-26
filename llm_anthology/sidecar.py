@@ -1,4 +1,4 @@
-"""Cockpit sidecar: a stdio NDJSON JSON-RPC 2.0 engine over an aisr corpus index.
+"""Cockpit sidecar: a stdio NDJSON JSON-RPC 2.0 engine over an llm_anthology corpus index.
 
 The Electron/UI cockpit talks to this process over stdin/stdout — ONE compact JSON
 object per line, each ``\\n``-terminated and flushed (NOT HTTP, NOT a socket). Every
@@ -9,7 +9,7 @@ of them may crash the server, they each become a typed error response.
 
 Layering
 --------
-The RPC surface is built ON the Phase-1 corpus API (``aisr.corpus``): the thread
+The RPC surface is built ON the Phase-1 corpus API (``llm_anthology.corpus``): the thread
 SPAWN GRAPH (threads + directed edges) is loaded into memory once at construction via
 ``load_corpus``; the contentless FTS5 index is queried live for search and stats; and
 a single conversation transcript is re-parsed on demand from its rollout file via the
@@ -29,7 +29,7 @@ Method status (all implemented; honest caveats inline)
 * ``graph.diff``       — FULL. Structural delta between two corpora. Each side is an
                          on-disk index path (``old_index`` / ``new_index``), a time-travel
                          snapshot of the loaded corpus as-of a birth ms (``as_of_a`` /
-                         ``as_of_b``, via ``aisr.timetravel.corpus_as_of``), or — when
+                         ``as_of_b``, via ``llm_anthology.timetravel.corpus_as_of``), or — when
                          neither is given — the corpus this sidecar already holds (so
                          ``{}`` is the empty self-diff). A named path must already exist (a
                          diff never creates one) and is read via SELECT only, so the corpus
@@ -41,13 +41,13 @@ Method status (all implemented; honest caveats inline)
                          empty — both snapshots view one immutable corpus.
 * ``graph.rollup``     — FULL. ``{thread_id: RollupMetrics}`` over every graph node — the
                          node's own plus its whole-subtree token/count/depth totals,
-                         diamond-deduped and cycle-safe (see ``aisr.rollup``). Counts and
+                         diamond-deduped and cycle-safe (see ``llm_anthology.rollup``). Counts and
                          graph shape only; no conversation text crosses.
 * ``graph.timeline``   — FULL. ``{events, min_ms, max_ms, undated_count}`` — the sorted
                          distinct dated node births, their range, and the undated-NODE
                          count over the SAME node set graph.at views (threads UNION edge
                          endpoints, so a dangling endpoint counts as undated — matching the
-                         frozen contract; see ``aisr.timetravel.timeline``). Ints/None only.
+                         frozen contract; see ``llm_anthology.timetravel.timeline``). Ints/None only.
 * ``graph.at``         — FULL. The spawn graph AS-OF ``as_of_ms`` (a time-travel snapshot):
                          nodes born by T (undated/dangling always present) + edges whose
                          CHILD is born by T, projected exactly like graph.subtree.
@@ -61,7 +61,7 @@ Method status (all implemented; honest caveats inline)
 * ``export.run``       — FULL. Writes the spawn-graph artifact to a drive-absolute-local
                          ``dest_path`` (UNC/network + relative + parent-traversal rejected)
                          and returns ``{ok, graph_gate, transcript_gate, written_path?}``,
-                         gate-enforced by ``aisr.export.export_with_gate``. This bite
+                         gate-enforced by ``llm_anthology.export.export_with_gate``. This bite
                          exports the GRAPH only (the sidecar holds no rendered transcripts),
                          so ``transcript_gate`` is vacuously true.
 * ``search.query``     — FULL match/provider-filter/paging. ``snippet`` comes from the
@@ -94,12 +94,12 @@ Method status (all implemented; honest caveats inline)
 
 Privacy (HARD): every free-text field derived from user/model content — a title, a
 preview, a search snippet, a transcript block, a tool payload — passes through
-``aisr.sanitize.sanitize_for_copy`` before crossing the wire, so a hidden-unicode
+``llm_anthology.sanitize.sanitize_for_copy`` before crossing the wire, so a hidden-unicode
 prompt-injection channel in the corpus cannot be relayed into the next agent. ``stats``
 and ``graph.*`` are aggregate/metadata only; a full transcript crosses only for the one
 conversation the user explicitly opened, and even then it is sanitized.
 
-Research plane / ACL split (Phase-4, HARD). ``aisr.research`` is a SEPARATE, corpus-blind
+Research plane / ACL split (Phase-4, HARD). ``llm_anthology.research`` is a SEPARATE, corpus-blind
 surface: the ONLY conversation data it may feed a cloud LLM is the sanitized metadata
 allowlist. This sidecar ENFORCES that split BY CONSTRUCTION — the cloud research handlers
 build a ``list[redact.MetadataView]`` via ``_metadata_views`` (``redact.to_metadata_view``
@@ -120,7 +120,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 
-from aisr import (
+from llm_anthology import (
     __version__,
     corpus,
     diff,
@@ -132,7 +132,7 @@ from aisr import (
     sanitize,
     timetravel,
 )
-from aisr.adapters import codex_rollout
+from llm_anthology.adapters import codex_rollout
 
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
 # are used directly where they apply).
@@ -257,7 +257,7 @@ def _reject_nonlocal_dest(dest_path):
     """Guard an export destination BEFORE any filesystem access: reject a UNC / network
     path (``\\\\host\\share`` — a crafted target coerces an outbound SMB/NTLM auth, the
     Windows hash-leak class) and any non-absolute path. Drive-absolute local paths only;
-    ``aisr.export`` then re-checks UNC + parent-traversal + confinement as defence in
+    ``llm_anthology.export`` then re-checks UNC + parent-traversal + confinement as defence in
     depth."""
     if dest_path.replace("/", "\\").startswith("\\\\"):
         raise RpcError(-32602, "dest_path must be a local path, not a UNC/network path")
@@ -449,7 +449,7 @@ class Sidecar:
 
     def _graph_timeline(self, params):
         """The node-creation event axis for a time scrubber: ``{events, min_ms, max_ms,
-        undated_count}`` from ``aisr.timetravel.timeline`` (sorted distinct dated births,
+        undated_count}`` from ``llm_anthology.timetravel.timeline`` (sorted distinct dated births,
         their range, and the count of undated NODES — threads UNION edge endpoints, so a
         dangling endpoint counts as undated). Ints/None only — no free text."""
         self._require_corpus()
@@ -487,7 +487,7 @@ class Sidecar:
         """Write the spawn-graph export to ``dest_path`` and return the fidelity verdict.
         ``dest_path`` is drive-absolute-local-only (UNC/network and relative paths ->
         -32602, the SMB hash-leak class) and the write is confined to its own parent
-        directory; ``aisr.export.export_with_gate`` then enforces the structural
+        directory; ``llm_anthology.export.export_with_gate`` then enforces the structural
         round-trip gate (and rejects parent-traversal) and writes ONLY if it passes.
 
         This bite exports the GRAPH artifact — the sidecar holds the spawn graph, not
@@ -836,24 +836,24 @@ class Sidecar:
 
 def _parse_args(args):
     """Parse the sidecar CLI: an optional ``--index <path>`` that falls back to
-    ``$AISR_INDEX`` then to no corpus. Kept tiny (no branches) so ``main`` stays
+    ``$LLM_ANTHOLOGY_INDEX`` then to no corpus. Kept tiny (no branches) so ``main`` stays
     fully covered by its four in-process tests."""
     parser = argparse.ArgumentParser(
-        prog="aisr.sidecar",
-        description="stdio NDJSON JSON-RPC 2.0 engine over an aisr corpus index")
+        prog="llm_anthology.sidecar",
+        description="stdio NDJSON JSON-RPC 2.0 engine over an llm_anthology corpus index")
     parser.add_argument(
         "--index", default=None,
-        help="path to the corpus index (SQLite); falls back to $AISR_INDEX, then "
+        help="path to the corpus index (SQLite); falls back to $LLM_ANTHOLOGY_INDEX, then "
              "serves with no corpus attached (health.ping still answers)")
     return parser.parse_args(args)
 
 
 def main(argv=None, stdin=None, stdout=None):
-    """Open the index (from ``--index`` or $AISR_INDEX; None -> no corpus) and serve on
+    """Open the index (from ``--index`` or $LLM_ANTHOLOGY_INDEX; None -> no corpus) and serve on
     the given streams (defaulting to the real stdio). This is the entrypoint the cockpit
-    launches as ``python -m aisr.sidecar --index <path>``."""
+    launches as ``python -m llm_anthology.sidecar --index <path>``."""
     args = sys.argv[1:] if argv is None else list(argv)
-    path = _parse_args(args).index or os.environ.get("AISR_INDEX")
+    path = _parse_args(args).index or os.environ.get("LLM_ANTHOLOGY_INDEX")
     conn = corpus.open_index(path) if path else None
     try:
         Sidecar(conn).serve(stdin if stdin is not None else sys.stdin,

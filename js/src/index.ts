@@ -1,5 +1,5 @@
 /**
- * ai-sessions-render — programmatic API.
+ * llm-anthology — programmatic API.
  *
  * Parse a ChatGPT / Claude / Gemini export into a provider-agnostic IR, then render
  * each conversation to browser-faithful HTML and clean, portable Markdown. Fully
@@ -7,7 +7,7 @@
  *
  * @example
  * ```ts
- * import { adapters, renderConversationHtml, verify } from "ai-sessions-render";
+ * import { adapters, renderConversationHtml, verify } from "llm-anthology";
  * const convs = adapters.claude.parseExport(JSON.parse(raw));
  * const html = renderConversationHtml(convs[0]);
  * console.log(verify(convs[0], html)); // { ok, missing_tokens, coverage }

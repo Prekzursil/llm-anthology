@@ -1,5 +1,5 @@
 {
-  "name": "ai-sessions-render",
+  "name": "llm-anthology",
   "version": "0.1.0",
   "description": "Local, offline, faithful renderer for ChatGPT / Claude / Gemini session exports (HTML + Markdown). No network, no egress.",
   "keywords": [
@@ -17,21 +17,21 @@
   ],
   "license": "MIT",
   "author": "Prekzursil",
-  "homepage": "https://github.com/Prekzursil/ai-sessions-render",
+  "homepage": "https://github.com/Prekzursil/LLM_Anthology",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Prekzursil/ai-sessions-render.git",
+    "url": "git+https://github.com/Prekzursil/LLM_Anthology.git",
     "directory": "js"
   },
   "bugs": {
-    "url": "https://github.com/Prekzursil/ai-sessions-render/issues"
+    "url": "https://github.com/Prekzursil/LLM_Anthology/issues"
   },
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "aisr": "dist/cli.js"
+    "llm-anthology": "dist/cli.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

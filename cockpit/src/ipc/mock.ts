@@ -11,7 +11,7 @@
  *   * an ISOLATED root (`research`) with no edges;
  *   * DIAMONDS (a child with several parents) that exercise the shortest-path depth.
  *
- * The `MockGraph` helper re-implements `aisr/corpus.py`'s graph semantics (union of
+ * The `MockGraph` helper re-implements `llm_anthology/corpus.py`'s graph semantics (union of
  * nodes, no-incoming-edge roots, sorted children, out-degree fan-out, cycle-safe
  * shortest-path depth) so the mock is a faithful stand-in, not a caricature.
  *
@@ -266,7 +266,7 @@ const RAW_EDGES: SpawnEdge[] = [
 ];
 
 /**
- * A faithful port of `aisr/corpus.py`'s graph helpers. Answers purely from the edge
+ * A faithful port of `llm_anthology/corpus.py`'s graph helpers. Answers purely from the edge
  * list; any id an edge names is a node even if it has no thread row.
  */
 export class MockGraph {
@@ -425,7 +425,7 @@ export class MockGraph {
   }
 
   /**
-   * BFS descendant walk mirroring `aisr/rollup.py`'s `_walk`: the count of DISTINCT
+   * BFS descendant walk mirroring `llm_anthology/rollup.py`'s `_walk`: the count of DISTINCT
    * subtree nodes (root included), the sum of their self_tokens, and the greatest
    * SHORTEST-path depth reached. The visited-set makes it cycle-safe and dedupes a
    * diamond's shared node; FIFO order dequeues each node at its shortest depth.
@@ -448,7 +448,7 @@ export class MockGraph {
 
   /**
    * Per-node {@link RollupMetrics} over EVERY graph node, keyed in sorted-id order — a
-   * faithful port of `aisr/rollup.py`'s `rollup` (self vs whole-subtree token/count,
+   * faithful port of `llm_anthology/rollup.py`'s `rollup` (self vs whole-subtree token/count,
    * diamond-deduped, cycle-safe). A dangling id contributes 0 self_tokens.
    */
   rollup(): RollupTable {

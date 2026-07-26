@@ -1,5 +1,5 @@
 /**
- * End-to-end + edge-path tests for the `aisr` CLI (cli.ts) — mirrors the Python
+ * End-to-end + edge-path tests for the `llm-anthology` CLI (cli.ts) — mirrors the Python
  * tests/test_cli.py and tests/test_coverage_paths.py loader cases so the two rails'
  * CLI behaviour matches and cli.ts reaches the Lean 100% gate.
  */
@@ -16,7 +16,7 @@ import * as verifyModule from "../src/verify.js";
 
 let root: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "aisr-cli-"));
+  root = mkdtempSync(join(tmpdir(), "llm_anthology-cli-"));
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });

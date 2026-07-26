@@ -27,8 +27,8 @@ Four public pieces:
         non-empty diff names exactly what the round-trip added / removed / changed.
 
   * export_with_gate(corpus, dest_path, conversations=None, *, root=None) -> dict
-        Sanitizes every free-text field (aisr.sanitize.sanitize_for_copy), runs the
-        graph gate AND a per-conversation token-multiset gate (aisr.verify.verify on
+        Sanitizes every free-text field (llm_anthology.sanitize.sanitize_for_copy), runs the
+        graph gate AND a per-conversation token-multiset gate (llm_anthology.verify.verify on
         the sanitized HTML that is actually stored), and writes the artifact ONLY if
         BOTH pass. On failure it writes NOTHING and returns a structured
         {added, removed, changed, missing_tokens} report. `dest_path` is
@@ -170,7 +170,7 @@ def _write_artifact(target, serialized_graph, conv_out):
     """Write the deterministic export bundle as UTF-8 bytes (no newline
     translation, so the file is byte-identical across platforms)."""
     doc = {
-        "aisr_export_version": EXPORT_FORMAT_VERSION,
+        "llm_anthology_export_version": EXPORT_FORMAT_VERSION,
         "graph": serialized_graph,
         "conversations": [{"id": cid, "html": html} for cid, html in conv_out],
     }

@@ -1,5 +1,5 @@
 """The forensic audit must cover every surface, not just message text."""
-from aisr import audit, ir
+from llm_anthology import audit, ir
 
 
 def test_audit_scans_all_surfaces():

@@ -1,4 +1,4 @@
-"""Generate js/src/generated/themes.ts from aisr/themes/*.css.
+"""Generate js/src/generated/themes.ts from llm_anthology/themes/*.css.
 
 The rendered page inlines its CSS (no remote fetch, CSP default-src 'none'), so the
 JS rail needs the same stylesheet bytes the Python rail uses. Embedding it as a
@@ -12,7 +12,7 @@ import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "aisr", "themes")
+SRC = os.path.join(ROOT, "llm_anthology", "themes")
 OUT = os.path.join(ROOT, "js", "src", "generated", "themes.ts")
 
 
@@ -26,7 +26,7 @@ def main():
     body = ",\n  ".join("%s: %s" % (json.dumps(n), json.dumps(css)) for n, css in entries)
     src = (
         "// GENERATED FILE - do not edit by hand.\n"
-        "// Produced by tools/gen-themes.py from aisr/themes/*.css so both rails inline\n"
+        "// Produced by tools/gen-themes.py from llm_anthology/themes/*.css so both rails inline\n"
         "// byte-identical CSS. Edit the .css file and re-run the generator.\n\n"
         "export const THEMES: Readonly<Record<string, string>> = {\n  %s,\n};\n\n"
         "/** Missing theme -> empty string, mirroring the Python loader's OSError path. */\n"

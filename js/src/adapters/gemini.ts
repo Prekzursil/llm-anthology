@@ -1,5 +1,5 @@
 /**
- * Google Takeout "Gemini Apps" activity -> IR. 1:1 with aisr/adapters/gemini.py.
+ * Google Takeout "Gemini Apps" activity -> IR. 1:1 with llm_anthology/adapters/gemini.py.
  *
  * Takeout is a FLAT activity log: each record is one EXCHANGE (prompt + response),
  * with NO conversation id. Grouping comes from outside (the live web-app harvest or

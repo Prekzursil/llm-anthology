@@ -1,11 +1,11 @@
 """A synthetic conversation exercising every block type — no real content.
 
-Used by `aisr demo` to produce a sample page someone can look at before pointing the
+Used by `llm-anthology demo` to produce a sample page someone can look at before pointing the
 tool at their own export. It deliberately includes the adversarial cases the renderer
 has to survive: a javascript: link, a zero-width character, a branch marker, and a
 tool call/result pair.
 """
-from aisr import ir
+from llm_anthology import ir
 
 
 def demo_conversation():

@@ -31,8 +31,8 @@ import json
 
 import pytest
 
-from aisr import corpus, ir
-from aisr.adapters import codex_rollout as cr
+from llm_anthology import corpus, ir
+from llm_anthology.adapters import codex_rollout as cr
 
 
 _SID = "019f570f-3a16-7e43-a5b9-aed8e2477c5e"

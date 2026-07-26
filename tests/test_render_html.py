@@ -2,7 +2,7 @@
 validated separately by the screenshot-diff gate, not here."""
 import re
 
-from aisr import render_html, ir
+from llm_anthology import render_html, ir
 
 
 def _conv(turns, title="t"):

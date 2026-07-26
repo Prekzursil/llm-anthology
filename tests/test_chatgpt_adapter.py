@@ -9,8 +9,8 @@ current_node}; message{author{role}, create_time, content{content_type, parts|te
 thoughts}, end_turn, metadata}. The rendered thread is current_node -> parent -> root,
 reversed.
 """
-from aisr.adapters import chatgpt
-from aisr import ir
+from llm_anthology.adapters import chatgpt
+from llm_anthology import ir
 
 
 def _node(nid, parent, children, role=None, parts=None, ctype="text", **meta):

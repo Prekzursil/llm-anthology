@@ -23,7 +23,7 @@ parsed with 0 errors and 0 empty conversations. That export carried only text,
 thoughts, multimodal_text and reasoning_recap at the message level — no canvas/canmore,
 tool calls, or execution_output — so those paths remain synthetic-tested only.
 """
-from aisr import ir
+from llm_anthology import ir
 
 _HIDDEN_ROLES = {"system"}
 _THINKING_TYPES = {"thoughts", "reasoning_recap"}

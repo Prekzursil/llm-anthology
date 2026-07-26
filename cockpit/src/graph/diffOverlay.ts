@@ -3,7 +3,7 @@
  * state for the spawn-tree canvas.
  *
  * The sidecar's `graph.diff` answers "what changed between two ingests of the corpus?"
- * as id-set + field deltas (see `aisr/diff.py` / the sidecar `_project_diff`). This
+ * as id-set + field deltas (see `llm_anthology/diff.py` / the sidecar `_project_diff`). This
  * module turns that answer into the overlay the canvas paints on top of the base
  * graph — WITHOUT touching the layout, the DOM, or the graph data:
  *

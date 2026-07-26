@@ -1,6 +1,6 @@
 /**
  * A synthetic conversation exercising every block type — no real content.
- * Mirrors aisr/demo.py, including the adversarial cases the renderer must survive
+ * Mirrors llm_anthology/demo.py, including the adversarial cases the renderer must survive
  * (a javascript: link, a zero-width character, a branch marker, a tool call/result).
  */
 import type { Conversation } from "./ir.js";

@@ -40,7 +40,7 @@ import os
 import sqlite3
 import time
 
-from aisr import corpus
+from llm_anthology import corpus
 
 _DB_NAME = "state_5.sqlite"
 _DEFAULT_HOME = "~/.codex"

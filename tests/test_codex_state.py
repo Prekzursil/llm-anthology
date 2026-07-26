@@ -14,8 +14,8 @@ import sqlite3
 
 import pytest
 
-from aisr import corpus
-from aisr.adapters import codex_state
+from llm_anthology import corpus
+from llm_anthology.adapters import codex_state
 
 
 # --------------------------------------------------------------------- fixtures

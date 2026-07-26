@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aisr import sanitize                        # noqa: E402
+from llm_anthology import sanitize                        # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "js", "test", "fixtures", "sanitize-parity.json")

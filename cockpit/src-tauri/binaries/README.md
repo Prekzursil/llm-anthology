@@ -9,16 +9,16 @@ builds today.
 
 A self-contained Python engine binary, one per target triple, following Tauri's
 `externalBin` naming convention (Tauri appends the triple at build time and
-strips it at runtime, so the app always spawns `aisr-engine`):
+strips it at runtime, so the app always spawns `llm_anthology-engine`):
 
-    binaries/aisr-engine-x86_64-pc-windows-msvc.exe
-    binaries/aisr-engine-x86_64-unknown-linux-gnu
-    binaries/aisr-engine-aarch64-apple-darwin
+    binaries/llm_anthology-engine-x86_64-pc-windows-msvc.exe
+    binaries/llm_anthology-engine-x86_64-unknown-linux-gnu
+    binaries/llm_anthology-engine-aarch64-apple-darwin
 
 ## How it will be built (SOTA decision)
 
 - Packaged with **python-build-standalone** via **uv** (uv 0.10.4) — a
-  relocatable CPython plus the `aisr` package, produced as a single launchable
+  relocatable CPython plus the `llm-anthology` package, produced as a single launchable
   engine binary. The build step (a future bite) emits the per-triple binary here.
 
 ## How it will be wired (deferred to the NEXT bite)
@@ -26,7 +26,7 @@ strips it at runtime, so the app always spawns `aisr-engine`):
 1. Declare it in `../tauri.conf.json` under `bundle.externalBin` (currently an
    empty `[]` placeholder), e.g.:
 
-       "bundle": { "externalBin": ["binaries/aisr-engine"] }
+       "bundle": { "externalBin": ["binaries/llm_anthology-engine"] }
 
 2. Spawn it from Rust (tauri-plugin-shell sidecar API) and speak to it over
    **stdio using newline-delimited JSON (NDJSON)** — one JSON object per line,

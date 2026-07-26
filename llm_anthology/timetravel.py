@@ -52,7 +52,7 @@ conversation content. Tests use synthetic fixtures exclusively.
 """
 from __future__ import annotations
 
-from aisr.corpus import Corpus
+from llm_anthology.corpus import Corpus
 
 
 def _birth(corpus: Corpus, tid: str):

@@ -32,7 +32,7 @@ import struct
 import pytest
 import zstandard
 
-from aisr import archive
+from llm_anthology import archive
 
 
 # --------------------------------------------------------------------- helpers

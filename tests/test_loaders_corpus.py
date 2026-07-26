@@ -19,7 +19,7 @@ import json
 import os
 import sqlite3
 
-from aisr import corpus, index, loaders
+from llm_anthology import corpus, index, loaders
 
 
 # ------------------------------------------------------------------- fixtures

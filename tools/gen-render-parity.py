@@ -19,8 +19,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aisr import audit, ir, render_html, render_md, verify   # noqa: E402
-from aisr.demo import demo_conversation              # noqa: E402
+from llm_anthology import audit, ir, render_html, render_md, verify   # noqa: E402
+from llm_anthology.demo import demo_conversation              # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "js", "test", "fixtures", "render-parity.json")

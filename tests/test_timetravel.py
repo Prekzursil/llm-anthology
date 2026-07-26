@@ -22,7 +22,7 @@ What is pinned:
     0), and the count of undated NODES over the SAME node set graph.at views (threads
     UNION edge endpoints), so a dangling edge endpoint counts as undated.
 """
-from aisr import corpus, timetravel
+from llm_anthology import corpus, timetravel
 
 
 # --------------------------------------------------------------------- fixtures

@@ -1,7 +1,7 @@
 """Shared build layer: IR conversations -> html/ + md/ + index.html + reports.
 
 Extracted from the three build_*.py scripts so the installed package ships ONE
-tested implementation behind the `aisr` console entry point. Providers differ only
+tested implementation behind the `llm-anthology` console entry point. Providers differ only
 in how they LOAD conversations and what their index meta column shows; everything
 downstream of the IR is identical.
 
@@ -17,7 +17,7 @@ import json
 import os
 import re
 
-from aisr import audit, render_html, render_md, sanitize, verify
+from llm_anthology import audit, render_html, render_md, sanitize, verify
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WS = re.compile(r"\s+")

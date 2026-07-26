@@ -103,7 +103,7 @@ impl Membrane {
     fn profile_name(self) -> Option<&'static str> {
         match self {
             Membrane::JobOnly => None,
-            Membrane::AppContainer => Some("aisr-cockpit-sidecar"),
+            Membrane::AppContainer => Some("llm-anthology-cockpit-sidecar"),
         }
     }
 }
@@ -324,7 +324,7 @@ impl Drop for AppContainer {
 /// already-exists path we derive the SID by name.
 unsafe fn ensure_appcontainer(name: &str) -> Result<AppContainer, String> {
     let wname = wide(name);
-    let wdisp = wide("AISR Cockpit engine sidecar");
+    let wdisp = wide("LLM Anthology Cockpit engine sidecar");
     let wdesc = wide("Sandboxed AI-session analysis engine (no internetClient)");
     let mut sid: *mut c_void = null_mut();
     let hr = CreateAppContainerProfile(

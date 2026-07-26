@@ -22,13 +22,13 @@ import pathlib
 import subprocess
 import sys
 
-REPO = pathlib.Path(r"C:\Users\Prekzursil\.local\opt\ai-sessions-render")
+REPO = pathlib.Path(r"C:\Users\Prekzursil\.local\opt\llm-anthology")
 TESTS = ["tests/test_redact.py", "tests/test_research.py",
          "tests/test_redaction_e2e.py", "tests/test_sidecar.py"]
 
 TARGETS = {
-    "research": REPO / "aisr" / "research.py",
-    "redact": REPO / "aisr" / "redact.py",
+    "research": REPO / "llm_anthology" / "research.py",
+    "redact": REPO / "llm_anthology" / "redact.py",
 }
 # the exact BYTES at start — the ONLY source of truth for restoration.
 # read_bytes/write_bytes, NOT read_text/write_text: on Windows the text round-trip

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * `aisr` — render ChatGPT / Claude / Gemini session exports to faithful HTML + Markdown.
+ * `llm-anthology` — render ChatGPT / Claude / Gemini session exports to faithful HTML + Markdown.
  *
  * Fully local and offline: this tool never opens a network connection. Mirrors the
- * Python `aisr` CLI (aisr/cli.py + loaders.py + build.py) so the two rails behave
+ * Python `llm-anthology` CLI (llm_anthology/cli.py + loaders.py + build.py) so the two rails behave
  * identically. Nothing here is on the byte-for-byte-parity-tested renderer path; the
  * heavy lifting is delegated to the same ported modules the tests cover.
  */
@@ -21,12 +21,12 @@ import { renderConversationMd } from "./render_md.js";
 import { escapeHtml, neutralizeHtml, sanitizeForCopy } from "./sanitize.js";
 import { verify } from "./verify.js";
 
-const USAGE = `aisr — render ChatGPT / Claude / Gemini session exports to HTML + Markdown (offline).
+const USAGE = `llm_anthology — render ChatGPT / Claude / Gemini session exports to HTML + Markdown (offline).
 
-  aisr claude   <export.json | dir>  <out_dir>
-  aisr chatgpt  <conversations.json> <out_dir> [--projects FILE]
-  aisr gemini   <transcript.json>    <out_dir> [--harvest FILE]
-  aisr demo     <out.html>
+  llm-anthology claude   <export.json | dir>  <out_dir>
+  llm-anthology chatgpt  <conversations.json> <out_dir> [--projects FILE]
+  llm-anthology gemini   <transcript.json>    <out_dir> [--harvest FILE]
+  llm-anthology demo     <out.html>
 `;
 
 const ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
@@ -379,5 +379,5 @@ export function main(argv: string[]): number {
   return 0;
 }
 
-const invoked = process.argv[1] && /aisr|cli\.js/.test(process.argv[1]);
+const invoked = process.argv[1] && /llm_anthology|cli\.js/.test(process.argv[1]);
 if (invoked) process.exit(main(process.argv.slice(2)));

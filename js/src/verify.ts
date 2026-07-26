@@ -1,5 +1,5 @@
 /**
- * Text-exact fidelity gate. 1:1 with aisr/verify.py.
+ * Text-exact fidelity gate. 1:1 with llm_anthology/verify.py.
  *
  * Literal pixel equality with a live page is impossible, but TEXT-exactness is a
  * hard gate: every prose word present in the source IR must survive into the

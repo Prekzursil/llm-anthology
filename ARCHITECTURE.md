@@ -1,30 +1,30 @@
 # Architecture
 
-`ai-sessions-render` (aisr) is a **local, offline** renderer for exported AI chat sessions.
+`llm-anthology` (llm_anthology) is a **local, offline** renderer for exported AI chat sessions.
 It parses the native export formats of Claude (claude.ai Data Export), Gemini (Google
 Takeout "Gemini Apps" activity), and ChatGPT (`conversations.json`) into one
 provider-agnostic intermediate representation (IR), then renders every conversation twice:
 a browser-faithful **HTML** copy for viewing and a clean **Markdown** copy for keeping and
 re-feeding to tools. Two independent cross-checks run on every conversation: a
-**text-exact fidelity gate** (`aisr/verify.py`) and a **hidden-character forensic audit**
-(`aisr/audit.py`).
+**text-exact fidelity gate** (`llm_anthology/verify.py`) and a **hidden-character forensic audit**
+(`llm_anthology/audit.py`).
 
 **No network, no egress.** Nothing is fetched and nothing leaves the machine: the HTML is
 self-contained with inlined CSS and a `default-src 'none'` Content-Security-Policy
-(`aisr/render_html.py:32-33`), remote markdown images are defanged into labelled links
-instead of `<img>` loads (`aisr/render_html.py:88-102`), and the build scripts state the
-guarantee explicitly (`aisr/build.py`, `aisr/loaders.py`). Session content is
-sensitive; every example in this document and in the code (`aisr demo`,
-`aisr/build.py`) is **synthetic**.
+(`llm_anthology/render_html.py:32-33`), remote markdown images are defanged into labelled links
+instead of `<img>` loads (`llm_anthology/render_html.py:88-102`), and the build scripts state the
+guarantee explicitly (`llm_anthology/build.py`, `llm_anthology/loaders.py`). Session content is
+sensitive; every example in this document and in the code (`llm-anthology demo`,
+`llm_anthology/build.py`) is **synthetic**.
 
-Runtime dependency: `markdown-it-py` (MIT), imported at `aisr/render_html.py:18`.
+Runtime dependency: `markdown-it-py` (MIT), imported at `llm_anthology/render_html.py:18`.
 (Note: `pyproject.toml` currently carries only project metadata and pytest config —
 `pyproject.toml:1-10` — it does not declare the dependency.)
 
 ## Pipeline
 
 ```
-native export             per-provider adapter           versioned IR (aisr/ir.py)
+native export             per-provider adapter           versioned IR (llm_anthology/ir.py)
 -------------             --------------------           -------------------------
 
 claude export.json  -->   adapters/claude.py    --+
@@ -54,13 +54,13 @@ conversations.json  -->   adapters/chatgpt.py   --+
           audit.py    hidden-char forensic scan -> _hidden-char-audit.json
 ```
 
-Entry point: the `aisr` console command (`aisr/cli.py`), with subcommands `claude`,
-`chatgpt`, `gemini` and `demo`. It delegates to `aisr/loaders.py` (per-provider loading
-and grouping) and `aisr/build.py` (the shared render/verify/write pipeline). The ChatGPT
-rail is wired (`aisr chatgpt`) but has not been validated against a large real export
-(`aisr/adapters/chatgpt.py`).
+Entry point: the `llm-anthology` console command (`llm_anthology/cli.py`), with subcommands `claude`,
+`chatgpt`, `gemini` and `demo`. It delegates to `llm_anthology/loaders.py` (per-provider loading
+and grouping) and `llm_anthology/build.py` (the shared render/verify/write pipeline). The ChatGPT
+rail is wired (`llm-anthology chatgpt`) but has not been validated against a large real export
+(`llm_anthology/adapters/chatgpt.py`).
 
-## The IR (`aisr/ir.py`)
+## The IR (`llm_anthology/ir.py`)
 
 Every adapter emits, and both renderers consume, exactly this shape. It is versioned
 (`IR_VERSION = 1`, `ir.py:10`; stamped on each `Conversation` via `ir_version`,
@@ -109,7 +109,7 @@ item, which is hidden UI state, not content (`claude.py:22`, `claude.py:170-171`
 
 ## Adapters — per-provider specifics
 
-### Claude (`aisr/adapters/claude.py`) — a message tree via `parent_message_uuid`
+### Claude (`llm_anthology/adapters/claude.py`) — a message tree via `parent_message_uuid`
 
 The export is an array of conversations, each with `chat_messages[]`; messages form a
 **tree** through `parent_message_uuid` (schema probed from real exports on disk,
@@ -140,7 +140,7 @@ summaries; `tool_use`/`tool_result` keep name, input/content, display text, erro
 and integration metadata. `display_content` is coerced to `str` defensively because the
 export sometimes stores a structured list there (`claude.py:25-28`).
 
-### Gemini (`aisr/adapters/gemini.py`) — a flat Takeout log needing external grouping
+### Gemini (`llm_anthology/adapters/gemini.py`) — a flat Takeout log needing external grouping
 
 Takeout is a **flat activity log**: each record is one exchange with **no conversation
 id** (`gemini.py:3-6`). Grouping therefore comes from *outside* the adapter and is passed
@@ -153,19 +153,19 @@ in as `groups` (`gemini.py:21-29`); the adapter itself only turns records into I
   (`gemini.py:87-90`). Every other verb is a **feature event** rendered as a single
   explicit `event` turn — "never as a fabricated model reply" (`gemini.py:79-85`). That
   arithmetic is why the real-corpus build reports 2·967 + 93 = **2027 turns**
-  (`aisr/loaders.py` prints exactly this expectation).
-- Grouping strategies live in `aisr/loaders.py`:
+  (`llm_anthology/loaders.py` prints exactly this expectation).
+- Grouping strategies live in `llm_anthology/loaders.py`:
   - **Harvest (TRUE grouping):** with a `gemini_full_harvest.json` from the live web app
     (the only system that knows the real boundaries), each harvested user turn is joined
     to its Takeout record by exact normalised prompt text; unmatched records are reported
-    in an `(unmatched Takeout activity)` group, never dropped (`aisr/loaders.py`).
+    in an `(unmatched Takeout activity)` group, never dropped (`llm_anthology/loaders.py`).
   - **Gap heuristic (PROVISIONAL):** without a harvest, split on a >30-minute gap or a
     Gem change, with every group explicitly titled "(provisional group N)" so a reader
-    never mistakes it for ground truth (`aisr/loaders.py`, `aisr/loaders.py`).
+    never mistakes it for ground truth (`llm_anthology/loaders.py`, `llm_anthology/loaders.py`).
   - The mode used is stamped into `_fidelity-report.json` as `grouping_mode`
-    (`aisr/loaders.py`).
+    (`llm_anthology/loaders.py`).
 
-### ChatGPT (`aisr/adapters/chatgpt.py`) — a `mapping`/`current_node` tree
+### ChatGPT (`llm_anthology/adapters/chatgpt.py`) — a `mapping`/`current_node` tree
 
 Unlike the other two, ChatGPT stores a **message tree keyed by node id**:
 `conversation{title, create_time, current_node, mapping{node_id: {id, message, parent,
@@ -190,7 +190,7 @@ children}}}` (`chatgpt.py:1-8`).
 
 ## Shared sanitise + render core
 
-### `aisr/sanitize.py` — hidden-unicode neutraliser + link allowlist
+### `llm_anthology/sanitize.py` — hidden-unicode neutraliser + link allowlist
 
 The corpus was flagged for hidden zero-width / bidi / private-use / TAG-block
 prompt-injection characters. The policy (`sanitize.py:1-19`):
@@ -209,7 +209,7 @@ prompt-injection characters. The policy (`sanitize.py:1-19`):
   invisible-text smuggling — category `Mn`, so no category test catches them); invisible
   Hangul fillers (`sanitize.py:26-28`); `Cc` controls except tab/LF/CR; and categories
   `Cf`, `Co`, `Cn`, `Cs` (a lone surrogate survives `json.loads` but would abort a UTF-8
-  write — see the `errors="replace"` writer at `aisr/build.py`).
+  write — see the `errors="replace"` writer at `llm_anthology/build.py`).
 - **Callers must pass decoded strings**: Claude exports store invisibles as `\uXXXX` JSON
   escapes, so scanning raw file bytes reports a false "clean" (`sanitize.py:16-19`).
 
@@ -221,15 +221,15 @@ would break the markup), `scan_invisibles` (audit list of `(index, U+XXXX)` hits
 `is_safe_url` (scheme allowlist: `http://`/`https://` only, killing `javascript:`,
 `data:`, `file:` — `sanitize.py:150-153`).
 
-### `aisr/render_html.py` — IR -> browser-faithful static HTML (the "view" copy)
+### `llm_anthology/render_html.py` — IR -> browser-faithful static HTML (the "view" copy)
 
 - Markdown via `markdown-it-py` with the `gfm-like` preset and `html=False`, falling back
   to `commonmark` on older library versions (`render_html.py:23-25`).
 - **Theme pack:** `render_conversation_html(conv, theme="claude")` inlines
-  `aisr/themes/<theme>.css` into a `<style>` tag (`render_html.py:27`,
+  `llm_anthology/themes/<theme>.css` into a `<style>` tag (`render_html.py:27`,
   `render_html.py:40-45`, `render_html.py:222-224`). One theme ships today —
   `claude.css`, a grounded claude.ai dark theme; a light theme is a documented follow-up
-  (`aisr/themes/claude.css:1-2`).
+  (`llm_anthology/themes/claude.css:1-2`).
 - **CSP:** `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; ...`,
   no scripts anywhere (`render_html.py:32-33`).
 - **Link hardening fails closed:** *every* anchor is rewritten; safe URLs get
@@ -252,7 +252,7 @@ would break the markup), `scan_invisibles` (audit list of `(index, U+XXXX)` hits
 - Known cosmetic limitation: the assistant label and avatar are hard-coded to
   "Claude"/"C" for every provider (`render_html.py:212-215`).
 
-### `aisr/render_md.py` — IR -> clean, portable Markdown (the "keep" copy)
+### `llm_anthology/render_md.py` — IR -> clean, portable Markdown (the "keep" copy)
 
 - **Content-faithful pass-through:** provider bodies are already Markdown, so `text`
   passes through untouched (`render_md.py:1-7`, `render_md.py:66-81`).
@@ -271,7 +271,7 @@ would break the markup), `scan_invisibles` (audit list of `(index, U+XXXX)` hits
 
 ## Cross-checks
 
-### `aisr/verify.py` — the text-exact fidelity gate
+### `llm_anthology/verify.py` — the text-exact fidelity gate
 
 The achievable "faithful" contract: **pixel equality with the live page is impossible;
 TEXT-exactness is the hard gate** — every prose word in the source IR must survive into
@@ -292,7 +292,7 @@ or garbles content.
   `{ok, missing_tokens, coverage}` and any non-empty `missing_tokens` fails the gate
   (`verify.py:64-74`).
 
-### `aisr/audit.py` — the hidden-character forensic audit
+### `llm_anthology/audit.py` — the hidden-character forensic audit
 
 Complementary coverage: while the fidelity gate reads only prose, the audit scans
 **every string a hidden codepoint could hide in** — the conversation title and account,
@@ -305,26 +305,26 @@ conversation (`audit.py:43-48`).
 
 ## Build drivers
 
-`aisr/build.py` (`aisr/build.py`) and `aisr/loaders.py`
-(`aisr/loaders.py`) wire the pipeline per conversation and write:
+`llm_anthology/build.py` (`llm_anthology/build.py`) and `llm_anthology/loaders.py`
+(`llm_anthology/loaders.py`) wire the pipeline per conversation and write:
 
 - `<out>/html/NNN-title.html` and `<out>/md/NNN-title.md` (Windows-illegal filename
-  characters scrubbed, names truncated — `aisr/build.py`);
-- `index.html` (Claude build, `aisr/build.py`);
+  characters scrubbed, names truncated — `llm_anthology/build.py`);
+- `index.html` (Claude build, `llm_anthology/build.py`);
 - `_hidden-char-audit.json` — per-conversation hit counts and codepoints;
 - `_fidelity-report.json` — pass/fail per conversation with coverage and a
   missing-token sample (plus `grouping_mode` for Gemini).
 
 Robustness decisions: each conversation renders inside its own `try/except` so one
-malformed conversation can never truncate the corpus (`aisr/build.py`,
-`aisr/build.py`); the input glob excludes the output directory so the tool never
-ingests its own output (`aisr/build.py`); writes use `errors="replace"` so an
+malformed conversation can never truncate the corpus (`llm_anthology/build.py`,
+`llm_anthology/build.py`); the input glob excludes the output directory so the tool never
+ingests its own output (`llm_anthology/build.py`); writes use `errors="replace"` so an
 unpaired surrogate that slipped through cannot abort a build mid-corpus
-(`aisr/build.py`); both builds end with terminal-state stdout markers
-(`FIDELITY_GATE_PASSED`, `ERRORS`, ... — `aisr/build.py`,
-`aisr/loaders.py`). `aisr demo` renders a fully synthetic
+(`llm_anthology/build.py`); both builds end with terminal-state stdout markers
+(`FIDELITY_GATE_PASSED`, `ERRORS`, ... — `llm_anthology/build.py`,
+`llm_anthology/loaders.py`). `llm-anthology demo` renders a fully synthetic
 conversation exercising every major block type, with no real content
-(`aisr/build.py`).
+(`llm_anthology/build.py`).
 
 ## Status and known gaps
 
@@ -335,7 +335,7 @@ and not part of the repo):
 - **Gemini rail:** 1060 real Takeout records -> 2027 turns (consistent with the verb
   census at `gemini.py:12-13`: 2·967 Prompted + 93 events). Grouping is **provisional**
   (gap heuristic) until a web-app harvest supplies true boundaries
-  (`aisr/loaders.py`).
+  (`llm_anthology/loaders.py`).
 - **ChatGPT rail:** adapter written, **UNVERIFIED** against a real export
   (`chatgpt.py:18-19`); no build driver yet.
 

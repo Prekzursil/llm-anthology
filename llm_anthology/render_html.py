@@ -17,7 +17,7 @@ import re
 
 from markdown_it import MarkdownIt
 
-from aisr import sanitize
+from llm_anthology import sanitize
 
 try:
     _MD = MarkdownIt("gfm-like", {"html": False, "linkify": False, "typographer": False})

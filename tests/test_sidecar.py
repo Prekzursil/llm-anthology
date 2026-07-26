@@ -4,7 +4,7 @@ SYNTHETIC fixtures ONLY. Every thread id, conversation, rollout line and token
 count below is a made-up shape that mirrors the Phase-0 MEASURED schema (a spawn
 graph of threads + directed edges over a contentless FTS5 index); none of it is a
 real conversation, path, or the real $CODEX_HOME. The privacy boundary the sidecar
-enforces — preview/snippet/transcript text passes through aisr.sanitize before it
+enforces — preview/snippet/transcript text passes through llm_anthology.sanitize before it
 crosses the wire — is proven here with a zero-width-space payload that must NOT
 survive into any emitted DTO.
 
@@ -21,11 +21,11 @@ from dataclasses import asdict
 
 import pytest
 
-from aisr import corpus, ir, redact, render_html, research, sidecar
-from aisr.corpus import SpawnEdge, ThreadMeta
+from llm_anthology import corpus, ir, redact, render_html, research, sidecar
+from llm_anthology.corpus import SpawnEdge, ThreadMeta
 
 # A zero-width space (U+200B, category Cf) — a hidden-unicode smuggling payload that
-# aisr.sanitize.sanitize_for_copy must strip from anything crossing the wire.
+# llm_anthology.sanitize.sanitize_for_copy must strip from anything crossing the wire.
 ZW = "​"
 
 
@@ -1015,7 +1015,7 @@ def test_main_with_argv_index_serves(tmp_path):
 
 
 def test_main_no_path_reports_corpus_not_ready(monkeypatch):
-    monkeypatch.delenv("AISR_INDEX", raising=False)
+    monkeypatch.delenv("LLM_ANTHOLOGY_INDEX", raising=False)
     stdin = io.StringIO(
         '{"jsonrpc":"2.0","id":1,"method":"health.ping"}\n'
         '{"jsonrpc":"2.0","id":2,"method":"corpus.stats","params":{}}\n')
@@ -1028,7 +1028,7 @@ def test_main_no_path_reports_corpus_not_ready(monkeypatch):
 
 def test_main_reads_index_from_env(tmp_path, monkeypatch):
     path = _disk_index(tmp_path)
-    monkeypatch.setenv("AISR_INDEX", path)
+    monkeypatch.setenv("LLM_ANTHOLOGY_INDEX", path)
     stdin = io.StringIO('{"jsonrpc":"2.0","id":1,"method":"corpus.stats","params":{}}\n')
     stdout = io.StringIO()
     sidecar.main(argv=[], stdin=stdin, stdout=stdout)
@@ -1048,12 +1048,12 @@ def test_main_defaults_to_sys_streams(tmp_path, monkeypatch):
 # ------------------------------------------------------ e2e over real stdio (subprocess)
 
 def _repo_root():
-    """Directory holding the importable ``aisr`` package (aisr/sidecar.py -> up two)."""
+    """Directory holding the importable ``llm_anthology`` package (llm_anthology/sidecar.py -> up two)."""
     return os.path.dirname(os.path.dirname(os.path.abspath(sidecar.__file__)))
 
 
 def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
-    """Spawn the REAL `python -m aisr.sidecar --index <synthetic>` process and
+    """Spawn the REAL `python -m llm_anthology.sidecar --index <synthetic>` process and
     round-trip health.ping + corpus.stats + graph.roots over actual OS stdio pipes
     (not in-memory StringIO), asserting the replies match the synthetic corpus. This is
     the Python-side complement to the Rust cargo e2e that proves the SAME wire.
@@ -1081,7 +1081,7 @@ def test_e2e_subprocess_roundtrip_over_real_stdio(tmp_path):
         + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "export.run",
                       "params": {"dest_path": export_dest}}) + "\n")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "aisr.sidecar", "--index", path],
+        [sys.executable, "-m", "llm_anthology.sidecar", "--index", path],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         cwd=_repo_root(), text=True, encoding="utf-8")
     out, err = proc.communicate(requests, timeout=30)   # closing stdin -> clean EOF exit

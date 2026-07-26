@@ -1,6 +1,6 @@
 /**
  * IR -> browser-faithful, self-contained static HTML (the "view" copy).
- * 1:1 with aisr/render_html.py.
+ * 1:1 with llm_anthology/render_html.py.
  *
  * - Text bodies -> HTML via markdown-it with html:false (raw HTML in a message is
  *   escaped, exactly as chatgpt.com / claude.ai / gemini render it).

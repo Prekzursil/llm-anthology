@@ -28,7 +28,7 @@ import json
 
 import pytest
 
-from aisr import corpus, diff, export, ir, render_html, sanitize
+from llm_anthology import corpus, diff, export, ir, render_html, sanitize
 
 
 # --------------------------------------------------------------------- fixtures
@@ -153,7 +153,7 @@ def test_export_writes_when_both_gates_pass(tmp_path):
     assert dest.exists()
 
     doc = json.loads(dest.read_bytes().decode("utf-8"))
-    assert doc["aisr_export_version"] == export.EXPORT_FORMAT_VERSION
+    assert doc["llm_anthology_export_version"] == export.EXPORT_FORMAT_VERSION
     # conversations are stored sorted by id and carry their prose
     assert [cc["id"] for cc in doc["conversations"]] == ["conv-a", "conv-b"]
     assert "hello" in doc["conversations"][0]["html"]
@@ -303,7 +303,7 @@ def test_export_sanitizes_free_text_fields_in_the_artifact(tmp_path):
     assert reparsed.threads["a"].title == "hello"
     assert reparsed.threads["a"].cwd == "cwd"
     assert reparsed.edges[0].status == "ok"
-    # the free-text sanitizer is exactly aisr.sanitize.sanitize_for_copy
+    # the free-text sanitizer is exactly llm_anthology.sanitize.sanitize_for_copy
     assert sanitize.sanitize_for_copy("hel" + zwsp + "lo") == "hello"
 
 

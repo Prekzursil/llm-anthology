@@ -17,7 +17,7 @@ Branches: messages form a tree via parent_message_uuid (91 real branch points on
 disk). We render the ACTIVE (latest) path — at each node choose the child with the
 max created_at — and annotate a turn with {index,total} when its parent had siblings.
 """
-from aisr import ir
+from llm_anthology import ir
 
 _HIDDEN_CONTENT_TYPES = {"token_budget"}
 

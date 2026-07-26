@@ -1,6 +1,6 @@
 """Corpus: the IR extension the cockpit consumes.
 
-`aisr.ir` is conversation-centric — Conversation -> Turn -> Block. That is the whole
+`llm_anthology.ir` is conversation-centric — Conversation -> Turn -> Block. That is the whole
 world for the HTML/Markdown renderers, but the cockpit also needs the SPAWN GRAPH the
 Codex rollout logs carry: which thread spawned which, and the per-thread metadata
 (model, tokens, branch, cwd, agent role) that the conversation IR never modelled. This

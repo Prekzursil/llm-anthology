@@ -22,8 +22,8 @@ These tests are load-bearing:
 import json
 from dataclasses import asdict, fields
 
-from aisr import corpus, ir
-from aisr.redact import (
+from llm_anthology import corpus, ir
+from llm_anthology.redact import (
     MetadataView,
     aggregate_stats,
     corpus_metadata,

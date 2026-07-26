@@ -108,7 +108,7 @@ fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Res
 
 // -- Phase-3 time-travel + export surface -------------------------------------------
 // Each mirrors the `forward(state, method, params)` pattern above, proxying one
-// `graph.*` / `export.*` JSON-RPC method the sidecar (`aisr/sidecar.py`) serves. The
+// `graph.*` / `export.*` JSON-RPC method the sidecar (`llm_anthology/sidecar.py`) serves. The
 // TS `real.ts` adapter targets these command names.
 #[tauri::command]
 fn graph_rollup(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {

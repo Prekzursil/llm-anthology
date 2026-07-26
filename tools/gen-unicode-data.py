@@ -10,7 +10,7 @@ predicate (which codepoints are invisible/dangerous). The options all leak:
     (one popular package returns Cc for assigned letters).
 
 So instead of reimplementing the predicate in JS, we EXPORT IT. This script imports
-the real `aisr.sanitize._is_flagged` and encodes the whole predicate as ranges, which
+the real `llm_anthology.sanitize._is_flagged` and encodes the whole predicate as ranges, which
 means sanitize.ts contains ZERO category logic: `isFlagged(cp)` is a binary search
 over a table generated from the same Python that the Python rail runs. The two rails
 cannot drift by construction.
@@ -27,7 +27,7 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aisr.sanitize import _is_flagged            # noqa: E402  the REAL predicate
+from llm_anthology.sanitize import _is_flagged            # noqa: E402  the REAL predicate
 
 MAX_CP = 0x110000
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -94,7 +94,7 @@ def main():
         '/** sha256 over the canonical range list; the table self-tests against this. */\n',
         'export const BITMAP_SHA256 = "%s";\n\n' % digest,
         fmt_ranges("FLAGGED_RANGES", flagged,
-                   "Every codepoint aisr.sanitize._is_flagged() calls invisible/dangerous"),
+                   "Every codepoint llm_anthology.sanitize._is_flagged() calls invisible/dangerous"),
         "\n",
         fmt_ranges("WORD_RANGES", word,
                    "Python re \\\\w for str patterns: str.isalnum() or underscore"),

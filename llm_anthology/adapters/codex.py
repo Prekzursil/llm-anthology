@@ -55,7 +55,7 @@ pull_request_status (28 'not_created' turns do carry a pr item).
 """
 import os
 
-from aisr import ir
+from llm_anthology import ir
 
 _COMPLETED = "COMPLETED"
 _FAILED = "FAILED"

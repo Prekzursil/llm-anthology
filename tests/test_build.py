@@ -8,7 +8,7 @@ an injection vector (titles are attacker-influenced content).
 import json
 import os
 
-from aisr import build, ir, render_html
+from llm_anthology import build, ir, render_html
 
 
 def _conv(title="T", n=1, text="hello", account="a@b"):

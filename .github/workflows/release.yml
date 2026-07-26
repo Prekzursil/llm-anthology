@@ -4,7 +4,7 @@ name: Release to PyPI
 # No API token is ever stored in this repository — GitHub mints a short-lived
 # identity token and PyPI verifies it. One-time setup on PyPI:
 #   PyPI -> your project -> Publishing -> Add a new (pending) publisher
-#     Owner: Prekzursil   Repository: ai-sessions-render
+#     Owner: Prekzursil   Repository: llm-anthology
 #     Workflow: release.yml   Environment: pypi
 on:
   release:
@@ -55,7 +55,7 @@ jobs:
         run: |
           python -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.whl
-          /tmp/venv/bin/aisr demo /tmp/demo.html
+          /tmp/venv/bin/llm-anthology demo /tmp/demo.html
           test -s /tmp/demo.html
 
   pypi:

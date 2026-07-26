@@ -5,8 +5,8 @@ Real schema: each record is one EXCHANGE with keys idx, timestamp, timestamp_iso
 verb, gem, prompt, response_md, attachments, media, title, detail, zero_width.
 Verbs on disk: Prompted 967, Used 60, Created Gemini Canvas 26, Gave feedback 6, Selected 1.
 """
-from aisr.adapters import gemini
-from aisr import ir
+from llm_anthology.adapters import gemini
+from llm_anthology import ir
 
 
 def _rec(idx, prompt="q", response="a", verb="Prompted", **extra):

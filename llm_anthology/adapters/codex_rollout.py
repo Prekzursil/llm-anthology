@@ -69,7 +69,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from aisr import corpus, ir
+from llm_anthology import corpus, ir
 
 # response_item.type values with a dedicated block mapping; everything else (agent_message,
 # any future type) is preserved verbatim as an `unknown` block.

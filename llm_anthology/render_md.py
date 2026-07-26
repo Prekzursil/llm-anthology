@@ -8,7 +8,7 @@ The HTML renderer instead BADGES the same chars for forensic viewing.
 import json
 import re
 
-from aisr import sanitize
+from llm_anthology import sanitize
 
 _NEWLINES = re.compile(r"\s*[\r\n]+\s*")
 # Characters that let a value break OUT of markdown link syntax

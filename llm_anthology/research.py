@@ -4,7 +4,7 @@ This is the ONLY component permitted to feed conversation data to a cloud LLM, s
 it is corpus-blind BY TYPE and BY CONSTRUCTION:
 
   * BY TYPE -- every public function takes ONLY ``MetadataView`` objects (the
-    structural metadata projection built by :mod:`aisr.redact`). It never imports
+    structural metadata projection built by :mod:`llm_anthology.redact`). It never imports
     or accepts a ``Corpus``, an ``ir.Conversation``, a sqlite connection, or raw
     text. The sole reference to ``MetadataView`` is a typing-only import, so this
     module has NO runtime dependency on the redaction layer and cannot reach back
@@ -25,7 +25,7 @@ Phase-4 decision (2026-07-25) after an adversarial leak-hunt proved the previous
 "sanitize the free text" model carried an SSN, an email, a freeform patient name and a
 drug name into a live cloud prompt. The cloud plane sees only opaque identifiers,
 timestamps, counts, and aggregate histograms; content-aware, per-conversation synthesis
-lives on the on-box LOCAL tier only (aisr/sidecar.py ``_research_local``), which never
+lives on the on-box LOCAL tier only (llm_anthology/sidecar.py ``_research_local``), which never
 egresses.
 
 The backend is a pluggable :class:`LLMBackend` (one ``synthesize(prompt) -> str``
@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:  # pragma: no cover - typing-only; keeps the plane corpus-blind
     from collections.abc import Iterable
 
-    from aisr.redact import MetadataView
+    from llm_anthology.redact import MetadataView
 
 
 # --- the STRICT allowlist: the ONLY MetadataView attributes that may cross -----

@@ -3,17 +3,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ai-sessions-render"
+name = "llm-anthology"
 version = "0.1.0"
-description = "Local, offline, faithful renderer for ChatGPT / Claude / Gemini session exports (HTML + Markdown). No network, no egress."
+description = "A local, private anthology of every AI coding session — browse, search, spawn-tree, faithfully export and safely manage ChatGPT / Claude / Gemini / Codex history. No network, no egress."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Prekzursil" }]
 keywords = [
-    "chatgpt", "claude", "gemini", "export", "transcript", "conversation",
-    "markdown", "html", "offline", "privacy", "archive",
+    "chatgpt", "claude", "gemini", "codex", "export", "transcript", "conversation",
+    "markdown", "html", "offline", "privacy", "archive", "anthology",
+    "session-manager", "agent-sessions", "spawn-tree",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -36,19 +37,20 @@ dependencies = ["markdown-it-py>=2.2"]
 dev = ["pytest>=7", "pytest-cov>=4"]
 
 [project.urls]
-Homepage = "https://github.com/Prekzursil/ai-sessions-render"
-Source = "https://github.com/Prekzursil/ai-sessions-render"
-Issues = "https://github.com/Prekzursil/ai-sessions-render/issues"
+Homepage = "https://github.com/Prekzursil/LLM_Anthology"
+Source = "https://github.com/Prekzursil/LLM_Anthology"
+Issues = "https://github.com/Prekzursil/LLM_Anthology/issues"
 
 [project.scripts]
-aisr = "aisr.cli:main"
+llm-anthology = "llm_anthology.cli:main"
+anth = "llm_anthology.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aisr"]
+packages = ["llm_anthology"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/aisr",
+    "/llm_anthology",
     "/tests",
     "/README.md",
     "/LICENSE",
@@ -59,10 +61,10 @@ include = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-# Lean 100% coverage gate — every statement in aisr/ must be exercised; the few
+# Lean 100% coverage gate — every statement in llm_anthology/ must be exercised; the few
 # genuinely-unreachable defensive guards carry a justified `# pragma: no cover`.
-addopts = "-q --cov=aisr --cov-report=term-missing --cov-fail-under=100"
+addopts = "-q --cov=llm_anthology --cov-report=term-missing --cov-fail-under=100"
 
 [tool.coverage.run]
 branch = true
-source = ["aisr"]
+source = ["llm_anthology"]

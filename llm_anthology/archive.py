@@ -1,4 +1,4 @@
-"""Seekable-zstd re-encoding for aisr rollout archives.
+"""Seekable-zstd re-encoding for llm_anthology rollout archives.
 
 A rollout `.zst` is a single zstd frame: opening one record means inflating the
 whole file. This module re-encodes such an archive into the zstd **seekable

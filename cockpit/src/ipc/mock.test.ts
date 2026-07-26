@@ -199,7 +199,7 @@ function edgeOrder(
   return 0;
 }
 
-describe("graph.rollup (mirrors aisr/rollup.py over the forest)", () => {
+describe("graph.rollup (mirrors llm_anthology/rollup.py over the forest)", () => {
   it("keys every graph node (incl. the dangling parent) with self_count 1", async () => {
     const table = await mockIpc.graphRollup();
     expect(Object.keys(table).sort()).toEqual([...FOREST_NODE_IDS].sort());
@@ -461,9 +461,9 @@ describe("export.plan / export.run", () => {
   });
 
   it("runs the export and passes both fidelity gates for a valid dest", async () => {
-    const run = await mockIpc.exportRun("/tmp/aisr-export.json");
+    const run = await mockIpc.exportRun("/tmp/llm-anthology-export.json");
     expect(run.ok).toBe(true);
-    expect(run.written_path).toBe("/tmp/aisr-export.json");
+    expect(run.written_path).toBe("/tmp/llm-anthology-export.json");
     expect(run.graph_gate).toBe(true);
     expect(run.transcript_gate).toBe(true);
   });

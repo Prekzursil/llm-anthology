@@ -13,7 +13,7 @@ Verbs on disk: Prompted 967 · Used 60 · Created Gemini Canvas 26 ·
 Only "Prompted" is a real prompt/response exchange; the rest are feature EVENTS
 and are rendered as a single event turn rather than a forged model reply.
 """
-from aisr import ir
+from llm_anthology import ir
 
 _PROMPT_VERB = "Prompted"
 

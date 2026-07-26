@@ -1,5 +1,5 @@
 /**
- * Claude native-export -> IR. 1:1 with aisr/adapters/claude.py.
+ * Claude native-export -> IR. 1:1 with llm_anthology/adapters/claude.py.
  *
  * Claude stores a message TREE (parent_message_uuid), and regenerations create
  * sibling branches. The active-path walk descends toward the subtree holding the

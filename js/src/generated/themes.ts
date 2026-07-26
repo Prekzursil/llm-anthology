@@ -1,5 +1,5 @@
 // GENERATED FILE - do not edit by hand.
-// Produced by tools/gen-themes.py from aisr/themes/*.css so both rails inline
+// Produced by tools/gen-themes.py from llm_anthology/themes/*.css so both rails inline
 // byte-identical CSS. Edit the .css file and re-run the generator.
 
 export const THEMES: Readonly<Record<string, string>> = {

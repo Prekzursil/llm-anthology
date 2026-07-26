@@ -1,13 +1,13 @@
-"""The `aisr` console entry point, end-to-end over SYNTHETIC fixtures.
+"""The `llm-anthology` console entry point, end-to-end over SYNTHETIC fixtures.
 
-These are the contract tests for the installed package: `pip install ai-sessions-render`
-must give a working `aisr <provider> <src> <out>`. Fixtures mirror each provider's real
+These are the contract tests for the installed package: `pip install llm-anthology`
+must give a working `llm_anthology <provider> <src> <out>`. Fixtures mirror each provider's real
 schema but contain no real conversation content.
 """
 import json
 import os
 
-from aisr import cli
+from llm_anthology import cli
 
 
 def _write(path, obj):

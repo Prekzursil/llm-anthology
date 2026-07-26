@@ -1,5 +1,5 @@
 /**
- * ChatGPT native export (conversations.json) -> IR. 1:1 with aisr/adapters/chatgpt.py.
+ * ChatGPT native export (conversations.json) -> IR. 1:1 with llm_anthology/adapters/chatgpt.py.
  *
  * UNLIKE the other two providers, ChatGPT stores a MESSAGE TREE, not a list. The
  * rendered thread is current_node -> parent -> ... -> root, reversed. Every other

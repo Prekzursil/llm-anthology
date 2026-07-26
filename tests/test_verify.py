@@ -1,6 +1,6 @@
 """Text-exact fidelity gate: every prose word in the source IR must appear in the
 rendered HTML (multiset containment). Proves rendering drops no content."""
-from aisr import verify, render_html, ir
+from llm_anthology import verify, render_html, ir
 
 
 def _c(text):

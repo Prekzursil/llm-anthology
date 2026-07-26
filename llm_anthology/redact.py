@@ -30,7 +30,7 @@ compound names, clinical questions) that no regex reliably strips. A live probe 
 previous iteration carried an SSN, an email, a freeform patient name and a drug name
 into the cloud prompt. The cloud research plane therefore receives ONLY opaque
 identifiers, timestamps, counts, and aggregate histograms. Per-conversation,
-content-aware synthesis exists only on the on-box LOCAL tier (aisr/sidecar.py
+content-aware synthesis exists only on the on-box LOCAL tier (llm_anthology/sidecar.py
 `_research_local`), which never egresses.
 
 `char_count` is a COUNT of body text (an int), never the text itself — the bodies are
@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from aisr.ir import Conversation
+from llm_anthology.ir import Conversation
 
 __all__ = [
     "MetadataView",

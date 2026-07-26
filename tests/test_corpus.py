@@ -17,7 +17,7 @@ import sqlite3
 
 import pytest
 
-from aisr import corpus, ir
+from llm_anthology import corpus, ir
 
 
 # --------------------------------------------------------------------- fixtures

@@ -1,1 +1,1 @@
-# Ensures the project root is importable as `aisr` across pytest versions.
+# Ensures the project root is importable as `llm-anthology` across pytest versions.

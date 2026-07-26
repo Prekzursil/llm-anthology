@@ -1,8 +1,8 @@
 //! Sidecar transport: spawn the Python analysis engine and speak stdio NDJSON
 //! JSON-RPC 2.0 to it.
 //!
-//! The engine is the committed `aisr.sidecar` module — launched as
-//! `python -m aisr.sidecar --index <path>` — which reads one compact JSON object
+//! The engine is the committed `llm_anthology.sidecar` module — launched as
+//! `python -m llm_anthology.sidecar --index <path>` — which reads one compact JSON object
 //! per line off stdin and writes one flushed JSON object per line to stdout (NOT
 //! HTTP, NOT a socket). This module owns two pieces:
 //!
@@ -115,7 +115,7 @@ pub struct SidecarClient {
 }
 
 impl SidecarClient {
-    /// Spawn `python -m aisr.sidecar --index <index_path>` with stdin/stdout/stderr
+    /// Spawn `python -m llm_anthology.sidecar --index <index_path>` with stdin/stdout/stderr
     /// piped, ready to answer JSON-RPC requests.
     ///
     /// Windows: raw `CreateProcessW` under a `KILL_ON_JOB_CLOSE` Job Object +
@@ -131,7 +131,7 @@ impl SidecarClient {
     #[cfg(windows)]
     fn spawn_platform(index_path: &str) -> Result<Self, String> {
         use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
-        let args = ["-m", "aisr.sidecar", "--index", index_path];
+        let args = ["-m", "llm_anthology.sidecar", "--index", index_path];
         let HardenedSpawn { stdin, stdout, stderr, reaper } =
             spawn_hardened("python", &args, &SpawnOpts::job_only())?;
         Ok(Self {
@@ -148,7 +148,7 @@ impl SidecarClient {
         use std::process::{Command, Stdio};
         let mut child = Command::new("python")
             .arg("-m")
-            .arg("aisr.sidecar")
+            .arg("llm_anthology.sidecar")
             .arg("--index")
             .arg(index_path)
             .stdin(Stdio::piped())
@@ -158,7 +158,7 @@ impl SidecarClient {
             // stdout and keeps stderr near-empty, so a plain pipe is safe here.
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("failed to spawn sidecar (python -m aisr.sidecar): {e}"))?;
+            .map_err(|e| format!("failed to spawn sidecar (python -m llm_anthology.sidecar): {e}"))?;
         let stdin = child
             .stdin
             .take()
@@ -314,13 +314,13 @@ mod tests {
     }
 
     /// END-TO-END over the REAL wire: build a SYNTHETIC corpus index with a committed
-    /// Python fixture, then spawn the ACTUAL `python -m aisr.sidecar --index <path>`
+    /// Python fixture, then spawn the ACTUAL `python -m llm_anthology.sidecar --index <path>`
     /// process through the production [`SidecarClient`] and round-trip health.ping +
     /// corpus.stats + graph.roots over genuine OS stdio pipes. This is the Rust<->Python
     /// proof the unit tests above (in-memory `Cursor` mocks) cannot give: it exercises
     /// process spawn, real NDJSON framing across a pipe, and the sidecar's own engine.
     ///
-    /// `aisr` is a source tree at the repo root (not pip-installed), so the repo root is
+    /// `llm-anthology` is a source tree at the repo root (not pip-installed), so the repo root is
     /// put on PYTHONPATH for both the builder and the spawned sidecar. Assertions match
     /// the fixture's known corpus EXACTLY.
     #[test]
@@ -330,14 +330,14 @@ mod tests {
         use std::process::Command;
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // <manifest> = cockpit/src-tauri  ->  up two  ->  repo root (holds `aisr/`).
+        // <manifest> = cockpit/src-tauri  ->  up two  ->  repo root (holds `llm_anthology/`).
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest
             .parent()
             .and_then(|p| p.parent())
             .expect("repo root is two levels above the crate manifest")
             .to_path_buf();
-        // Both subprocesses need `import aisr` to resolve. `Command` inherits this.
+        // Both subprocesses need `import llm_anthology` to resolve. `Command` inherits this.
         // (`std::env::set_var` is safe under this crate's 2021 edition.)
         std::env::set_var("PYTHONPATH", &repo_root);
 
@@ -347,7 +347,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let index_path =
-            std::env::temp_dir().join(format!("aisr_e2e_{}_{}.db", std::process::id(), nanos));
+            std::env::temp_dir().join(format!("llm_anthology_e2e_{}_{}.db", std::process::id(), nanos));
 
         // Build the KNOWN synthetic corpus (3 convs / 3 threads / 2 edges / 1 root).
         let fixture = manifest
@@ -405,7 +405,7 @@ mod tests {
 
     /// END-TO-END over the REAL wire for the Phase-3 TIME-TRAVEL + EXPORT surface: build
     /// the same SYNTHETIC index (its thread births SPAN TIME and carry differing tokens),
-    /// spawn the ACTUAL `python -m aisr.sidecar` process through [`SidecarClient`], and
+    /// spawn the ACTUAL `python -m llm_anthology.sidecar` process through [`SidecarClient`], and
     /// round-trip the SIX new methods over genuine OS stdio NDJSON pipes —
     /// `graph.timeline`, `graph.at`, `graph.rollup`, `graph.diff` (the as-of DELTA form),
     /// `export.plan`, and a POSITIVE `export.run` that writes a real artifact to a temp
@@ -438,7 +438,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let index_path = std::env::temp_dir()
-            .join(format!("aisr_e2e_tt_{}_{}.db", std::process::id(), nanos));
+            .join(format!("llm_anthology_e2e_tt_{}_{}.db", std::process::id(), nanos));
 
         let fixture = manifest
             .join("tests")
@@ -545,7 +545,7 @@ mod tests {
         // 6a) export.run POSITIVE — writes a real artifact to a temp path and passes both
         //     gates; the file lands on disk and its graph re-parses to the three threads.
         let export_path = std::env::temp_dir()
-            .join(format!("aisr_e2e_export_{}_{}.json", std::process::id(), nanos));
+            .join(format!("llm_anthology_e2e_export_{}_{}.json", std::process::id(), nanos));
         let export_str = export_path.to_str().expect("export path is valid UTF-8");
         let run = client
             .call("export.run", &json!({ "dest_path": export_str }))
@@ -560,7 +560,7 @@ mod tests {
         );
         let artifact = std::fs::read_to_string(&export_path).expect("read export artifact");
         let doc: Value = serde_json::from_str(&artifact).expect("artifact is valid JSON");
-        assert_eq!(doc["aisr_export_version"], json!(1), "artifact: {doc}");
+        assert_eq!(doc["llm_anthology_export_version"], json!(1), "artifact: {doc}");
         assert_eq!(doc["conversations"], json!([]), "graph-only export bundles no transcripts");
         let graph: Value = serde_json::from_str(
             doc["graph"].as_str().expect("artifact graph is a JSON string"),
@@ -673,7 +673,7 @@ mod tests {
     ///       so the block is attributable to the membrane and not a dead network.
     ///
     /// Grants the fixed container's package SID read+execute on the interpreter dir,
-    /// the `aisr` source tree, and a dedicated index/probe dir (idempotent, benign RX
+    /// the `llm-anthology` source tree, and a dedicated index/probe dir (idempotent, benign RX
     /// ACEs for one stable SID — exactly the icacls step a production install runs).
     /// If CPython cannot run in a regular AppContainer on this host, proof (1) FAILS
     /// LOUDLY rather than silently skipping.
@@ -696,7 +696,7 @@ mod tests {
             .and_then(|p| p.parent())
             .expect("repo root two levels above crate")
             .to_path_buf();
-        let aisr_dir = repo_root.join("aisr");
+        let llm_anthology_dir = repo_root.join("llm_anthology");
         std::env::set_var("PYTHONPATH", &repo_root);
 
         let nanos = SystemTime::now()
@@ -704,7 +704,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let work = std::env::temp_dir()
-            .join(format!("aisr_membrane_{}_{}", std::process::id(), nanos));
+            .join(format!("llm_anthology_membrane_{}_{}", std::process::id(), nanos));
         std::fs::create_dir_all(&work).expect("create membrane work dir");
         let index_path = work.join("index.db");
 
@@ -723,11 +723,11 @@ mod tests {
 
         // --- ONE-TIME provisioning: grant the FIXED container SID read+execute on
         //     JUST the stdlib (NOT the ~120k-file site-packages — the sidecar is
-        //     pure stdlib + aisr), plus the aisr tree, the repo root (traverse), and
+        //     pure stdlib + llm_anthology), plus the llm_anthology tree, the repo root (traverse), and
         //     the dedicated work dir. Once (not per-spawn), so the test stays fast. ---
         let sid = ensure_container_sid(Membrane::AppContainer).expect("ensure AppContainer profile");
         grant_stdlib_read(&sid, &python_home);
-        grant_read(&sid, &aisr_dir.to_string_lossy(), true);
+        grant_read(&sid, &llm_anthology_dir.to_string_lossy(), true);
         grant_read(&sid, &repo_root.to_string_lossy(), false);
         // The index dir needs WRITE: SQLite's WAL journal (open_index sets
         // journal_mode=WAL) creates `-wal`/`-shm` sidecars even for read queries.
@@ -741,7 +741,7 @@ mod tests {
             let opts = SpawnOpts { membrane: Membrane::AppContainer, kill_on_job_close: true };
             let mut sc = spawn_hardened(
                 "python",
-                &["-S", "-m", "aisr.sidecar", "--index", index_str],
+                &["-S", "-m", "llm_anthology.sidecar", "--index", index_str],
                 &opts,
             )
             .expect("spawn the real sidecar inside a regular AppContainer");
@@ -817,7 +817,7 @@ mod tests {
 
     /// Grant the AppContainer package `sid` read+execute on JUST the CPython
     /// standard library (root binaries, DLLs, and every `Lib` child EXCEPT the
-    /// huge `site-packages` tree — the sidecar imports only stdlib + aisr). This
+    /// huge `site-packages` tree — the sidecar imports only stdlib + llm_anthology). This
     /// keeps the AppContainer grant fast (~8k files, not ~130k).
     #[cfg(windows)]
     fn grant_stdlib_read(sid: &str, python_home: &std::path::Path) {

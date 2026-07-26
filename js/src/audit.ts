@@ -1,6 +1,6 @@
 /**
  * Hidden-character forensic audit across EVERY text surface of a conversation.
- * 1:1 with aisr/audit.py.
+ * 1:1 with llm_anthology/audit.py.
  *
  * Scanning only block.text under-reported by roughly 5x: an injected payload is most
  * likely to sit in uploaded-document text (attachment.extracted_content), tool input

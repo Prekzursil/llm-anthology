@@ -1,7 +1,7 @@
 """Claude native-export -> IR adapter. Fixtures are SYNTHETIC (mirror the real
 schema probed from disk; no real conversation content)."""
-from aisr.adapters import claude
-from aisr import ir
+from llm_anthology.adapters import claude
+from llm_anthology import ir
 
 
 def _msg(uuid, parent, sender, content, ts, **extra):

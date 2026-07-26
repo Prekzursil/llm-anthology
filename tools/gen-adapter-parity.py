@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aisr.adapters import chatgpt, claude, gemini  # noqa: E402
+from llm_anthology.adapters import chatgpt, claude, gemini  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "js", "test", "fixtures", "adapter-parity.json")

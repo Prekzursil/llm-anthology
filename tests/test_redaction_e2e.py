@@ -51,7 +51,7 @@ from dataclasses import asdict, fields
 
 import pytest
 
-from aisr import corpus, ir, redact, research, sidecar
+from llm_anthology import corpus, ir, redact, research, sidecar
 
 # --- KNOWN sensitive canary tokens (SYNTHETIC — never real corpus data) -----------
 SECRET = "RAWBODY_SECRET_DO_NOT_LEAK"          # a raw message-body secret

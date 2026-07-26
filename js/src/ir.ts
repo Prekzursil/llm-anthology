@@ -5,7 +5,7 @@
  * shape; the HTML and Markdown renderers consume only this. Versioned so a future
  * schema change is explicit. Unknown provider payloads survive via block.data.x_raw.
  *
- * 1:1 with aisr/ir.py. The Python dataclasses default every optional field, so the
+ * 1:1 with llm_anthology/ir.py. The Python dataclasses default every optional field, so the
  * factory helpers here do the same rather than leaving `undefined` to leak into a
  * renderer that expects a string.
  */

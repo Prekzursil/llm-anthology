@@ -1,7 +1,7 @@
 /**
  * REAL implementation of {@link IpcClient}, backed by the Tauri commands the Rust side
  * (`src-tauri/src/lib.rs`) exposes. Each command proxies ONE JSON-RPC call through to
- * the Python sidecar (`aisr/sidecar.py`, launched as `python -m aisr.sidecar --index
+ * the Python sidecar (`llm_anthology/sidecar.py`, launched as `python -m llm_anthology.sidecar --index
  * <path>`) over stdio and returns the sidecar's JSON-RPC `result` verbatim.
  *
  * INTEGRATION SEAM. The Rust work-unit landed PER-METHOD commands (`health_ping`,
@@ -81,7 +81,7 @@ export const realIpc: IpcClient = {
   // -- Phase-3 time-travel + export surface --------------------------------------
   // Each proxies one JSON-RPC method through its matching Rust command (see
   // `src-tauri/src/lib.rs`), mirroring the `graph.*` / `export.*` param names the
-  // sidecar (`aisr/sidecar.py`) requires. The mock implements the same six.
+  // sidecar (`llm_anthology/sidecar.py`) requires. The mock implements the same six.
   graphRollup(): Promise<RollupTable> {
     return cmd<RollupTable>("graph_rollup");
   },

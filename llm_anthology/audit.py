@@ -6,7 +6,7 @@ or output, a citation title, or the conversation TITLE — none of which were ch
 """
 import json
 
-from aisr import sanitize
+from llm_anthology import sanitize
 
 _STR_KEYS = ("extracted_content", "file_name", "name", "integration_name")
 _BLOB_KEYS = ("input", "content")

@@ -1,25 +1,25 @@
-"""`aisr` — render ChatGPT / Claude / Gemini session exports to faithful HTML + Markdown.
+"""`llm-anthology` — render ChatGPT / Claude / Gemini session exports to faithful HTML + Markdown.
 
 Fully local and offline: this tool never opens a network connection. Point it at an
 export you already have on disk and it writes <out_dir>/html, <out_dir>/md, an index
 and two reports (a text-exact fidelity gate and a hidden-unicode audit).
 
-  aisr claude   <export.json | dir>  <out_dir>
-  aisr chatgpt  <conversations.json> <out_dir> [--projects FILE]
-  aisr codex    <codex.json>         <out_dir>
-  aisr gemini   <transcript.json>    <out_dir> [--harvest FILE]
-  aisr demo     <out.html>
+  llm-anthology claude   <export.json | dir>  <out_dir>
+  llm-anthology chatgpt  <conversations.json> <out_dir> [--projects FILE]
+  llm-anthology codex    <codex.json>         <out_dir>
+  llm-anthology gemini   <transcript.json>    <out_dir> [--harvest FILE]
+  llm-anthology demo     <out.html>
 """
 import argparse
 import os
 import sys
 
-from aisr import build, demo, loaders, render_html
+from llm_anthology import build, demo, loaders, render_html
 
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="aisr",
+        prog="llm-anthology",
         description="Render AI session exports to faithful HTML + clean Markdown. "
                     "Fully offline — no network calls, ever.")
     sub = p.add_subparsers(dest="cmd")

@@ -1,7 +1,7 @@
 """Provider loaders: raw export files -> (conversations, errors[, extra]).
 
 Each provider differs only in how its export is read and grouped; everything from
-the IR onward is shared (see aisr.build). Loading errors are COLLECTED and handed
+the IR onward is shared (see llm_anthology.build). Loading errors are COLLECTED and handed
 to the build layer rather than raised, so one unreadable file cannot cost the corpus.
 
 Gemini's grouping lives here because Takeout's activity log has no conversation id:
@@ -15,8 +15,8 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from aisr import corpus, index
-from aisr.adapters import chatgpt, claude, codex, codex_rollout, codex_state, gemini
+from llm_anthology import corpus, index
+from llm_anthology.adapters import chatgpt, claude, codex, codex_rollout, codex_state, gemini
 
 GAP = timedelta(minutes=30)
 _WS = re.compile(r"\s+")

@@ -1,13 +1,13 @@
-# ai-sessions-render (JavaScript / TypeScript)
+# llm-anthology (JavaScript / TypeScript)
 
 **Turn your ChatGPT / Claude / Gemini data exports into browser-faithful HTML and clean, portable Markdown — entirely offline. No network. No egress.**
 
-This is the JS/TypeScript port of [`ai-sessions-render`](https://github.com/Prekzursil/ai-sessions-render) (also published to PyPI as a Python package). It is a faithful port, not a reimplementation: its output is validated **byte-for-byte** against the Python rail.
+This is the JS/TypeScript port of [`llm-anthology`](https://github.com/Prekzursil/LLM_Anthology) (also published to PyPI as a Python package). It is a faithful port, not a reimplementation: its output is validated **byte-for-byte** against the Python rail.
 
 ## Install
 
 ```bash
-npm install ai-sessions-render
+npm install llm-anthology
 ```
 
 Node ≥ 20. The only runtime dependencies are [`markdown-it`](https://github.com/markdown-it/markdown-it) (pinned exactly to 14.3.0) and [`entities`](https://github.com/fb55/entities), both MIT/BSD.
@@ -16,16 +16,16 @@ Node ≥ 20. The only runtime dependencies are [`markdown-it`](https://github.co
 
 ```bash
 # a single Claude export file, or a directory tree of them (incl. design_chats/)
-npx aisr claude ./claude-export/ ./out/claude/
+npx llm-anthology claude ./claude-export/ ./out/claude/
 
 # ChatGPT conversations.json (optionally a second project-tagged file)
-npx aisr chatgpt ./conversations.json ./out/chatgpt/ --projects ./projects.json
+npx llm-anthology chatgpt ./conversations.json ./out/chatgpt/ --projects ./projects.json
 
 # Gemini Takeout activity (optionally a web harvest for TRUE grouping)
-npx aisr gemini ./transcript.json ./out/gemini/ --harvest ./web_harvest.json
+npx llm-anthology gemini ./transcript.json ./out/gemini/ --harvest ./web_harvest.json
 
 # a synthetic sample page, no real content
-npx aisr demo ./demo.html
+npx llm-anthology demo ./demo.html
 ```
 
 Each run writes `<out>/html/NNN-title.html`, `<out>/md/NNN-title.md`, an `index.html`, and two reports: `_fidelity-report.json` (a text-exact gate, per conversation) and `_hidden-char-audit.json` (every flagged invisible codepoint).
@@ -33,7 +33,7 @@ Each run writes `<out>/html/NNN-title.html`, `<out>/md/NNN-title.md`, an `index.
 ## Library
 
 ```ts
-import { adapters, renderConversationHtml, renderConversationMd, verify } from "ai-sessions-render";
+import { adapters, renderConversationHtml, renderConversationMd, verify } from "llm-anthology";
 
 const convs = adapters.claude.parseExport(JSON.parse(raw));
 const html = renderConversationHtml(convs[0]);

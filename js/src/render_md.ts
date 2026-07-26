@@ -1,5 +1,5 @@
 /**
- * IR -> clean, portable Markdown (the "keep" copy). 1:1 with aisr/render_md.py.
+ * IR -> clean, portable Markdown (the "keep" copy). 1:1 with llm_anthology/render_md.py.
  *
  * Content-faithful: Claude/ChatGPT/Gemini bodies are already Markdown, so text
  * passes through untouched. Hidden unicode is STRIPPED (this file is a portable

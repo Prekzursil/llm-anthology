@@ -1,6 +1,6 @@
 # Cockpit
 
-Tauri v2 desktop shell for **ai-sessions-render** (`aisr`) — a local, offline
+Tauri v2 desktop shell for **llm-anthology** (`llm_anthology`) — a local, offline
 cockpit for browsing an AI-session corpus (rollouts, state graph, FTS5 search).
 
 This is the **P2 scaffold**: a bare window that compiles on Windows. The analysis

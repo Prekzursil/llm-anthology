@@ -1,4 +1,4 @@
-"""Contract for the corpus-BLIND research plane (``aisr/research.py``).
+"""Contract for the corpus-BLIND research plane (``llm_anthology/research.py``).
 
 PRIVACY-CRITICAL (Phase-4). The research plane is the ONLY component allowed to
 feed conversation data to a cloud LLM, so it must be corpus-blind BY
@@ -28,7 +28,7 @@ oracle):
 """
 from types import SimpleNamespace
 
-from aisr import research
+from llm_anthology import research
 
 RAWBODY = "RAWBODY_SECRET_DO_NOT_LEAK"
 SSN = "123-45-6789"

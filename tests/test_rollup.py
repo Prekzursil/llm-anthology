@@ -15,7 +15,7 @@ What the rollup must guarantee, and the tree that pins each guarantee:
     absent from the threads table (its self_tokens is 0), and the output dict is ordered
     by sorted id so a rollup is diffable/reproducible.
 """
-from aisr import corpus, rollup
+from llm_anthology import corpus, rollup
 
 
 # --------------------------------------------------------------------- fixtures
