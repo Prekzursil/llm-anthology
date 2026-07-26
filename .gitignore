@@ -36,3 +36,6 @@ js/test/fixtures/adapter-parity.json
 # The durable findings live in the commit messages; these are working files.
 .audit/
 .port/
+
+# Staged engine interpreter (a ~35MB build artifact produced by cockpit/scripts/stage-engine.ps1)
+cockpit/src-tauri/resources/

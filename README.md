@@ -114,7 +114,7 @@ npm run tauri build   # -> src-tauri/target/release/bundle/nsis/*.exe
 
 The cockpit UI can also be opened in a plain browser (`npm run dev`) — outside Tauri it automatically serves an in-memory mock corpus, so the interface can be previewed, screenshotted and design-reviewed without a Rust build.
 
-> **Packaging caveat, stated plainly:** the installer does **not** yet bundle a Python runtime (`bundle.externalBin` is empty). An installed cockpit resolves `python -m llm_anthology.sidecar` from `PATH`, so the machine needs Python and this package. Bundling a relocatable CPython is the documented next step (`cockpit/src-tauri/binaries/README.md`).
+The installer is **self-contained**: `cockpit/scripts/stage-engine.ps1` bundles a relocatable CPython (python-build-standalone via `uv`) with the engine installed into it, so an installed app needs neither Python nor this package on the machine. A dev build with nothing staged falls back to `python` on `PATH`. Roughly a 14 MB installer, ~60 MB installed. See [`cockpit/src-tauri/binaries/README.md`](cockpit/src-tauri/binaries/README.md).
 
 ---
 

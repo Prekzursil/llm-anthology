@@ -67,12 +67,23 @@ needs no administrator.
 Tauri's config schema hard-fails on an unknown field, so a `"//targets"` pseudo-comment breaks
 the build.)
 
-## Packaging caveat — the engine is not bundled yet
+## Packaging — the engine IS bundled
 
-`bundle.externalBin` is still `[]`. An installed cockpit therefore resolves
-`python -m llm_anthology.sidecar` from `PATH`, so the machine needs Python and the
-`llm-anthology` package installed. Bundling a relocatable CPython (python-build-standalone via
-uv) is the documented next step — see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md).
+    powershell -File scripts/stage-engine.ps1     # stage a relocatable CPython (~50 MB)
+    npm run tauri build                            # -> ~14 MB NSIS installer
+
+`scripts/stage-engine.ps1` stages a python-build-standalone CPython (via `uv`) into
+`src-tauri/resources/engine/` with the `llm-anthology` package installed into it, and
+`tauri.conf.json` maps that into the bundle. An installed app therefore carries its own
+interpreter at `<install-dir>/engine/python.exe` and does **not** require the user to have
+Python or the package.
+
+`src/sidecar.rs::engine_python_in()` prefers the bundled interpreter and falls back to `python`
+on `PATH`, so a dev build with nothing staged behaves exactly as before. Both branches are
+unit-tested. Details and the reasoning for a resource rather than `externalBin`:
+[`src-tauri/binaries/README.md`](src-tauri/binaries/README.md).
+
+The staged tree is a build artifact and is gitignored.
 
 ## Run (dev)
 

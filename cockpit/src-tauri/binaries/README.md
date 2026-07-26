@@ -1,44 +1,72 @@
-# Cockpit engine sidecar — placeholder (NOT yet wired)
+# Cockpit engine sidecar — how the engine is shipped
 
-This directory is the Tauri **sidecar** location for the AI-session analysis
-engine that the Cockpit desktop app will spawn. It is a documented placeholder
-for the *next* work-unit; nothing here is wired yet, which is why the app still
-builds today.
+This directory was the placeholder for a Tauri `externalBin` sidecar. **That route was not
+taken.** The engine ships as a Tauri **resource** instead, and the packaging gap this file
+used to document is closed.
 
-## What will live here
+## What actually ships
 
-A self-contained Python engine binary, one per target triple, following Tauri's
-`externalBin` naming convention (Tauri appends the triple at build time and
-strips it at runtime, so the app always spawns `llm_anthology-engine`):
+`cockpit/scripts/stage-engine.ps1` stages a **relocatable CPython**
+(python-build-standalone, fetched via `uv`) into `../resources/engine/`, with the
+`llm-anthology` package pip-installed into it. `tauri.conf.json` maps that tree into the
+bundle:
 
-    binaries/llm_anthology-engine-x86_64-pc-windows-msvc.exe
-    binaries/llm_anthology-engine-x86_64-unknown-linux-gnu
-    binaries/llm_anthology-engine-aarch64-apple-darwin
+    "bundle": { "resources": { "resources/engine": "engine" } }
 
-## How it will be built (SOTA decision)
+so an installed app has its interpreter at `<install-dir>/engine/python.exe`.
 
-- Packaged with **python-build-standalone** via **uv** (uv 0.10.4) — a
-  relocatable CPython plus the `llm-anthology` package, produced as a single launchable
-  engine binary. The build step (a future bite) emits the per-triple binary here.
+`src/sidecar.rs::engine_python_in()` prefers that interpreter and falls back to `python` on
+`PATH`:
 
-## How it will be wired (deferred to the NEXT bite)
+- **packaged install** → the bundled CPython. The app does **not** require the user to have
+  Python or the package installed.
+- **dev build** (nothing staged) → `python` from `PATH`, exactly as before, which is also
+  what the Rust test-suite's real-sidecar e2e tests use.
 
-1. Declare it in `../tauri.conf.json` under `bundle.externalBin` (currently an
-   empty `[]` placeholder), e.g.:
+Both branches are unit-tested (`engine_python_prefers_a_bundled_interpreter`,
+`engine_python_falls_back_to_path_when_nothing_is_bundled`,
+`engine_python_ignores_an_empty_engine_directory`) — the bundled branch is otherwise only
+reachable from a real installation, which is exactly the kind of path that ships broken.
 
-       "bundle": { "externalBin": ["binaries/llm_anthology-engine"] }
+## Why a resource, not `externalBin`
 
-2. Spawn it from Rust (tauri-plugin-shell sidecar API) and speak to it over
-   **stdio using newline-delimited JSON (NDJSON)** — one JSON object per line,
-   framed by `\n`. No HTTP, no localhost port.
+`externalBin` wants ONE executable per target triple. python-build-standalone is a *tree* — a
+real interpreter plus its stdlib — not a single file. Freezing it into one binary
+(PyInstaller/Nuitka) was the alternative and was rejected: a frozen bundle changes import
+semantics, and the engine's value here is that the sidecar module loads in production exactly
+as it does in development. Shipping the tree as a resource keeps one code path.
 
-3. Lifecycle + isolation, also deferred to that bite:
-   - a Windows **Job Object** (kill-on-close) so no orphaned engine outlives the app;
-   - an **AppContainer** sandbox membrane around the engine process.
+## Lifecycle and isolation are unchanged
 
-## Why it is empty now
+Swapping the interpreter path changed nothing about how the process is created. The engine is
+still spawned through one raw `CreateProcessW` that does three things at once:
 
-Wiring a not-yet-built sidecar into `externalBin` would break `tauri build`
-(the bundler looks for the file on disk). Keeping `externalBin: []` plus this
-README means the scaffold BUILDS today while documenting exactly where the
-engine plugs in.
+- a **Job Object** with `KILL_ON_JOB_CLOSE`, so no engine outlives the app;
+- `CREATE_NO_WINDOW`;
+- optionally an **AppContainer** membrane with no `internetClient` capability (a first-class,
+  tested spawn mode; opt-in at the production call site because a sandboxed engine also needs
+  its export destination granted to the package SID — an export-lifecycle concern).
+
+Transport is unchanged too: **stdio NDJSON JSON-RPC 2.0**, one object per line. No HTTP, no
+localhost port.
+
+## Rebuilding
+
+    cd cockpit
+    powershell -File scripts/stage-engine.ps1     # ~50 MB staged, gitignored
+    npm run tauri build                            # -> ~14 MB NSIS installer
+
+The staged tree is a build artifact and is gitignored — never commit the interpreter. The
+staging script verifies its own output before finishing: it imports `llm_anthology` and runs
+`python -m llm_anthology.sidecar --help` using the staged interpreter, from a cwd with no repo
+on it, so a half-staged tree fails the script rather than the installer.
+
+## Size
+
+| Piece | Size |
+|---|---|
+| staged engine (slimmed: no CPython test suite, IDLE, Tk/Tcl) | ~50 MB |
+| NSIS installer | ~14 MB |
+| installed footprint | ~60 MB |
+
+Pass `-NoSlim` to keep the full stdlib.

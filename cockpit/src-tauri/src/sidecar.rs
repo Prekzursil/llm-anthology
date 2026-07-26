@@ -17,6 +17,7 @@
 //!   correlation is trivially satisfied.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -114,9 +115,45 @@ pub struct SidecarClient {
     next_id: u64,
 }
 
+/// Resolve the engine interpreter, given the directory holding the app executable.
+///
+/// A PACKAGED install ships a relocatable CPython (python-build-standalone) beside the
+/// binary as a Tauri resource, with the engine package already installed into it — so the
+/// app does not require the user to have Python at all. A DEV build ships none and falls
+/// back to `python` on PATH, which is also what every test in this file relies on.
+///
+/// Pure and directory-taking, so BOTH branches are testable without an installed app —
+/// the bundled branch is otherwise only reachable from a real installation, which is
+/// exactly the kind of path that ships broken.
+///
+/// Note this returns a path, not a decision about hardening: the spawn flags (Job Object
+/// reap, CREATE_NO_WINDOW, optional AppContainer membrane) are unchanged and apply
+/// identically to the bundled interpreter.
+pub(crate) fn engine_python_in(exe_dir: &Path) -> String {
+    let bundled = if cfg!(windows) {
+        exe_dir.join("engine").join("python.exe")
+    } else {
+        exe_dir.join("engine").join("bin").join("python3")
+    };
+    if bundled.is_file() {
+        return bundled.to_string_lossy().into_owned();
+    }
+    "python".to_string()
+}
+
+/// The interpreter this process should spawn. Falls back to `python` if the executable's
+/// own location cannot be determined, so a resolution failure degrades to today's
+/// behaviour rather than to no engine at all.
+fn engine_python() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(engine_python_in))
+        .unwrap_or_else(|| "python".to_string())
+}
+
 impl SidecarClient {
-    /// Spawn `python -m llm_anthology.sidecar --index <index_path>` with stdin/stdout/stderr
-    /// piped, ready to answer JSON-RPC requests.
+    /// Spawn `<engine-python> -m llm_anthology.sidecar --index <index_path>` with
+    /// stdin/stdout/stderr piped, ready to answer JSON-RPC requests.
     ///
     /// Windows: raw `CreateProcessW` under a `KILL_ON_JOB_CLOSE` Job Object +
     /// `CREATE_NO_WINDOW` — the reliable reap + no-window core. The AppContainer
@@ -132,8 +169,9 @@ impl SidecarClient {
     fn spawn_platform(index_path: &str) -> Result<Self, String> {
         use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
         let args = ["-m", "llm_anthology.sidecar", "--index", index_path];
+        let python = engine_python();
         let HardenedSpawn { stdin, stdout, stderr, reaper } =
-            spawn_hardened("python", &args, &SpawnOpts::job_only())?;
+            spawn_hardened(&python, &args, &SpawnOpts::job_only())?;
         Ok(Self {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
@@ -146,7 +184,7 @@ impl SidecarClient {
     #[cfg(not(windows))]
     fn spawn_platform(index_path: &str) -> Result<Self, String> {
         use std::process::{Command, Stdio};
-        let mut child = Command::new("python")
+        let mut child = Command::new(engine_python())
             .arg("-m")
             .arg("llm_anthology.sidecar")
             .arg("--index")
@@ -196,9 +234,59 @@ impl Drop for SidecarClient {
 
 #[cfg(test)]
 mod tests {
-    use super::jsonrpc_roundtrip;
+    use super::{engine_python_in, jsonrpc_roundtrip};
     use serde_json::{json, Value};
     use std::io::Cursor;
+
+    /// A dev build (no bundled interpreter beside the exe) must fall back to PATH.
+    #[test]
+    fn engine_python_falls_back_to_path_when_nothing_is_bundled() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm_anthology_enginepy_none_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(engine_python_in(&dir), "python");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PACKAGED install ships a relocatable CPython beside the binary and must prefer it,
+    /// so the app does not depend on the user having Python.
+    ///
+    /// This branch is otherwise reachable only from a real installation — exactly the kind
+    /// of path that ships broken — so it is exercised here against a stand-in file.
+    #[test]
+    fn engine_python_prefers_a_bundled_interpreter() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm_anthology_enginepy_bundled_{}", std::process::id()));
+        let engine = dir.join("engine");
+        std::fs::create_dir_all(&engine).unwrap();
+        let exe = if cfg!(windows) {
+            engine.join("python.exe")
+        } else {
+            let bin = engine.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            bin.join("python3")
+        };
+        std::fs::write(&exe, b"stand-in").unwrap();
+
+        let resolved = engine_python_in(&dir);
+        assert_ne!(resolved, "python", "a bundled interpreter must win over PATH");
+        assert_eq!(std::path::Path::new(&resolved), exe.as_path());
+        // An absolute path is what hardened_spawn::resolve_program accepts directly
+        // (it short-circuits the PATH walk for an absolute, existing file).
+        assert!(std::path::Path::new(&resolved).is_absolute());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory that merely CONTAINS an `engine` dir, with no interpreter in it, is not
+    /// a packaged install — a half-staged bundle must not be mistaken for a complete one.
+    #[test]
+    fn engine_python_ignores_an_empty_engine_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "llm_anthology_enginepy_empty_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("engine")).unwrap();
+        assert_eq!(engine_python_in(&dir), "python");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn roundtrip_frames_one_newline_terminated_line_and_returns_result() {
