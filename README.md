@@ -1,106 +1,141 @@
-# llm-anthology
+# LLM Anthology
 
-**Turn your ChatGPT / Claude / Gemini data exports into browser-faithful HTML and clean, portable Markdown — entirely on your own machine. No network. No egress.**
+**Every AI coding session you've ever had — browsable, searchable, connected, exportable, and manageable. Entirely on your own machine. No network. No egress.**
 
-Your AI conversations are part of your working history, but a provider "data export" is a pile of raw JSON that no human wants to read. `llm-anthology` converts those exports into two artifacts per conversation:
+Your conversations with ChatGPT, Claude, Gemini and Codex are your working history: your decisions, your research trail, your debugging. They currently live scattered across four vendor formats, in raw JSON nobody wants to read, in stores that quietly keep three copies of the same session. LLM Anthology turns that pile into one curated, private archive you actually own.
 
-- a **view copy** — a self-contained static HTML page that reads like the original web app, safe to open in any browser, and
-- a **keep copy** — clean Markdown that survives any future tooling and is safe to re-feed to a model.
+It is two things in one binary:
 
-Everything runs offline. The tool makes zero network requests, and the pages it emits are locked down so *they* can't make any either.
+- an **engine** (Python) that ingests every provider into one shared model, indexes it for full-text search, and renders faithful HTML + Markdown, and
+- a **cockpit** (Tauri desktop app) that shows the whole corpus as a **cross-provider spawn tree** — which agent session spawned which — with time-travel, diffing, and fidelity-gated export.
 
-## Why
+Everything runs offline. The engine makes zero network requests, the pages it emits are locked down so *they* can't either, and the desktop app runs its engine behind an OS-level sandbox that has no network capability at all.
 
-- **Own your AI history.** Conversations you had with an assistant are your notes, your decisions, your research trail. They should be readable and greppable on your disk, not trapped in a vendor UI or an unreadable JSON blob.
-- **Browser-faithful and portable at the same time.** HTML for reading the way the conversation actually looked (roles, thinking blocks, tool calls, branches, citations); Markdown for grep, diff, static-site pipelines, and archival.
-- **Fully local, built for sensitive content.** Chat exports contain private material and — increasingly — *hostile* material (hidden-unicode prompt-injection payloads travel inside conversations). This tool treats every export as sensitive **and** untrusted: nothing leaves the machine, and invisible characters are surfaced or stripped rather than silently passed through.
+---
 
-## Features
+## Why this exists
 
-- **Three providers, one pipeline.** Each adapter parses its native export into a small provider-agnostic IR (`llm_anthology/ir.py`); the HTML and Markdown renderers consume only the IR.
-  - **Claude** (claude.ai account data export): full content model — text, thinking (including thinking the UI withheld, labelled as such), tool calls/results, attachments with extracted document text, citations, file chips.
-  - **ChatGPT** (`conversations.json`): message-tree walk from `current_node`, thoughts/reasoning recaps, code and execution-output blocks, image asset pointers. *Adapter written, not yet validated against a real export — see status table.*
-  - **Gemini** (Google Takeout "Gemini Apps" activity): prompt/response exchanges plus honest rendering of feature events ("Used", "Created Gemini Canvas", …) as events — never as fabricated model replies.
-- **Tree & branch handling.** Claude exports are a message *tree* (regenerations create siblings). The adapter walks the **active path** — descending toward the subtree holding the globally newest message, not merely the newest immediate child, which would abandon live threads (`llm_anthology/adapters/claude.py:105`) — annotates branch points ("2/2"), walks every root so orphaned subtrees aren't lost, and sweeps in unreachable messages rather than dropping them. ChatGPT's abandoned regenerations are excluded by following `current_node → root`, so discarded replies never leak into the transcript (`llm_anthology/adapters/chatgpt.py:76`).
-- **Hidden-unicode neutralisation** (`llm_anthology/sanitize.py`). Zero-width and bidi format characters, the Unicode TAG block, variation selectors (the 256-value invisible-text smuggling channel), private-use, unassigned, lone surrogates, and invisible Hangul fillers are all flagged — position-aware, so legitimate emoji sequences (ZWJ between pictographs, VS16 after a pictograph) stay intact. Two deliberate surfaces:
-  - **HTML (forensic):** each flagged codepoint becomes a *visible inert badge* (`⚑` with the `U+XXXX` name in a tooltip) — the evidence is preserved, never rendered invisibly.
-  - **Markdown / filenames (safe copy):** flagged codepoints are *stripped*, so re-pasting an archived message into your next model session can't re-inject a payload.
-- **Text-exact fidelity gate** (`llm_anthology/verify.py`). Every prose word token in the parsed source must survive into the rendered HTML (multiset comparison, attribute-aware). Any conversation with missing tokens is reported in `_fidelity-report.json`. This is the hard guarantee that no rendering bug silently drops or garbles content.
-- **Forensic audit sidecar** (`llm_anthology/audit.py`). Hidden-character scanning covers *every* text surface — titles, tool inputs/outputs, attachment extracted text, citation titles — not just message bodies (scanning bodies alone under-reported by roughly 5x on real data). Results land in `_hidden-char-audit.json`.
-- **Hardened, self-contained HTML** (`llm_anthology/render_html.py`). CSP `default-src 'none'`, no scripts, theme CSS inlined, links allowlisted to http/https with a fail-closed anchor rewrite, remote markdown images defanged into labelled links instead of `<img>` loads.
-- **Corpus resilience.** Each conversation renders inside its own try/except; one malformed conversation is reported, never fatal to the rest of the corpus (`llm_anthology/build.py`). Loading errors (unreadable file, malformed JSON) are collected and reported the same way rather than raised.
+- **Own your AI history.** It should be readable and greppable on your disk, not trapped in a vendor UI or an unreadable export blob.
+- **See the shape of your work.** Modern agent sessions *spawn* other sessions. A flat list hides that entirely. The spawn tree is the thing no other tool in this space draws — and it is cross-provider, so a Claude session that spawned a Codex run appears as one connected graph.
+- **Built for genuinely sensitive content.** Chat exports contain private material and, increasingly, *hostile* material — hidden-unicode prompt-injection payloads travel inside conversations. Every export is treated as both sensitive **and** untrusted.
 
-## How it works
+---
+
+## What it does
+
+### Ingest — four providers, one model
+Each adapter parses its native export into a small provider-agnostic IR (`llm_anthology/ir.py`); everything downstream consumes only the IR.
+
+| Provider | Input | Status |
+|---|---|---|
+| **Claude** | claude.ai account data export (file or directory tree) | **Validated** on 212 real conversations; text-exact gate 207/212, 0 errors. Includes `design_chats/*.json`, which use a different message shape |
+| **Gemini** | Takeout "Gemini Apps" activity (+ optional web harvest) | **Validated** on 1,060 real records → 2,027 turns. Conversation **grouping is PROVISIONAL** (time-gap heuristic) unless a harvest supplies true boundaries |
+| **Codex** | `rollout-*.jsonl` session files + `state_5` store | Powers the spawn tree and dedup |
+| **ChatGPT** | `conversations.json` (message tree) | **UNVALIDATED at scale** — hardened adapter + synthetic tests, but no large real export has been run through it |
+
+### Render — a view copy and a keep copy
+Two artifacts per conversation: a self-contained **HTML** page that reads like the original web app, and clean portable **Markdown** that survives any future tooling and is safe to re-feed to a model.
+
+### Search — FTS5 over the whole corpus
+A SQLite full-text index across every provider at once.
+
+### Spawn tree — the differentiator
+A canvas graph of which session spawned which, across providers, laid out with ELK in a worker. Plus:
+- **time travel** — scrub the corpus to any past moment and see only what existed then (`timetravel.py`);
+- **diff** — structural delta between two corpus snapshots, id-set based, not pixels (`diff.py`);
+- **rollup** — per-subtree token/turn aggregates (`rollup.py`).
+
+### Export — with a fidelity gate that can actually fail
+Export a graph or a transcript, and the round-trip **diff is the oracle**: the exported artifact is re-parsed and compared against the source, so an export that silently drops a node fails instead of shipping (`export.py`, `verify.py`).
+
+### Manage — absorbed from codex-session-manager
+The three capabilities inherited when that app was retired (see [Lineage](#lineage)):
+
+- **Metadata layer** (`metadata.py`) — pin an **alias**, **tags** and **notes** onto any session. App-owned and **non-mutating by construction**: nothing in the module opens a session file, so your originals stay byte-identical. Searchable by tag or free text.
+- **Safe maintenance** (`maintenance.py`) — **archive / move / reconcile / delete** for session stores. The safety property is a hard **planner/executor split**: `plan_maintenance()` is pure and returns a preview with typed warnings; `execute_maintenance()` only runs a plan the planner produced, refuses without an exact typed confirmation, defaults to dry-run, writes a **checkpoint** first, and is reversible via `restore_checkpoint()`. Every path is confined to the resolved store root — traversal, absolute and UNC escapes are refused, not sanitized.
+- **Codex dedup** (`dedup.py`) — Codex writes the same session to the live store, a backup mirror and wherever your own syncs left it. Dedup collapses those physical copies into one **logical session** while keeping every copy attached as evidence. It is a **view**: it never deletes anything.
+
+---
+
+## Architecture
 
 ```
-export JSON ──▶ adapter (claude | chatgpt | gemini) ──▶ provider-agnostic IR (llm_anthology/ir.py)
-                                                             │
-                       ┌─────────────────────────────────────┼──────────────────────┐
-                       ▼                                     ▼                      ▼
-              llm_anthology/render_html.py                   llm_anthology/render_md.py          llm_anthology/audit.py
-              "view" copy (HTML,                    "keep" copy (MD,           hidden-char
-              invisibles badged)                    invisibles stripped)       forensics
-                       │
-                       ▼
-              llm_anthology/verify.py — text-exact fidelity gate (hard, per conversation)
+ exports / session stores
+   (claude · chatgpt · gemini · codex rollouts + state)
+            │
+            ▼
+      adapters ──▶ provider-agnostic IR ──▶ corpus + SQLite/FTS5 index
+            │                                    │
+            │                    ┌───────────────┼────────────────┐
+            ▼                    ▼               ▼                ▼
+      render_html / render_md   search      spawn tree      metadata · dedup
+      verify.py (fidelity gate)                             maintenance (gated)
+            │
+            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │  Tauri cockpit                                              │
+   │    TS + canvas UI  ◀── Tauri commands ──▶  Rust core        │
+   │                                              │              │
+   │                              stdio NDJSON JSON-RPC 2.0      │
+   │                                              ▼              │
+   │                              python -m llm_anthology.sidecar│
+   └─────────────────────────────────────────────────────────────┘
 ```
+
+The engine is a **stdio** JSON-RPC server — deliberately not a localhost HTTP port, so nothing else on the machine can talk to it.
+
+---
 
 ## Install
 
-Requires **Python >= 3.9**. The only third-party runtime dependency is [markdown-it-py](https://github.com/executablebooks/markdown-it-py) (MIT).
+Requires **Python ≥ 3.9**. The only third-party runtime dependency is [markdown-it-py](https://github.com/executablebooks/markdown-it-py) (MIT).
 
 ```bash
 pip install llm-anthology
 ```
 
-That installs the `llm-anthology` command. To work from a clone instead:
+That installs the `llm-anthology` command (short alias: `anth`). From a clone:
 
 ```bash
 git clone https://github.com/Prekzursil/LLM_Anthology
-cd llm-anthology
+cd LLM_Anthology
 pip install -e ".[dev]"
-python -m pytest          # 136 tests, all synthetic fixtures
+python -m pytest
 ```
+
+### Desktop cockpit
+
+```bash
+cd cockpit
+npm install
+npm run tauri dev     # develop
+npm run tauri build   # -> src-tauri/target/release/bundle/nsis/*.exe
+```
+
+The cockpit UI can also be opened in a plain browser (`npm run dev`) — outside Tauri it automatically serves an in-memory mock corpus, so the interface can be previewed, screenshotted and design-reviewed without a Rust build.
+
+> **Packaging caveat, stated plainly:** the installer does **not** yet bundle a Python runtime (`bundle.externalBin` is empty). An installed cockpit resolves `python -m llm_anthology.sidecar` from `PATH`, so the machine needs Python and this package. Bundling a relocatable CPython is the documented next step (`cockpit/src-tauri/binaries/README.md`).
+
+---
 
 ## Quickstart
 
-All paths below are synthetic examples — point them at your own export.
-
-**Claude** — a single export JSON, or a directory that contains export JSON files:
+All paths below are synthetic examples.
 
 ```bash
+# Claude — a single export JSON, or a directory of them
 llm-anthology claude ~/exports/claude/conversations.json out/claude/
-llm-anthology claude ~/exports/claude/                   out/claude/
-```
 
-A real Claude export directory also contains `users.json`, `memories.json`, `projects/` and `design_chats/`. Only actual conversations are ingested — `conversations.json` files plus `design_chats/*.json`. That second one matters: design chats use a **different message shape** (`messages[]` with `role` + a content *dict*, rather than `chat_messages[]` with `sender` + a content *list*), so feeding one through the normal parser yields a silently **empty** conversation. On a real corpus that was 544 KB of conversation content rendering as blank pages.
+# Gemini — provisional grouping, or true grouping with a harvest
+llm-anthology gemini ~/exports/gemini/transcript.json out/gemini/
+llm-anthology gemini ~/exports/gemini/transcript.json out/gemini/ --harvest ~/exports/gemini/web_harvest.json
 
-No export handy? Render the built-in **synthetic demo** (exercises every block type, contains no real content):
+# ChatGPT
+llm-anthology chatgpt ~/exports/chatgpt/conversations.json out/chatgpt/
 
-```bash
+# No export handy? Render the built-in synthetic demo
 llm-anthology demo out/demo.html
 ```
-
-**Gemini** — a Takeout-derived activity transcript, optionally joined with a web-app harvest for true conversation grouping:
-
-```bash
-# provisional grouping (30-minute-gap heuristic, clearly labelled as such)
-llm-anthology gemini ~/exports/gemini/transcript.json out/gemini/
-
-# true grouping, joined on exact normalised prompt text
-llm-anthology gemini ~/exports/gemini/transcript.json out/gemini/ --harvest ~/exports/gemini/web_harvest.json
-```
-
-The grouping mode is written into `_fidelity-report.json` as `grouping_mode`, so a heuristic can never be mistaken for ground truth.
-
-**ChatGPT** — `conversations.json` from the data export, or any JSON array of conversation objects. Conversations appearing in both files are rendered once (deduped by id); records carrying a `__project_id` get their project shown in the index:
-
-```bash
-llm-anthology chatgpt ~/exports/chatgpt/conversations.json out/chatgpt/
-llm-anthology chatgpt ~/exports/chatgpt/conversations.json out/chatgpt/ --projects ~/exports/chatgpt/projects.json
-```
-
-The ChatGPT adapter is **not yet validated against a large real export** — see the status table.
 
 ### Output layout
 
@@ -110,56 +145,55 @@ out/claude/
 ├── html/001-<title>.html     # one self-contained page per conversation
 ├── md/001-<title>.md         # matching portable Markdown
 ├── _fidelity-report.json     # per-conversation gate results + isolated errors
-└── _hidden-char-audit.json   # every flagged invisible codepoint, per conversation
+└── _hidden-char-audit.json   # every flagged invisible codepoint
 ```
+
+---
 
 ## The fidelity contract (read this before trusting it)
 
-Being honest about what "faithful" means here:
+- **Hard gate — text-exact (enforced).** Every prose word token in the parsed source must appear in the rendered HTML (multiset comparison, attribute-aware). Failures land in `_fidelity-report.json`. Math spans are held out of the markdown pass and restored verbatim so CommonMark's backslash stripping cannot silently mutate TeX — unrendered-but-intact beats mutated.
+- **Advisory — visual resemblance (not enforced).** The theme approximates the native web-app look. There is no automated visual check.
+- **Explicitly NOT claimed — pixel-identical.** Impossible for a static offline page, and not a goal. Math is preserved verbatim rather than typeset; code is not syntax-highlighted.
 
-- **Hard gate — text-exact (enforced).** Every prose word in the parsed source (message text and thinking bodies) must appear in the rendered HTML. The build runs `llm_anthology/verify.py` on every conversation and writes failures to `_fidelity-report.json`. Math spans are held out of the markdown pass entirely and restored verbatim, specifically so CommonMark's backslash stripping can't silently mutate TeX (`llm_anthology/render_html.py:105`) — unrendered-but-intact beats mutated.
-- **Advisory — visual resemblance (not enforced).** The bundled theme approximates the native web-app look (bubbles, roles, collapsible thinking, tool panels). There is **no automated visual check** in this repo; visual fidelity is best-effort.
-- **Explicitly NOT claimed — pixel-identical.** Literal pixel equality with a live, scripted web app is impossible for a static offline page and is not a goal. Math is preserved verbatim rather than typeset, and code blocks are not syntax-highlighted (both are documented follow-ups).
-
-Latest full runs on real (private, not-in-repo) corpora: **Claude** — 212 conversations rendered (204 from `conversations.json` + 8 design chats), text-exact gate passed on 207/212, 0 errors; **Gemini** — 1,060 activity records → 2,027 turns rendered, with conversation grouping still provisional pending a web-app harvest.
-
-That Claude figure was previously reported as 236. It was wrong, and the way it was wrong is worth recording: a `**/*.json` glob had been sweeping up the export's *metadata* files (`users.json`, `memories.json`, `projects/*.json`) — each of which the adapter happily wrapped as a single **empty** conversation — plus, when the output directory sat outside the source tree, the tool's own previous reports (`_hidden-char-audit.json` contributed 29 phantom "conversations", one per audit row). So 236 = 204 real + 32 empty artefacts. Counting rendered files is not the same as counting conversations; the count is now taken only from real conversation sources.
+---
 
 ## Security & privacy posture
 
-- **Local-only, no egress — by construction.** The code performs no network I/O anywhere (standard library + `markdown-it-py` only; no HTTP client, no sockets). Your conversations never leave your machine.
-- **The output can't phone home either.** Every rendered page ships `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; form-action 'none'`, contains no scripts, inlines its CSS, and never embeds a remote `<img>` — markdown images are defanged into labelled links that are only followed if *you* click them.
-- **Exports are treated as untrusted input.**
-  - Raw HTML inside message bodies is escaped, matching what chatgpt.com / claude.ai / gemini themselves do (`markdown-it` with `html=False`).
-  - Every anchor is rewritten with an http/https allowlist that **fails closed**: an href the rewriter can't verify is dropped, and `javascript:` / `data:` / `file:` URLs are defanged to inert text (`llm_anthology/render_html.py:48`, `llm_anthology/sanitize.py:150`).
-  - Hidden/invisible codepoints are badged in HTML, stripped in Markdown and filenames (see Features), and inventoried in the audit sidecar.
-  - The Markdown writer hardens against markdown injection: newlines are stripped from single-line fields so a value can never forge a `## Human` turn header, and link titles/URLs are escaped and percent-encoded so a `)` or `]` in the data can't forge a second live link (`llm_anthology/render_md.py:19`).
-  - Only local, scheme-less relative paths ever become `<img src>`; anything with a URL scheme is displayed as text, never fetched.
-- **Repo hygiene.** `.gitignore` blocks rendered output and real conversation data from ever being committed. All examples and tests in this repo use synthetic content only.
+- **Local-only, by construction.** No network I/O anywhere in the engine — standard library plus `markdown-it-py`. No HTTP client, no sockets.
+- **The output can't phone home either.** Every rendered page ships `default-src 'none'`, contains no scripts, inlines its CSS, and defangs remote images into labelled links.
+- **Exports are treated as untrusted input.** Raw HTML in message bodies is escaped; every anchor is rewritten against an http/https allowlist that **fails closed**; `javascript:`/`data:`/`file:` URLs are defanged to inert text.
+- **Hidden-unicode neutralisation** (`sanitize.py`). Zero-width and bidi formats, the TAG block, **variation selectors** (the 256-value invisible-text smuggling channel), private-use, unassigned, lone surrogates and invisible Hangul fillers are all flagged — position-aware, so legitimate emoji survive. Badged visibly in HTML (forensic), stripped in Markdown and filenames (safe copy).
+- **OS-level engine sandbox.** The cockpit spawns its engine through one raw `CreateProcessW` that does three things at once: an **AppContainer** with no `internetClient` capability (the engine literally cannot reach the network), a **Job Object** with `KILL_ON_JOB_CLOSE` (no orphaned engine outlives the app), and `CREATE_NO_WINDOW`.
+- **Cloud research is metadata-only, and that is enforced.** The optional research plane may summarise your corpus via an LLM. What may cross to it is a **strict allowlist of structural metadata** — ids, provider, timestamps, turn/char counts — and nothing else. Free text, including conversation **titles**, is excluded *by construction*: a title is derived from raw message content (the Codex adapter builds it from the first user message), so letting titles cross would leak raw content. Both layers are mutation-pinned by `tools/privacy_mutation_check.py`, which fails if re-adding the leak keeps the suite green.
+- **Repo hygiene.** `.gitignore` blocks rendered output and real conversation data. Every example and test uses synthetic content only.
 
-## Provider status
-
-| Provider | Input | Command | Status |
-|---|---|---|---|
-| **Claude** | claude.ai account data export (JSON file or directory tree) | `llm-anthology claude` | **Validated** on 212 real conversations; text-exact gate 207/212, 0 errors. Includes `design_chats/*.json` (separate message shape) |
-| **Gemini** | Takeout "Gemini Apps" activity as a normalised `transcript.json` (+ optional web harvest) | `llm-anthology gemini` | **Validated** on 1,060 real records (2,027 turns rendered); conversation **grouping is PROVISIONAL** (time-gap heuristic) unless a web-app harvest supplies true boundaries |
-| **ChatGPT** | `conversations.json` (message tree) | `llm-anthology chatgpt` | **UNVALIDATED at scale** — synthetic tests + a hardened adapter, but a large real export has not yet been run through it (`llm_anthology/adapters/chatgpt.py`) |
-
-## Known limitations
-
-- The HTML turn header currently labels every assistant "Claude", regardless of provider (`llm_anthology/render_html.py:214`).
-- Math is preserved verbatim (`$...$` / `$$...$$` shown as-is), not typeset; no syntax highlighting; one bundled theme.
-- Claude exports contain no bytes for uploaded `files` — they render as a named chip ("no bytes in export"). Attachment *text* (extracted document content) is preserved.
-- Gemini: Takeout's activity log has no conversation IDs; the Takeout → `transcript.json` normalisation step is not part of this repo yet.
+---
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest    # 136 tests
+python -m pytest            # engine: 100% line + branch coverage, enforced
+
+cd cockpit
+npx vitest run              # UI logic
+npx tsc --noEmit
+cd src-tauri && cargo test  # Rust core, incl. real-sidecar e2e round-trips
 ```
 
-Tests are synthetic-only (no real conversation content) and cover the adapters, both renderers, the sanitizer, the audit, and the fidelity gate.
+The engine gate is a hard **100% line *and* branch** requirement (`--cov-fail-under=100`); the few genuinely unreachable defensive guards carry a justified `# pragma: no cover`. Tests are synthetic-only — no real conversation content.
+
+---
+
+## Lineage
+
+LLM Anthology is the union of two of this author's earlier projects:
+
+- **ai-sessions-render** (`aisr`) — the Python engine: adapters, IR, renderers, sanitizer, fidelity gate. Renamed to `llm_anthology`; the old package name is retired.
+- **codex-session-manager** — a C#/.NET WPF app for managing Codex session history. **Retired.** It shared zero code with this stack, so its three unique capabilities — the metadata layer, gated maintenance, and Codex dedup — were re-implemented here against the C# tests as the behavioural spec, rather than merged.
+
+"Anthology" because that is what this is: a curated collection of everything you and your agents have written.
 
 ## License
 
