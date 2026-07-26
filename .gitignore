@@ -31,3 +31,8 @@ transcript.json
 # or packaged. The renderer/sanitize parity fixtures are synthetic and ARE committed.
 js/test/fixtures/adapter-parity.json
 # Real exports should live OUTSIDE this tree entirely — this is the last line of defence.
+
+# Audit / port scratch: UI captures, review artifacts, workflow evidence.
+# The durable findings live in the commit messages; these are working files.
+.audit/
+.port/
