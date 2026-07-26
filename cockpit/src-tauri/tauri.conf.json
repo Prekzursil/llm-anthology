@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Cockpit",
+        "title": "LLM Anthology",
         "width": 1000,
         "height": 700
       }
@@ -24,7 +24,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "//targets": "nsis, not \"all\". \"all\" also builds the WiX/MSI target, which fails on this machine: light.exe aborts ICE validation with LGHT0217 / Windows Installer error 2738 (the VBScript runtime cannot be reached by the ICE custom actions). The generated .wxs itself is fine -- it only emits warnings -- so this is an environment fault, not a packaging defect. NSIS does not use WiX or ICE at all, and is the better fit here anyway: a smaller per-user install that needs no admin.",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
