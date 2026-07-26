@@ -30,8 +30,20 @@ TARGETS = {
     "research": REPO / "aisr" / "research.py",
     "redact": REPO / "aisr" / "redact.py",
 }
-# the exact bytes at start — the ONLY source of truth for restoration
-SNAPSHOT = {k: p.read_text(encoding="utf-8") for k, p in TARGETS.items()}
+# the exact BYTES at start — the ONLY source of truth for restoration.
+# read_bytes/write_bytes, NOT read_text/write_text: on Windows the text round-trip
+# rewrites every LF as CRLF, so a "restored" file is semantically identical but
+# byte-different, and git reports the whole file as modified. (Measured: it did.)
+SNAPSHOT = {k: p.read_bytes() for k, p in TARGETS.items()}
+
+
+def _text(key):
+    return SNAPSHOT[key].decode("utf-8")
+
+
+def _write(path, text):
+    """Write with explicit LF endings so a mutation never rewrites line endings."""
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _run_suite():
@@ -46,13 +58,13 @@ def _run_suite():
 def _restore_all():
     """Put every target back to its start-of-run bytes."""
     for key, path in TARGETS.items():
-        path.write_text(SNAPSHOT[key], encoding="utf-8")
+        path.write_bytes(SNAPSHOT[key])
 
 
 def mutate_research():
     """M1: put `title` back into the cloud prompt renderer."""
     p = TARGETS["research"]
-    src = SNAPSHOT["research"]
+    src = _text("research")
     out = src.replace(
         '_ID_FIELDS = ("conversation_id", "provider", "account", "thread_id",\n'
         '              "created_at", "updated_at")',
@@ -64,13 +76,13 @@ def mutate_research():
         '        "  title: %s" % p["title"],',
     )
     assert out != src, "M1 anchors not found — update the mutation script"
-    p.write_text(out, encoding="utf-8")
+    _write(p, out)
 
 
 def mutate_redact():
     """M2: put the `title` field back on the crossing surface."""
     p = TARGETS["redact"]
-    src = SNAPSHOT["redact"]
+    src = _text("redact")
     # NOTE: `title: str` with NO default. An earlier version used `title: str = ""`,
     # which put a defaulted field before non-defaulted ones -> the dataclass raised
     # TypeError at import and every test ERRORED. That is a BOGUS mutation: the suite
@@ -95,7 +107,7 @@ def mutate_redact():
         '        title=d.get("title", ""),\n',
     )
     assert out != src, "M2 anchors not found — update the mutation script"
-    p.write_text(out, encoding="utf-8")
+    _write(p, out)
 
 
 def main():
@@ -121,9 +133,7 @@ def main():
         print(f"{name}: exit={rc} caught={caught} :: {line}")
 
     # prove the restore really put the fixed source back (not merely "matches HEAD")
-    restored_ok = all(
-        TARGETS[k].read_text(encoding="utf-8") == SNAPSHOT[k] for k in TARGETS
-    )
+    restored_ok = all(TARGETS[k].read_bytes() == SNAPSHOT[k] for k in TARGETS)
     print("source restored byte-identical to start:", restored_ok)
 
     post_rc, post_line = _run_suite()
