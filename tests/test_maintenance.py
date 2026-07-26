@@ -23,13 +23,29 @@ What is pinned:
     NTFS alternate-data-stream `name:stream`, and a real SYMLINK inside the store
     whose target is outside it. The symlink case is why the guard resolves paths
     physically (os.path.realpath) and not just lexically.
-  * the executor never trusts a hand-built preview: it re-asserts confinement, that
-    every plan source is an ALLOWED target, that the source exists, and that the
-    destination does not (lexists, so a dangling symlink cannot be written through).
+  * the executor never trusts a hand-built preview — the ROOTS included: a UNC or
+    `..` root on the preview is refused before anything is created (os.makedirs on
+    `\\\\host\\share` is an outbound SMB authentication, so those probes intercept
+    makedirs and never let one leave the machine). It also re-asserts confinement,
+    that every plan source is an ALLOWED target, that no source and no destination
+    appears twice, that the source exists, and that the destination does not (lexists,
+    so a dangling symlink cannot be written through).
+  * one physical file is planned exactly once, so the typed-confirmation count cannot
+    overstate what will happen and no batch can crash on its own second move.
+  * BOTH confinement layers are pinned independently, which needs care: each alone
+    refuses a plain outside path, so the tests assert WHICH layer fired.
 
 Path semantics are asserted with pure PureWindowsPath rules where possible so the
 suite behaves identically on Linux/macOS/Windows CI; the real moves use the
 host-native tmp_path, so the mutating path is exercised on every platform.
+
+PORTABILITY: three tests still need FILE symlinks (Developer Mode on Windows) and skip
+without them, but none is uniquely load-bearing any more — measured with every one of
+them deselected, maintenance.py still reports 275/0 statements, 90/0 branches, 100%.
+The physical-confinement layer, whose only route is a link, is reached through a
+DIRECTORY link instead: a symlink on POSIX, an NTFS junction on Windows, which needs
+no elevation. The separator and lexical rules are additionally pinned by assertions
+that need no link at all.
 """
 import json
 import os
@@ -57,6 +73,36 @@ def _can_symlink():
 
 
 _SYMLINKS = _can_symlink()
+
+
+def _link_dir(link, target):
+    """Create `link` as a DIRECTORY link resolving to `target`.
+
+    Prefers a plain symlink; on Windows falls back to an NTFS junction, which — unlike a
+    file symlink — needs neither Developer Mode nor elevation. That fallback is the
+    whole point: it lets the PHYSICAL confinement layer be exercised on a stock Windows
+    host, where the file-symlink tests below skip and would otherwise take the only
+    route to that layer with them.
+    """
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        import _winapi                     # CPython-on-Windows junction, no elevation
+        _winapi.CreateJunction(target, link)
+
+
+def _can_link_dir():
+    d = tempfile.mkdtemp()
+    try:
+        _link_dir(os.path.join(d, "l"), d)
+        return True
+    except (OSError, AttributeError, ImportError):   # env capability probe, not app code
+        return False
+
+
+_DIR_LINKS = _can_link_dir()
 
 
 def _read_bytes(path):
@@ -270,6 +316,86 @@ def test_plan_skips_destination_names_already_on_disk(tmp_path):
     assert preview.plan[0].destination == str(archive / "a-2.jsonl")
 
 
+@pytest.mark.skipif(not _SYMLINKS, reason="file symlinks unavailable on this host")
+def test_plan_treats_a_dangling_link_at_the_destination_as_occupied(tmp_path):
+    """`_unique_name` probes with lexists, not exists: a dangling symlink already holds
+    the name. With `exists` the planner would show the operator a destination the
+    executor will then refuse — the run fails closed, but only after the operator
+    confirmed a plan that could never have run."""
+    root, paths = _store(tmp_path, "a.jsonl")
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    os.symlink(str(archive / "sub" / "nowhere.jsonl"), str(archive / "a.jsonl"))
+    assert not os.path.exists(archive / "a.jsonl")        # dangling...
+    assert os.path.lexists(archive / "a.jsonl")           # ...but the name is taken
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.ARCHIVE, [_copy(paths[0])], root, tmp_path))
+    assert preview.plan[0].destination == str(archive / "a-1.jsonl")
+
+
+# ------------------------------------ planner: one physical file is planned only once
+
+def test_plan_deduplicates_two_targets_that_name_one_physical_file(tmp_path):
+    """Two SessionCopy entries CAN name the same file_path — the sibling DEDUP unit
+    exists precisely because one logical session has several physical copies — and both
+    pass the executor's isfile pre-flight, because at check time the file is still
+    there. Left alone the plan holds two moves from one source: the operator is asked to
+    type "DELETE 2 FILES" for a single file, and the second move crashes."""
+    root, paths = _store(tmp_path, "b.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "first"), _copy(paths[0], "second")], root, tmp_path))
+    assert [t.session_id for t in preview.allowed] == ["first"]
+    assert [(b.reason, b.target.session_id) for b in preview.blocked] == [
+        ("duplicate-target", "second")]
+    assert [m.source for m in preview.plan] == [paths[0]]
+    assert preview.required_typed_confirmation == "DELETE 1 FILE"     # a truthful count
+    assert any(w.severity is mt.MaintenanceWarningSeverity.REVIEW
+               and "Duplicate target" in w.message for w in preview.warnings)
+
+
+def test_plan_treats_a_case_or_separator_variant_as_the_same_physical_file(tmp_path):
+    """The de-duplication key is the same `normcase` key the executor already uses for
+    its allowed-set, so it folds case and `/` on Windows and stays exact on POSIX —
+    a duplicate must not slip through by being spelled differently."""
+    root, paths = _store(tmp_path, "b.jsonl")
+    variant = paths[0].replace(os.sep, "/") if os.sep == "\\" else paths[0]
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "first"), _copy(variant, "second")], root, tmp_path))
+    assert [t.session_id for t in preview.allowed] == ["first"]
+    assert [b.reason for b in preview.blocked] == ["duplicate-target"]
+
+
+def test_plan_blocks_a_duplicate_as_protected_when_it_is_also_protected(tmp_path):
+    """A protected duplicate is reported as PROTECTED, not merely as a duplicate: the
+    more dangerous reason wins, so the audit record names the real objection."""
+    root, paths = _store(tmp_path, ".codex/sessions/s.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "a"), _copy(paths[0], "b")], root, tmp_path))
+    assert [b.reason for b in preview.blocked] == ["protected", "protected"]
+
+
+def test_execute_and_restore_survive_a_duplicated_target(tmp_path):
+    """The end-to-end consequence. Without de-duplication the second move raises an
+    uncaught FileNotFoundError mid-batch, and restore_checkpoint then refuses the whole
+    batch as an "unaccounted move" — so the file that DID move is not auto-recoverable,
+    which is the entire safety argument for a DELETE being a quarantine."""
+    root, paths = _store(tmp_path, "b.jsonl")
+    original = _read_bytes(paths[0])
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "first"), _copy(paths[0], "second")], root, tmp_path))
+    result = mt.execute_maintenance(preview, preview.required_typed_confirmation,
+                                    apply=True)
+    assert result.executed is True and len(result.moves) == 1
+    assert not os.path.exists(paths[0])
+    restored = mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert restored.executed is True
+    assert _read_bytes(paths[0]) == original
+
+
 # ------------------------------------------------ planner: adversarial path safety
 
 def test_plan_blocks_a_unc_target_path(tmp_path):
@@ -357,6 +483,73 @@ def test_plan_blocks_a_symlink_that_escapes_the_store_root(tmp_path):
     assert [b.reason for b in preview.blocked] == ["outside-store-root"]
     assert "resolved" in preview.blocked[0].detail
     assert victim.read_bytes() == b"not yours"
+
+
+# -------------------------- confinement: BOTH layers are load-bearing, not just one
+
+def test_within_rejects_a_sibling_directory_whose_name_extends_the_root(tmp_path):
+    """Pins the separator suffix in `_within`: `.../store-evil` must not pass as
+    `.../store`. Asserted on the predicate itself because the only end-to-end route
+    into it needs a symlink, and not every host can create one — without this the rule
+    is unpinned on exactly those hosts."""
+    root = os.path.join(str(tmp_path), "store")
+    assert mt._within(root, root) is True
+    assert mt._within(os.path.join(root, "a.jsonl"), root) is True
+    assert mt._within(os.path.join(str(tmp_path), "store-evil", "a.jsonl"), root) is False
+
+
+def test_classify_blocks_an_outside_target_lexically_before_resolving_anything(tmp_path):
+    """Pins the LEXICAL layer. The module claims two layers "because either alone is
+    insufficient", but the physical layer also refuses a plain outside path — so
+    deleting the lexical guard leaves the suite green unless a test observes WHICH layer
+    fired. The two details are distinguishable, so it can."""
+    root, _ = _store(tmp_path)
+    outside = tmp_path / "outside" / "secret.jsonl"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"not yours")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(str(outside))], root, tmp_path))
+    detail = preview.blocked[0].detail
+    assert "is not within the store root" in detail       # layer 1, lexical
+    assert "resolved to" not in detail                    # ...and not layer 2, realpath
+
+
+@pytest.mark.skipif(not _DIR_LINKS, reason="directory links unavailable on this host")
+def test_plan_blocks_a_directory_link_escaping_into_a_sibling_of_the_store(tmp_path):
+    """End-to-end form of the separator rule, and the only route to the PHYSICAL layer's
+    refusal: a directory link inside `.../store` resolving into the sibling
+    `.../store-evil`. Lexically innocent, so layer 1 waves it through and only a
+    separator-aware containment test can refuse it. Uses a directory link rather than a
+    file symlink so it still runs — and still covers that layer — on a host without
+    Developer Mode."""
+    root, _ = _store(tmp_path)
+    victim = tmp_path / "store-evil" / "secret.jsonl"
+    victim.parent.mkdir(parents=True)
+    victim.write_bytes(b"not yours")
+    _link_dir(str(tmp_path / "store" / "innocent"), str(tmp_path / "store-evil"))
+    escaping = str(tmp_path / "store" / "innocent" / "secret.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(escaping)], root, tmp_path))
+    assert [b.reason for b in preview.blocked] == ["outside-store-root"]
+    assert "resolved to" in preview.blocked[0].detail       # layer 2, the realpath one
+    assert victim.read_bytes() == b"not yours"
+
+
+@pytest.mark.skipif(not _DIR_LINKS, reason="directory links unavailable on this host")
+def test_plan_blocks_an_outside_directory_link_that_resolves_inside_the_store(tmp_path):
+    """End-to-end form of the lexical rule, and the case the PHYSICAL layer structurally
+    cannot catch: a link OUTSIDE the store resolving to a real file inside it. realpath
+    lands in the store, so containment is satisfied and only the lexical layer can
+    refuse a target the operator named by a path outside the store."""
+    root, paths = _store(tmp_path, "real.jsonl")
+    (tmp_path / "outside").mkdir(parents=True)
+    _link_dir(str(tmp_path / "outside" / "innocent"), root)
+    disguised = str(tmp_path / "outside" / "innocent" / "real.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(disguised)], root, tmp_path))
+    assert [b.reason for b in preview.blocked] == ["outside-store-root"]
+    assert "is not within the store root" in preview.blocked[0].detail
+    assert os.path.isfile(paths[0])
 
 
 @pytest.mark.parametrize("bad", [r"\\evil\share", "", "   ", "store/../elsewhere"])
@@ -592,6 +785,122 @@ def test_execute_refuses_a_plan_destination_outside_its_root(tmp_path):
     assert os.path.isfile(paths[0])
 
 
+# ------------------------------- executor: the ROOTS on the preview are not trusted
+
+def _forbid_unc_makedirs(monkeypatch):
+    """Contain the UNC-root probes below.
+
+    Those tests hand the executor a UNC root, and on Windows `os.makedirs` against
+    `\\\\host\\share` initiates an outbound SMB/NTLM authentication — an egress event
+    this offline-only tool must never emit, from its own suite least of all. So the call
+    is turned into a loud LOCAL failure before it can reach the network, while local
+    makedirs passes through untouched. This is containment, not an oracle: every
+    assertion is on the refusal itself, and if the guard is ever removed these tests
+    fail with "reached a UNC path" instead of quietly authenticating to a stranger.
+    """
+    real = os.makedirs
+
+    def _guarded(name, *args, **kwargs):
+        if str(name).replace("/", "\\").startswith("\\\\"):
+            raise AssertionError("os.makedirs reached a UNC path: %r" % (name,))
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(mt.os, "makedirs", _guarded)
+
+
+@pytest.mark.parametrize("field,label", [("checkpoint_root", "checkpoint root"),
+                                         ("destination_root", "destination root")])
+def test_execute_refuses_a_unc_root_carried_on_the_preview(tmp_path, monkeypatch,
+                                                           field, label):
+    """The planner refuses both of these roots outright. The executor re-confines every
+    source and every destination but then hands the two ROOTS straight to os.makedirs,
+    so it must refuse the identical root rather than trust the object it was given —
+    reachable the moment an RPC layer rebuilds a preview from JSON."""
+    root, paths = _store(tmp_path, "a.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.ARCHIVE, [_copy(paths[0])], root, tmp_path))
+    _forbid_unc_makedirs(monkeypatch)
+    with pytest.raises(mt.MaintenancePathError, match="UNC / non-local " + label):
+        mt.execute_maintenance(_forge(preview, **{field: r"\\evil.example\share\cp"}),
+                               "ARCHIVE 1 FILE", apply=True)
+    assert os.path.isfile(paths[0])
+
+
+def test_execute_refuses_a_unc_checkpoint_root_even_with_an_empty_plan(tmp_path,
+                                                                      monkeypatch):
+    """An EMPTY plan is enough: the per-move loop never runs, and the checkpoint root is
+    created before the destination loop anyway, so no plan entry has to be crafted."""
+    root, _ = _store(tmp_path)
+    empty = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [], root, tmp_path))
+    _forbid_unc_makedirs(monkeypatch)
+    with pytest.raises(mt.MaintenancePathError, match="UNC"):
+        mt.execute_maintenance(_forge(empty, checkpoint_root=r"\\evil.example\share\cp"),
+                               "DELETE 0 FILES", apply=True)
+
+
+def test_execute_refuses_a_parent_traversal_root_on_the_preview(tmp_path):
+    """The other half of what `_require_root` refuses in the planner: a `..` root."""
+    root, _ = _store(tmp_path)
+    empty = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [], root, tmp_path))
+    escaping = os.path.join(str(tmp_path), "checkpoints", "..", "escape")
+    with pytest.raises(mt.MaintenancePathError, match="parent-traversal"):
+        mt.execute_maintenance(_forge(empty, checkpoint_root=escaping),
+                               "DELETE 0 FILES", apply=True)
+    assert not (tmp_path / "escape").exists()
+
+
+def test_execute_refuses_a_poisoned_root_on_a_dry_run_too(tmp_path):
+    """The roots are validated BEFORE the dry-run return. `_require_root` is purely
+    lexical — it makes no filesystem call — so "a dry run touches nothing" still holds,
+    and the operator learns the preview is unusable at preview time, not at apply time."""
+    root, _ = _store(tmp_path)
+    empty = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [], root, tmp_path))
+    before = _tree(str(tmp_path))
+    with pytest.raises(mt.MaintenancePathError, match="UNC"):
+        mt.execute_maintenance(_forge(empty, checkpoint_root=r"\\evil.example\share\cp"),
+                               "DELETE 0 FILES")
+    assert _tree(str(tmp_path)) == before
+
+
+# --------------------------- executor: a plan may not collide with itself
+
+def test_execute_refuses_a_plan_that_moves_one_source_twice(tmp_path):
+    """The planner de-duplicates now, but the executor does not trust the preview: a
+    rebuilt or forged plan can still carry two moves from one source, and the second
+    raises an uncaught FileNotFoundError mid-batch — after the first has already run."""
+    root, paths = _store(tmp_path, "a.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.ARCHIVE, [_copy(paths[0])], root, tmp_path))
+    doubled = preview.plan + (mt.PlannedMove(
+        session_id="s1", source=paths[0],
+        destination=str(tmp_path / "archive" / "a-1.jsonl")),)
+    with pytest.raises(mt.MaintenanceRefused, match="cannot be moved twice"):
+        mt.execute_maintenance(_forge(preview, plan=doubled), "ARCHIVE 1 FILE",
+                               apply=True)
+    assert _read_bytes(paths[0]) == b"synthetic-a.jsonl"
+
+
+def test_execute_refuses_a_plan_that_writes_one_destination_twice(tmp_path):
+    """Silent data loss if allowed: the occupancy check runs over the whole plan BEFORE
+    the first move, so a shared destination is free at check time both times — and then
+    the second shutil.move overwrites the first file's bytes."""
+    root, paths = _store(tmp_path, "a/x.jsonl", "b/x.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.ARCHIVE,
+                 [_copy(paths[0], "a"), _copy(paths[1], "b")], root, tmp_path))
+    collided = tuple(mt.PlannedMove(session_id=m.session_id, source=m.source,
+                                    destination=str(tmp_path / "archive" / "x.jsonl"))
+                     for m in preview.plan)
+    with pytest.raises(mt.MaintenanceRefused, match="would overwrite the first"):
+        mt.execute_maintenance(_forge(preview, plan=collided), "ARCHIVE 2 FILES",
+                               apply=True)
+    assert _read_bytes(paths[0]) == b"synthetic-a/x.jsonl"
+    assert _read_bytes(paths[1]) == b"synthetic-b/x.jsonl"
+
+
 def test_execute_refuses_a_stale_plan_whose_source_vanished(tmp_path):
     root, paths = _store(tmp_path, "a.jsonl")
     preview = mt.plan_maintenance(
@@ -764,6 +1073,62 @@ def test_restore_refuses_when_both_ends_of_a_move_are_missing(tmp_path):
     os.remove(result.moves[0].destination)               # quarantine emptied by hand
     with pytest.raises(mt.MaintenanceRefused, match="unaccounted"):
         mt.restore_checkpoint(result.manifest_path, apply=True)
+
+
+def test_restore_can_skip_unaccounted_moves_and_still_recover_the_rest(tmp_path):
+    """The default stays a loud refusal: an unaccounted entry means the manifest no
+    longer matches the disk, and guessing is how a recovery tool loses data. But an
+    all-or-nothing refusal ALSO denies recovery of every other file in the batch, which
+    is its own harm — so the operator can opt in explicitly, and what was skipped is
+    both returned and recorded in the manifest rather than glossed over."""
+    root, paths = _store(tmp_path, "a.jsonl", "b.jsonl")
+    original = _read_bytes(paths[0])
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "a"), _copy(paths[1], "b")], root, tmp_path))
+    result = mt.execute_maintenance(preview, "DELETE 2 FILES", apply=True)
+    os.remove(result.moves[1].destination)               # b vanished from quarantine
+    with pytest.raises(mt.MaintenanceRefused, match="unaccounted"):
+        mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert not os.path.exists(paths[0])                  # ...and nothing was restored
+    recovered = mt.restore_checkpoint(result.manifest_path, apply=True,
+                                      skip_unaccounted=True)
+    assert recovered.executed is True
+    assert [m.destination for m in recovered.moves] == [paths[0]]
+    assert recovered.unaccounted == (paths[1],)
+    assert _read_bytes(paths[0]) == original
+    doc = _read_json(result.manifest_path)
+    assert doc["status"] == "restored" and doc["unaccounted"] == [paths[1]]
+
+
+def test_restore_names_every_unaccounted_move_in_a_single_refusal(tmp_path):
+    """Collected, not first-fail: an operator repairing this by hand needs the whole
+    list, and a per-entry raise would reveal them one slow round-trip at a time."""
+    root, paths = _store(tmp_path, "a.jsonl", "b.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "a"), _copy(paths[1], "b")], root, tmp_path))
+    result = mt.execute_maintenance(preview, "DELETE 2 FILES", apply=True)
+    for move in result.moves:
+        os.remove(move.destination)
+    with pytest.raises(mt.MaintenanceRefused) as excinfo:
+        mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert "unaccounted" in str(excinfo.value)
+    assert repr(paths[0]) in str(excinfo.value)          # %r, as everywhere else here
+    assert repr(paths[1]) in str(excinfo.value)
+
+
+def test_restore_reports_no_unaccounted_moves_on_a_clean_recovery(tmp_path):
+    """The empty case is asserted too, so `unaccounted` cannot quietly become junk."""
+    root, paths = _store(tmp_path, "a.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(paths[0])], root, tmp_path))
+    result = mt.execute_maintenance(preview, "DELETE 1 FILE", apply=True)
+    dry = mt.restore_checkpoint(result.manifest_path, skip_unaccounted=True)
+    assert dry.unaccounted == ()
+    restored = mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert restored.unaccounted == ()
+    assert "unaccounted" not in _read_json(result.manifest_path)
 
 
 def test_restore_refuses_a_tampered_manifest_pointing_outside_the_store_root(tmp_path):

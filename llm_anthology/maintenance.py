@@ -17,7 +17,9 @@ THE SAFETY PROPERTY IS THE PLANNER/EXECUTOR SPLIT, not an implementation detail:
         are ALLOWED, which are BLOCKED and why, which warnings at which severity, the
         exact source -> destination pair for every move, and the exact phrase the
         operator must type. Because the plan is fully materialised up front, the
-        operator confirms the real thing rather than an intention.
+        operator confirms the real thing rather than an intention. A target naming a
+        file an earlier target already claimed is BLOCKED as `duplicate-target`, so one
+        physical file is moved exactly once and the confirmation count is truthful.
 
   execute_maintenance(preview, confirmation, *, apply=False) -> MaintenanceResult
         Runs ONLY a plan. Three independent gates, in this order:
@@ -32,17 +34,30 @@ THE SAFETY PROPERTY IS THE PLANNER/EXECUTOR SPLIT, not an implementation detail:
              written and flushed BEFORE the first move, so a crash mid-batch leaves a
              complete recovery record (the C# wrote its manifest AFTER the moves; that
              is the one place this port deliberately diverges, in the safe direction).
-        It also refuses to trust the preview it is handed: every plan source must be an
-        ALLOWED target, confinement is re-asserted on both ends, the source must be a
+        It also refuses to trust the preview it is handed. NOTHING on the preview is
+        taken on faith, the two ROOTS included: both are re-validated with the planner's
+        own `_require_root` before anything is created, because `os.makedirs` on a UNC
+        root is an outbound SMB/NTLM authentication and a preview rebuilt from JSON by
+        an RPC layer must not be able to name one. Then every plan source must be an
+        ALLOWED target, confinement is re-asserted on both ends, no source and no
+        destination may appear twice (the pre-flight runs over the whole plan BEFORE the
+        first move, so a shared destination looks free both times and the second
+        `shutil.move` would overwrite the first file's bytes), the source must be a
         regular file, and the destination must not already exist (`lexists`, so a
         dangling symlink cannot be written through).
 
   restore_checkpoint(manifest_path, *, apply=False) -> MaintenanceResult
         The recovery half. Moves every relocated file back to its recorded original
-        path, and is itself gated: dry-run by default, confinement re-validated against
-        the roots recorded in the manifest (so tampering the manifest cannot turn
-        restore into an arbitrary-write primitive), and it fails loud rather than
-        overwrite a file that has since taken the original name.
+        path, and is itself gated: dry-run by default, and it fails loud rather than
+        overwrite a file that has since taken the original name or guess at a move it
+        cannot account for.
+        CONFINEMENT HERE IS SELF-REFERENTIAL AND IS NOT AN ANTI-TAMPER GUARANTEE: each
+        recorded path is re-validated against the roots recorded in the SAME manifest,
+        so editing a path alone is caught, but editing a root along with it is not —
+        whoever can write the manifest can aim a restore anywhere they could already
+        write. The manifest lives in a directory the owner controls, so under this
+        single-user local threat model that is accepted; a caller that obtains a
+        manifest from anywhere less trusted must pin the roots out-of-band first.
 
 A DELETE never unlinks. It relocates into `<checkpoint_root>/deleted`, so "delete" is
 a quarantine that restore_checkpoint can undo (ported verbatim from
@@ -174,7 +189,8 @@ class SessionCopy:
 @dataclass(frozen=True)
 class BlockedTarget:
     """A target the planner refuses to touch, with the machine-readable `reason`
-    (protected / unsafe-path / traversal / outside-store-root) and a human `detail`.
+    (protected / unsafe-path / traversal / outside-store-root / duplicate-target) and a
+    human `detail`.
     The C# BlockedTargets carried only the copy; carrying the reason is a deliberate
     addition so the UI and the RPC layer can explain a refusal without re-deriving it."""
     target: SessionCopy
@@ -236,10 +252,15 @@ class MaintenanceResult:
     `manifest_path` is empty on a dry run precisely because no checkpoint was written.
     Keeping `moves` populated on a dry run is what makes restore_checkpoint previewable
     at all (it has no separate preview object).
+
+    `unaccounted` names the recorded originals a restore could not account for (neither
+    end of the recorded move exists on disk). It is empty unless the caller passed
+    `skip_unaccounted=True`, because otherwise restore refuses the batch outright.
     """
     executed: bool
     moves: Tuple[PlannedMove, ...] = ()
     manifest_path: str = ""
+    unaccounted: Tuple[str, ...] = ()
 
 
 # ------------------------------------------------------------------ path safety
@@ -410,17 +431,36 @@ def plan_maintenance(request):
     warnings = []
     plan = []
     claimed = set()
+    planned_sources = set()
     for target in request.targets:
         verdict = _classify(target.file_path, store_root)
         if verdict is None and _is_protected(target):
             verdict = ("protected", "protected store path: %r" % target.file_path)
+        if verdict is None and os.path.normcase(target.file_path) in planned_sources:
+            # Two targets CAN name one physical file — the DEDUP unit exists precisely
+            # because one logical session has several physical copies — and both pass
+            # the executor's is-a-regular-file pre-flight, because at check time the
+            # file is still there. Planning both would hold two moves from one source:
+            # the operator would be asked to confirm a count larger than the number of
+            # files, and the second move would fail after the first had already run.
+            # Checked last, so a duplicate that is ALSO protected is reported as
+            # protected — the more dangerous reason is the one worth recording.
+            verdict = ("duplicate-target",
+                       "target %r is already planned by an earlier entry; one physical "
+                       "file is moved once" % target.file_path)
         if verdict is not None:
             blocked.append(BlockedTarget(target=target, reason=verdict[0],
                                          detail=verdict[1]))
-            warnings.append(MaintenanceWarning(
-                MaintenanceWarningSeverity.DANGEROUS,
-                "Protected path blocked: %s (%s)" % (target.file_path, verdict[0])))
+            if verdict[0] == "duplicate-target":
+                warnings.append(MaintenanceWarning(
+                    MaintenanceWarningSeverity.REVIEW,
+                    "Duplicate target ignored: %s" % target.file_path))
+            else:
+                warnings.append(MaintenanceWarning(
+                    MaintenanceWarningSeverity.DANGEROUS,
+                    "Protected path blocked: %s (%s)" % (target.file_path, verdict[0])))
             continue
+        planned_sources.add(os.path.normcase(target.file_path))
         allowed.append(target)
         warnings.append(MaintenanceWarning(
             MaintenanceWarningSeverity.DANGEROUS,
@@ -523,33 +563,58 @@ def execute_maintenance(preview, confirmation, *, apply=False, now_ms=None):
     "nothing destructive happens without an explicit act" is structural.
     """
     _require_confirmation(preview, confirmation)
+    # The ROOTS are part of the untrusted preview, so they get the planner's own rule
+    # before anything is created: the planner refuses a UNC or `..` root, and so must
+    # this, because os.makedirs on `\\host\share` initiates an outbound SMB/NTLM
+    # authentication — the egress class this offline-only tool must never permit — and
+    # an empty plan is enough to reach it. Validating here rather than after the dry-run
+    # return costs nothing: _require_root is purely lexical, makes no filesystem call,
+    # and so leaves "a dry run touches the filesystem not at all" intact while surfacing
+    # a poisoned preview at preview time instead of at apply time.
+    checkpoint_root = _require_root(preview.checkpoint_root, "checkpoint root")
+    destination_root = _require_root(preview.destination_root, "destination root")
     if not apply:
         return MaintenanceResult(executed=False, moves=preview.plan, manifest_path="")
 
     # The executor does not trust the preview object: a forged plan must not smuggle a
-    # blocked target past the planner, so every source has to be an ALLOWED target.
+    # blocked target past the planner, so every source has to be an ALLOWED target, and
+    # the plan may not collide with itself. Both collision checks matter because the
+    # occupancy check below runs over the WHOLE plan before the first move: a repeated
+    # source would vanish after its first move (an uncaught FileNotFoundError mid-batch),
+    # and a repeated destination would look free both times and then be overwritten.
     allowed_paths = {os.path.normcase(t.file_path) for t in preview.allowed}
+    seen_sources = set()
+    seen_destinations = set()
     for move in preview.plan:
-        if os.path.normcase(move.source) not in allowed_paths:
+        source_key = os.path.normcase(move.source)
+        destination_key = os.path.normcase(move.destination)
+        if source_key not in allowed_paths:
             raise MaintenanceRefused(
                 "plan source %r is not an allowed target in this preview" % move.source)
+        if source_key in seen_sources:
+            raise MaintenanceRefused("plan source %r appears twice; one file cannot be "
+                                     "moved twice" % move.source)
+        if destination_key in seen_destinations:
+            raise MaintenanceRefused("plan destination %r appears twice; the second move "
+                                     "would overwrite the first" % move.destination)
+        seen_sources.add(source_key)
+        seen_destinations.add(destination_key)
         _require_confined(move.source, preview.store_root, "plan source")
         if not os.path.isfile(move.source):
             raise MaintenanceRefused("plan source %r is not a regular file (the plan is "
                                      "stale or the target is a directory)" % move.source)
 
-    os.makedirs(preview.checkpoint_root, exist_ok=True)
-    os.makedirs(preview.destination_root, exist_ok=True)
+    os.makedirs(checkpoint_root, exist_ok=True)
+    os.makedirs(destination_root, exist_ok=True)
     for move in preview.plan:
-        _require_confined(move.destination, preview.destination_root,
-                          "plan destination")
+        _require_confined(move.destination, destination_root, "plan destination")
         if os.path.lexists(move.destination):
             raise MaintenanceRefused("plan destination %r already exists; refusing to "
                                      "overwrite" % move.destination)
 
     recorded_at_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    manifest_path = os.path.join(preview.checkpoint_root, _unique_name(
-        preview.checkpoint_root,
+    manifest_path = os.path.join(checkpoint_root, _unique_name(
+        checkpoint_root,
         "%d-%s.json" % (recorded_at_ms, preview.action.value), set()))
     # THE CHECKPOINT, BEFORE THE FIRST MOVE. Status "pending" means "these moves were
     # intended"; restore_checkpoint can undo whichever of them actually landed.
@@ -566,15 +631,27 @@ def execute_maintenance(preview, confirmation, *, apply=False, now_ms=None):
 
 # -------------------------------------------------------------------- recovery
 
-def restore_checkpoint(manifest_path, *, apply=False, now_ms=None):
+def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
+                       skip_unaccounted=False):
     """Undo a checkpointed run: move every relocated file back to its original path.
 
     Works on a "pending" manifest too, which is what makes a crash mid-batch
     recoverable: each move is inspected independently and only the ones that actually
     landed are undone. Fails loud rather than lose data — if a file has since taken the
-    original name, or if BOTH ends of a recorded move are missing, it refuses instead of
-    guessing. Confinement is re-validated against the roots recorded in the manifest, so
-    editing the manifest cannot turn restore into an arbitrary-write primitive.
+    original name it refuses outright, and if BOTH ends of a recorded move are missing
+    the manifest no longer describes the disk, so by default the whole batch is refused
+    rather than guessed at. Every unaccounted entry is named in ONE refusal, because an
+    operator repairing this by hand needs the whole list.
+
+    `skip_unaccounted=True` restores the accounted moves anyway and reports the rest.
+    The default stays fail-closed, but an all-or-nothing refusal is itself a hazard: one
+    missing file would otherwise deny automated recovery to every other file in the
+    batch, and automated recovery is the entire safety argument for a delete being a
+    quarantine. What was skipped is returned on the result AND recorded in the manifest,
+    so a partial restore is never silent.
+
+    Confinement is re-validated against the roots recorded in the manifest; see the
+    module docstring for why that is not an anti-tamper guarantee.
     """
     doc = read_checkpoint(manifest_path)
     status = doc.get("status", "")
@@ -587,6 +664,7 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None):
     store_root = doc["store_root"]
     destination_root = doc["destination_root"]
     pending = []
+    unaccounted = []
     for entry in doc["moves"]:
         original = entry["source"]
         relocated = entry["destination"]
@@ -595,26 +673,35 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None):
         if not os.path.lexists(relocated):
             if os.path.lexists(original):
                 continue                        # never moved (or already restored)
-            raise MaintenanceRefused(
-                "unaccounted move: neither %r nor %r exists; refusing to guess"
-                % (original, relocated))
+            unaccounted.append(original)        # collected, so one refusal names them all
+            continue
         if os.path.lexists(original):
             raise MaintenanceRefused("original path %r is occupied; refusing to "
                                      "overwrite it during restore" % original)
         pending.append(PlannedMove(session_id=entry["session_id"],
                                    source=relocated, destination=original))
+    if unaccounted and not skip_unaccounted:
+        raise MaintenanceRefused(
+            "unaccounted move(s): neither the original nor the checkpoint copy exists "
+            "for %s; refusing to guess (skip_unaccounted=True restores the accounted "
+            "moves and leaves these alone)"
+            % ", ".join(repr(path) for path in unaccounted))
 
     if not apply:
         return MaintenanceResult(executed=False, moves=tuple(pending),
-                                 manifest_path=manifest_path)
+                                 manifest_path=manifest_path,
+                                 unaccounted=tuple(unaccounted))
     for move in pending:
         os.makedirs(os.path.dirname(move.destination), exist_ok=True)
         shutil.move(move.source, move.destination)
     doc["status"] = "restored"
     doc["restored_at_ms"] = int(time.time() * 1000) if now_ms is None else now_ms
+    if unaccounted:
+        doc["unaccounted"] = list(unaccounted)  # a partial restore is never silent
     _write_json(manifest_path, doc)
     return MaintenanceResult(executed=True, moves=tuple(pending),
-                            manifest_path=manifest_path)
+                            manifest_path=manifest_path,
+                            unaccounted=tuple(unaccounted))
 
 
 # ------------------------------------------------------------- the audit ledger
