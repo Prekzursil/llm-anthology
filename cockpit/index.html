@@ -17,34 +17,46 @@
         <span id="health" class="muted"></span>
       </header>
 
-      <aside id="sidebar">
-        <div class="panel-title">Threads</div>
-        <div id="roots-list" class="list-viewport"></div>
+      <aside id="sidebar" aria-label="Threads, search and export">
+        <h2 class="panel-title" id="threads-title">Threads</h2>
+        <!-- role="group", NOT role="list": these viewports are virtualized and render
+             <button class="root-row"> children, not <li>/role=listitem. Declaring a
+             list here produced a CRITICAL aria-required-children violation (measured:
+             it replaced the moderate landmark one). role=group is the correct wrapper
+             for a labelled set of controls and imposes no child-role contract. -->
+        <div id="roots-list" class="list-viewport" role="group" aria-labelledby="threads-title"></div>
 
-        <div class="panel-title">Search</div>
+        <h2 class="panel-title" id="search-title">Search</h2>
+        <label class="visually-hidden" for="search-input">Search conversations</label>
         <input id="search-input" type="search" placeholder="Search conversations…" autocomplete="off" />
-        <div id="search-status" class="muted"></div>
-        <div id="search-results" class="list-viewport"></div>
+        <div id="search-status" class="muted" role="status" aria-live="polite"></div>
+        <div id="search-results" class="list-viewport" role="group" aria-labelledby="search-title"></div>
 
-        <div class="panel-title">Export</div>
-        <div id="export-panel"></div>
+        <h2 class="panel-title" id="export-title">Export</h2>
+        <div id="export-panel" aria-labelledby="export-title"></div>
       </aside>
 
-      <main id="graph-pane">
-        <div id="graph-toolbar">
+      <main id="graph-pane" aria-label="Spawn tree">
+        <div id="graph-toolbar" role="toolbar" aria-label="Graph view controls">
           <button id="btn-forest" type="button">Full forest</button>
           <button id="btn-fit" type="button">Fit</button>
           <button id="btn-aggregate" type="button" aria-pressed="false">Aggregated</button>
           <button id="btn-diff" type="button" aria-pressed="false">Diff mode</button>
-          <span id="graph-status" class="muted"></span>
+          <span id="graph-status" class="muted" role="status" aria-live="polite"></span>
           <span class="spacer"></span>
           <span id="legend"></span>
         </div>
         <div id="scrubber"></div>
-        <canvas id="tree-canvas"></canvas>
+        <!-- The canvas is a rendering of the thread graph that the Threads list and
+             the detail pane already expose as real DOM; it is labelled so a screen
+             reader announces its purpose rather than an unnamed graphic. -->
+        <canvas id="tree-canvas" role="img" aria-label="Spawn-tree graph of conversation threads"></canvas>
       </main>
 
-      <section id="detail">
+      <!-- A <section> is only exposed as a landmark when it has an accessible name.
+           Without one, its content counted as "not contained by landmarks" — the
+           single moderate axe violation in the first audit. -->
+      <section id="detail" aria-label="Thread details">
         <p class="muted">Select a node to inspect a thread.</p>
       </section>
     </div>

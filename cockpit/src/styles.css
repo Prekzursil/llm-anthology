@@ -10,6 +10,34 @@
   --row-hover: #eef1f8;
   --selected: #ffd54a;
 
+  /* -- 4px spacing scale ---------------------------------------------------
+     The first UI audit found 65 high-confidence off-grid spacing values (10px,
+     6px, 5px paddings and gaps) — authored, not sub-pixel rounding. They were
+     individually reasonable and collectively an unsystematised rhythm, which is
+     what makes a UI read as "assembled" rather than "designed". Every spacing
+     value below is now a token on a 4px grid; use these, never a raw px. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  /* Focus ring. Rendered with box-shadow rather than `outline` so it follows
+     border-radius on every control. */
+  --focus-ring: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
+
+  /* Minimum hit target. 32px is a deliberate professional-tool density (Linear,
+     Raycast, DaVinci sit here) and satisfies WCAG 2.5.8 Target Size (Minimum,
+     AA = 24x24). It does NOT meet 2.5.5 (Enhanced, AAA = 44x44); that is an
+     accepted, documented trade-off for an information-dense desktop cockpit,
+     not an oversight. Controls that failed even AA — notably the 16px-tall
+     scrubber rail — are raised below. */
+  --control-min: 32px;
+
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 14px;
   line-height: 1.45;
@@ -21,6 +49,33 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* -- keyboard focus (WCAG 2.4.7) --------------------------------------------
+   The audit reported: "14 interactive control(s) suppress the focus outline and
+   the page has no :focus-visible rule". Several controls set `outline: none`
+   while only styling `:focus` via border-colour, so keyboard focus was either
+   invisible or indistinguishable from hover — the whole app was unusable by
+   keyboard. One rule covers every interactive control, and `:focus-visible`
+   keeps the ring off mouse clicks. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* -- motion (WCAG 2.3.3) ----------------------------------------------------
+   The cockpit animates the time-travel scrubber playback. Honour the OS-level
+   reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 html,
@@ -46,8 +101,8 @@ body,
   grid-area: topbar;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -74,18 +129,37 @@ body,
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 10px;
-  gap: 6px;
+  padding: var(--space-3);
+  gap: var(--space-2);
   background: var(--panel);
   border-right: 1px solid var(--border);
 }
 
+/* Screen-reader-only. Used to give the search input a real <label> without
+   showing a redundant caption next to an already-obvious field. Clip-based so the
+   text stays in the a11y tree (display:none would remove it). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Panel titles are real <h2> headings (they give the sidebar a navigable heading
+   structure), so the browser's default heading margins are reset here. */
 .panel-title {
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-  margin-top: 6px;
+  margin: var(--space-2) 0 0;
 }
 
 .list-viewport {
@@ -98,8 +172,9 @@ body,
 
 #search-input {
   width: 100%;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  min-height: var(--control-min);
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
@@ -116,9 +191,10 @@ body,
 .hit-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0 10px;
+  padding: 0 var(--space-3);
+  min-height: var(--control-min);
   border: none;
   background: transparent;
   color: var(--text);
@@ -179,16 +255,17 @@ body,
 #graph-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
 #graph-toolbar button {
-  padding: 5px 12px;
-  border-radius: 7px;
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
@@ -215,14 +292,14 @@ body,
 
 #legend {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
 }
 
 .legend-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   font-size: 12px;
   color: var(--muted);
 }
@@ -237,7 +314,7 @@ body,
 /* -- detail ---------------------------------------------------------------- */
 #detail {
   grid-area: detail;
-  padding: 14px;
+  padding: var(--space-4);
   overflow-y: auto;
   background: var(--panel);
   border-left: 1px solid var(--border);
@@ -245,14 +322,14 @@ body,
 
 #detail h2 {
   font-size: 14px;
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
   word-break: break-word;
 }
 
 #detail dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   margin: 0;
 }
 
@@ -268,8 +345,8 @@ body,
 }
 
 .detail-preview {
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
@@ -283,16 +360,17 @@ body,
 .scrubber {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
 .scrubber-play {
   flex: 0 0 auto;
-  padding: 4px 12px;
-  border-radius: 7px;
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
@@ -333,6 +411,9 @@ body,
   width: 100%;
   margin: 0;
   cursor: pointer;
+  /* Was 16px tall — below even WCAG 2.5.8 AA (24x24). The rail is the primary
+     time-travel control, so it gets a genuine hit area. */
+  min-height: var(--space-6);
 }
 
 .scrubber-undated {
@@ -343,13 +424,14 @@ body,
 #export-panel {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .export-dest {
   width: 100%;
-  padding: 6px 8px;
-  border-radius: 8px;
+  padding: var(--space-2);
+  min-height: var(--control-min);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
@@ -363,13 +445,14 @@ body,
 
 .export-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .export-actions button {
   flex: 1 1 0;
-  padding: 5px 10px;
-  border-radius: 7px;
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
@@ -383,8 +466,8 @@ body,
 
 .export-output {
   margin: 0;
-  padding: 8px;
-  border-radius: 8px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
   background: var(--panel-2);
   border: 1px solid var(--border);
   white-space: pre-wrap;
