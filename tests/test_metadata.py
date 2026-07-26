@@ -225,6 +225,155 @@ def test_set_is_an_upsert_not_a_duplicate(conn):
     assert metadata.get_alias(conn, "conv-1") == "third"
 
 
+# ------------------------------------------------ the conversation_id key contract
+
+# Every PUBLIC entry point that takes a conversation_id, listed once so the guard cannot
+# be added to some of them and forgotten on the rest.
+def _id_entry_points(conn):
+    return (
+        ("get_metadata", lambda cid: metadata.get_metadata(conn, cid)),
+        ("get_alias", lambda cid: metadata.get_alias(conn, cid)),
+        ("get_tags", lambda cid: metadata.get_tags(conn, cid)),
+        ("get_notes", lambda cid: metadata.get_notes(conn, cid)),
+        ("set_metadata", lambda cid: metadata.set_metadata(conn, cid, alias="A")),
+        ("set_alias", lambda cid: metadata.set_alias(conn, cid, "A")),
+        ("set_tags", lambda cid: metadata.set_tags(conn, cid, ["t"])),
+        ("set_notes", lambda cid: metadata.set_notes(conn, cid, "N")),
+        ("add_tags", lambda cid: metadata.add_tags(conn, cid, ["t"])),
+        ("remove_tags", lambda cid: metadata.remove_tags(conn, cid, ["t"])),
+        ("clear_alias", lambda cid: metadata.clear_alias(conn, cid)),
+        ("clear_tags", lambda cid: metadata.clear_tags(conn, cid)),
+        ("clear_notes", lambda cid: metadata.clear_notes(conn, cid)),
+        ("clear_metadata", lambda cid: metadata.clear_metadata(conn, cid)),
+        ("merge_metadata", lambda cid: metadata.merge_metadata(conn, cid, alias="A")),
+    )
+
+
+# None and a bare '' are the two an RPC payload actually produces (`params.get(...)` on a
+# missing field, and an empty form value); the rest pin the whole non-str class.
+_BAD_IDS = (None, "", "   ", "\t\n", 17, 0, object(), b"conv-1", ["conv-1"])
+
+
+def _assert_rejects(name, call, bad):
+    try:
+        call(bad)
+    except ValueError:
+        return
+    raise AssertionError("%s accepted conversation_id=%r" % (name, bad))
+
+
+def test_every_entry_point_rejects_a_blank_or_non_string_conversation_id(conn):
+    """csm guards precisely this — SaveMetadataAsync throws ArgumentException on
+    IsNullOrWhiteSpace(sessionId) — and the port dropped it.
+
+    It matters more here than in csm: SQLite does not enforce NOT NULL on a non-INTEGER
+    PRIMARY KEY and NULLs are DISTINCT in the implied unique index, so a None key does not
+    upsert, it APPENDS. The module already hardens the VALUE side against a bad RPC
+    payload (see test_non_string_free_text_becomes_blank); the KEY — the identity — must
+    be hardened too, and by raising rather than coercing, because there is no safe
+    fallback identity to coerce to.
+
+    The id is VALIDATED, never trimmed: trimming would silently change an identity.
+    """
+    for name, call in _id_entry_points(conn):
+        for bad in _BAD_IDS:
+            _assert_rejects(name, call, bad)
+    assert conn.execute("SELECT count(*) FROM conversation_metadata").fetchone()[0] == 0
+
+
+def test_a_bad_conversation_id_cannot_create_an_unreachable_ghost_row(conn):
+    """The end-to-end harm, pinned. Repeated set_alias(None) calls used to append one row
+    each — rows get_metadata could not read (it read blanks), clear_metadata could not
+    delete (a no-op) and search_metadata still surfaced: permanent, un-prunable residue of
+    the owner's own text under a key no UI can resolve. A '' key is milder — it round
+    trips and is deletable — but still yields a row that can never join `conversations`.
+    """
+    for ghost in ("GHOSTALIAS", "GHOSTALIAS2", "GHOSTALIAS3"):
+        for bad in (None, ""):
+            with pytest.raises(ValueError):
+                metadata.set_alias(conn, bad, ghost)
+    assert conn.execute("SELECT count(*) FROM conversation_metadata").fetchone()[0] == 0
+    assert metadata.search_metadata(conn, "ghostalias") == []
+    assert metadata.tag_counts(conn) == {}
+
+
+def test_a_valid_conversation_id_is_stored_exactly_as_given(conn):
+    """The guard rejects; it must not NORMALISE. Surrounding whitespace inside an
+    otherwise valid id is part of the identity and is stored verbatim."""
+    metadata.set_alias(conn, " conv-1 ", "Padded key")
+    assert metadata.get_alias(conn, " conv-1 ") == "Padded key"
+    assert metadata.get_alias(conn, "conv-1") == ""
+    assert conn.execute(
+        "SELECT conversation_id FROM conversation_metadata").fetchone()[0] == " conv-1 "
+
+
+# ------------------------------------------------------------------- DURABILITY
+
+def test_a_metadata_write_is_durable_without_the_caller_committing(tmp_path):
+    """A write must SURVIVE the process that made it — the module's entire purpose is that
+    hand-authored notes persist.
+
+    The WRITE PATH owns the commit, matching the codebase precedent (index.build_index
+    does `do(conn.commit)` per chunk), because every entry point RETURNS the stored
+    Metadata and that reads as a success receipt. Without it an RPC handler written the
+    obvious way — `conn = open_metadata(p); set_alias(...); return ok` — silently loses
+    every alias, tag and note on process exit, with a fully green suite behind it.
+
+    Nothing here commits, and `conn.close()` ROLLS BACK an open sqlite transaction, so
+    this passes only if the write already committed itself.
+    """
+    path = str(tmp_path / "index.db")
+    conn = _track(metadata.open_metadata(path))
+    metadata.set_metadata(conn, "conv-1", alias="SURVIVEME", tags=["important"],
+                          notes="Keep for regression checks")
+    metadata.merge_metadata(conn, "conv-2", alias="MERGED")
+    metadata.add_tags(conn, "conv-1", ["renderer"])
+    assert conn.in_transaction is False        # nothing left pending on the caller
+    conn.close()                               # NO caller commit: an open txn is lost
+
+    reopened = _track(metadata.open_metadata(path))
+    assert metadata.get_metadata(reopened, "conv-1") == metadata.Metadata(
+        "conv-1", "SURVIVEME", ("important", "renderer"), "Keep for regression checks")
+    assert metadata.get_alias(reopened, "conv-2") == "MERGED"
+
+
+def test_clearing_metadata_is_durable_without_the_caller_committing(tmp_path):
+    """The DELETE half of the same contract. `clear_metadata` writes directly instead of
+    going through `_write`, so it needs its own commit or a cleared annotation comes back
+    from the dead on the next open.
+
+    The set is committed EXPLICITLY here so the only uncommitted work is the DELETE — a
+    failure isolates the clear path rather than re-reporting the insert path.
+    """
+    path = str(tmp_path / "index.db")
+    conn = _track(metadata.open_metadata(path))
+    metadata.set_metadata(conn, "conv-1", alias="A", tags=["t"], notes="N")
+    conn.commit()
+    metadata.clear_metadata(conn, "conv-1")
+    assert conn.in_transaction is False
+    conn.close()
+
+    reopened = _track(metadata.open_metadata(path))
+    assert metadata.get_metadata(reopened, "conv-1").is_empty is True
+    assert reopened.execute(
+        "SELECT count(*) FROM conversation_metadata").fetchone()[0] == 0
+
+
+def test_clearing_a_field_to_blank_is_durable(tmp_path):
+    """`_write`'s DELETE-when-empty clamp reached through set_metadata: clearing the last
+    populated field drops the row, and THAT must survive a reopen too."""
+    path = str(tmp_path / "index.db")
+    conn = _track(metadata.open_metadata(path))
+    metadata.set_alias(conn, "conv-1", "A")
+    conn.commit()
+    metadata.clear_alias(conn, "conv-1")
+    conn.close()
+
+    reopened = _track(metadata.open_metadata(path))
+    assert reopened.execute(
+        "SELECT count(*) FROM conversation_metadata").fetchone()[0] == 0
+
+
 # --------------------------------------------------------------- set-like tags
 
 def test_tags_are_set_like_and_deterministically_ordered(conn):
@@ -467,7 +616,36 @@ def test_find_by_thread_resolves_through_the_conversations_table(conn):
     metadata.set_alias(conn, "conv-2", "Other session")
     assert [m.alias for m in metadata.find_by_thread(conn, "thread-1")] == ["Pinned session"]
     assert metadata.find_by_thread(conn, "thread-absent") == []
+    # NB: the blank case is asserted BEHAVIOURALLY in the next test, not here — this
+    # fixture indexes no blank-thread_id conversation, so `find_by_thread(conn, "")`
+    # returns [] whether or not the guard exists.
+
+
+def test_find_by_thread_with_a_blank_thread_id_matches_no_non_codex_conversation(conn):
+    """The blank-thread_id guard, asserted by CONSEQUENCE rather than by line coverage.
+
+    `conversations.thread_id` DEFAULTs to '' for every non-Codex provider, so an unguarded
+    '' query returns the WHOLE non-Codex corpus — every private note in the store, handed
+    back as a false match to a UI that calls find_by_thread(conn, conv.thread_id) for a
+    ChatGPT / Claude / Gemini conversation.
+
+    The fixture MUST contain ANNOTATED conversations whose thread_id IS '': without them
+    the query returns [] regardless and the assertion passes vacuously. That vacuity is
+    exactly how deleting this two-line guard left a 100%-covered suite green (adversarial
+    review F3, mutant M8) — so the `thread_id column values` assertion below is
+    load-bearing, not decoration.
+    """
+    _index_conv(conn, "chatgpt-a", provider="chatgpt")        # thread_id defaults to ''
+    _index_conv(conn, "claude-b", provider="claude")          # thread_id defaults to ''
+    _index_conv(conn, "codex-c", provider="codex", thread_id="thread-1")
+    metadata.set_notes(conn, "chatgpt-a", "PRIVATE NOTE for chatgpt-a")
+    metadata.set_notes(conn, "claude-b", "PRIVATE NOTE for claude-b")
+    metadata.set_notes(conn, "codex-c", "codex note")
+    assert [r[0] for r in conn.execute("SELECT thread_id FROM conversations "
+                                       "ORDER BY conversation_id")] == ["", "", "thread-1"]
     assert metadata.find_by_thread(conn, "") == []
+    assert [m.conversation_id for m in metadata.find_by_thread(conn, "thread-1")] \
+        == ["codex-c"]
 
 
 def test_tag_counts_is_a_collapsed_deterministic_facet(conn):

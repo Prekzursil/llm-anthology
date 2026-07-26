@@ -39,6 +39,21 @@ corpus.py's schema is not touched. Two deliberate departures from csm:
     into "silently destroy every note the owner ever wrote), and metadata may be set for
     a conversation that has not been ingested yet.
 
+DURABILITY — THE WRITE PATH COMMITS. Every write commits before it returns, and returns
+the stored Metadata as a receipt. That receipt has to be TRUE. A caller who opens a
+connection, writes and exits would otherwise lose everything: sqlite rolls back an
+uncommitted transaction on close, and a read-back on the same connection still sees the
+new value from inside that transaction, so nothing short of reopening the file can
+detect the loss. `index.build_index` owns durability the same way (`do(conn.commit)` per
+chunk). Pinned by tests that CLOSE and REOPEN the database with no caller commit.
+
+THE KEY IS VALIDATED, NOT COERCED. `conversation_id` must be a non-blank str; anything
+else raises ValueError. That is csm's SaveMetadataAsync guard
+(`IsNullOrWhiteSpace(sessionId)` -> ArgumentException), and it carries more weight here
+than in C#: SQLite does not enforce NOT NULL on a non-INTEGER PRIMARY KEY and NULLs
+compare DISTINCT in the implied unique index, so a None key APPENDS a row on every write
+instead of upserting. See `_check_id`.
+
 PRIVACY — LOCAL-ONLY, and NOT part of the cloud projection. `redact.py`'s allowlist
 forbids ALL free text from crossing to the cloud research plane (owner decision
 2026-07-25, after a probe carried an SSN, an email and a patient name into a prompt), and
@@ -159,6 +174,32 @@ def open_metadata(path):
 
 # ---------------------------------------------------------------- normalisation
 
+def _check_id(conversation_id):
+    """Reject a `conversation_id` that cannot be a usable key. csm's dropped guard —
+    `SaveMetadataAsync`: `if (string.IsNullOrWhiteSpace(sessionId)) throw new
+    ArgumentException(...)`.
+
+    Load-bearing in a way it is not in C#. SQLite does not enforce NOT NULL on a
+    non-INTEGER PRIMARY KEY and NULLs compare DISTINCT in the implied unique index, so a
+    None key does not upsert — every write APPENDS another row, and those rows are
+    unreachable through get_metadata (which reads blanks), undeletable through
+    clear_metadata (which affects zero rows) and still visible to search_metadata: the
+    owner's own text becomes permanent, un-prunable residue under a key no UI can
+    resolve. '' is milder — it round-trips and deletes — but still names a conversation
+    that can never join `conversations`.
+
+    RAISES where `clean_text` coerces, because there is no safe identity to coerce TO:
+    the realistic source is an RPC handler doing `params.get("conversation_id")` on a
+    payload that omits the field, and silently annotating some fallback conversation
+    would be worse than failing. Applied on the READ side too, which csm did not do — a
+    Metadata(conversation_id=None) handed to a UI is nonsense however it was reached.
+
+    VALIDATES ONLY, never trims: trimming an id would silently change an identity.
+    """
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ValueError("conversation_id must be a non-blank string")
+
+
 def clean_text(value):
     """A free-text field on the way IN: hidden codepoints STRIPPED, then trimmed.
 
@@ -247,7 +288,9 @@ def _to_metadata(conversation_id, row):
 
 def get_metadata(conn, conversation_id):
     """The annotations for `conversation_id`. An un-annotated conversation yields an
-    EMPTY Metadata — never None, never an error."""
+    EMPTY Metadata — never None, never an error. An UNUSABLE conversation_id is a
+    different thing from an un-annotated one and does raise (`_check_id`)."""
+    _check_id(conversation_id)
     row = conn.execute(
         "SELECT alias, tags, notes FROM conversation_metadata WHERE conversation_id=?",
         (conversation_id,)).fetchone()
@@ -272,18 +315,29 @@ def get_notes(conn, conversation_id):
 # ----------------------------------------------------------------------- write
 
 def _write(conn, conversation_id, alias, tags, notes):
-    """Upsert one already-normalised annotation, or DELETE it when it holds nothing.
-    Returns the stored Metadata so a caller never has to re-read to see the result."""
+    """Upsert one already-normalised annotation, or DELETE it when it holds nothing, then
+    COMMIT. Returns the stored Metadata so a caller never has to re-read to see the
+    result.
+
+    The SINGLE write chokepoint — `clear_metadata` routes its DELETE through here too —
+    so the key guard and the commit are stated once and no write entry point can reach
+    the table around them.
+
+    The commit is part of the contract, not a convenience: that returned Metadata reads
+    as a success receipt, so the write it reports must have actually landed on disk.
+    """
+    _check_id(conversation_id)
     meta = Metadata(conversation_id=conversation_id, alias=alias, tags=tags, notes=notes)
     if meta.is_empty:
         conn.execute("DELETE FROM conversation_metadata WHERE conversation_id=?",
                      (conversation_id,))
-        return meta
-    conn.execute(
-        "INSERT OR REPLACE INTO conversation_metadata(%s) VALUES (?,?,?,?,?,?)"
-        % ",".join(_COLS),
-        (conversation_id, alias, _SEP.join(tags), notes,
-         _tags_key(tags), _search_key(alias, tags, notes)))
+    else:
+        conn.execute(
+            "INSERT OR REPLACE INTO conversation_metadata(%s) VALUES (?,?,?,?,?,?)"
+            % ",".join(_COLS),
+            (conversation_id, alias, _SEP.join(tags), notes,
+             _tags_key(tags), _search_key(alias, tags, notes)))
+    conn.commit()
     return meta
 
 
@@ -351,11 +405,17 @@ def clear_notes(conn, conversation_id):
 
 
 def clear_metadata(conn, conversation_id):
-    """Drop the whole annotation. Absent row -> a silent no-op, mirroring csm, whose
-    UPDATE ... WHERE session_id=? simply affects zero rows for an unknown session."""
-    conn.execute("DELETE FROM conversation_metadata WHERE conversation_id=?",
-                 (conversation_id,))
-    return Metadata(conversation_id=conversation_id)
+    """Drop the whole annotation and COMMIT. Absent row -> a silent no-op, mirroring csm,
+    whose UPDATE ... WHERE session_id=? simply affects zero rows for an unknown session.
+
+    Expressed as an all-blank `_write` rather than as its own DELETE. An all-blank
+    annotation is ALREADY stored as the absence of a row, so this issues byte-for-byte
+    the same statement — and it is what gives `_write`'s key guard TEETH: every OTHER
+    write path validates during its leading `get_metadata` read, so a guard in `_write`
+    would be unreachable, un-assertable dead code (measured: its mutant survived a green
+    100% suite) until one caller reaches it without reading first. This is that caller.
+    """
+    return _write(conn, conversation_id, "", (), "")
 
 
 def merge_metadata(conn, conversation_id, alias="", tags=(), notes=""):
