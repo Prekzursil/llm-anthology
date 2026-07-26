@@ -15,7 +15,8 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from aisr.adapters import chatgpt, claude, codex, gemini
+from aisr import corpus, index
+from aisr.adapters import chatgpt, claude, codex, codex_rollout, codex_state, gemini
 
 GAP = timedelta(minutes=30)
 _WS = re.compile(r"\s+")
@@ -241,3 +242,72 @@ def load_gemini(transcript_path, harvest_path=None):
         "harvest_matched_records": matched,
         "source_records": len(records),
     }
+
+
+# --------------------------------------------------------------- cockpit corpus
+
+def _fingerprint(conv):
+    """A lightweight, stable content fingerprint for an ingested conversation.
+
+    Keyed on (id, updated_at, turn count) so an APPENDED-TO rollout (a later
+    updated_at / more turns) re-ingests while an unchanged one is skipped. Correctness
+    does not rest on it — corpus.add_conversation is idempotent by conversation_id, so
+    even a fingerprint collision cannot duplicate a posting; it only drives the fast
+    resume/skip path in index.build_index.
+    """
+    return index.hash_content(json.dumps([conv.id, conv.updated_at, len(conv.turns)]))
+
+
+def load_corpus(sessions_root, index_path, codex_home=None):
+    """Build the cockpit Corpus and its FTS5 index in one pass.
+
+    Ingests the Codex rollout logs under `sessions_root` (the DATE-NESTED
+    YYYY/MM/DD/rollout-*.jsonl tree) for conversation content and the per-thread graph
+    node each carries, MERGES the live Codex state DB spawn graph
+    ($CODEX_HOME/state_5.sqlite — opened read-only + immutable, retried-then-skipped if
+    busy or absent), and builds the contentless FTS5 index at `index_path` over every
+    ingested conversation.
+
+    Merge policy: rollout-derived thread metadata (a title / preview from the ACTUAL
+    first prompt) WINS; the state graph fills in threads no rollout covered and
+    contributes the authoritative spawn edges. Spawn edges are de-duplicated by
+    (parent, child). The index build is resumable and idempotent, so a re-run adds no
+    duplicate row or posting.
+
+    Returns (corpus, errors): `errors` is the rollout ingest's per-file parse/read log
+    (the state read never raises — it skips), so a partial corpus never costs the build.
+    """
+    docs, errors = codex_rollout.ingest_sessions(sessions_root)
+    result = corpus.Corpus()
+    sources = []
+    seen_edges = set()
+
+    for doc in docs:
+        conv = doc.conversation
+        conv.meta["thread_id"] = doc.thread_id          # link the FTS row to its thread
+        result.conversations.append(conv)
+        result.add_thread(doc.thread)
+        for edge in doc.edges:
+            key = (edge.parent_thread_id, edge.child_thread_id)
+            if key not in seen_edges:
+                seen_edges.add(key)
+                result.add_edge(edge)
+        sources.append(index.IndexSource(
+            file=doc.rollout_path, content_hash=_fingerprint(conv), records=[conv]))
+
+    state = codex_state.load_corpus(codex_home)
+    for meta in state.threads.values():
+        if meta.id not in result.threads:               # rollout metadata takes priority
+            result.add_thread(meta)
+    for edge in state.edges:
+        key = (edge.parent_thread_id, edge.child_thread_id)
+        if key not in seen_edges:
+            seen_edges.add(key)
+            result.add_edge(edge)
+
+    conn = corpus.open_index(index_path)
+    try:
+        index.build_index(conn, sources)
+    finally:
+        conn.close()
+    return result, errors
