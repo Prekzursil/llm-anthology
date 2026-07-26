@@ -92,6 +92,20 @@ Method status (all implemented; honest caveats inline)
                          synthesize: redact -> MetadataView -> ``research.extract_entities``.
                          Returns ``{entities, conversation_count}`` (each entity sanitized).
 
+* ``metadata.get`` / ``metadata.set`` / ``metadata.clear`` / ``metadata.search`` /
+  ``metadata.tags`` — FULL. The app-owned annotation layer absorbed from
+                         codex-session-manager: alias / tags / notes per conversation.
+                         ``set`` is a PARTIAL update — an omitted field is left unchanged,
+                         an explicit ``""`` (or ``[]``) clears it — because the cockpit
+                         edits one field at a time and a per-field call must not blank its
+                         siblings. ``search`` matches ANNOTATIONS ONLY (never message
+                         bodies), ANDing ``text`` and ``tag``, and returns [] for a blank
+                         query rather than the whole catalogue. These annotations are
+                         LOCAL-ONLY: they are deliberately absent from
+                         ``redact.MetadataView``, so they can never ride the cloud research
+                         plane. ``metadata`` never opens a session file, so no annotation
+                         write can mutate the owner's originals.
+
 Privacy (HARD): every free-text field derived from user/model content — a title, a
 preview, a search snippet, a transcript block, a tool payload — passes through
 ``llm_anthology.sanitize.sanitize_for_copy`` before crossing the wire, so a hidden-unicode
@@ -126,6 +140,7 @@ from llm_anthology import (
     diff,
     export,
     ir,
+    metadata as metadata_store,
     redact,
     research,
     rollup,
@@ -282,6 +297,10 @@ class Sidecar:
     def __init__(self, conn, research_backend=None, local_backend=None):
         self.conn = conn
         self.corpus = corpus.load_corpus(conn) if conn is not None else corpus.Corpus()
+        # The metadata layer owns its OWN table, created idempotently here rather than in
+        # corpus.py's schema, so the annotation store is additive over any existing index.
+        if conn is not None:
+            metadata_store.ensure_schema(conn)
         # The cloud research plane's egress backend and the LOCAL tier's on-box backend.
         # Both default to a no-network placeholder, so an unconfigured host reaches the
         # network for neither; a real cockpit host injects the concrete backends.
@@ -307,6 +326,11 @@ class Sidecar:
             "conversation.get": self._conversation_get,
             "research.synthesize": self._research_synthesize,
             "research.extract_entities": self._research_extract_entities,
+            "metadata.get": self._metadata_get,
+            "metadata.set": self._metadata_set,
+            "metadata.clear": self._metadata_clear,
+            "metadata.search": self._metadata_search,
+            "metadata.tags": self._metadata_tags,
         }
 
     # -- transport ----------------------------------------------------------------
@@ -622,6 +646,99 @@ class Sidecar:
         summary = self.local_backend.synthesize(prompt)
         return {"tier": "local", "summary": _clean(summary),
                 "conversation_count": len(transcripts)}
+
+    # -- metadata (the absorbed csm annotation layer) ------------------------------
+    #
+    # LOCAL-ONLY BY DESIGN. Alias/tags/notes are free text the owner authored, so they are
+    # deliberately absent from `redact.MetadataView` and can never ride the cloud research
+    # plane (see redact.py's docstring). They cross only this stdio wire, to the UI.
+    # `metadata` never opens a session file, so none of these methods can mutate the
+    # owner's originals.
+
+    def _annotation(self, meta):
+        """One `metadata.Metadata` as a wire dict. Free text is sanitized on the way OUT as
+        well as in, exactly like every other text-bearing method here — an annotation is
+        still attacker-influenced if it was pasted from a conversation."""
+        return {
+            "conversation_id": meta.conversation_id,
+            "alias": _clean(meta.alias),
+            "tags": [_clean(t) for t in meta.tags],
+            "notes": _clean(meta.notes),
+            "is_empty": meta.is_empty,
+        }
+
+    def _metadata_get(self, params):
+        """Annotations for one conversation. Un-annotated reads back as an EMPTY annotation
+        (``is_empty`` true), never an error, so the UI can render unconditionally."""
+        self._require_corpus()
+        cid = _req_str(params, "conversation_id")
+        return self._annotation(metadata_store.get_metadata(self.conn, cid))
+
+    def _metadata_set(self, params):
+        """Partial update: an OMITTED field is left unchanged, an explicit "" (or []) clears
+        it. That distinction is the whole point — the cockpit edits one field at a time and
+        a per-field call must not silently blank the other two."""
+        self._require_corpus()
+        cid = _req_str(params, "conversation_id")
+        tags = params.get("tags")
+        if tags is not None and not isinstance(tags, list):
+            raise RpcError(-32602, "tags must be a list of strings")
+        alias, notes = params.get("alias"), params.get("notes")
+        for name, value in (("alias", alias), ("notes", notes)):
+            if value is not None and not isinstance(value, str):
+                raise RpcError(-32602, "%s must be a string" % name)
+        # metadata._check_id raises ValueError for a key that cannot be stored; surface it
+        # as an RPC param error rather than letting it escape as an internal fault.
+        try:
+            meta = metadata_store.set_metadata(
+                self.conn, cid, alias=alias, tags=tags, notes=notes)
+        except ValueError as exc:
+            raise RpcError(-32602, str(exc)) from exc
+        return self._annotation(meta)
+
+    def _metadata_clear(self, params):
+        """Drop the whole annotation. An absent row is a silent no-op, mirroring csm."""
+        self._require_corpus()
+        cid = _req_str(params, "conversation_id")
+        try:
+            return self._annotation(metadata_store.clear_metadata(self.conn, cid))
+        except ValueError as exc:
+            raise RpcError(-32602, str(exc)) from exc
+
+    def _metadata_search(self, params):
+        """Search ANNOTATIONS (never message bodies) by free text and/or tag, ANDed, joined
+        to the display columns the listing needs. With neither filter the result is empty —
+        a blank query must not dump the whole catalogue into the UI."""
+        self._require_corpus()
+        text, tag = params.get("text", ""), params.get("tag", "")
+        for name, value in (("text", text), ("tag", tag)):
+            if not isinstance(value, str):
+                raise RpcError(-32602, "%s must be a string" % name)
+        rows = metadata_store.search_conversations(self.conn, text=text, tag=tag)
+        # Column order is fixed by metadata.search_conversations' SELECT; sqlite3.Row
+        # supports positional access, so this works with or without a row_factory.
+        return [
+            {
+                "conversation_id": r[0],
+                "provider": r[1],
+                "account": r[2],
+                "title": _clean(r[3]),
+                "created_at": r[4],
+                "updated_at": r[5],
+                "turn_count": r[6],
+                "thread_id": r[7],
+                "annotation": self._annotation(
+                    metadata_store.get_metadata(self.conn, r[0])),
+            }
+            for r in rows
+        ]
+
+    def _metadata_tags(self, params):
+        """The tag facet: tag -> conversation count, case-collapsed and deterministically
+        ordered by the store."""
+        self._require_corpus()
+        return [{"tag": _clean(tag), "count": count}
+                for tag, count in metadata_store.tag_counts(self.conn).items()]
 
     # -- projections --------------------------------------------------------------
 
