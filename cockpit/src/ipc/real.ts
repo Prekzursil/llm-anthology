@@ -28,6 +28,7 @@ import type {
   GraphSnapshot,
   HealthInfo,
   IpcClient,
+  OpenCorpusResult,
   RollupTable,
   RootsParams,
   SearchParams,
@@ -48,6 +49,14 @@ async function cmd<T>(command: string, params: unknown = {}): Promise<T> {
 }
 
 export const realIpc: IpcClient = {
+  /**
+   * `open_corpus` does NOT take the `{ params }` wrapper the data commands use — its Rust
+   * signature is `open_corpus(state, index_path: String)`, so the argument is passed by
+   * name. Tauri maps the camelCase key onto the snake_case parameter.
+   */
+  openCorpus(indexPath: string): Promise<OpenCorpusResult> {
+    return invoke<OpenCorpusResult>("open_corpus", { indexPath });
+  },
   healthPing(): Promise<HealthInfo> {
     return cmd<HealthInfo>("health_ping");
   },

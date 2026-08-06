@@ -42,13 +42,22 @@
      border-radius on every control. */
   --focus-ring: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
 
-  /* Minimum hit target. 32px is a deliberate professional-tool density (Linear,
-     Raycast, DaVinci sit here) and satisfies WCAG 2.5.8 Target Size (Minimum,
-     AA = 24x24). It does NOT meet 2.5.5 (Enhanced, AAA = 44x44); that is an
-     accepted, documented trade-off for an information-dense desktop cockpit,
-     not an oversight. Controls that failed even AA — notably the 16px-tall
-     scrubber rail — are raised below. */
-  --control-min: 32px;
+  /* Minimum hit target.
+     PREVIOUSLY 32px, with this rationale: a deliberate professional-tool
+     density (Linear, Raycast, DaVinci sit here) satisfying WCAG 2.5.8 Target
+     Size (Minimum, AA = 24x24) but not 2.5.5 (Enhanced, AAA = 44x44) — an
+     accepted trade-off for an information-dense desktop cockpit, not an
+     oversight. That reasoning still stands on its own terms.
+     RAISED to 44px anyway, as a deliberate reversal, because the 32px floor was
+     not what any control actually rendered at: padding plus the inherited
+     line-height put every one of them at 38.3px, so the token was not buying
+     the density it described. Six rules read this token (#search-input,
+     .root-row/.hit-row, #graph-toolbar button, .scrubber-play, .export-dest,
+     .export-actions button) — one edit here moves all of them, which is why
+     they must NOT be patched individually. Still AA-compliant either way; 44px
+     is a quality improvement, not a violation fix.
+     NOT covered: .scrubber-range keeps its own 24px floor below. */
+  --control-min: 44px;
 
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 14px;
@@ -128,6 +137,77 @@ body,
 
 .spacer {
   flex: 1 1 auto;
+}
+
+/* -- corpus bar (the app's primary action) ----------------------------------
+   Attaching a corpus is the precondition for every other pane, so the control
+   lives in the top bar rather than behind a menu. */
+#corpus-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+#btn-open-corpus {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  /* Deliberately ABOVE --control-min (32px). That token encodes an accepted
+     information-density trade-off for the secondary toolbar controls, which
+     meets WCAG 2.5.8 AA but not 2.5.5 AAA. This button is the one control the
+     whole app depends on and the only one a first-run user must find, so it
+     takes the full 44x44 enhanced target instead. */
+  min-height: 44px;
+  min-width: 44px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#btn-open-corpus:hover {
+  border-color: var(--accent);
+}
+
+/* Disabled while an open is in flight, so a slow engine spawn cannot be
+   double-submitted. */
+#btn-open-corpus:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The attached index, shortened to its basename; the full path is on `title`. */
+#corpus-current {
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The failure line, beside the button rather than in a console the user never
+   opens. Rendered as a chip in --text on --panel-2 (13.9:1, well past AA) — the
+   palette has no danger token, and inventing a saturated red would either fail
+   AA against this near-black chrome or shout louder than a recoverable
+   "pick another file" deserves. The border carries the distinction instead. */
+.corpus-error {
+  color: var(--text);
+  font-size: 12px;
+  max-width: 340px;
+}
+
+/* The chip only exists when there is something to report — but the element is
+   NEVER `display: none`, because a `role="alert"` region removed from the
+   accessibility tree is not announced when its text arrives (the content change
+   would land while it was still hidden). An empty inline span with no padding
+   or border already occupies nothing, so this gets the same visual result
+   without the a11y cost. */
+.corpus-error:not(:empty) {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
 }
 
 .muted {
@@ -276,6 +356,30 @@ body,
   min-width: 0;
   min-height: 0;
   background: var(--canvas-bg);
+  /* Anchors the empty-state overlay below. */
+  position: relative;
+}
+
+/* Empty state, same `data-empty` mechanism as `.list-viewport` — the label is
+   supplied by app.ts via the tested `emptyStateLabel` rule. It has to hang off
+   the PANE, not the canvas: a <canvas> is a replaced element and renders no
+   ::after. Overlaid and centred rather than laid out as a flex item so it does
+   not resize the canvas, and pointer-transparent so it cannot swallow a drag.
+   --muted on --canvas-bg is 5.9:1, past AA. Without this the pane is a bare
+   black rectangle that reads as a broken renderer. */
+#graph-pane[data-empty]::after {
+  content: attr(data-empty);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 320px;
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  pointer-events: none;
 }
 
 #graph-toolbar {

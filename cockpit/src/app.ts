@@ -15,15 +15,34 @@ import { collapseLinearChains } from "./graph/aggregate";
 import { SpawnTreeCanvas } from "./graph/canvas";
 import { diffToOverlay } from "./graph/diffOverlay";
 import { ElkLayoutEngine, LayoutTimeoutError } from "./graph/elkLayout";
-import { buildElkGraph, extractLayout, type LayoutInput } from "./graph/layout";
+import {
+  buildElkGraph,
+  extractLayout,
+  type LayoutInput,
+  type PositionedGraph,
+} from "./graph/layout";
 import { knownProviders, providerTint } from "./graph/palette";
+import { CorpusBar } from "./ui/corpusBar";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
-import { VirtualList } from "./ui/virtualList";
+import { emptyStateLabel, VirtualList } from "./ui/virtualList";
 
 const ROOT_ROW_HEIGHT = 52;
 const EDGE_KEY_SEP = "\u0000";
+
+/**
+ * What the graph pane says when it has nothing to draw. Applied through the SAME
+ * `data-empty` mechanism the virtualized lists use (see `ui/virtualList`), so the rule
+ * stays the already-tested `emptyStateLabel` rather than a second, parallel one. Without
+ * it the pane is a bare black rectangle, indistinguishable from a broken renderer —
+ * which is exactly how it read on a corpus-less boot.
+ */
+const GRAPH_EMPTY_LABEL =
+  "No spawn tree yet. Use “Open corpus…” in the top bar to attach a corpus index.";
+
+/** A cleared canvas, for the transition out of a graph that no longer has any nodes. */
+const EMPTY_GRAPH: PositionedGraph = { nodes: [], edges: [], width: 0, height: 0 };
 
 function requireEl<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -37,8 +56,11 @@ export class CockpitApp {
   private readonly rootsList: VirtualList<ThreadNode>;
   private readonly search: SearchPanel;
 
+  private readonly corpusBar: CorpusBar;
+
   private readonly healthEl = requireEl("health");
   private readonly statsEl = requireEl("stats");
+  private readonly graphPaneEl = requireEl("graph-pane");
   private readonly graphStatusEl = requireEl("graph-status");
   private readonly detailEl = requireEl("detail");
   private readonly aggregateBtn = requireEl<HTMLButtonElement>("btn-aggregate");
@@ -57,6 +79,8 @@ export class CockpitApp {
   /** The last scrub position (epoch ms), or null before any scrub. */
   private scrubAsOf: number | null = null;
   private scrubber: TimeScrubber | null = null;
+  /** Set the moment {@link reload} starts, so boot never loads the same corpus twice. */
+  private loaded = false;
 
   constructor() {
     this.canvas = new SpawnTreeCanvas(requireEl<HTMLCanvasElement>("tree-canvas"));
@@ -76,6 +100,17 @@ export class CockpitApp {
     );
     this.search.setHitHandler((hit) => void this.onHitSelected(hit));
 
+    // The app's PRIMARY action. Every pane below reads through the engine, and the
+    // engine answers nothing until a corpus is attached — so without this control the
+    // app boots into a state it can never leave.
+    this.corpusBar = new CorpusBar(
+      ipc,
+      requireEl<HTMLButtonElement>("btn-open-corpus"),
+      requireEl("corpus-current"),
+      requireEl("corpus-error"),
+      () => void this.reload(),
+    );
+
     requireEl("btn-forest").addEventListener("click", () => void this.showForest());
     requireEl("btn-fit").addEventListener("click", () => this.canvas.fitToView());
     this.aggregateBtn.addEventListener("click", () => void this.toggleAggregate());
@@ -85,8 +120,28 @@ export class CockpitApp {
     this.renderLegend();
   }
 
-  /** Boot: health, stats, roots, rollup badges, the forest, then the time scrubber. */
+  /**
+   * Boot. Re-attaches the corpus remembered from the last session first — a successful
+   * restore fires the corpus-bar callback, which is already a full {@link reload}, so
+   * the guard below stops boot from loading the same corpus twice. With nothing
+   * remembered (or a restore that failed) the engine stays unattached and the load
+   * paints the empty states that point at the Open-corpus button.
+   */
   async init(): Promise<void> {
+    await this.corpusBar.restore();
+    if (!this.loaded) await this.reload();
+  }
+
+  /**
+   * Load — or RE-load — every view from the currently attached corpus: health, stats,
+   * roots, rollup badges, the forest, then the time scrubber. Attaching a corpus calls
+   * this, so opening one populates the whole UI with no restart.
+   */
+  async reload(): Promise<void> {
+    this.loaded = true;
+    // A new corpus has its own timeline; carrying the previous one's scrub position
+    // forward would time-travel the new graph to a meaningless instant.
+    this.scrubAsOf = null;
     await Promise.all([
       this.loadHealth(),
       this.loadStats(),
@@ -131,19 +186,33 @@ export class CockpitApp {
   }
 
   private async loadRoots(): Promise<void> {
-    const roots = await ipc.graphRoots({ limit: 1000, order: "created" });
-    this.rootsList.setItems(roots);
+    try {
+      this.rootsList.setItems(await ipc.graphRoots({ limit: 1000, order: "created" }));
+    } catch {
+      // With no corpus attached every graph read rejects. Show the list's own empty
+      // state instead of rejecting out of the boot chain — `main.ts` fires `init()`
+      // with `void`, so that rejection was unhandled and the whole UI stayed blank.
+      this.rootsList.setItems([]);
+    }
   }
 
   /** Merge every root subtree into the full forest and render it. */
   private async showForest(): Promise<void> {
-    const roots = await ipc.graphRoots({ limit: 1000 });
-    const nodeMap = new Map<string, ThreadNode>();
-    const edgeMap = new Map<string, SpawnEdge>();
-    for (const root of roots) {
-      const sub = await ipc.graphSubtree(root.id);
-      for (const n of sub.nodes) nodeMap.set(n.id, n);
-      for (const e of sub.edges) edgeMap.set(`${e.parent}${EDGE_KEY_SEP}${e.child}`, e);
+    let nodeMap = new Map<string, ThreadNode>();
+    let edgeMap = new Map<string, SpawnEdge>();
+    try {
+      const roots = await ipc.graphRoots({ limit: 1000 });
+      for (const root of roots) {
+        const sub = await ipc.graphSubtree(root.id);
+        for (const n of sub.nodes) nodeMap.set(n.id, n);
+        for (const e of sub.edges) edgeMap.set(`${e.parent}${EDGE_KEY_SEP}${e.child}`, e);
+      }
+    } catch {
+      // Same reason as loadRoots. Discard any partial harvest rather than drawing a
+      // forest that is silently missing subtrees — a half-graph is a worse lie than an
+      // empty one in a tool whose whole subject is the graph.
+      nodeMap = new Map();
+      edgeMap = new Map();
     }
     await this.present(
       { nodes: [...nodeMap.values()], edges: [...edgeMap.values()] },
@@ -171,11 +240,21 @@ export class CockpitApp {
   }
 
   private async renderGraph(input: LayoutInput, selectId: string | null): Promise<void> {
+    if (input.nodes.length === 0) {
+      // Nothing to lay out. Clear the canvas (a previous corpus may still be drawn on
+      // it) and hand the pane its empty state rather than running ELK over an empty
+      // graph, which yields a zero-size layout and leaves a dead black rectangle.
+      this.canvas.setGraph(EMPTY_GRAPH, false);
+      this.applyGraphEmptyState(0);
+      this.graphStatusEl.textContent = "";
+      return;
+    }
     this.graphStatusEl.textContent = `laying out ${input.nodes.length} nodes…`;
     try {
       const laid = await this.engine.layout(buildElkGraph(input));
       const positioned = extractLayout(laid, input);
       this.canvas.setGraph(positioned);
+      this.applyGraphEmptyState(positioned.nodes.length);
       if (selectId !== null) this.canvas.select(selectId);
       const crossCount = positioned.edges.filter((e) => e.cross).length;
       this.graphStatusEl.textContent = `${positioned.nodes.length} nodes · ${positioned.edges.length} edges · ${crossCount} cross-provider`;
@@ -183,6 +262,18 @@ export class CockpitApp {
       const msg = err instanceof LayoutTimeoutError ? err.message : `layout failed: ${String(err)}`;
       this.graphStatusEl.textContent = msg;
     }
+  }
+
+  /**
+   * Reflect "the graph pane has nothing to draw" onto the pane as `data-empty="<label>"`,
+   * exactly as `VirtualList` does for the sidebar lists — same attribute, same
+   * `[data-empty]::after` CSS, and the same already-tested `emptyStateLabel` decision, so
+   * there is one empty-state mechanism in this app rather than two.
+   */
+  private applyGraphEmptyState(nodeCount: number): void {
+    const label = emptyStateLabel(nodeCount, GRAPH_EMPTY_LABEL);
+    if (label === null) this.graphPaneEl.removeAttribute("data-empty");
+    else this.graphPaneEl.setAttribute("data-empty", label);
   }
 
   private async onNodeSelected(id: string | null): Promise<void> {
@@ -217,10 +308,16 @@ export class CockpitApp {
 
   // -- time travel + diff overlay ----------------------------------------------
 
-  /** Build the time scrubber into its container and load the birth-event axis. */
+  /**
+   * Build the time scrubber into its container and load the birth-event axis. Re-entrant:
+   * {@link reload} calls it again on every corpus open, and the scrubber appends its own
+   * DOM, so the previous instance is torn down first or each open would stack another
+   * slider on the pane.
+   */
   private async mountScrubber(): Promise<void> {
     const container = document.getElementById("scrubber");
     if (container === null) return;
+    this.scrubber?.destroy();
     this.scrubber = new TimeScrubber(container, ipc, (asOfMs) => void this.onScrub(asOfMs));
     await this.scrubber.load();
   }

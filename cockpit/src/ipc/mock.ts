@@ -27,6 +27,7 @@ import type {
   FullIpcClient,
   GraphSnapshot,
   HealthInfo,
+  OpenCorpusResult,
   RollupTable,
   RootsParams,
   SearchHit,
@@ -573,16 +574,31 @@ function compareEdges(a: SpawnEdge, b: SpawnEdge): number {
 }
 
 /**
+ * The mock's surface: the whole {@link FullIpcClient} data contract PLUS a live
+ * `openedIndex` readback of the last path handed to `openCorpus`. The readback exists
+ * because a reference implementation that silently discarded its one lifecycle argument
+ * would be indistinguishable from one that never received it — and `openCorpus` returns
+ * the same `{ok, index}` either way. It is additive, so a `MockIpcClient` still drops
+ * straight into any `IpcClient`/`FullIpcClient` slot.
+ */
+export interface MockIpcClient extends FullIpcClient {
+  /** Path of the last successful `openCorpus`, or null before any open. */
+  readonly openedIndex: string | null;
+}
+
+/**
  * Build a mock IPC client over the given data. The default export uses the built-in
  * synthetic forest; the factory is exported so tests can drive tiny graphs. The return
- * type is {@link FullIpcClient} — the mock implements the full Phase-3 surface, so the
+ * type is {@link MockIpcClient} — the mock implements the full Phase-3 surface, so the
  * six time-travel/export methods are callable without an optional-chaining dance.
  */
 export function createMockIpc(
   threads: RawThread[] = RAW_THREADS,
   edges: SpawnEdge[] = RAW_EDGES,
-): FullIpcClient {
+): MockIpcClient {
   const graph = new MockGraph(threads, edges);
+  /** The last path `openCorpus` was given. Read back via the `openedIndex` getter. */
+  let lastOpenedIndex: string | null = null;
 
   function runSearch(params: SearchParams): SearchResult {
     const q = params.q.trim().toLowerCase();
@@ -615,6 +631,27 @@ export function createMockIpc(
   }
 
   return {
+    get openedIndex(): string | null {
+      return lastOpenedIndex;
+    },
+
+    /**
+     * Record the requested index and report success.
+     *
+     * DELIBERATELY NOT A GATE — the fixture forest is served from construction, before
+     * and after any `openCorpus`. The real engine does refuse every read until a corpus
+     * is attached, but copying that here would break the mock's whole reason to exist:
+     * `./index.ts` selects this adapter for every NON-Tauri environment (vite dev,
+     * `vite preview`, the screenshot harness, a design review), and the native file
+     * picker only exists inside the Tauri webview. A gated mock would leave those
+     * environments unable to attach anything and unable to leave the empty state —
+     * reintroducing, in the preview, the exact dead boot this method was added to cure.
+     */
+    async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
+      lastOpenedIndex = indexPath;
+      return { ok: true, index: indexPath };
+    },
+
     async healthPing(): Promise<HealthInfo> {
       return {
         ok: true,
@@ -764,7 +801,7 @@ export function createMockIpc(
 }
 
 /** The default mock client over the built-in synthetic forest. */
-export const mockIpc: FullIpcClient = createMockIpc();
+export const mockIpc: MockIpcClient = createMockIpc();
 
 /** Exposed so tests can assert against the same data the default client serves. */
 export const MOCK_THREADS = RAW_THREADS;

@@ -262,7 +262,24 @@ export interface ExportResult {
  * (Tauri `invoke`) adapter implement this; the app never imports one directly, only
  * the `ipc` singleton from `./index.ts`.
  */
+/**
+ * `open_corpus` result: the engine was (re)spawned against `index`.
+ *
+ * This is a LIFECYCLE call, not a data read — it replaces the sidecar process, so every
+ * cached read taken before it is stale afterwards.
+ */
+export interface OpenCorpusResult {
+  ok: boolean;
+  index: string;
+}
+
 export interface IpcClient {
+  /**
+   * Attach the engine to the corpus index at `indexPath`, replacing any corpus already
+   * open. Every other method on this interface fails with "no corpus attached" until this
+   * has succeeded once, so this is the app's entry point rather than an optional extra.
+   */
+  openCorpus(indexPath: string): Promise<OpenCorpusResult>;
   healthPing(): Promise<HealthInfo>;
   corpusStats(): Promise<CorpusStats>;
   graphRoots(params?: RootsParams): Promise<ThreadNode[]>;

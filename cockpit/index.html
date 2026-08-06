@@ -12,6 +12,22 @@
     <div id="app">
       <header id="topbar">
         <h1>llm_anthology cockpit</h1>
+        <!-- The corpus control sits FIRST after the title because attaching a corpus is
+             both the app's primary action and the precondition for every other pane:
+             the engine answers nothing until it succeeds. role="group" (not a landmark)
+             matches the sidebar's wrapper convention — it names a related set of
+             controls without imposing a child-role contract. -->
+        <div id="corpus-bar" role="group" aria-label="Corpus">
+          <button id="btn-open-corpus" type="button">Open corpus…</button>
+          <!-- role="status" (polite): the picker is a NATIVE dialog, so when it closes
+               there is no in-page focus change to tell a screen-reader user which corpus
+               they just attached. The text here is a placeholder — CorpusBar repaints it
+               from NO_CORPUS_LABEL on construction. -->
+          <span id="corpus-current" class="muted" role="status">No corpus open</span>
+          <!-- Empty until something fails. role="alert" so a failure the user caused by
+               pressing the button is announced, not silently painted. -->
+          <span id="corpus-error" class="corpus-error" role="alert"></span>
+        </div>
         <span id="stats" class="muted"></span>
         <span class="spacer"></span>
         <span id="health" class="muted"></span>

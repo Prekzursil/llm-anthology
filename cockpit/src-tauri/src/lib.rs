@@ -46,10 +46,37 @@ fn forward(state: &EngineState, method: &str, params: Value) -> Result<Value, St
     }
 }
 
+/// Reject an `index_path` that is not an existing file. Split out from the command so the
+/// rule is unit-testable without constructing a Tauri `State`.
+fn validate_index_path(index_path: &str) -> Result<(), String> {
+    let path = std::path::Path::new(index_path);
+    if path.is_file() {
+        return Ok(());
+    }
+    // Distinguish the two reasons, because "it's a folder" and "it's not there" send the
+    // user to completely different next actions.
+    Err(if path.is_dir() {
+        format!("{index_path} is a folder, not a corpus index file")
+    } else {
+        format!("no corpus index at {index_path}")
+    })
+}
+
 /// (Re)spawn the engine sidecar pointed at `index_path`. Replacing the previous
 /// client drops it, which reaps the old process (best-effort — see `SidecarClient`).
+///
+/// REFUSES a path that is not an existing file, and that refusal is load-bearing rather
+/// than defensive politeness. The engine opens an index with `corpus.open_index`, which
+/// documents itself as "Open (creating if absent)" — it is `sqlite3.connect` plus a schema
+/// init. The sidecar then reports `corpus_ready` as simply `self.conn is not None`
+/// (`llm_anthology/sidecar.py`). So WITHOUT this guard, naming a path that does not exist
+/// silently CREATES an empty index and reports success: a corpus the user has moved or
+/// deleted would be resurrected as an empty file, and the UI would show zero conversations
+/// with no error to explain why. "Open" must not be a create. Building a NEW index is the
+/// CLI's `index` command, which owns the create verb deliberately.
 #[tauri::command]
 fn open_corpus(state: State<'_, EngineState>, index_path: String) -> Result<Value, String> {
+    validate_index_path(&index_path)?;
     // Spawn BEFORE taking the lock's contents so a spawn failure leaves any existing
     // engine intact rather than tearing it down for a replacement that never arrived.
     let client = SidecarClient::spawn(&index_path)?;
@@ -144,6 +171,11 @@ fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // The corpus index is a file on disk, and a webview `<input type="file">` yields
+        // no filesystem path in Tauri v2 — so a native picker is the only way the user can
+        // name an index for `open_corpus`. Without it the app has no route to its primary
+        // action and boots into a dead state.
+        .plugin(tauri_plugin_dialog::init())
         .manage(EngineState::default())
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -170,7 +202,40 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::app_info;
+    use super::{app_info, validate_index_path};
+
+    /// BOTH-STATES test for the open-vs-create guard. The passing case alone would not
+    /// prove anything: the guard's whole purpose is to FAIL on a path the Python layer
+    /// would otherwise happily create, so the rejecting cases are the real assertions.
+    #[test]
+    fn validate_index_path_accepts_a_real_file_and_rejects_everything_else() {
+        // A file that certainly exists: this source file.
+        let real = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
+        assert_eq!(validate_index_path(real), Ok(()), "an existing file must pass");
+
+        // A path that does not exist. Without the guard the engine would CREATE this as an
+        // empty index and report corpus_ready = true.
+        let missing = concat!(env!("CARGO_MANIFEST_DIR"), "/src/definitely-not-here.db");
+        let err = validate_index_path(missing).expect_err("a missing path must be rejected");
+        assert!(
+            err.contains("no corpus index at"),
+            "error must name the missing-file reason, got: {err}"
+        );
+
+        // A directory. Distinguished from "missing" because it needs a different fix.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let err = validate_index_path(dir).expect_err("a directory must be rejected");
+        assert!(
+            err.contains("is a folder"),
+            "error must name the folder reason, got: {err}"
+        );
+
+        // Empty string — the shape a cleared persisted setting would take.
+        assert!(
+            validate_index_path("").is_err(),
+            "an empty path must be rejected, not treated as the cwd"
+        );
+    }
 
     #[test]
     fn app_info_reports_name_version_and_deferred_engine() {
