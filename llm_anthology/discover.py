@@ -141,6 +141,7 @@ class Roots:
     """
     codex_home: str = ""            # $CODEX_HOME, else ~/.codex
     claude_home: str = ""           # ~/.claude
+    grok_home: str = ""             # $GROK_HOME, else ~/.grok
     user_dirs: tuple = ()           # Downloads / Documents / Desktop — export landing
     index_dirs: tuple = ()          # where an already-built corpus index might sit
 
@@ -264,10 +265,11 @@ class IndexSpec:
 #: The shipped provider table.
 #:
 #: Every entry is grounded in this repository, cited below. Providers the owner wants
-#: next — Grok/xAI, Copilot, DeepSeek, Perplexity, Cursor — are deliberately ABSENT:
-#: their on-disk export shapes are not established here, and a guessed filename pattern
-#: is a detector that silently never fires. Add one by appending a row once its real
-#: shape is known.
+#: next — Copilot, DeepSeek, Perplexity, Cursor — are deliberately ABSENT: their
+#: on-disk export shapes are not established here, and a guessed filename pattern is a
+#: detector that silently never fires. Add one by appending a row once its real shape
+#: is known — Grok/xAI joined the table that way, once `.scratch/GROK-SCHEMA.md`
+#: measured its store and `adapters/grok.py` could read it.
 PROVIDERS = (
     # corpus.py:161,179 — the index schema; conversations + conversations_fts identify
     # an index this app wrote, regardless of what the file is called.
@@ -301,6 +303,25 @@ PROVIDERS = (
     StoreSpec(provider="claude-code", root="claude_home", subdir="projects",
               item_patterns=("*.jsonl",), item_depth=2, report="subdir",
               dir_counter="project_dirs"),
+
+    # adapters/grok.py:1 — Grok Build keeps a LIVE store at
+    # <grok_home>/sessions/<percent-encoded-cwd>/<session-id>/, one DIRECTORY per
+    # session. `updates.jsonl` is the counted item because it is the conversation;
+    # counting `summary.json` too would double every session.
+    #
+    # report="subdir", so `path` is the sessions root that grok.ingest_sessions()
+    # takes directly — no caller has to derive it.
+    #
+    # item_depth=3 is exact, not slack: it reaches files in <enc-cwd>/<session-id>/
+    # and stops ABOVE `subagents/<id>/`, so a subagent's bookkeeping directory can
+    # never inflate the session count this reports (grok.py:_is_subagent_dir makes
+    # the same exclusion on the ingest side).
+    #
+    # No markers: an empty ~/.grok must report nothing, and the item count is the
+    # only honest evidence a store is there.
+    StoreSpec(provider="grok", root="grok_home", subdir="sessions",
+              item_patterns=(ItemPattern("session_updates", "updates.jsonl"),),
+              item_depth=3, report="subdir", dir_counter="session_dirs"),
 
     # adapters/chatgpt.py:1 and cli.py:11 — the native export is conversations.json.
     # Claude's export uses the SAME filename, so neither claims it alone; `chat.html`
@@ -340,7 +361,12 @@ def default_roots(home=None, env=None):
 
     ``$CODEX_HOME`` wins over ``~/.codex`` because that is the precedence
     ``adapters/codex_state.py:129`` already uses — a discovery that disagreed with the
-    loader would point at a store the ingest then ignores.
+    loader would point at a store the ingest then ignores. ``$GROK_HOME`` is the same
+    shape one level over: the override names the HOME, and the sessions tree hangs off
+    it, so the default resolves to ``~/.grok/sessions``. UNVERIFIED whether Grok reads
+    ``$GROK_HOME`` as the home or as the sessions directory itself; the settling check
+    is the ``grok_home`` value inside any ``summary.json``, which is a path and not
+    conversation content.
     """
     home = home if home is not None else os.path.expanduser("~")
     env = env if env is not None else os.environ
@@ -348,6 +374,7 @@ def default_roots(home=None, env=None):
                       for name in ("Downloads", "Documents", "Desktop"))
     return Roots(codex_home=env.get("CODEX_HOME") or os.path.join(home, ".codex"),
                  claude_home=os.path.join(home, ".claude"),
+                 grok_home=env.get("GROK_HOME") or os.path.join(home, ".grok"),
                  user_dirs=user_dirs,
                  index_dirs=user_dirs)
 
@@ -378,7 +405,7 @@ def discover(roots=None, specs=None, file_budget=DEFAULT_FILE_BUDGET,
 
 def _all_roots(roots):
     """Every configured root path, in a stable order, skipping unset ones."""
-    return [p for p in (roots.codex_home, roots.claude_home)
+    return [p for p in (roots.codex_home, roots.claude_home, roots.grok_home)
             + tuple(roots.user_dirs) + tuple(roots.index_dirs) if p]
 
 
