@@ -741,11 +741,19 @@ class Sidecar:
             if not os.path.isdir(value):
                 raise RpcError(-32602,
                                "%s must be an existing directory: %s" % (name, _clean(value)))
-        codex_home = _req_str(params, "codex_home")
+        # OPTIONAL, like the roots. It is only the Codex state graph, which a Grok-only
+        # ingest has none of. Leaving it unnamed skips that merge outright — `load_corpus`
+        # no longer falls through to the live store, which is the behaviour that let an
+        # automated probe read the owner's real sessions.
+        codex_home = _opt_str(params, "codex_home")
         # Existence is NOT required here: codex_state.load_corpus skips a missing/busy
         # state DB by design (codex_state.py:96-98), so an absent one is a valid, silent
         # "no state graph to merge" rather than a failure.
-        _reject_nonlocal_path(codex_home, "codex_home")
+        # Guarded only when NAMED. An empty string is not an absolute path, so running the
+        # guard unconditionally rejected the very case this parameter was just made optional
+        # for — omitting it raised "codex_home must be an absolute local path".
+        if codex_home:
+            _reject_nonlocal_path(codex_home, "codex_home")
         index_path = self._index_path()
         if not index_path:
             raise RpcError(BUILD_UNAVAILABLE,

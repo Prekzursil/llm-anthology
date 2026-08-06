@@ -356,12 +356,20 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
             errors.extend(_admit(result, doc, label, path_attr, claimed_by, seen_edges,
                                  sources))
 
-    state = codex_state.load_corpus(codex_home)
-    for meta in state.threads.values():
-        if meta.id not in result.threads:               # earlier sources take priority
-            result.add_thread(meta)
-    for edge in state.edges:
-        _add_edge(result, edge, seen_edges)
+    # The Codex state graph is merged ONLY when a home was named. Two reasons, and the
+    # second is the important one:
+    #   * a Grok-only ingest has no Codex home to merge, and demanding one made that case
+    #     impossible to express;
+    #   * `codex_state.load_corpus(None)` falls back to the LIVE Codex store, and an
+    #     automated probe really did read the owner's real private sessions that way. An
+    #     unnamed home now means "no state graph", never "go find one".
+    if codex_home:
+        state = codex_state.load_corpus(codex_home)
+        for meta in state.threads.values():
+            if meta.id not in result.threads:           # earlier sources take priority
+                result.add_thread(meta)
+        for edge in state.edges:
+            _add_edge(result, edge, seen_edges)
 
     conn = corpus.open_index(index_path)
     try:

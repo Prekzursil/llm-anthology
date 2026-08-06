@@ -178,6 +178,33 @@ def test_build_accepts_a_GROK_ONLY_source_with_no_codex_sessions_root(tmp_path):
     assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["grok-sess-1"]
 
 
+def test_build_accepts_grok_with_codex_home_OMITTED_entirely(tmp_path):
+    """The real Grok-only shape: a grok_root and NOTHING else.
+
+    Making `codex_home` optional was not enough on its own — `_reject_nonlocal_path` still
+    ran on the empty string, which is not an absolute path, so omitting it raised
+    "codex_home must be an absolute local path" and the case the parameter had just been
+    made optional for still failed. The guard now runs only when the value is named.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    out = srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path)})
+
+    assert out["state"] == "running"
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["errors"] == [], status
+    assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["grok-sess-1"]
+
+
+def test_build_still_rejects_a_UNC_codex_home_when_it_IS_named(tmp_path):
+    """Optional must not mean unguarded: a named home is still an SMB/NTLM vector."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path),
+                                      "codex_home": r"\\evil.example\share"})
+    assert excinfo.value.code == -32602
+
+
 def test_build_requires_at_least_one_named_source(tmp_path):
     """Naming neither root is a caller bug and must be refused, not silently ingest nothing."""
     srv, _ = _server(tmp_path, runner=_sync)
@@ -257,15 +284,46 @@ def test_build_rejects_unc_and_relative_codex_home(tmp_path):
         assert reason in ei.value.message
 
 
-def test_build_requires_both_paths_by_name(tmp_path):
-    """codex_home is REQUIRED, never defaulted: loaders.load_corpus(codex_home=None)
-    reads the owner's LIVE Codex store, so omitting it must fail rather than slurp."""
+def test_build_requires_a_SOURCE_by_name(tmp_path):
+    """At least one SOURCE root must be named; a bare codex_home is not a source.
+
+    This used to require BOTH sessions_root and codex_home, for a privacy reason:
+    `loaders.load_corpus(codex_home=None)` fell through to the owner's LIVE Codex store, so
+    omitting it would have slurped real private sessions. That fallback is GONE — an unnamed
+    home now means "no state graph to merge" — so the requirement moved to what it was
+    really protecting: an ingest must be pointed at something the caller named.
+    """
     srv, _ = _server(tmp_path, runner=_sync)
-    root = _sessions_tree(str(tmp_path / "sessions"))
-    for params in ({}, {"sessions_root": root}, {"codex_home": _codex_home(tmp_path)}):
+    for params in ({}, {"codex_home": _codex_home(tmp_path)}):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("corpus.build", params)
         assert ei.value.code == -32602
+        assert "at least one source" in str(ei.value.message)
+
+
+def test_omitting_codex_home_does_NOT_read_the_live_store(tmp_path, monkeypatch):
+    """The privacy property itself, asserted directly instead of via a required argument.
+
+    The old guarantee was structural — codex_home was mandatory, so the live-store fallback
+    could not be reached. Now that it is optional, that structural argument is gone and the
+    property needs its own test: an unnamed home must SKIP the state merge entirely, never
+    fall through to `~/.codex`. An automated probe really did read the owner's real sessions
+    through that fallback, which is why this is pinned rather than assumed.
+    """
+    called = []
+
+    def must_not_be_called(home):
+        called.append(home)
+        raise AssertionError(f"codex_state.load_corpus was reached with {home!r}")
+
+    monkeypatch.setattr(sidecar.loaders.codex_state, "load_corpus", must_not_be_called)
+
+    srv, _ = _server(tmp_path, runner=_sync)
+    srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path)})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert called == [], "the live Codex store must never be consulted for an unnamed home"
 
 
 def test_build_rejects_a_sessions_root_that_is_not_a_directory(tmp_path):
