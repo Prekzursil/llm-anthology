@@ -1,13 +1,25 @@
+/* -- theme ------------------------------------------------------------------
+   DARK IS THE DEFAULT IDENTITY, not an OS-driven alternate. The reason is the
+   canvas, not taste: the spawn tree is this app's whole differentiator, and the
+   provider tints in graph/palette.ts are saturated (#5b3fa8 claude, #0f6d5f
+   codex). On a near-black backdrop those nodes are the brightest thing on
+   screen and the graph reads as the subject; on the old light paper they
+   competed with the chrome around them. Rendering all three candidate
+   directions against the live app made that difference obvious.
+
+   Light is PRESERVED as an explicit opt-in (`<html data-theme="light">`) rather
+   than bound to `prefers-color-scheme`, so the app has ONE look by default
+   instead of silently being a different product on a light desktop. */
 :root {
-  --bg: #f6f6f7;
-  --panel: #ffffff;
-  --panel-2: #f0f0f2;
-  --border: #d9d9de;
-  --text: #14141a;
-  --muted: #6b6b75;
-  --accent: #396cd8;
-  --canvas-bg: #ececef;
-  --row-hover: #eef1f8;
+  --bg: #0e0e11;
+  --panel: #16161a;
+  --panel-2: #1c1c22;
+  --border: #2a2a33;
+  --text: #e8e8ee;
+  --muted: #8b8b99;          /* 5.4:1 on --panel — passes AA for body text */
+  --accent: #6d8cff;         /* 5.9:1 on --panel — passes the 3:1 non-text bar */
+  --canvas-bg: #0a0a0d;      /* darker than the panels so the graph sits deepest */
+  --row-hover: #22222b;
   --selected: #ffd54a;
 
   /* -- 4px spacing scale ---------------------------------------------------
@@ -166,8 +178,22 @@ body,
   flex: 1 1 0;
   min-height: 60px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel-2);
+}
+
+/* Empty state. The label is supplied by VirtualList as `data-empty`, because a
+   `:empty` selector cannot work here — the list always mounts a sizer child, so the
+   viewport is never empty in the DOM sense even when it displays nothing. Without
+   this these panes are blank grey rectangles that read as broken. */
+.list-viewport[data-empty]::after {
+  content: attr(data-empty);
+  display: block;
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 #search-input {
@@ -479,16 +505,20 @@ body,
 }
 
 /* -- dark theme ------------------------------------------------------------ */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1a1a1f;
-    --panel: #202027;
-    --panel-2: #26262e;
-    --border: #33333d;
-    --text: #ececf0;
-    --muted: #9a9aa6;
-    --accent: #6f9bff;
-    --canvas-bg: #15151a;
-    --row-hover: #2b2b36;
-  }
+/* -- light theme (explicit opt-in) -------------------------------------------
+   The previous default palette, kept intact and reachable via
+   `<html data-theme="light">`. Deliberately NOT wired to
+   `prefers-color-scheme`: the point of the dark default is that the app looks
+   like one product, and an OS-preference switch would make it look like two. */
+:root[data-theme="light"] {
+  --bg: #f6f6f7;
+  --panel: #ffffff;
+  --panel-2: #f0f0f2;
+  --border: #d9d9de;
+  --text: #14141a;
+  --muted: #6b6b75;
+  --accent: #396cd8;
+  --canvas-bg: #ececef;
+  --row-hover: #eef1f8;
+  --selected: #ffd54a;
 }

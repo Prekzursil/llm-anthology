@@ -31,6 +31,9 @@ export class SearchPanel {
     this.list = new VirtualList<SearchHit>(resultsViewport, {
       itemHeight: ROW_HEIGHT,
       renderRow: (hit) => this.renderHit(hit),
+      // Covers both "you have not searched yet" and "that query matched nothing";
+      // the live status line above distinguishes them.
+      emptyLabel: "Search across every provider at once.",
     });
     this.input.addEventListener("input", () => this.schedule());
   }

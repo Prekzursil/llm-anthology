@@ -65,6 +65,7 @@ export class CockpitApp {
     this.rootsList = new VirtualList<ThreadNode>(requireEl("roots-list"), {
       itemHeight: ROOT_ROW_HEIGHT,
       renderRow: (node) => this.renderRootRow(node),
+      emptyLabel: "No threads in this corpus yet.",
     });
 
     this.search = new SearchPanel(
