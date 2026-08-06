@@ -162,13 +162,37 @@ impl SidecarClient {
     /// sandboxed engine also needs its export DESTINATION granted to the package
     /// SID, an export-lifecycle concern rather than a fixed spawn concern.
     pub fn spawn(index_path: &str) -> Result<Self, String> {
-        Self::spawn_platform(index_path)
+        Self::spawn_platform(Some(index_path))
+    }
+
+    /// Spawn an engine with NO index attached.
+    ///
+    /// Needed to break a genuine chicken-and-egg between two individually-correct rules:
+    /// `open_corpus` refuses a path that is not an existing file (so "open" can never
+    /// resurrect a deleted corpus as a silently-empty one), while `corpus.create` — the verb
+    /// that MAKES that file — is only reachable through a running engine. A user creating
+    /// their first corpus has neither.
+    ///
+    /// The engine already supports this: its `main` treats a missing `--index` as "no corpus"
+    /// (`conn = corpus.open_index(path) if path else None`), `health.ping` still answers with
+    /// `corpus_ready` false, and `corpus.create` is deliberately the one data method that does
+    /// not require an attached corpus. So a short-lived index-less engine can create the file,
+    /// after which the normal `open_corpus` path takes over.
+    ///
+    /// Every hardening property of the normal spawn still applies — same `spawn_platform`,
+    /// so the Job Object reap and `CREATE_NO_WINDOW` are unchanged.
+    pub fn spawn_without_index() -> Result<Self, String> {
+        Self::spawn_platform(None)
     }
 
     #[cfg(windows)]
-    fn spawn_platform(index_path: &str) -> Result<Self, String> {
+    fn spawn_platform(index_path: Option<&str>) -> Result<Self, String> {
         use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
-        let args = ["-m", "llm_anthology.sidecar", "--index", index_path];
+        let mut args: Vec<&str> = vec!["-m", "llm_anthology.sidecar"];
+        if let Some(p) = index_path {
+            args.push("--index");
+            args.push(p);
+        }
         let python = engine_python();
         let HardenedSpawn { stdin, stdout, stderr, reaper } =
             spawn_hardened(&python, &args, &SpawnOpts::job_only())?;
@@ -182,13 +206,14 @@ impl SidecarClient {
     }
 
     #[cfg(not(windows))]
-    fn spawn_platform(index_path: &str) -> Result<Self, String> {
+    fn spawn_platform(index_path: Option<&str>) -> Result<Self, String> {
         use std::process::{Command, Stdio};
-        let mut child = Command::new(engine_python())
-            .arg("-m")
-            .arg("llm_anthology.sidecar")
-            .arg("--index")
-            .arg(index_path)
+        let mut cmd = Command::new(engine_python());
+        cmd.arg("-m").arg("llm_anthology.sidecar");
+        if let Some(p) = index_path {
+            cmd.arg("--index").arg(p);
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // stderr is piped per the transport contract. It is NOT drained here; the
@@ -399,6 +424,91 @@ mod tests {
             let v: Value = serde_json::from_str(l).expect("each framed line parses independently");
             assert_eq!(v["jsonrpc"], "2.0");
         }
+    }
+
+    /// The CREATE-then-OPEN journey over the real wire — the chicken-and-egg proof.
+    ///
+    /// Two individually-correct rules deadlock a first-time user: `open_corpus` refuses a path
+    /// that is not an existing file, and `corpus.create` (the verb that makes that file) is
+    /// only reachable through a running engine. A user with no corpus has neither. This proves
+    /// the index-less spawn breaks that, and — the part worth testing — that it does so
+    /// WITHOUT weakening either rule: the second create must still refuse to clobber.
+    ///
+    /// A compile is not evidence for any of this: every assertion below crosses a real process
+    /// boundary into Python.
+    #[test]
+    fn e2e_create_without_an_index_then_open_the_file_it_made() {
+        use super::SidecarClient;
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root is two levels above the crate manifest")
+            .to_path_buf();
+        std::env::set_var("PYTHONPATH", &repo_root);
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let index = std::env::temp_dir().join(format!("anth_create_{stamp}.sqlite"));
+        let index_str = index.to_string_lossy().to_string();
+        assert!(!index.exists(), "precondition: the index must not exist yet");
+
+        // 1. An engine with NO index must still start and answer.
+        let mut engine = SidecarClient::spawn_without_index().expect("index-less spawn");
+        let health = engine
+            .call("health.ping", &json!({}))
+            .expect("health.ping with no corpus attached");
+        assert_eq!(
+            health["corpus_ready"],
+            json!(false),
+            "an index-less engine must report corpus_ready false: {health}"
+        );
+
+        // 2. It can create the file the user does not have yet.
+        let created = engine
+            .call("corpus.create", &json!({ "index_path": index_str }))
+            .expect("corpus.create through an index-less engine");
+        assert!(
+            index.exists(),
+            "corpus.create must leave a real file on disk: {created}"
+        );
+
+        // 3. Creating again must REFUSE — open-refuses-to-create is only half the guarantee;
+        //    create-must-not-clobber is the other half, and it is what stops a stray second
+        //    call from replacing a corpus the user already has with an empty one.
+        let clobber = engine.call("corpus.create", &json!({ "index_path": index_str }));
+        assert!(
+            clobber.is_err(),
+            "a second create must refuse to clobber, got: {clobber:?}"
+        );
+        drop(engine);
+
+        // 4. The created file must satisfy the REAL open path — the whole point of creating it.
+        let mut opened = SidecarClient::spawn(&index_str).expect("open the created index");
+        let h2 = opened
+            .call("health.ping", &json!({}))
+            .expect("health.ping on the created index");
+        assert_eq!(
+            h2["corpus_ready"],
+            json!(true),
+            "the created index must attach: {h2}"
+        );
+        let stats = opened
+            .call("corpus.stats", &json!({}))
+            .expect("corpus.stats on the created index");
+        assert_eq!(
+            stats["conversations"],
+            json!(0),
+            "a freshly created corpus is EMPTY, not broken: {stats}"
+        );
+        drop(opened);
+
+        let _ = std::fs::remove_file(&index);
     }
 
     /// END-TO-END over the REAL wire: build a SYNTHETIC corpus index with a committed

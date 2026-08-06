@@ -88,6 +88,43 @@ fn open_corpus(state: State<'_, EngineState>, index_path: String) -> Result<Valu
     Ok(json!({ "ok": true, "index": index_path }))
 }
 
+/// Create an EMPTY corpus index at `index_path`, then leave it for `open_corpus` to attach.
+///
+/// Runs against a SHORT-LIVED, index-less engine rather than the managed one, because a user
+/// making their first corpus has no engine attached — and `forward` requires one. Spawning a
+/// throwaway also means a create can never disturb an engine the user already has open: a
+/// corpus they are working in stays attached whatever happens here.
+///
+/// Refusing to clobber is the engine's job (`corpus.create` returns CORPUS_EXISTS), which is
+/// the mirror of `open_corpus` refusing to create. Both halves of that split are enforced on
+/// the side that owns the verb, so neither can be bypassed from here.
+#[tauri::command]
+fn create_corpus(index_path: String) -> Result<Value, String> {
+    let mut client = SidecarClient::spawn_without_index()?;
+    let result = client.call("corpus.create", &json!({ "index_path": index_path }));
+    // `client` drops here, reaping the throwaway engine.
+    result
+}
+
+#[tauri::command]
+fn corpus_build(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "corpus.build", params.unwrap_or_else(|| json!({})))
+}
+
+/// Poll an ingest. Safe to call before any build — the engine answers `{"state":"idle"}`
+/// rather than erroring, so the UI can render this unconditionally.
+#[tauri::command]
+fn corpus_build_status(
+    state: State<'_, EngineState>,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    forward(
+        state.inner(),
+        "corpus.build_status",
+        params.unwrap_or_else(|| json!({})),
+    )
+}
+
 #[tauri::command]
 fn health_ping(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
     forward(state.inner(), "health.ping", params.unwrap_or_else(|| json!({})))
@@ -180,6 +217,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             open_corpus,
+            create_corpus,
+            corpus_build,
+            corpus_build_status,
             health_ping,
             corpus_stats,
             graph_roots,
