@@ -6,8 +6,9 @@ schema but contain no real conversation content.
 """
 import json
 import os
+import sqlite3
 
-from llm_anthology import cli
+from llm_anthology import cli, corpus, index
 
 
 def _write(path, obj):
@@ -209,3 +210,235 @@ def test_malformed_json_is_reported_not_fatal(tmp_path):
     assert rc == 0                                     # reported, not a crash
     rep = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
     assert any(e["stage"] == "parse" for e in rep["errors"])
+
+
+# ------------------------------------------------------------------ index (cockpit)
+#
+# The cockpit REQUIRES a SQLite corpus index, and until this subcommand existed no
+# shipped interface could create one (loaders.load_corpus had zero production callers).
+# These fixtures are SYNTHETIC: a date-nested rollout tree and a state DB built under
+# tmp_path. Every test either passes --codex-home explicitly or monkeypatches
+# CODEX_HOME, so the owner's real ~/.codex is never read.
+
+def _rollout(day_dir, name, lines):
+    os.makedirs(day_dir, exist_ok=True)
+    path = os.path.join(day_dir, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("".join(line + "\n" for line in lines))
+    return path
+
+
+def _meta(sid, ts, **kw):
+    pl = {"session_id": sid, "id": sid, "timestamp": ts, "cwd": "/repo",
+          "model_provider": "openai", "git": {"branch": "feat/x"}}
+    pl.update(kw)
+    return json.dumps({"type": "session_meta", "timestamp": ts, "payload": pl})
+
+
+def _turn(role, text, ts):
+    kind = "input_text" if role == "user" else "output_text"
+    return json.dumps({"type": "response_item", "timestamp": ts,
+                       "payload": {"type": "message", "role": role,
+                                   "content": [{"type": kind, "text": text}]}})
+
+
+def _sessions_tree(root):
+    """Two synthetic rollouts: C1 (spawned by P1) and C2 (a root)."""
+    day = os.path.join(root, "2026", "07", "24")
+    _rollout(day, "rollout-2026-07-24T10-00-00-0000c1.jsonl", [
+        _meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1"),
+        _turn("user", "alpha bravo", "2026-07-24T10:00:01.000Z"),
+        _turn("assistant", "charlie delta", "2026-07-24T10:00:02.000Z")])
+    _rollout(day, "rollout-2026-07-24T11-00-00-0000c2.jsonl", [
+        _meta("C2", "2026-07-24T11:00:00.000Z"),
+        _turn("user", "echo foxtrot", "2026-07-24T11:00:01.000Z")])
+    return day
+
+
+def _state_db(home):
+    """A synthetic $CODEX_HOME/state_5.sqlite carrying a state-only thread + edge."""
+    os.makedirs(home, exist_ok=True)
+    conn = sqlite3.connect(os.path.join(home, "state_5.sqlite"))
+    conn.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, model_provider TEXT, "
+        "tokens_used INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, "
+        "git_branch TEXT, cwd TEXT, agent_role TEXT, agent_nickname TEXT, "
+        "preview TEXT, rollout_path TEXT)")
+    conn.execute("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, "
+                 "child_thread_id TEXT, status TEXT)")
+    conn.execute("INSERT INTO threads (id, title) VALUES ('S3', 'STATE_S3')")
+    conn.execute("INSERT INTO thread_spawn_edges VALUES ('C1', 'S3', 'state')")
+    conn.commit()
+    conn.close()
+    return os.path.join(home, "state_5.sqlite")
+
+
+def test_index_builds_a_corpus_index_the_cockpit_can_open(tmp_path, capsys):
+    """The whole point: produce the SQLite file `sidecar --index <path>` consumes."""
+    sessions, home = tmp_path / "sessions", tmp_path / "codex_home"
+    idx = tmp_path / "corpus.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    assert cli.main(["index", str(sessions), str(idx), "--codex-home", str(home)]) == 0
+
+    out = capsys.readouterr().out
+    assert "INGESTED_CONVERSATIONS 2" in out
+    assert "INDEX_ROWS 2" in out
+    # these two report the PERSISTED graph, not the in-memory one -- see
+    # test_index_persists_the_spawn_graph_the_cockpit_renders for why that matters
+    assert "INDEX_THREADS 3" in out             # C1 + C2 from rollouts, S3 from state
+    assert "INDEX_EDGES 2" in out               # (P1,C1) from rollout, (C1,S3) from state
+    assert "INGEST_ERRORS 0" in out
+
+    conn = corpus.open_index(str(idx))
+    try:
+        assert index.count(conn) == 2
+        assert [r["conversation_id"] for r in index.search(conn, "bravo")] == ["C1"]
+        row = conn.execute(
+            "SELECT thread_id FROM conversations WHERE conversation_id='C1'").fetchone()
+        assert row["thread_id"] == "C1"
+    finally:
+        conn.close()
+
+
+def test_index_persists_the_spawn_graph_the_cockpit_renders(tmp_path):
+    """CONVERSATION COUNTS CANNOT CATCH THIS, AND THAT IS THE POINT.
+
+    The cockpit rebuilds its spawn tree with `corpus.load_corpus(conn)`, which reads
+    EXCLUSIVELY from the `threads` and `thread_spawn_edges` tables (corpus.py:324-334).
+    Nothing derives the graph from conversations. So an index whose conversations landed
+    but whose graph tables are empty opens as a healthy-looking stats line above a
+    COMPLETELY BLANK spawn tree — the app's primary view, dead — while every
+    conversation-count assertion in this file stays green.
+
+    Measured on the artifact this command produced before the fix:
+    conversations=3, conversations_fts=3, threads=0, thread_spawn_edges=0.
+
+    `loaders.load_corpus` assembles the graph in memory with add_thread/add_edge, then
+    hands the connection to `index.build_index`, which only ever calls add_conversation
+    and set_checkpoint (index.py:164,168) — it never writes either graph table — and the
+    connection is closed, discarding the graph. `corpus.upsert_thread` / `upsert_edge`
+    (corpus.py:256,263) exist for exactly this and had zero production callers.
+
+    This asserts on the ARTIFACT, through the same reader the cockpit uses. It is
+    EXPECTED to be RED until the loaders.py fix lands; the fix belongs there, in one
+    place, for every caller — not worked around in the CLI.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "codex_home"
+    idx = tmp_path / "corpus.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    assert cli.main(["index", str(sessions), str(idx), "--codex-home", str(home)]) == 0
+
+    conn = corpus.open_index(str(idx))
+    try:
+        graph = corpus.load_corpus(conn)          # exactly what the sidecar rebuilds
+    finally:
+        conn.close()
+
+    assert graph.threads, "index has ZERO threads — the cockpit's spawn tree is blank"
+    assert graph.edges, "index has ZERO spawn edges — the cockpit's spawn tree is blank"
+    # the merged graph, now durable: rollout nodes C1/C2 plus the state-only node S3
+    assert set(graph.threads) == {"C1", "C2", "S3"}
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in graph.edges) == \
+        [("C1", "S3"), ("P1", "C1")]
+    # present is not enough — the reloaded graph must be NAVIGABLE
+    assert graph.roots() == ["C2", "P1"]         # P1 is a dangling parent root
+    assert graph.children_of("P1") == ["C1"] and graph.children_of("C1") == ["S3"]
+    assert graph.depth("S3") == 2
+
+
+def test_index_creates_the_parent_directory_for_the_index_file(tmp_path):
+    """`corpus.open_index` is a bare sqlite3.connect — it does NOT create parents, so a
+    nested --out path would die with 'unable to open database file'."""
+    sessions = tmp_path / "sessions"
+    _sessions_tree(str(sessions))
+    idx = tmp_path / "nested" / "deeper" / "corpus.sqlite"
+    assert cli.main(["index", str(sessions), str(idx),
+                     "--codex-home", str(tmp_path / "no_state")]) == 0
+    assert os.path.isfile(str(idx))
+
+
+def test_index_surfaces_ingest_errors_and_does_not_exit_zero(tmp_path, capsys):
+    """A partially-ingested index that reports success is the worst outcome: the cockpit
+    silently opens an incomplete corpus. The index is still WRITTEN (the build is
+    resumable, so a re-run after fixing the file completes it) but the exit code says so.
+    """
+    sessions = tmp_path / "sessions"
+    day = _sessions_tree(str(sessions))
+    _rollout(day, "rollout-2026-07-24T12-00-00-0000c3.jsonl", [
+        _meta("C3", "2026-07-24T12:00:00.000Z"),
+        "{not json",
+        _turn("user", "golf hotel", "2026-07-24T12:00:01.000Z")])
+
+    idx = tmp_path / "corpus.sqlite"
+    rc = cli.main(["index", str(sessions), str(idx),
+                   "--codex-home", str(tmp_path / "no_state")])
+
+    cap = capsys.readouterr()
+    assert rc == 3
+    assert "INGEST_ERRORS 1" in cap.out
+    assert "stage=parse" in cap.err          # the error is surfaced, not swallowed
+    assert "INDEX_ROWS 3" in cap.out         # the readable rollouts still landed
+
+
+def test_index_caps_the_error_detail_so_a_broken_tree_cannot_spam(tmp_path, capsys):
+    sessions = tmp_path / "sessions"
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    extra = 3
+    for i in range(cli.MAX_ERRORS_SHOWN + extra):
+        _rollout(day, "rollout-2026-07-24T10-00-%02d-0000x%d.jsonl" % (i, i), [
+            _meta("X%d" % i, "2026-07-24T10:00:00.000Z"), "{not json"])
+
+    idx = tmp_path / "corpus.sqlite"
+    rc = cli.main(["index", str(sessions), str(idx),
+                   "--codex-home", str(tmp_path / "no_state")])
+
+    cap = capsys.readouterr()
+    assert rc == 3
+    assert "INGEST_ERRORS %d" % (cli.MAX_ERRORS_SHOWN + extra) in cap.out
+    assert cap.err.count("INGEST_ERROR ") == cli.MAX_ERRORS_SHOWN
+    assert "and %d more" % extra in cap.err
+
+
+def test_index_on_an_empty_sessions_root_is_not_an_error(tmp_path, capsys):
+    """Nothing in means nothing was LOST — the same rule the render path uses."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    idx = tmp_path / "corpus.sqlite"
+    assert cli.main(["index", str(sessions), str(idx),
+                     "--codex-home", str(tmp_path / "no_state")]) == 0
+    out = capsys.readouterr().out
+    assert "INGESTED_CONVERSATIONS 0" in out and "INDEX_ROWS 0" in out
+    assert os.path.isfile(str(idx))          # an empty index is still a usable artifact
+
+
+def test_index_missing_sessions_root_is_a_clean_error_not_a_traceback(tmp_path):
+    """Returns before any codex_home is resolved, so no live store is touched."""
+    assert cli.main(["index", str(tmp_path / "nope"), str(tmp_path / "i.sqlite")]) == 1
+
+
+def test_index_without_codex_home_discloses_the_live_store_it_will_read(
+        tmp_path, monkeypatch, capsys):
+    """With no --codex-home, `load_corpus` falls back to the LIVE Codex store
+    (adapters/codex_state.py:129 — $CODEX_HOME, else ~/.codex) and that read is
+    otherwise SILENT: an absent DB is skipped without a word. Someone indexing an
+    ARCHIVED sessions tree would get this machine's live spawn graph merged in and
+    never know. So the resolved DB path is always printed.
+    """
+    home = tmp_path / "live_home"
+    state_db = _state_db(str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home))      # never the owner's real ~/.codex
+    sessions = tmp_path / "sessions"
+    _sessions_tree(str(sessions))
+    idx = tmp_path / "corpus.sqlite"
+
+    assert cli.main(["index", str(sessions), str(idx)]) == 0
+
+    # The path printed is resolved through codex_state._db_path — the SAME function
+    # load_corpus reads through — so a path built from $CODEX_HOME can only appear here
+    # if the env var was consulted. That the graph then LANDS is a separate claim, and
+    # test_index_persists_the_spawn_graph_the_cockpit_renders owns it.
+    assert "CODEX_STATE_DB " + state_db in capsys.readouterr().out

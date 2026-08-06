@@ -9,12 +9,22 @@ and two reports (a text-exact fidelity gate and a hidden-unicode audit).
   llm-anthology codex    <codex.json>         <out_dir>
   llm-anthology gemini   <transcript.json>    <out_dir> [--harvest FILE]
   llm-anthology demo     <out.html>
+
+`index` is the odd one out: it writes no site, it builds the SQLite corpus index the
+cockpit consumes (`python -m llm_anthology.sidecar --index <path>`).
+
+  llm-anthology index    <sessions_root>      <out.sqlite> [--codex-home DIR]
 """
 import argparse
 import os
 import sys
 
-from llm_anthology import build, demo, loaders, render_html
+from llm_anthology import build, corpus, demo, index, loaders, render_html
+from llm_anthology.adapters import codex_state
+
+# How many ingest errors get a detail line before the rest are summarised. A tree of
+# thousands of unreadable rollouts must not bury the counts under its own error log.
+MAX_ERRORS_SHOWN = 10
 
 
 def build_parser():
@@ -48,7 +58,87 @@ def build_parser():
 
     d = sub.add_parser("demo", help="write a synthetic sample page (no real content)")
     d.add_argument("out_html")
+
+    i = sub.add_parser("index", help="build the SQLite corpus index the cockpit reads "
+                                     "(the ONLY supported way to produce one)")
+    i.add_argument("src", help="the Codex sessions ROOT — the date-nested "
+                               "YYYY/MM/DD/rollout-*.jsonl tree")
+    i.add_argument("out_index", help="the SQLite index FILE to write; hand it to "
+                                     "`sidecar --index <this>`")
+    i.add_argument("--codex-home", default=None,
+                   help="directory holding state_5.sqlite (the spawn graph). Omitted "
+                        "means the LIVE store ($CODEX_HOME, else ~/.codex) — the "
+                        "resolved path is always printed. Point this at a directory "
+                        "with no state_5.sqlite to index the rollouts alone.")
     return p
+
+
+def _build_index(args):
+    """`index` — build the cockpit's SQLite corpus index. Returns the exit code.
+
+    Kept out of `main` because it shares nothing with the four render subcommands: it
+    writes one SQLite FILE rather than a site directory, so it never reaches
+    build.render_corpus / print_report.
+    """
+    out = os.path.abspath(args.out_index)
+    # corpus.open_index is a bare sqlite3.connect — it creates the file but NOT its
+    # parent directory, so do that here exactly as the demo branch has to.
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+
+    # Announce before the work: a real sessions tree takes minutes and load_corpus
+    # exposes no progress hook (loaders.py:310 calls index.build_index WITHOUT its
+    # `progress=` callback), so this line is the only thing standing between the user
+    # and a silent terminal.
+    print("INDEX_BUILDING", args.src, "->", args.out_index, flush=True)
+    # Disclose the state store BEFORE reading it. With no --codex-home, load_corpus
+    # falls back to the LIVE Codex store ($CODEX_HOME, else ~/.codex — see
+    # adapters/codex_state.py:129) and that read is otherwise SILENT: an absent or busy
+    # DB is skipped without a word. Someone indexing an ARCHIVED sessions tree would get
+    # this machine's live spawn graph merged in and never know. Resolved through
+    # _db_path itself so the disclosure can never drift from the path actually read.
+    print("CODEX_STATE_DB", codex_state._db_path(args.codex_home), flush=True)
+
+    result, errors = loaders.load_corpus(args.src, out, codex_home=args.codex_home)
+
+    conn = corpus.open_index(out)
+    try:
+        # Read the postcondition back OUT of the artifact instead of reporting the
+        # in-memory objects. `result` is what load_corpus ASSEMBLED, which is not the
+        # same thing as what reached disk -- reporting its thread/edge counts once
+        # advertised a spawn graph the index did not contain. corpus.load_corpus is the
+        # exact reader the sidecar uses to rebuild the cockpit's graph, so these are the
+        # numbers the app will actually see.
+        rows = index.count(conn)
+        graph = corpus.load_corpus(conn)
+    finally:
+        conn.close()
+
+    print("INGESTED_CONVERSATIONS", len(result.conversations))   # read out of the tree
+    print("INDEX_ROWS", rows)                                    # ...and landed on disk
+    print("INDEX_THREADS", len(graph.threads))
+    print("INDEX_EDGES", len(graph.edges))
+    print("INGEST_ERRORS", len(errors))
+    # stderr is unbuffered while a piped stdout is block-buffered, so without this the
+    # error detail below lands ABOVE the counts it belongs to whenever output is
+    # redirected -- measured on a live run.
+    sys.stdout.flush()
+    for err in errors[:MAX_ERRORS_SHOWN]:
+        # sorted(items) rather than named fields: an entry carries `line` only when it
+        # came from a rollout, and a formatter that named fields would silently drop it.
+        print("  INGEST_ERROR " + " ".join("%s=%s" % kv for kv in sorted(err.items())),
+              file=sys.stderr)
+    if len(errors) > MAX_ERRORS_SHOWN:
+        print("  ... and %d more" % (len(errors) - MAX_ERRORS_SHOWN), file=sys.stderr)
+    print("INDEX_WRITTEN", args.out_index)
+
+    # Exit 3 on ANY ingest error -- partial as well as total. Same code, same rule as
+    # the render path below: content went in and did not come out. The index is still
+    # written and the build is idempotent, so re-running after fixing the bad file
+    # completes it; but a caller scripting `index && open-the-cockpit` must not read a
+    # half-ingested corpus as success. That silent-partial-success is the exact trap
+    # this file (see the exit-3 note in main) and build.py:107 were already bitten by.
+    # One code is enough -- the counts above already separate partial from total.
+    return 3 if errors else 0
 
 
 def main(argv=None):
@@ -73,6 +163,9 @@ def main(argv=None):
     if not os.path.exists(args.src):
         print("ERROR: no such file or directory: %s" % args.src, file=sys.stderr)
         return 1
+
+    if args.cmd == "index":
+        return _build_index(args)
 
     if args.cmd == "claude":
         convs, errors = loaders.load_claude(args.src, args.out_dir)
