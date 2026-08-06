@@ -592,6 +592,29 @@ def test_ingest_sessions_reads_plain_and_compressed_together_without_double_coun
         "the uncompressed copy should win — no decode, and it cannot be a truncated frame"
 
 
+def test_read_rollout_lines_refuses_a_zst_that_inflates_past_the_cap(tmp_path, monkeypatch):
+    """The decompression cap must actually FIRE, not just exist.
+
+    A compressed file's inflated size is not knowable from its on-disk size, so ingest
+    walking a whole tree could otherwise be made to exhaust memory by one pathological
+    archive. The real ceiling is 512 MiB, which no honest fixture can reach, so the cap is
+    lowered for this test — the assertion is about the BEHAVIOUR at the boundary, not the
+    constant's value. Reported as OSError so `ingest_sessions` charges it to that one file.
+    """
+    p = tmp_path / ("rollout-big-%s.jsonl.zst" % _SID)
+    _write_rollout_zst(p, [_session_meta(), _msg("user", ["x" * 200])])
+    monkeypatch.setattr(cr, "_MAX_ROLLOUT_BYTES", 8)
+
+    with pytest.raises(OSError) as excinfo:
+        cr._read_rollout_lines(str(p))
+    assert "decompression cap" in str(excinfo.value)
+
+    # And the sweep must survive it: the oversized file is logged, not fatal.
+    docs, errors = cr.ingest_sessions(str(tmp_path))
+    assert docs == []
+    assert len(errors) == 1 and errors[0]["stage"] == "read"
+
+
 def test_ingest_sessions_reports_a_corrupt_zst_without_aborting_the_sweep(tmp_path):
     """One unreadable archive must cost that FILE, not the whole history."""
     day = tmp_path / "2026" / "07" / "12"

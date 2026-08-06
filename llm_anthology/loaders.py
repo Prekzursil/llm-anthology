@@ -258,7 +258,7 @@ def _fingerprint(conv):
     return index.hash_content(json.dumps([conv.id, conv.updated_at, len(conv.turns)]))
 
 
-def load_corpus(sessions_root, index_path, codex_home=None):
+def load_corpus(sessions_root, index_path, codex_home=None, progress=None):
     """Build the cockpit Corpus and its FTS5 index in one pass.
 
     Ingests the Codex rollout logs under `sessions_root` (the DATE-NESTED
@@ -308,7 +308,13 @@ def load_corpus(sessions_root, index_path, codex_home=None):
     conn = corpus.open_index(index_path)
     try:
         _persist_graph(conn, result)
-        index.build_index(conn, sources)
+        # Forward `progress` so a caller can both REPORT and INTERRUPT a long ingest.
+        # `build_index` invokes it after each committed chunk (index.py), and without the
+        # forward there was no per-chunk hook at all: the in-app build could show only a
+        # single up-front line, and cancellation had nothing to check — `sidecar.py`
+        # documents that absence as exactly why a cancel could not be honoured. Passing
+        # None is identical to omitting it, since build_index defaults it to None.
+        index.build_index(conn, sources, progress=progress)
     finally:
         conn.close()
     return result, errors

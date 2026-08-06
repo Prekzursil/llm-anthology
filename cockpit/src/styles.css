@@ -152,11 +152,14 @@ body,
 #btn-open-corpus {
   flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
-  /* Deliberately ABOVE --control-min (32px). That token encodes an accepted
-     information-density trade-off for the secondary toolbar controls, which
-     meets WCAG 2.5.8 AA but not 2.5.5 AAA. This button is the one control the
-     whole app depends on and the only one a first-run user must find, so it
-     takes the full 44x44 enhanced target instead. */
+  /* 44x44, the WCAG 2.5.5 enhanced target. This is now the SAME as --control-min
+     rather than above it: the token was raised from 32px to 44px, so the earlier
+     "this one control is the exception" rationale no longer applies and is not
+     repeated here. Kept explicit rather than switched to var(--control-min)
+     because this button must stay 44x44 even if the token is ever lowered again
+     for density — it is the only control a first-run user MUST find, and
+     min-width matters here (a short label like the token alone would not fix
+     width; see #btn-fit, which is 41.6px wide from its padding). */
   min-height: 44px;
   min-width: 44px;
   border-radius: var(--radius-md);
@@ -395,6 +398,11 @@ body,
 #graph-toolbar button {
   padding: var(--space-2) var(--space-3);
   min-height: var(--control-min);
+  /* Height alone did not clear the target size: #btn-fit's label is short enough that
+     padding left it 41.6px WIDE while already 44px tall. Only that button is affected —
+     the others ("Full forest", "Aggregated", "Diff mode") are wider than 44px from their
+     text — so this floors the outlier without changing the toolbar's look. */
+  min-width: var(--control-min);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel-2);

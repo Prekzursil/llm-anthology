@@ -185,6 +185,44 @@ def test_load_corpus_PERSISTS_the_spawn_graph_not_just_the_conversations(tmp_pat
     assert persisted.threads["S3"].title == "STATE_S3"
 
 
+def test_load_corpus_forwards_progress_so_a_long_ingest_can_be_reported(tmp_path):
+    """`progress` must reach build_index, or a long ingest has no per-chunk hook at all.
+
+    Two things depend on it and neither is cosmetic: the in-app build can otherwise show
+    only one up-front line for a multi-minute ingest, and cancellation has nothing to
+    check — the sidecar documents that absence as precisely why a cancel could not be
+    honoured. Asserting the callback FIRES is the only way to know the kwarg is wired;
+    accepting it and dropping it would look identical from the signature.
+    """
+    sessions = tmp_path / "sessions"
+    home = tmp_path / "codex_home"
+    idx = tmp_path / "index.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    seen = []
+    loaders.load_corpus(str(sessions), str(idx), codex_home=str(home),
+                        progress=lambda file, offset: seen.append((file, offset)))
+
+    assert seen, "progress must be called at least once for a non-empty ingest"
+    # build_index reports (file, offset) after each committed batch.
+    assert all(isinstance(f, str) and isinstance(o, int) for f, o in seen), seen
+
+
+def test_load_corpus_without_progress_still_works(tmp_path):
+    """Omitting `progress` must behave exactly as before — the kwarg is additive."""
+    sessions = tmp_path / "sessions"
+    home = tmp_path / "codex_home"
+    idx = tmp_path / "index.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    c, errors = loaders.load_corpus(str(sessions), str(idx), codex_home=str(home))
+
+    assert errors == []
+    assert set(c.threads) == {"C1", "C2", "S3"}
+
+
 def test_load_corpus_re_run_does_not_duplicate_persisted_graph_rows(tmp_path):
     """Persisting the graph must stay idempotent, like the conversation ingest already is.
 
