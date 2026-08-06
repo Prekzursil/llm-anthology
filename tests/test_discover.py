@@ -500,7 +500,8 @@ def test_a_store_whose_items_sit_in_its_base_omits_items_root(tmp_path, empty_ro
 def test_registry_ships_only_grounded_providers():
     """Guards against inventing a filename pattern for a provider whose on-disk shape
     is unknown. Every shipped provider is one this repo has an adapter or loader for."""
-    grounded = {"codex", "claude", "claude-code", "chatgpt", "gemini", "anthology"}
+    grounded = {"codex", "claude", "claude-code", "chatgpt", "gemini", "anthology",
+                "grok"}
     assert {s.provider for s in discover.PROVIDERS} <= grounded
 
 
