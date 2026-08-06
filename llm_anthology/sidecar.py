@@ -10,11 +10,18 @@ of them may crash the server, they each become a typed error response.
 Layering
 --------
 The RPC surface is built ON the Phase-1 corpus API (``llm_anthology.corpus``): the thread
-SPAWN GRAPH (threads + directed edges) is loaded into memory once at construction via
-``load_corpus``; the contentless FTS5 index is queried live for search and stats; and
+SPAWN GRAPH (threads + directed edges) is loaded into memory at construction via
+``load_corpus`` (and REPLACED wholesale when a ``corpus.build`` ingest completes — see
+that method); the contentless FTS5 index is queried live for search and stats; and
 a single conversation transcript is re-parsed on demand from its rollout file via the
 Codex rollout adapter. ``dispatch`` is a pure function of ``(method, params)`` so every
 handler is testable WITHOUT real stdio; ``serve`` is the thin readline loop on top.
+
+THREADING. Everything here answers on the single request thread EXCEPT the ``corpus.build``
+worker, which runs the ingest on a background thread so a multi-minute build cannot hold
+the client's one mutex-guarded stdio pipe. That worker touches only its own job record
+(lock-guarded) and its own sqlite connection; ``self.conn`` is request-thread-only, because
+``corpus.open_index`` uses sqlite3's default ``check_same_thread=True``.
 
 Method status (all implemented; honest caveats inline)
 ------------------------------------------------------
@@ -22,6 +29,38 @@ Method status (all implemented; honest caveats inline)
 * ``corpus.stats``     — FULL. ``records`` = SUM(turn_count) and ``bytes`` = SUM(char_count)
                          over the index; the raw 2.2M-event count is NOT retained by the
                          index, so these are the honest index-computable aggregates.
+* ``corpus.create``    — FULL. Initialise an EMPTY index at ``index_path`` and close it. The
+                         explicit CREATE verb, and the ONLY data method that works with no
+                         corpus attached — a user making their FIRST corpus has nothing open
+                         by definition. It exists because the Rust ``open_corpus`` refuses a
+                         path that is not an existing file (so "open" can never resurrect a
+                         moved corpus as an empty one), which otherwise leaves no way to make
+                         a new corpus in-app. Refuses to CLOBBER an existing file (-32006, a
+                         code of its own so a UI can offer "open that one instead?"), refuses
+                         UNC/relative, and refuses a missing parent rather than creating one.
+* ``corpus.build``     — FULL, and the ONLY ingest surface (before it, the app could display
+                         a corpus but never create one). NON-BLOCKING: it validates, starts
+                         the ingest on a background thread and returns a job handle, because
+                         the client is one mutex-guarded stdio pipe and a blocking build
+                         would freeze every other RPC for the length of the ingest. ONE job
+                         at a time (a second start -> -32004). ``sessions_root`` and
+                         ``codex_home`` are both REQUIRED and both refused if UNC or
+                         relative; ``codex_home`` is never defaulted because
+                         ``loaders.load_corpus`` would otherwise read the owner's LIVE Codex
+                         store. An in-memory index -> -32005 (the worker reopens the index
+                         BY PATH, and a second connect to ':memory:' is a different
+                         database). NO CANCEL is offered, deliberately — the reason and the
+                         resumable-restart that stands in for it are in the section comment
+                         on the handlers.
+* ``corpus.build_status`` — FULL. Poll-safe at any time, including before any build (that
+                         reads back ``{"state":"idle"}`` rather than an error).
+                         ``indexed_conversations`` is a LIVE count from the index, so it
+                         climbs as the worker commits chunks; per-file ingest errors are
+                         surfaced (basenamed + sanitized), never swallowed. After a terminal
+                         build (done OR failed — a failed one can still have committed the
+                         graph) the request thread RE-READS the graph from the index, so an
+                         incremental ingest shows the union of every build rather than only
+                         the last one.
 * ``graph.roots``      — FULL. ``order`` in {created(default)|recent|title}; limit/offset.
 * ``graph.children``   — FULL.
 * ``graph.subtree``    — FULL. Optional ``depth`` cap; cycle/diamond-safe.
@@ -157,6 +196,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -168,6 +208,7 @@ from llm_anthology import (
     diff,
     export,
     ir,
+    loaders,
     maintenance,
     metadata as metadata_store,
     redact,
@@ -187,6 +228,16 @@ DB_BUSY = -32002
 # well-formed, the operation was declined (unconfirmed, out of the store root, a plan that
 # collides with itself, a stale plan). A client must be able to tell those apart.
 MAINTENANCE_REFUSED = -32003
+# A second corpus.build while one is still running. Well-formed, but only one ingest may
+# own the index at a time — the client should poll corpus.build_status, not retry.
+BUILD_IN_PROGRESS = -32004
+# corpus.build cannot run against THIS engine: the attached index has no on-disk file (an
+# in-memory database), so the worker has nothing to reopen. Not retryable.
+BUILD_UNAVAILABLE = -32005
+# corpus.create was asked to make an index where a file already exists. Distinct from
+# -32602 on purpose: the path is perfectly valid, it is simply already taken, and only a
+# separate code lets a UI offer "open that one instead?" rather than "bad path".
+CORPUS_EXISTS = -32006
 
 _ROOT_ORDERS = ("created", "recent", "title")
 
@@ -322,6 +373,40 @@ def _reject_nonlocal_dest(dest_path):
     _reject_nonlocal_path(dest_path, "dest_path")
 
 
+def _now_ms():
+    """Wall-clock epoch milliseconds — the same unit every ``*_at_ms`` field on this wire
+    uses, so a UI can subtract a job's start from a node's birth without converting."""
+    return int(time.time() * 1000)
+
+
+def _default_build_runner(fn):
+    """Run ``fn`` on a fresh DAEMON thread and return it (the caller ignores the handle;
+    the tests join it, which is how the threaded path is asserted without a sleep).
+
+    DAEMON is deliberate: an ingest of 13k files must never hold the interpreter open at
+    shutdown. Abandoning it mid-run is safe because ``index.build_index`` commits and
+    advances its checkpoint after every chunk, so the index is left valid-but-partial and
+    the next build RESUMES from the last committed batch rather than restarting."""
+    thread = threading.Thread(target=fn, name="corpus-build", daemon=True)
+    thread.start()
+    return thread
+
+
+def _build_error(err):
+    """One ingest error dict -> its wire form. The ``file`` key is a local filesystem path
+    (it embeds the owner's username), so it is reduced to a basename exactly like every
+    other path on this surface, and every remaining value is sanitized — a malformed
+    rollout is attacker-influenced text and must not relay a hidden-unicode payload.
+
+    ``file`` is indexed directly rather than guarded: every producer sets it
+    (codex_rollout.py:336, :340, :366), so a guard here would be an unreachable branch, and
+    a future producer that omitted it should fail LOUDLY rather than silently leak the
+    absolute path this function exists to strip."""
+    projected = dict(err)
+    projected["file"] = os.path.basename(projected["file"])
+    return _sanitize_tree(projected)
+
+
 def _raw_transcript(conv):
     """Every block's RAW text in an ir.Conversation, joined. This is UNSANITIZED,
     NON-allowlisted body content — it feeds ONLY the LOCAL synthesis tier, which never
@@ -336,7 +421,8 @@ class Sidecar:
     JSON-RPC requests. ``conn`` None means no corpus is attached: ``health.ping`` still
     works (reporting ``corpus_ready`` False) while every data method returns -32000."""
 
-    def __init__(self, conn, research_backend=None, local_backend=None):
+    def __init__(self, conn, research_backend=None, local_backend=None,
+                 build_runner=None):
         self.conn = conn
         self.corpus = corpus.load_corpus(conn) if conn is not None else corpus.Corpus()
         # The metadata layer owns its OWN table, created idempotently here rather than in
@@ -356,9 +442,23 @@ class Sidecar:
             research.MockBackend() if research_backend is None else research_backend)
         self.local_backend = (
             research.MockBackend() if local_backend is None else local_backend)
+        # The corpus.build job slot. AT MOST ONE ingest exists at a time, so a single slot
+        # (rather than a registry) is the whole model — see _corpus_build. `_build_lock`
+        # guards every field of `_build_job` because the worker THREAD writes it while the
+        # request thread reads it; nothing else in this class is shared across threads.
+        self._build_lock = threading.Lock()
+        self._build_job = None
+        self._next_build_id = 1
+        # How the ingest is run. Injected so a test can execute it inline or capture it and
+        # control the interleaving; production spawns a daemon thread.
+        self._build_runner = (
+            _default_build_runner if build_runner is None else build_runner)
         self._handlers = {
             "health.ping": self._health_ping,
             "corpus.stats": self._corpus_stats,
+            "corpus.create": self._corpus_create,
+            "corpus.build": self._corpus_build,
+            "corpus.build_status": self._corpus_build_status,
             "graph.roots": self._graph_roots,
             "graph.children": self._graph_children,
             "graph.subtree": self._graph_subtree,
@@ -438,6 +538,11 @@ class Sidecar:
         handler = self._handlers.get(method)
         if handler is None:
             raise RpcError(-32601, "method not found: %s" % method)
+        # A finished ingest hands its Corpus back here, on the REQUEST thread, before any
+        # handler reads self.corpus. Hanging this off dispatch rather than off
+        # corpus.build_status means a UI that never polls still stops serving a stale
+        # graph the moment it makes any other call.
+        self._adopt_completed_build()
         try:
             return handler(params)
         except sqlite3.OperationalError as e:
@@ -471,6 +576,233 @@ class Sidecar:
             "SELECT provider, COUNT(*) FROM conversations GROUP BY provider")}
         return {"conversations": conversations, "records": records, "threads": threads,
                 "edges": edges, "bytes": total_bytes, "providers": providers}
+
+    # -- corpus.build (the ONLY ingest surface, and the only one that leaves this thread)
+    #
+    # WHY A JOB AND NOT A BLOCKING CALL. The Rust client is one stdio pipe behind one
+    # mutex: `forward` (cockpit/src-tauri/src/lib.rs:36-47) locks, and `SidecarClient::call`
+    # (cockpit/src-tauri/src/sidecar.rs:218-222) writes a line then BLOCKS on read_line for
+    # the matching id. A build that answered only when the ingest finished would therefore
+    # hold that mutex for minutes and freeze every other RPC — health.ping included. So
+    # `build` starts the work and returns a handle, and `build_status` reports on it.
+    #
+    # WHY THE WORKER NEVER TOUCHES self.conn. corpus.open_index builds its connection with
+    # sqlite3's DEFAULT check_same_thread=True (corpus.py:241), so any use of self.conn off
+    # the request thread raises ProgrammingError — measured, not assumed. The worker is
+    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:308) and
+    # closes (loaders.py:312) its OWN connection inside the worker thread, so the two
+    # connections are thread-confined by construction. They do share the file, which is
+    # exactly what WAL (corpus.py:233) is for: the request thread keeps reading committed
+    # rows while the worker writes, and a transient collision is already typed as -32002.
+    #
+    # NO CANCEL, DELIBERATELY. The only cooperative abort point in the stack is
+    # index.build_index's per-chunk `progress` callback (index.py:171-172), and
+    # loaders.load_corpus does not forward one (loaders.py:310 calls build_index with no
+    # progress=), so there is no hook to honour a cancel through — and the phase BEFORE it,
+    # codex_rollout.ingest_sessions, has no hook at all. Killing the thread outright is not
+    # safe in CPython and would abandon an open sqlite connection mid-transaction. Shipping
+    # a cancel that only fires after the longest phase already finished would be a lie, so
+    # none is offered. What stands in for it: build_index commits and advances its
+    # checkpoint after every chunk (index.py:168-170), so an abandoned build leaves a
+    # VALID, partially-populated index and the next build RESUMES from the last committed
+    # batch instead of restarting. Recovery is "run it again", not "cancel".
+
+    def _corpus_create(self, params):
+        """Initialise an EMPTY index at ``index_path`` — the explicit CREATE verb.
+
+        WHY IT EXISTS. The Rust ``open_corpus`` refuses any path that is not an existing
+        file, so "open" can never resurrect a moved or deleted corpus as a silently-empty
+        one. That split is right, and it leaves no way to make a NEW corpus in-app, because
+        the path the user would name does not exist yet. This closes it as CREATE-then-OPEN
+        with open still refusing to create.
+
+        THE ONE DATA METHOD THAT DOES NOT ``_require_corpus``. A user creating their FIRST
+        corpus has nothing attached by definition, so requiring one would make this
+        unreachable exactly when it is needed. It touches no engine state — it opens a
+        brand-new connection, applies the schema and closes it — so it is safe with or
+        without an index attached, and the caller then OPENS the file it just made.
+
+        It refuses to CLOBBER (``CORPUS_EXISTS``), which is the create-side mirror of open
+        refusing to create: a corpus the user already has must never be replaced by an empty
+        one. A missing parent directory is refused rather than created — materialising an
+        arbitrary directory tree from a caller-named path is more surface than this needs.
+        [The exists-check and the create are not one atomic step, so a second process could
+        create the file in between; on a single-user desktop app that race is benign — it
+        ends with an initialised index either way, never a truncated one, because
+        ``open_index`` opens an existing database rather than overwriting it.]"""
+        index_path = _req_str(params, "index_path")
+        _reject_nonlocal_path(index_path, "index_path")
+        if os.path.exists(index_path):
+            raise RpcError(CORPUS_EXISTS,
+                           "a file already exists at %s; open it instead of creating it"
+                           % _clean(index_path))
+        if not os.path.isdir(os.path.dirname(index_path)):
+            raise RpcError(-32602, "index_path parent directory does not exist: %s"
+                           % _clean(os.path.dirname(index_path)))
+        corpus.open_index(index_path).close()
+        return {"index_path": _clean(index_path), "created": True}
+
+    def _index_path(self):
+        """The on-disk file backing the attached index, or "" for an in-memory database.
+
+        Read from sqlite itself (the ``main`` row of PRAGMA database_list, column 2) rather
+        than remembered from a constructor argument, so it is correct even for a connection
+        this object did not open. Indexed positionally so it works with or without a
+        row_factory."""
+        return self.conn.execute("PRAGMA database_list").fetchone()[2]
+
+    def _corpus_build(self, params):
+        """START an ingest of ``sessions_root`` into the attached index; return a handle.
+
+        Returns immediately — ``state`` in the start reply is always ``"running"``, because
+        this call reports that the job was ACCEPTED, not that it finished; ``build_status``
+        is the single source of truth for the outcome.
+
+        ``codex_home`` is REQUIRED and never defaulted, exactly as ``dedup.scan`` requires
+        it and for the same measured reason: ``loaders.load_corpus`` with ``codex_home``
+        None falls back to the LIVE Codex store (codex_state.py:127-130), and an automated
+        probe really did read the owner's real sessions that way. An ingest of private data
+        must be something the caller named. Both paths are refused if UNC (an outbound
+        SMB/NTLM vector) or relative.
+
+        ``sessions_root`` must also be an existing DIRECTORY. ingest_sessions globs
+        (codex_rollout.py:361-362), so a typo'd root yields zero docs and zero errors and
+        would otherwise report a perfectly "successful" build of nothing."""
+        self._require_corpus()
+        sessions_root = _req_str(params, "sessions_root")
+        _reject_nonlocal_path(sessions_root, "sessions_root")
+        if not os.path.isdir(sessions_root):
+            raise RpcError(-32602,
+                           "sessions_root must be an existing directory: %s"
+                           % _clean(sessions_root))
+        codex_home = _req_str(params, "codex_home")
+        # Existence is NOT required here: codex_state.load_corpus skips a missing/busy
+        # state DB by design (codex_state.py:96-98), so an absent one is a valid, silent
+        # "no state graph to merge" rather than a failure.
+        _reject_nonlocal_path(codex_home, "codex_home")
+        index_path = self._index_path()
+        if not index_path:
+            raise RpcError(BUILD_UNAVAILABLE,
+                           "this engine holds an in-memory index; corpus.build needs an "
+                           "on-disk index the worker can reopen")
+
+        with self._build_lock:
+            running = self._build_job is not None and self._build_job["state"] == "running"
+            if running:
+                raise RpcError(BUILD_IN_PROGRESS,
+                               "build %s is still running; poll corpus.build_status"
+                               % self._build_job["job_id"])
+            job = {"job_id": "build-%d" % self._next_build_id, "state": "running",
+                   "sessions_root": sessions_root, "started_ms": _now_ms(),
+                   "finished_ms": None, "errors": [], "error": None,
+                   "needs_reload": False}
+            self._next_build_id += 1
+            self._build_job = job
+        # OUTSIDE the lock: a synchronous runner executes the worker inline, and the worker
+        # takes this same non-reentrant lock — starting it while held would deadlock.
+        self._build_runner(
+            lambda: self._run_build(job, sessions_root, index_path, codex_home))
+        return {"job_id": job["job_id"], "state": "running",
+                "sessions_root": _clean(sessions_root),
+                "started_ms": job["started_ms"]}
+
+    def _run_build(self, job, sessions_root, index_path, codex_home):
+        """THE WORKER. Runs off the request thread; touches ONLY the job record (under the
+        lock) and thread-local objects. Values are stored RAW and projected at the wire in
+        ``_corpus_build_status``, like every other text-bearing surface here.
+
+        The bare ``except Exception`` is load-bearing, not laziness: an exception escaping a
+        thread's target has nowhere to propagate — the interpreter prints it and the job
+        would sit "running" forever, so the UI would poll a dead build indefinitely. Every
+        failure has to become a terminal state instead.
+
+        NOTHING but plain data crosses the thread boundary. The Corpus ``load_corpus``
+        returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
+        request thread re-reads the index instead of receiving that object. ``needs_reload``
+        is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
+        conversation ingest (loaders.py:310-311), so a FAILED build can still have changed
+        the index and the live view must follow it."""
+        try:
+            _built, errors = loaders.load_corpus(sessions_root, index_path, codex_home)
+        except Exception as exc:                      # noqa: BLE001 — see the docstring
+            with self._build_lock:
+                job["error"] = "%s: %s" % (type(exc).__name__, exc)
+                job["needs_reload"] = True
+                job["finished_ms"] = _now_ms()
+                job["state"] = "failed"
+            return
+        with self._build_lock:
+            job["errors"] = errors
+            job["needs_reload"] = True
+            job["finished_ms"] = _now_ms()
+            job["state"] = "done"
+
+    def _adopt_completed_build(self):
+        """Re-read the graph from the INDEX after a finished ingest — on the REQUEST thread,
+        so every mutation of ``self.corpus`` stays single-threaded.
+
+        WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
+        Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
+        loaders.py:281), while ``_persist_graph`` UPSERTS that run into the tables a previous
+        build already populated (loaders.py:346-350). The in-app flow is "open an existing
+        corpus, then ingest more sessions into it", so taking the returned object would drop
+        every previously-ingested thread from the live view while the index on disk still
+        held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].
+        The index is the only source carrying the union, so the index is what is read.
+
+        It also means NO object crosses the thread boundary at all: the worker sets a flag,
+        the request thread does the read on its own connection. The read is deliberately
+        OUTSIDE the lock (no database I/O while the worker may be waiting on it) and the
+        flag is cleared only AFTER it succeeds, so a failed re-read retries on the next call
+        rather than leaving a stale graph served as if it were current. Only the single
+        request thread ever runs this, so the flag cannot be lost between the two sections.
+        """
+        with self._build_lock:
+            job = self._build_job
+            pending = job is not None and job["needs_reload"]
+        if not pending:
+            return
+        self.corpus = corpus.load_corpus(self.conn)
+        with self._build_lock:
+            job["needs_reload"] = False
+
+    def _corpus_build_status(self, params):
+        """Progress + outcome for the current (or last) ingest. Safe to poll at any time,
+        including before any build — that reads back ``{"state": "idle"}`` rather than an
+        error, so the UI can render unconditionally (the same choice ``metadata.get`` makes).
+
+        ``indexed_conversations`` is REAL progress, not an estimate: it is counted from the
+        index on this thread, and because the worker commits after every chunk
+        (index.py:168-170) under WAL, the count climbs as those batches land.
+
+        The optional ``job_id`` lets a client prove it is reading the job it started; a poll
+        that raced a newer build gets -32602 rather than another job's progress."""
+        self._require_corpus()
+        requested = params.get("job_id")
+        if requested is not None and not isinstance(requested, str):
+            raise RpcError(-32602, "job_id must be a string")
+        indexed = self.conn.execute(
+            "SELECT COUNT(*) FROM conversations").fetchone()[0]
+        with self._build_lock:
+            snapshot = None if self._build_job is None else dict(self._build_job)
+        if snapshot is None:
+            if requested is not None:
+                raise RpcError(-32602,
+                               "unknown job_id %r: no build has been started" % requested)
+            return {"state": "idle", "indexed_conversations": indexed, "errors": []}
+        if requested is not None and requested != snapshot["job_id"]:
+            raise RpcError(-32602, "unknown job_id %r; the current job is %r"
+                           % (requested, snapshot["job_id"]))
+        result = {"job_id": snapshot["job_id"], "state": snapshot["state"],
+                  "sessions_root": _clean(snapshot["sessions_root"]),
+                  "started_ms": snapshot["started_ms"],
+                  "indexed_conversations": indexed,
+                  "errors": [_build_error(e) for e in snapshot["errors"]]}
+        if snapshot["finished_ms"] is not None:
+            result["finished_ms"] = snapshot["finished_ms"]
+        if snapshot["error"] is not None:
+            result["error"] = _clean(snapshot["error"])
+        return result
 
     def _graph_roots(self, params):
         self._require_corpus()
