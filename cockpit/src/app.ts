@@ -23,6 +23,7 @@ import {
 } from "./graph/layout";
 import { knownProviders, providerTint } from "./graph/palette";
 import { CorpusBar } from "./ui/corpusBar";
+import { engineErrorText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
@@ -167,9 +168,12 @@ export class CockpitApp {
       const h = await ipc.healthPing();
       this.healthEl.textContent = h.corpus_ready
         ? `engine ${h.engine_version} · IR ${h.ir_version}`
-        : "no corpus attached";
+        : "engine idle";
     } catch (err) {
-      this.healthEl.textContent = `engine unavailable: ${String(err)}`;
+      // The not-attached case is the app's INITIAL STATE, not a fault, and the CorpusBar
+      // already reports it — so this must not render the engine's internal
+      // "call open_corpus first" text here as well.
+      this.healthEl.textContent = engineErrorText(err, "engine unavailable");
     }
   }
 
@@ -181,7 +185,7 @@ export class CockpitApp {
         .join(" · ");
       this.statsEl.textContent = `${s.conversations} conversations · ${s.threads} threads · ${s.edges} edges · ${providers}`;
     } catch (err) {
-      this.statsEl.textContent = `stats unavailable: ${String(err)}`;
+      this.statsEl.textContent = engineErrorText(err, "stats unavailable");
     }
   }
 
@@ -259,7 +263,8 @@ export class CockpitApp {
       const crossCount = positioned.edges.filter((e) => e.cross).length;
       this.graphStatusEl.textContent = `${positioned.nodes.length} nodes · ${positioned.edges.length} edges · ${crossCount} cross-provider`;
     } catch (err) {
-      const msg = err instanceof LayoutTimeoutError ? err.message : `layout failed: ${String(err)}`;
+      const msg =
+      err instanceof LayoutTimeoutError ? err.message : engineErrorText(err, "layout failed");
       this.graphStatusEl.textContent = msg;
     }
   }
@@ -337,7 +342,7 @@ export class CockpitApp {
       const snap = await ipc.graphAt(asOfMs);
       await this.present({ nodes: snap.nodes, edges: snap.edges }, null);
     } catch (err) {
-      this.graphStatusEl.textContent = `time-travel failed: ${String(err)}`;
+      this.graphStatusEl.textContent = engineErrorText(err, "time-travel failed");
     }
   }
 
@@ -364,7 +369,7 @@ export class CockpitApp {
       const diff = await ipc.graphDiff(this.scrubAsOf ?? undefined, undefined);
       this.canvas.setDiffOverlay(diffToOverlay(diff));
     } catch (err) {
-      this.graphStatusEl.textContent = `diff failed: ${String(err)}`;
+      this.graphStatusEl.textContent = engineErrorText(err, "diff failed");
     }
   }
 

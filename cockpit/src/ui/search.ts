@@ -5,6 +5,7 @@
  */
 
 import type { IpcClient, SearchHit } from "../ipc";
+import { engineErrorText } from "./errors";
 import { VirtualList } from "./virtualList";
 
 export type HitHandler = (hit: SearchHit) => void;
@@ -64,7 +65,9 @@ export class SearchPanel {
     } catch (err) {
       if (token !== this.latest) return;
       this.list.setItems([]);
-      this.status.textContent = `Search failed: ${String(err)}`;
+      // Searching before a corpus is attached is not a search failure — route it through
+      // the shared presenter so it does not print the engine's internal method name.
+      this.status.textContent = engineErrorText(err, "Search failed");
     }
   }
 
