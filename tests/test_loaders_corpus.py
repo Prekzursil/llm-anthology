@@ -137,6 +137,82 @@ def test_load_corpus_merges_rollouts_state_and_builds_the_index(tmp_path):
         conn.close()
 
 
+def test_load_corpus_PERSISTS_the_spawn_graph_not_just_the_conversations(tmp_path):
+    """The graph must survive in the INDEX, not only in the returned in-memory Corpus.
+
+    This is the assertion whose absence hid a P0. The test above checks the in-memory
+    `c.threads` / `c.edges` / `c.roots()` and, separately, that the index holds
+    conversations — so it passes even when the graph is never written to disk. But the
+    cockpit does not use the returned object: it spawns a sidecar against the index FILE
+    and rebuilds the graph with `corpus.load_corpus(conn)`, which reads exclusively from
+    the `threads` and `thread_spawn_edges` tables. An index with empty graph tables
+    therefore reports conversations normally in `corpus.stats` while `graph.roots`,
+    `graph.timeline` and `graph.children` all come back empty — the app's entire primary
+    view blank, with every existing test green.
+
+    So this asserts against a REOPENED connection, the same way the consumer reads it.
+    """
+    sessions = tmp_path / "sessions"
+    home = tmp_path / "codex_home"
+    idx = tmp_path / "index.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    in_memory, errors = loaders.load_corpus(str(sessions), str(idx), codex_home=str(home))
+    assert errors == []
+
+    conn = corpus.open_index(str(idx))
+    try:
+        persisted = corpus.load_corpus(conn)
+    finally:
+        conn.close()
+
+    # The persisted graph must match the one load_corpus built in memory.
+    assert set(persisted.threads) == set(in_memory.threads) == {"C1", "C2", "S3"}
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in persisted.edges) == \
+        [("C1", "S3"), ("P1", "C1")]
+
+    # And it must be NAVIGABLE after the round-trip, since that is what the UI does with
+    # it — a table holding rows that no longer form a graph would still be a failure.
+    assert persisted.roots() == ["C2", "P1"]
+    assert persisted.children_of("P1") == ["C1"]
+    assert persisted.depth("S3") == 2
+
+    # Merge policy must survive persistence too: rollout metadata won in memory, so the
+    # row on disk must be the rollout one, not the state one.
+    assert persisted.threads["C1"].git_branch == "feat/x"
+    assert persisted.threads["C1"].title != "STATE_C1"
+    assert persisted.threads["S3"].title == "STATE_S3"
+
+
+def test_load_corpus_re_run_does_not_duplicate_persisted_graph_rows(tmp_path):
+    """Persisting the graph must stay idempotent, like the conversation ingest already is.
+
+    `load_corpus` is documented as re-runnable ("a re-run adds no duplicate row or
+    posting"), and the cockpit will re-ingest into an existing index. If graph persistence
+    appended instead of upserting, every re-run would multiply the edges and the graph
+    would slowly rot.
+    """
+    sessions = tmp_path / "sessions"
+    home = tmp_path / "codex_home"
+    idx = tmp_path / "index.sqlite"
+    _sessions_tree(str(sessions))
+    _state_db(str(home))
+
+    loaders.load_corpus(str(sessions), str(idx), codex_home=str(home))
+    loaders.load_corpus(str(sessions), str(idx), codex_home=str(home))  # replay
+
+    conn = corpus.open_index(str(idx))
+    try:
+        threads = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+        edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert threads == 3, f"expected 3 thread rows after a replay, got {threads}"
+    assert edges == 2, f"expected 2 edge rows after a replay, got {edges}"
+
+
 def test_load_corpus_on_empty_inputs_returns_an_empty_corpus_and_index(tmp_path):
     sessions = tmp_path / "empty_sessions"
     home = tmp_path / "no_state"          # no state_5.sqlite here -> skipped, not fatal

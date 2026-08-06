@@ -307,7 +307,45 @@ def load_corpus(sessions_root, index_path, codex_home=None):
 
     conn = corpus.open_index(index_path)
     try:
+        _persist_graph(conn, result)
         index.build_index(conn, sources)
     finally:
         conn.close()
     return result, errors
+
+
+def _persist_graph(conn, result):
+    """Write the assembled thread graph into the index.
+
+    WHY THIS EXISTS: `index.build_index` persists only conversations — it calls
+    `corpus.add_conversation` and `corpus.set_checkpoint` and never touches the `threads`
+    or `thread_spawn_edges` tables. Without this, the graph `load_corpus` just built lived
+    ONLY in the returned in-memory object and was discarded when this function closed the
+    connection. That mattered because the cockpit never sees the returned object: it spawns
+    a sidecar against the index FILE and rebuilds the graph with `corpus.load_corpus(conn)`,
+    which reads exclusively from those two tables. So an index built here reported
+    conversations normally via `corpus.stats` while `graph.roots` / `graph.timeline` /
+    `graph.children` all came back empty — the app's entire primary view blank. Every test
+    passed, because they asserted on the in-memory corpus and on the conversation rows, and
+    nothing asserted that the graph survived to disk.
+
+    Runs BEFORE the conversation ingest deliberately: `build_index` is the long, chunked,
+    resumable half, so committing the (small) graph first means an interruption leaves a
+    corpus that is still navigable and resumable, rather than the conversations-without-a-
+    graph state this function used to produce unconditionally.
+
+    Writes go through `index._retry`, the SAME lock-retry policy `build_index` uses for
+    every write, rather than a second private copy of that policy — the module documents
+    that every write is retried on transient SQLITE_LOCKED/BUSY, and a background in-app
+    ingest makes contention a live concern rather than a theoretical one. `upsert_thread`
+    and `upsert_edge` are INSERT OR REPLACE, so a re-run upserts instead of duplicating and
+    the documented idempotence of `load_corpus` is preserved.
+    """
+    def do(op):
+        return index._retry(op)
+
+    for meta in result.threads.values():
+        do(lambda m=meta: corpus.upsert_thread(conn, m))
+    for edge in result.edges:
+        do(lambda e=edge: corpus.upsert_edge(conn, e))
+    do(conn.commit)
