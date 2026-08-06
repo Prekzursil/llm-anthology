@@ -19,9 +19,15 @@
  */
 
 import type {
+  BuildHandle,
+  BuildParams,
+  BuildStatus,
   Conversation,
   CorpusDiffDto,
   CorpusStats,
+  CreateCorpusResult,
+  DiscoveryFinding,
+  DiscoveryResult,
   ExportPlan,
   ExportResult,
   FullIpcClient,
@@ -265,6 +271,148 @@ const RAW_EDGES: SpawnEdge[] = [
   { parent: "plan", child: "canvas" }, // cross claude->codex
   { parent: "layout", child: "search", status: "completed" },
 ];
+
+// ---------------------------------------------------------------------------
+// auto-discovery fixture
+// ---------------------------------------------------------------------------
+
+/** `T0` as UNIX SECONDS — discovery reports seconds, not the ms everything else uses. */
+const T0_SEC = T0 / 1000;
+
+/**
+ * WINDOWS-shaped paths, deliberately, while the rest of this mock uses POSIX ones.
+ *
+ * Discovery is the one surface whose payload is a scan of the LOCAL filesystem, and the
+ * only platform this app ships on is Windows — so a POSIX fixture here would leave the
+ * separator handling in `ui/discoveryPanel`'s path split unexercised in every preview and
+ * screenshot, which is exactly where a basename bug would otherwise hide.
+ */
+const HOME = "C:\\Users\\preview";
+
+/**
+ * The 25 near-identical ChatGPT exports.
+ *
+ * A REAL census on the author's machine returned 25 of them (against 7 Claude, 2 Codex and
+ * 1 Gemini export), which is also the engine's per-group cap — `DEFAULT_MAX_PER_GROUP`
+ * (`llm_anthology/discover.py:106`). So this group is simultaneously the worst case for
+ * the UI's own collapsing AND a group the ENGINE truncated, and it exists here so a
+ * preview shows both at once rather than either in isolation.
+ */
+function chatgptExports(): DiscoveryFinding[] {
+  return Array.from({ length: 25 }, (_, i) => ({
+    provider: "chatgpt",
+    kind: "export_file",
+    path: `${HOME}\\Downloads\\chatgpt-export-${String(i + 1).padStart(2, "0")}\\conversations.json`,
+    count: 1,
+    // Descending age, one day apart, so the newest-first ordering has something to sort.
+    newest_mtime: T0_SEC - i * 86400,
+    confidence: "high",
+    detail: { size_bytes: 4_100_000 + i * 9_137 },
+  }));
+}
+
+/**
+ * A whole scan, shaped like the measured one: a built index, both STORE shapes, and the
+ * long export tail. The two store shapes differ in the way the ingest derivation depends
+ * on (`llm_anthology/discover.py:550-551`) and that difference is the whole reason both
+ * are here:
+ *
+ *   * codex reports its BASE (`report="base"`), so `path` is the Codex home and
+ *     `detail.items_root` is the distinct sessions tree -> both `corpus.build` parameters
+ *     are derivable;
+ *   * claude-code reports its SUBDIR (`report="subdir"`), so `path` and
+ *     `detail.items_root` are the SAME directory and no Codex home is named -> the ingest
+ *     parameters are NOT derivable, which the panel has to say rather than guess.
+ */
+const DISCOVERY: DiscoveryResult = {
+  findings: [
+    {
+      provider: "anthology",
+      kind: "built_index",
+      path: `${HOME}\\Documents\\anthology.db`,
+      count: 1_284,
+      newest_mtime: T0_SEC - 3_600,
+      confidence: "high",
+      detail: { conversations: 1_284, tables: ["conversations", "conversations_fts"] },
+    },
+    {
+      provider: "codex",
+      kind: "session_store",
+      path: `${HOME}\\.codex`,
+      count: 2_043,
+      newest_mtime: T0_SEC - 900,
+      confidence: "high",
+      detail: {
+        // The measured live store: thousands of COMPRESSED rollouts and zero plain ones
+        // (`llm_anthology/adapters/codex_rollout.py:357-359`). `ingestable` counts only
+        // the plain form, so it reads 0 here even though `ingest_sessions` globs both
+        // (`codex_rollout.py:416-419`) — see `ui/discoveryPanel`'s note on why the panel
+        // does not gate the ingest on that field.
+        rollouts_jsonl: 0,
+        rollouts_zst: 2_043,
+        ingestable: 0,
+        state_db: `${HOME}\\.codex\\state_5.sqlite`,
+        items_root: `${HOME}\\.codex\\sessions`,
+      },
+    },
+    {
+      provider: "claude-code",
+      kind: "session_store",
+      path: `${HOME}\\.claude\\projects`,
+      count: 162,
+      newest_mtime: T0_SEC - 120,
+      confidence: "high",
+      detail: {
+        "*.jsonl": 162,
+        ingestable: 162,
+        project_dirs: 9,
+        items_root: `${HOME}\\.claude\\projects`,
+      },
+    },
+    {
+      provider: "claude",
+      kind: "export_file",
+      path: `${HOME}\\Downloads\\claude-data\\conversations.json`,
+      count: 1,
+      newest_mtime: T0_SEC - 172_800,
+      confidence: "high",
+      detail: { size_bytes: 18_400_000, ambiguous_with: ["chatgpt"] },
+    },
+    {
+      provider: "gemini",
+      kind: "export_file",
+      path: `${HOME}\\Downloads\\Takeout\\Gemini Apps\\_converted\\transcript.json`,
+      count: 1,
+      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:552`),
+      // so a renderer that treated this as a timestamp would print 1970.
+      newest_mtime: 0,
+      confidence: "low",
+      detail: { size_bytes: 2_100 },
+    },
+    ...chatgptExports(),
+  ],
+  stats: {
+    elapsed_seconds: 1.78,
+    roots_scanned: 5,
+    dirs_visited: 2_188,
+    files_examined: 39_512,
+    budget_exhausted: false,
+    // The ENGINE capped this group. Distinct from any collapsing the UI does, and the
+    // only signal that older items exist on disk that the scan never listed.
+    truncated_groups: ["chatgpt/export_file"],
+    errors: [
+      `${HOME}\\Downloads\\locked: [WinError 5] Access is denied`,
+      `${HOME}\\Desktop\\gone: [WinError 3] The system cannot find the path specified`,
+    ],
+  },
+};
+
+/**
+ * How many `corpus.build_status` polls the mock reports as `running` before it reports
+ * `done`. Fixed rather than clock-based so a preview always shows a real progress
+ * transition and a test always terminates — the mock reads no clock anywhere.
+ */
+const MOCK_BUILD_POLLS = 3;
 
 /**
  * A faithful port of `llm_anthology/corpus.py`'s graph helpers. Answers purely from the edge
@@ -599,6 +747,8 @@ export function createMockIpc(
   const graph = new MockGraph(threads, edges);
   /** The last path `openCorpus` was given. Read back via the `openedIndex` getter. */
   let lastOpenedIndex: string | null = null;
+  /** The in-flight/last mock ingest, or null before any `corpusBuild`. */
+  let buildJob: { id: string; polls: number } | null = null;
 
   function runSearch(params: SearchParams): SearchResult {
     const q = params.q.trim().toLowerCase();
@@ -650,6 +800,66 @@ export function createMockIpc(
     async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
       lastOpenedIndex = indexPath;
       return { ok: true, index: indexPath };
+    },
+
+    /**
+     * The fixture scan. Returns a fresh deep-ish copy so a caller that sorts or mutates
+     * the array in place cannot corrupt the fixture for the next scan — the panel does
+     * sort, and a shared mutable fixture is how a "why did the order change on rescan?"
+     * bug gets born.
+     */
+    async discoverSources(): Promise<DiscoveryResult> {
+      return {
+        findings: DISCOVERY.findings.map((f) => ({ ...f, detail: { ...f.detail } })),
+        stats: { ...DISCOVERY.stats },
+      };
+    },
+
+    /**
+     * Record the requested path and report it created. NO filesystem write, and — unlike
+     * the engine — no clobber check, for the same reason `openCorpus` is not a gate here:
+     * this adapter serves every non-Tauri environment, where there is no real index to
+     * collide with.
+     */
+    async createCorpus(indexPath: string): Promise<CreateCorpusResult> {
+      return { index_path: indexPath, created: true };
+    },
+
+    async corpusBuild(params: BuildParams): Promise<BuildHandle> {
+      buildJob = { id: "mock-build-1", polls: 0 };
+      return {
+        job_id: buildJob.id,
+        state: "running",
+        sessions_root: params.sessions_root,
+        started_ms: T0,
+      };
+    },
+
+    /**
+     * Poll the mock ingest. Reports `idle` before any build (exactly as the engine does
+     * rather than erroring — `llm_anthology/sidecar.py:824`), then `running` with a
+     * climbing `indexed_conversations` for {@link MOCK_BUILD_POLLS} polls, then `done`.
+     * Reaching a terminal state is the point: a mock that stayed `running` forever would
+     * make a poll loop that never stops look correct.
+     */
+    async corpusBuildStatus(jobId?: string): Promise<BuildStatus> {
+      if (buildJob === null) {
+        return { state: "idle", indexed_conversations: 0, errors: [] };
+      }
+      if (jobId !== undefined && jobId !== buildJob.id) {
+        throw new Error(`unknown job_id '${jobId}'; the current job is '${buildJob.id}'`);
+      }
+      buildJob.polls += 1;
+      const running = buildJob.polls < MOCK_BUILD_POLLS;
+      return {
+        job_id: buildJob.id,
+        state: running ? "running" : "done",
+        sessions_root: "/mock/sessions",
+        started_ms: T0,
+        indexed_conversations: Math.min(buildJob.polls, MOCK_BUILD_POLLS) * 400,
+        errors: [],
+        ...(running ? {} : { finished_ms: T0 + 30_000 }),
+      };
     },
 
     async healthPing(): Promise<HealthInfo> {

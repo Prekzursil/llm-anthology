@@ -63,6 +63,15 @@
           <span id="legend"></span>
         </div>
         <div id="scrubber"></div>
+        <!-- AUTO-DISCOVERY, the first-run surface. It lives in the graph pane because
+             that pane is the large empty rectangle on a fresh install and this is the
+             widest column — 25 near-identical export paths do not fit a 300px sidebar.
+             Left EMPTY by DiscoveryPanel whenever there is nothing to show, so the
+             `#discovery:empty` rule collapses it and an attached corpus gets the whole
+             pane back with no toggle to find. Same mechanism as `#scrubber:empty`.
+             role/aria-labelledby are set by the panel when it paints, because an empty
+             labelled group would otherwise sit in the a11y tree announcing nothing. -->
+        <div id="discovery"></div>
         <!-- The canvas is a rendering of the thread graph that the Threads list and
              the detail pane already expose as real DOM; it is labelled so a screen
              reader announces its purpose rather than an unnamed graphic. -->

@@ -22,7 +22,8 @@ import {
   type PositionedGraph,
 } from "./graph/layout";
 import { knownProviders, providerTint } from "./graph/palette";
-import { CorpusBar } from "./ui/corpusBar";
+import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui/corpusBar";
+import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { SearchPanel } from "./ui/search";
@@ -58,6 +59,20 @@ export class CockpitApp {
   private readonly search: SearchPanel;
 
   private readonly corpusBar: CorpusBar;
+  /** The first-run auto-discovery surface; null when `#discovery` is absent. */
+  private readonly discovery: DiscoveryPanel | null;
+  /** Remembers the last attached index, so the discovery panel can update it too. */
+  private readonly corpusStore: CorpusStore = localCorpusStore();
+  private readonly corpusLabelEl = requireEl("corpus-current");
+
+  /**
+   * The attached index path, or null when nothing is attached.
+   *
+   * Tracked HERE rather than read off `CorpusBar`, which exposes no such getter: the
+   * `onOpened` callback fires only after a successful attach, so it is an exact signal,
+   * and boot needs it to decide whether a scan is even warranted.
+   */
+  private attachedIndex: string | null = null;
 
   private readonly healthEl = requireEl("health");
   private readonly statsEl = requireEl("stats");
@@ -107,10 +122,20 @@ export class CockpitApp {
     this.corpusBar = new CorpusBar(
       ipc,
       requireEl<HTMLButtonElement>("btn-open-corpus"),
-      requireEl("corpus-current"),
+      this.corpusLabelEl,
       requireEl("corpus-error"),
-      () => void this.reload(),
+      (indexPath) => {
+        this.attachedIndex = indexPath;
+        // An import would now land in THIS corpus rather than a new one, and the panel's
+        // row labels have to say so.
+        this.discovery?.setCorpusAttached(indexPath);
+        void this.reload();
+      },
     );
+
+    // Auto-discovery: the other half of the same problem the corpus bar solves. The bar
+    // gave the app a control; this removes the need to know a path at all.
+    this.discovery = this.mountDiscovery();
 
     requireEl("btn-forest").addEventListener("click", () => void this.showForest());
     requireEl("btn-fit").addEventListener("click", () => this.canvas.fitToView());
@@ -131,6 +156,39 @@ export class CockpitApp {
   async init(): Promise<void> {
     await this.corpusBar.restore();
     if (!this.loaded) await this.reload();
+    // Scan ONLY when the restore left us with nothing. A returning user already has their
+    // corpus back, and a scan they did not ask for would spend 1.8-7.5s walking their
+    // Downloads folder to offer them something they are not looking for.
+    if (this.attachedIndex === null) await this.discovery?.scan();
+  }
+
+  /**
+   * Build the discovery panel over `#discovery`, if the shell has one.
+   *
+   * The panel attaches corpora itself (it opens a discovered index, and creates one to
+   * import into), which the corpus bar cannot be told about — `CorpusBar` exposes no
+   * "adopt this path" entry point. So the adoption is completed here instead, reusing the
+   * bar's OWN exported `corpusLabel` derivation and storage key rather than re-deriving
+   * either: the top-bar label then names the corpus the panel attached, and the next
+   * launch restores it exactly as a manual open would.
+   */
+  private mountDiscovery(): DiscoveryPanel | null {
+    const container = document.getElementById("discovery");
+    if (container === null) return null;
+    return new DiscoveryPanel(ipc, container, (indexPath) => {
+      this.adoptCorpus(indexPath);
+      void this.reload();
+    });
+  }
+
+  /** Record an index attached outside the corpus bar, and make the top bar say so. */
+  private adoptCorpus(indexPath: string): void {
+    this.attachedIndex = indexPath;
+    const { label, title } = corpusLabel(indexPath);
+    this.corpusLabelEl.textContent = label;
+    if (title === "") this.corpusLabelEl.removeAttribute("title");
+    else this.corpusLabelEl.setAttribute("title", title);
+    this.corpusStore.write(indexPath);
   }
 
   /**

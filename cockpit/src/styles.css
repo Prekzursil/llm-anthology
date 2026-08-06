@@ -558,6 +558,176 @@ body,
   flex: 0 0 auto;
 }
 
+/* -- auto-discovery (the first-run surface) ---------------------------------
+   Collapses to nothing when the panel has nothing to show — the same `:empty`
+   trick `#scrubber` uses — so the graph pane is fully returned once a corpus is
+   attached. Capped at half the pane so a long export tail scrolls inside the
+   panel instead of pushing the canvas off screen. */
+#discovery:empty {
+  display: none;
+}
+
+#discovery {
+  flex: 0 1 auto;
+  max-height: 50%;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  /* Paints ABOVE `#graph-pane[data-empty]::after`. That overlay is absolutely positioned
+     and centred on the WHOLE pane, so on a first run — when the pane is empty and this
+     panel is showing, which is the same moment — it would otherwise print its text across
+     these rows. The rule below removes it outright; this pair is the fallback that keeps
+     the panel legible (rather than half-covered) if `:has()` is unavailable. */
+  position: relative;
+  z-index: 1;
+}
+
+/* While auto-discovery is on screen, suppress the pane's "No spawn tree yet" overlay.
+   It is not wrong — there is no tree — but it duplicates what this panel is already
+   saying, in the same place, on top of it. `:has()` is Chromium 105+/Safari 15.4+; the
+   Tauri v2 webview is evergreen WebView2, and an older engine simply ignores the rule and
+   falls back to the z-index above. */
+#graph-pane:has(#discovery:not(:empty))[data-empty]::after {
+  content: none;
+}
+
+.discovery-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 var(--space-1);
+}
+
+/* Both are --muted on --panel (5.4:1), past the AA 4.5:1 bar for body text. */
+.discovery-status:empty,
+.discovery-notes:empty {
+  display: none;
+}
+
+.discovery-status,
+.discovery-notes,
+.discovery-empty {
+  margin: 0 0 var(--space-2);
+}
+
+.discovery-group {
+  margin-top: var(--space-3);
+}
+
+.discovery-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 var(--space-1);
+}
+
+.discovery-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  min-height: var(--control-min);
+}
+
+/* min-width:0 lets the ellipsis below actually take effect — without it a flex
+   item refuses to shrink below its content width and the long paths force the
+   whole panel to overflow sideways. */
+.discovery-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.discovery-name {
+  font-size: 13px;
+}
+
+/* The containing directory is the ONLY thing distinguishing 25 files all named
+   conversations.json, so it is shown rather than hidden behind the tooltip. */
+.discovery-name,
+.discovery-parent,
+.discovery-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.discovery-parent,
+.discovery-summary {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* A row with no action states why, in place of the button. Kept to a third of
+   the row so a long reason wraps instead of squeezing the path to nothing. */
+.discovery-reason {
+  flex: 0 1 34%;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.discovery-action {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  min-width: var(--control-min);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.discovery-action:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.discovery-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The "+N more" control. A real button (it reveals rows), so it takes the same
+   44px floor as every other control. */
+.discovery-more {
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.discovery-more:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.discovery-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A group the ENGINE capped: nothing to expand, so it is a sentence, not a
+   control. Keeping it visually distinct from `.discovery-more` is the point —
+   one is recoverable, the other is not. */
+.discovery-note {
+  margin: var(--space-1) 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* -- export panel ---------------------------------------------------------- */
 #export-panel {
   display: flex;

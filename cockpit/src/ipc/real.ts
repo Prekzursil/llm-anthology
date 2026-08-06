@@ -20,9 +20,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  BuildHandle,
+  BuildParams,
+  BuildStatus,
   Conversation,
   CorpusDiffDto,
   CorpusStats,
+  CreateCorpusResult,
+  DiscoveryResult,
   ExportPlan,
   ExportResult,
   GraphSnapshot,
@@ -56,6 +61,31 @@ export const realIpc: IpcClient = {
    */
   openCorpus(indexPath: string): Promise<OpenCorpusResult> {
     return invoke<OpenCorpusResult>("open_corpus", { indexPath });
+  },
+
+  /**
+   * `discover_sources` takes NO arguments (`src-tauri/src/lib.rs:120`) — the engine
+   * exposes no `roots` parameter on purpose, so passing the `{ params }` wrapper the data
+   * commands use would hand the command an argument its signature does not declare.
+   */
+  discoverSources(): Promise<DiscoveryResult> {
+    return invoke<DiscoveryResult>("discover_sources");
+  },
+  /** By-name, like `open_corpus`: the Rust signature is `create_corpus(index_path: String)`. */
+  createCorpus(indexPath: string): Promise<CreateCorpusResult> {
+    return invoke<CreateCorpusResult>("create_corpus", { indexPath });
+  },
+  corpusBuild(params: BuildParams): Promise<BuildHandle> {
+    return cmd<BuildHandle>("corpus_build", params);
+  },
+  corpusBuildStatus(jobId?: string): Promise<BuildStatus> {
+    // `job_id` is OPTIONAL and proves the poll is reading the job it started; a poll that
+    // raced a newer build gets -32602 rather than another job's progress
+    // (`llm_anthology/sidecar.py:809-827`). Omitted entirely when absent, because an
+    // explicit null would fail the string check there.
+    const params: Record<string, unknown> = {};
+    if (jobId !== undefined) params.job_id = jobId;
+    return cmd<BuildStatus>("corpus_build_status", params);
   },
   healthPing(): Promise<HealthInfo> {
     return cmd<HealthInfo>("health_ping");
