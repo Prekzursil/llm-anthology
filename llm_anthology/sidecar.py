@@ -206,6 +206,7 @@ from llm_anthology import (
     corpus,
     dedup,
     diff,
+    discover,
     export,
     ir,
     loaders,
@@ -457,6 +458,7 @@ class Sidecar:
             "health.ping": self._health_ping,
             "corpus.stats": self._corpus_stats,
             "corpus.create": self._corpus_create,
+            "sources.discover": self._sources_discover,
             "corpus.build": self._corpus_build,
             "corpus.build_status": self._corpus_build_status,
             "graph.roots": self._graph_roots,
@@ -641,6 +643,36 @@ class Sidecar:
                            % _clean(os.path.dirname(index_path)))
         corpus.open_index(index_path).close()
         return {"index_path": _clean(index_path), "created": True}
+
+    def _sources_discover(self, params):
+        """Find AI session data already on this machine — the first-run entry point.
+
+        WHY IT EXISTS. Attaching a corpus previously meant naming a SQLite index in a file
+        dialog, which asks the user to know a path they have no reason to know, and made a
+        fresh install a dead end. This reports what is actually present so the UI can offer
+        it, rather than asking.
+
+        LIKE ``corpus.create``, IT DOES NOT ``_require_corpus``: it exists precisely for the
+        moment nothing is attached. It touches no engine state and holds no connection.
+
+        NO ``roots`` PARAMETER, DELIBERATELY. Accepting caller-supplied roots would turn this
+        into a directory-enumeration primitive usable against any path the engine can read,
+        which is a capability the feature does not need — autodetection means known
+        locations. ``discover`` guards its own roots anyway (it raises ValueError for a
+        UNC/network or relative path, translated here to -32602 as its docstring asks), so
+        the guard is belt-and-braces rather than the only defence.
+
+        CONTENT-BLIND. ``discover`` detects from filenames, directory shapes, sizes and at
+        most a sqlite-magic or JSON first-bytes sniff, so a store of private conversations is
+        counted and located but never parsed. Paths and counts cross the wire; message text
+        cannot, because it is never read. Everything is still passed through
+        ``_sanitize_tree`` — a filename is attacker-influenceable text bound for a UI.
+        """
+        try:
+            result = discover.discover()
+        except ValueError as e:
+            raise RpcError(-32602, str(e))
+        return _sanitize_tree(result.as_dict())
 
     def _index_path(self):
         """The on-disk file backing the attached index, or "" for an in-memory database.

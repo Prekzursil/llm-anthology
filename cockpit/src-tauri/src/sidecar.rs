@@ -426,6 +426,46 @@ mod tests {
         }
     }
 
+    /// `sources.discover` over the real wire, with NO index attached.
+    ///
+    /// This is the first-run call, so the index-less path is the ONLY one it ever takes. A
+    /// test that attached a corpus first would exercise a situation that never happens.
+    /// Asserts shape rather than contents, since findings depend on the host machine — but a
+    /// shape assertion over a real process still proves the thing worth proving: that the
+    /// call reaches Python, scans, serialises, and comes back without a corpus.
+    #[test]
+    fn e2e_discover_sources_without_an_index() {
+        use super::SidecarClient;
+        use std::path::PathBuf;
+
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root is two levels above the crate manifest")
+            .to_path_buf();
+        std::env::set_var("PYTHONPATH", &repo_root);
+
+        let mut engine = SidecarClient::spawn_without_index().expect("index-less spawn");
+        let out = engine
+            .call("sources.discover", &json!({}))
+            .expect("sources.discover with no corpus attached");
+
+        assert!(
+            out["findings"].is_array(),
+            "findings must be an array the UI can iterate: {out}"
+        );
+        assert!(
+            out["stats"]["roots_scanned"].as_u64().unwrap_or(0) >= 1,
+            "at least one candidate root must have been scanned: {out}"
+        );
+        // Bounded scanning is a hard requirement — an unbounded walk would hang the UI.
+        assert!(
+            out["stats"]["files_examined"].is_number(),
+            "the scan must report what it examined: {out}"
+        );
+    }
+
     /// The CREATE-then-OPEN journey over the real wire — the chicken-and-egg proof.
     ///
     /// Two individually-correct rules deadlock a first-time user: `open_corpus` refuses a path

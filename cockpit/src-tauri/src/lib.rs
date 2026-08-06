@@ -106,6 +106,24 @@ fn create_corpus(index_path: String) -> Result<Value, String> {
     result
 }
 
+/// Find AI session data already on this machine.
+///
+/// Runs on a THROWAWAY index-less engine for the same reason `create_corpus` does: this is the
+/// first-run call, so by definition there is no corpus attached and `forward` would refuse it.
+/// Using a separate process also means a scan can never disturb a corpus the user already has
+/// open.
+///
+/// Takes no arguments on purpose. The engine exposes no `roots` parameter — accepting one
+/// would turn autodetection into a directory-enumeration primitive against any path the engine
+/// can read — and there is nothing for this layer to pass through.
+#[tauri::command]
+fn discover_sources() -> Result<Value, String> {
+    let mut client = SidecarClient::spawn_without_index()?;
+    let result = client.call("sources.discover", &json!({}));
+    // `client` drops here, reaping the throwaway engine.
+    result
+}
+
 #[tauri::command]
 fn corpus_build(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
     forward(state.inner(), "corpus.build", params.unwrap_or_else(|| json!({})))
@@ -218,6 +236,7 @@ pub fn run() {
             app_info,
             open_corpus,
             create_corpus,
+            discover_sources,
             corpus_build,
             corpus_build_status,
             health_ping,
