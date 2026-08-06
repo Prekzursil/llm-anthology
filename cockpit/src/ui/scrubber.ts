@@ -12,7 +12,7 @@
  */
 
 import type { Timeline } from "../ipc/types";
-import { engineErrorText } from "./errors";
+import { engineStatusText } from "./errors";
 
 // -- pure tick/scale mapping ---------------------------------------------------------
 
@@ -237,7 +237,7 @@ export class TimeScrubber {
     } catch (err) {
       // Not-attached is the initial state, not a timeline fault — do not surface the
       // engine's internal "call open_corpus first" text on the scrubber.
-      this.disable(engineErrorText(err, "timeline failed"));
+      this.disable(engineStatusText(err, "timeline failed"));
     }
   }
 

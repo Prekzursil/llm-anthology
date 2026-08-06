@@ -24,7 +24,7 @@ import {
 import { knownProviders, providerTint } from "./graph/palette";
 import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui/corpusBar";
 import { DiscoveryPanel } from "./ui/discoveryPanel";
-import { engineErrorText } from "./ui/errors";
+import { engineErrorText, engineStatusText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
@@ -231,7 +231,7 @@ export class CockpitApp {
       // The not-attached case is the app's INITIAL STATE, not a fault, and the CorpusBar
       // already reports it — so this must not render the engine's internal
       // "call open_corpus first" text here as well.
-      this.healthEl.textContent = engineErrorText(err, "engine unavailable");
+      this.healthEl.textContent = engineStatusText(err, "engine unavailable");
     }
   }
 
@@ -243,7 +243,7 @@ export class CockpitApp {
         .join(" · ");
       this.statsEl.textContent = `${s.conversations} conversations · ${s.threads} threads · ${s.edges} edges · ${providers}`;
     } catch (err) {
-      this.statsEl.textContent = engineErrorText(err, "stats unavailable");
+      this.statsEl.textContent = engineStatusText(err, "stats unavailable");
     }
   }
 

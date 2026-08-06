@@ -119,9 +119,15 @@ def test_codex_store_detected_with_state_db_and_rollout_counts(tmp_path, empty_r
     assert hit.confidence == discover.CONF_HIGH
     assert hit.detail["rollouts_jsonl"] == 2
     assert hit.detail["rollouts_zst"] == 3
-    # the repo's ingest globs rollout-*.jsonl only (codex_rollout.py:361), so the
-    # INGESTABLE count must be reported separately from the on-disk total.
-    assert hit.detail["ingestable"] == 2
+    # ALL 5 are ingestable: codex_rollout.ingest_sessions globs BOTH rollout-*.jsonl and
+    # rollout-*.jsonl.zst and transparently decompresses. This assertion previously read
+    # `== 2` (plain only), correctly, while the reader handled only the uncompressed form.
+    # It moved when that reader was fixed, exactly as the note on the codex StoreSpec said
+    # it would — and leaving it at 2 would have kept the shipped panel reporting
+    # "ingestable 0" for a live store whose 2024 compressed rollouts had just become
+    # readable. The number here is the CAPABILITY claim the UI shows a user, so it has to
+    # track the engine rather than lag it.
+    assert hit.detail["ingestable"] == 5
     assert hit.detail["state_db"].endswith("state_5.sqlite")
     assert hit.newest_mtime > 0
     # loaders.load_corpus(sessions_root, index_path, codex_home) needs BOTH paths, and

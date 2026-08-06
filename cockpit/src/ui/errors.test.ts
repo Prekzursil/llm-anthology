@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { NO_CORPUS_MESSAGE, engineErrorText, isNoCorpusError } from "./errors";
+import { NO_CORPUS_MESSAGE, engineErrorText, engineStatusText, isNoCorpusError } from "./errors";
 
 // Verbatim from cockpit/src-tauri/src/lib.rs — the `forward` helper's None arm.
 const RAW_ENGINE_ERROR = "no corpus attached: call open_corpus first";
@@ -40,6 +40,27 @@ describe("isNoCorpusError", () => {
   });
 });
 
+describe("engineStatusText", () => {
+  it("goes SILENT for the not-attached state", () => {
+    // Measured in the installed app: routing every status line through engineErrorText put
+    // the same sentence in the top bar three times, beside a corpus bar already saying it.
+    expect(engineStatusText(RAW_ENGINE_ERROR, "stats unavailable")).toBe("");
+    expect(engineStatusText(RAW_ENGINE_ERROR, "engine unavailable")).toBe("");
+    expect(engineStatusText(RAW_ENGINE_ERROR, "timeline failed")).toBe("");
+  });
+
+  it("does NOT go silent for a genuine fault", () => {
+    // Silence for a real error would be a worse defect than the redundancy it replaced.
+    const out = engineStatusText(new Error("database disk image is malformed"), "stats unavailable");
+    expect(out).toContain("stats unavailable");
+    expect(out).toContain("malformed");
+  });
+
+  it("never leaks the internal method name either", () => {
+    expect(engineStatusText(RAW_ENGINE_ERROR, "stats unavailable")).not.toContain("open_corpus");
+  });
+});
+
 describe("engineErrorText", () => {
   it("replaces the not-attached error with an actionable instruction", () => {
     const out = engineErrorText(RAW_ENGINE_ERROR, "stats unavailable");
@@ -56,6 +77,15 @@ describe("engineErrorText", () => {
 
   it("drops the label for the not-attached case, so it does not read as two problems", () => {
     expect(engineErrorText(RAW_ENGINE_ERROR, "stats unavailable")).not.toContain("unavailable:");
+  });
+
+  it("differs from engineStatusText ONLY for the not-attached case", () => {
+    // The two must not drift into two behaviours for real errors — the whole distinction is
+    // about the not-attached state, nothing else.
+    const real = new Error("database disk image is malformed");
+    expect(engineStatusText(real, "stats unavailable")).toBe(
+      engineErrorText(real, "stats unavailable"),
+    );
   });
 
   it("KEEPS a genuine error's real message and its label", () => {

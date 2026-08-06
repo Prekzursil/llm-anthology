@@ -44,3 +44,25 @@ export function engineErrorText(err: unknown, label: string): string {
   }
   return `${label}: ${String(err)}`;
 }
+
+/**
+ * Same as {@link engineErrorText}, but SILENT for the not-attached state.
+ *
+ * For SECONDARY status lines — the stats readout, the engine version, the scrubber's axis —
+ * which sit beside a control that already reports corpus state. Routing every one of them
+ * through `engineErrorText` was the first fix and it overcorrected: the installed app showed
+ * "No corpus open — use “Open corpus…” in the top bar." THREE times across the top bar,
+ * beside a corpus bar already reading "No corpus open", and each copy told the user to look
+ * at the bar they were looking at. Four sentences for one piece of information.
+ *
+ * So the instruction is stated ONCE, where it is the primary signal (the corpus bar and the
+ * graph pane's empty state), and these places simply go quiet. A GENUINE fault still speaks
+ * with its label intact — going quiet is only ever for the not-attached state, never for a
+ * real error, because a silent failure is the worse defect.
+ */
+export function engineStatusText(err: unknown, label: string): string {
+  if (isNoCorpusError(err)) {
+    return "";
+  }
+  return `${label}: ${String(err)}`;
+}

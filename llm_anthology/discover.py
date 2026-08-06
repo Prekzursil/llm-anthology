@@ -280,20 +280,24 @@ PROVIDERS = (
     # adapters/codex_state.py:45 (state_5.sqlite) and adapters/codex_rollout.py:1
     # (sessions/YYYY/MM/DD/rollout-*.jsonl).
     #
-    # COUPLED TO THE ENGINE — re-check this flag when codex_rollout changes. `.zst` is
-    # counted separately and marked NOT ingestable because codex_rollout.py:361 globs
-    # "rollout-*.jsonl" only, while the measured live store holds 2024 `.zst` and ZERO
-    # plain `.jsonl` — i.e. the honest `ingestable` for that store is 0, and reporting
-    # the 2024 as loadable would promise an ingest that yields nothing. The moment the
-    # engine globs the compressed form too, this becomes a one-word edit
-    # (ingestable=False -> True) and the assertion in
-    # test_codex_store_detected_with_state_db_and_rollout_counts moves with it.
+    # COUPLED TO THE ENGINE — re-check this flag when codex_rollout changes.
+    #
+    # `.zst` WAS marked not-ingestable, correctly at the time: codex_rollout globbed
+    # "rollout-*.jsonl" only, while the measured live store held 2024 `.zst` and ZERO plain
+    # `.jsonl`, so reporting them as loadable would have promised an ingest that yields
+    # nothing. That reader is now fixed — ingest_sessions globs both suffixes and
+    # transparently decompresses, measured on the same store as docs=2042 where it had
+    # returned 0 — so the flag is flipped, as the note here predicted it would be.
+    #
+    # Leaving it False after the fix was NOT harmless: the shipped discovery panel showed
+    # "2,024 sessions · ingestable 0" for a store that had just become fully readable,
+    # i.e. it told the user their entire Codex history could not be imported. A stale
+    # capability flag understates the product as confidently as a wrong one overstates it.
     # ~/.codex/archived_sessions is deliberately NOT counted: `subdir` is the single
     # tree an ingest is pointed at, and the archive is a sibling of it.
     StoreSpec(provider="codex", root="codex_home", subdir="sessions",
               item_patterns=(ItemPattern("rollouts_jsonl", "rollout-*.jsonl"),
-                             ItemPattern("rollouts_zst", "rollout-*.jsonl.zst",
-                                         ingestable=False)),
+                             ItemPattern("rollouts_zst", "rollout-*.jsonl.zst")),
               markers=(("state_db", "state_5.sqlite"),),
               item_depth=5, report="base"),
 
