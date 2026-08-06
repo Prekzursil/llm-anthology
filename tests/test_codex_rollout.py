@@ -540,6 +540,72 @@ def test_ingest_sessions_recurses_the_date_tree_and_filters_non_rollouts(tmp_pat
     assert corpus.SpawnEdge("root", "child-a", "") in edges
 
 
+def _write_rollout_zst(path, records):
+    """Write a rollout as a single-frame `rollout-*.jsonl.zst`, the shape Codex stores."""
+    import zstandard
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(json.dumps(r) + "\n" for r in records).encode("utf-8")
+    path.write_bytes(zstandard.ZstdCompressor().compress(body))
+
+
+def test_ingest_sessions_reads_ZSTD_COMPRESSED_rollouts(tmp_path):
+    """A live Codex store compresses its rollouts, and reading only `.jsonl` sees nothing.
+
+    MEASURED on a real store: 2043 `rollout-*.jsonl.zst` and ZERO plain `.jsonl`. Against
+    it, ingest_sessions returned `docs=0, errors=0` — a silent no-op reporting a perfectly
+    successful ingest of an entire history it could not read. Zero errors is what made it
+    invisible: a failure would have been noticed.
+    """
+    _write_rollout_zst(tmp_path / "2026" / "07" / "12" / ("rollout-z-%s.jsonl.zst" % _SID),
+                       [_session_meta(sid="compressed-a", parent_thread_id="root"),
+                        _msg("user", ["stored compressed"]),
+                        _msg("assistant", ["read back fine"])])
+
+    docs, errors = cr.ingest_sessions(str(tmp_path))
+
+    assert errors == [], f"a compressed rollout must parse cleanly: {errors}"
+    assert [d.thread.id for d in docs] == ["compressed-a"]
+    # The content must survive the decode, not merely the file be counted.
+    assert [t.role for t in docs[0].conversation.turns] == ["human", "assistant"]
+    assert docs[0].rollout_path.endswith(".jsonl.zst")
+    assert corpus.SpawnEdge("root", "compressed-a", "") in docs[0].edges
+
+
+def test_ingest_sessions_reads_plain_and_compressed_together_without_double_counting(tmp_path):
+    """Mixed stores are the normal case: Codex compresses older rollouts and leaves recent
+    ones plain. A conversation present in BOTH forms must be ingested once, not twice —
+    double-counting would inflate every stat and duplicate nodes in the spawn graph."""
+    day = tmp_path / "2026" / "07" / "12"
+    _write_rollout(day / ("rollout-plain-%s.jsonl" % _SID), [_session_meta(sid="plain-one")])
+    _write_rollout_zst(day / "rollout-old-000.jsonl.zst", [_session_meta(sid="compressed-one")])
+    # The SAME rollout in both forms — the de-duplication case.
+    _write_rollout(day / "rollout-both-111.jsonl", [_session_meta(sid="both")])
+    _write_rollout_zst(day / "rollout-both-111.jsonl.zst", [_session_meta(sid="both")])
+
+    docs, errors = cr.ingest_sessions(str(tmp_path))
+
+    assert errors == []
+    assert sorted(d.thread.id for d in docs) == ["both", "compressed-one", "plain-one"]
+    both = [d for d in docs if d.thread.id == "both"]
+    assert len(both) == 1, "a rollout present as .jsonl AND .jsonl.zst must ingest once"
+    assert both[0].rollout_path.endswith(".jsonl"), \
+        "the uncompressed copy should win — no decode, and it cannot be a truncated frame"
+
+
+def test_ingest_sessions_reports_a_corrupt_zst_without_aborting_the_sweep(tmp_path):
+    """One unreadable archive must cost that FILE, not the whole history."""
+    day = tmp_path / "2026" / "07" / "12"
+    (day).mkdir(parents=True, exist_ok=True)
+    (day / "rollout-bad-000.jsonl.zst").write_bytes(b"this is not a zstd frame at all")
+    _write_rollout_zst(day / "rollout-good-111.jsonl.zst", [_session_meta(sid="survivor")])
+
+    docs, errors = cr.ingest_sessions(str(tmp_path))
+
+    assert [d.thread.id for d in docs] == ["survivor"], "the good rollout must still land"
+    assert len(errors) == 1 and errors[0]["stage"] == "read"
+    assert errors[0]["file"].endswith("rollout-bad-000.jsonl.zst")
+
+
 def test_ingest_sessions_reports_a_malformed_line_without_aborting(tmp_path):
     good = tmp_path / "2026" / "07" / "12" / "rollout-good.jsonl"
     _write_rollout(good, [_session_meta(sid="ok"), _msg("user", ["fine"])])

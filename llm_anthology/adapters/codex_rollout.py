@@ -73,6 +73,13 @@ from llm_anthology import corpus, ir
 
 # response_item.type values with a dedicated block mapping; everything else (agent_message,
 # any future type) is preserved verbatim as an `unknown` block.
+# Decompression cap for a `.zst` rollout. Bounded rather than unbounded because a
+# compressed file's inflated size is not knowable from its on-disk size, and ingest walks a
+# whole tree: one pathological archive should fail that FILE, not exhaust memory and take
+# the sweep with it. 512 MiB is far above any real rollout (the largest measured on a live
+# store is a few MB) while still being a ceiling.
+_MAX_ROLLOUT_BYTES = 512 * 1024 * 1024
+
 _TEXT_PARTS = ("input_text", "output_text")
 _UUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -344,22 +351,84 @@ def parse_rollout_lines(lines, rollout_path=""):
     return build_document(records, rollout_path=rollout_path), errors
 
 
+def _read_rollout_lines(path):
+    """The lines of one rollout, transparently decompressing a `.zst` archive.
+
+    Codex compresses older rollouts to `rollout-*.jsonl.zst`. MEASURED on a live store:
+    2043 `.zst` files and ZERO plain `.jsonl`, so a reader that handles only `.jsonl` sees
+    an entirely empty history.
+
+    A rollout `.zst` is a single zstd frame, so it is decompressed whole (`archive.py`
+    describes exactly this: "opening one record means inflating the whole file"). Decoding
+    is `max_output_size`-capped rather than unbounded: a zip-bomb-shaped file would
+    otherwise inflate without limit while ingesting an untrusted-ish tree.
+    """
+    if not path.endswith(".zst"):
+        with open(path, encoding="utf-8") as fh:
+            return fh.readlines()
+
+    import zstandard  # local: only the compressed path needs the dependency
+
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    dctx = zstandard.ZstdDecompressor()
+    try:
+        raw = dctx.decompress(blob)
+    except zstandard.ZstdError:
+        # A single-frame decompress needs the original size in the frame header; when it is
+        # absent, stream instead. Capped for the same reason as above.
+        try:
+            with open(path, "rb") as fh:
+                with dctx.stream_reader(fh) as reader:
+                    raw = reader.read(_MAX_ROLLOUT_BYTES + 1)
+        except zstandard.ZstdError as e:
+            # Surface a CORRUPT archive as an OSError, because that is the failure class
+            # ingest_sessions catches per file. Letting ZstdError escape aborted the entire
+            # sweep on one bad archive — a single damaged file would cost the user their
+            # whole history, which is precisely the blast radius this ingest is meant to
+            # avoid. (Caught by test_ingest_sessions_reports_a_corrupt_zst_...)
+            raise OSError(f"corrupt zstd rollout {path}: {e}") from e
+    if len(raw) > _MAX_ROLLOUT_BYTES:
+        raise OSError(
+            f"rollout exceeds the {_MAX_ROLLOUT_BYTES} byte decompression cap: {path}")
+    return raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+
+
 def parse_rollout_file(path):
-    """Read one rollout .jsonl file -> (RolloutDoc, errors). May raise on an unreadable
-    path; ingest_sessions catches that so one bad file cannot cost the sweep."""
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.readlines()
+    """Read one rollout (`.jsonl` or `.jsonl.zst`) -> (RolloutDoc, errors). May raise on an
+    unreadable path; ingest_sessions catches that so one bad file cannot cost the sweep."""
+    lines = _read_rollout_lines(path)
     return parse_rollout_lines(lines, rollout_path=path)
 
 
 def ingest_sessions(root):
     """Recursively ingest a Codex sessions ROOT -> (docs, errors). Walks the DATE-NESTED
-    tree for every rollout-*.jsonl (trap 4), collecting one RolloutDoc per file — each
-    carrying its Conversation, thread id and rollout_path — and logging any file that
-    cannot be read rather than aborting the sweep."""
+    tree for every rollout-*.jsonl AND its compressed `.zst` form (trap 4), collecting one
+    RolloutDoc per file — each carrying its Conversation, thread id and rollout_path — and
+    logging any file that cannot be read rather than aborting the sweep.
+
+    BOTH suffixes are globbed because a live Codex store compresses older rollouts:
+    measured 2043 `.zst` against 0 plain `.jsonl`. Globbing only `.jsonl` returned
+    `docs=0, errors=0` on that store — a silent no-op that reports a perfectly successful
+    ingest of nothing, which is worse than failing.
+    """
     docs, errors = [], []
-    pattern = os.path.join(root, "**", "rollout-*.jsonl")
-    for path in sorted(glob.glob(pattern, recursive=True)):
+    patterns = [
+        os.path.join(root, "**", "rollout-*.jsonl"),
+        os.path.join(root, "**", "rollout-*.jsonl.zst"),
+    ]
+    # De-duplicated: a store holding both `x.jsonl` and `x.jsonl.zst` must ingest the
+    # conversation ONCE. The plain file wins — it needs no decode and cannot be truncated
+    # mid-frame — and sorting keeps the output order deterministic.
+    seen, paths = set(), []
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern, recursive=True)):
+            key = path[:-4] if path.endswith(".zst") else path
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+    for path in sorted(paths):
         try:
             doc, errs = parse_rollout_file(path)
         except OSError as e:

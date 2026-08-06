@@ -31,7 +31,11 @@ classifiers = [
     "Topic :: Text Processing :: Markup :: HTML",
     "Topic :: Utilities",
 ]
-dependencies = ["markdown-it-py>=2.2"]
+# zstandard is REQUIRED, not optional: a live Codex store compresses its rollouts, and a
+# measured store held 2043 `rollout-*.jsonl.zst` against ZERO plain `.jsonl`. Without this
+# the bundled engine reads that user's entire history as zero conversations — and reports
+# zero errors doing it. `archive.py` already depended on it while it was undeclared.
+dependencies = ["markdown-it-py>=2.2", "zstandard>=0.22"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4"]
