@@ -8,6 +8,12 @@ Gemini's grouping lives here because Takeout's activity log has no conversation 
 a web-app harvest gives TRUE grouping, otherwise a clearly-labelled provisional
 time-gap heuristic is used. That label is propagated into the report so a reader
 never mistakes the heuristic for ground truth.
+
+`load_corpus` (the cockpit ingest) is the one MULTI-PROVIDER loader: it merges the LIVE
+stores — Codex rollouts, an optional Grok session store, and the Codex state graph — into
+one Corpus and one index. Adding a provider there is one entry in its `todo` table plus
+one optional root argument; the merge, edge de-duplication, id-collision and error-
+attribution policies are shared and are documented on that function.
 """
 import glob
 import json
@@ -16,7 +22,8 @@ import re
 from datetime import datetime, timedelta
 
 from llm_anthology import corpus, index
-from llm_anthology.adapters import chatgpt, claude, codex, codex_rollout, codex_state, gemini
+from llm_anthology.adapters import (chatgpt, claude, codex, codex_rollout, codex_state,
+                                    gemini, grok)
 
 GAP = timedelta(minutes=30)
 _WS = re.compile(r"\s+")
@@ -258,52 +265,93 @@ def _fingerprint(conv):
     return index.hash_content(json.dumps([conv.id, conv.updated_at, len(conv.turns)]))
 
 
-def load_corpus(sessions_root, index_path, codex_home=None, progress=None):
-    """Build the cockpit Corpus and its FTS5 index in one pass.
+#: The LABEL each document source carries on every `errors` entry it produces, so a
+#: reader of that flat list can tell WHICH store failed — the entries are otherwise
+#: shaped alike (file/line/stage/error) and indistinguishable. It is also the identity
+#: the collision check compares: a repeated thread id from the SAME source is a resumed
+#: (or copied) session, which is normal and already handled; a repeated id from a
+#: DIFFERENT source is a cross-provider collision.
+CODEX_ROLLOUT_SOURCE = "codex-rollout"
+GROK_SOURCE = "grok"
+
+
+def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
+                grok_root=None):
+    """Build the cockpit Corpus and its FTS5 index in one pass, over one or more providers.
 
     Ingests the Codex rollout logs under `sessions_root` (the DATE-NESTED
     YYYY/MM/DD/rollout-*.jsonl tree) for conversation content and the per-thread graph
-    node each carries, MERGES the live Codex state DB spawn graph
+    node each carries; OPTIONALLY ingests a Grok Build session store under `grok_root`
+    (the `<enc-cwd>/<session-id>/` tree, whose `subagents/` metas are the only other
+    source of spawn edges in this repository); MERGES the live Codex state DB spawn graph
     ($CODEX_HOME/state_5.sqlite — opened read-only + immutable, retried-then-skipped if
-    busy or absent), and builds the contentless FTS5 index at `index_path` over every
-    ingested conversation.
+    busy or absent); and builds the contentless FTS5 index at `index_path` over every
+    ingested conversation, whatever its provider.
 
-    Merge policy: rollout-derived thread metadata (a title / preview from the ACTUAL
-    first prompt) WINS; the state graph fills in threads no rollout covered and
-    contributes the authoritative spawn edges. Spawn edges are de-duplicated by
-    (parent, child). The index build is resumable and idempotent, so a re-run adds no
-    duplicate row or posting.
+    `grok_root` IS NEVER DEFAULTED. Omit it and no Grok store is read at all — there is
+    deliberately no `~/.grok` fallback, unlike `codex_home`, whose fallback to the LIVE
+    store is how an automated probe once read the owner's real sessions (which is why
+    `sidecar.py`'s `corpus.build` RPC requires `codex_home` explicitly). A Grok store
+    holds private material; reading one has to be something the caller named.
 
-    Returns (corpus, errors): `errors` is the rollout ingest's per-file parse/read log
-    (the state read never raises — it skips), so a partial corpus never costs the build.
+    MERGE POLICY, in ingest order, so "which source wins for what" stays answerable:
+      1. Codex rollouts claim their thread ids first. Their metadata (a title / preview
+         from the ACTUAL first prompt) WINS over every later source, as before.
+      2. Grok claims only ids no earlier source claimed, and brings its own thread
+         metadata and spawn edges verbatim for those.
+      3. The Codex state DB fills in threads no earlier source covered — unchanged, it
+         remains the gap-filler — and contributes its authoritative spawn edges.
+      4. Spawn edges are de-duplicated by (parent, child) across ALL sources; the first
+         source to declare an edge owns its `status`.
+
+    CROSS-PROVIDER THREAD-ID COLLISION. `Corpus.threads` is keyed by thread id and
+    `conversations.conversation_id` is UNIQUE, so a Grok session id equal to a Codex
+    thread id would REPLACE that node (re-pointing its subtree) while
+    `corpus.add_conversation` — idempotent by conversation_id — silently discarded the
+    incoming conversation. Both failures are invisible. Codex thread ids and Grok session
+    ids are both UUID-shaped in practice, so a genuine clash is vanishingly unlikely, but
+    it CANNOT be ruled out: every id has non-UUID fallbacks (a rollout filename, a Grok
+    session DIRECTORY NAME, and ultimately "") and a copied or hand-edited store can
+    produce anything. So the ids are kept VERBATIM — namespacing them would silently
+    diverge the id the app shows from the id the provider shows — and the second claimant
+    is REFUSED with an error entry naming both sources. It contributes no conversation,
+    no thread and no edge; attaching its subtree to another provider's thread would be
+    worse than dropping it, and the drop is now reported rather than silent.
+
+    Returns (corpus, errors): `errors` is the per-source parse/read log, every entry
+    tagged with its `source` (the state read never raises — it skips), so a partial
+    corpus never costs the build.
     """
-    docs, errors = codex_rollout.ingest_sessions(sessions_root)
     result = corpus.Corpus()
-    sources = []
-    seen_edges = set()
+    sources, errors = [], []
+    seen_edges, claimed_by = set(), {}
 
-    for doc in docs:
-        conv = doc.conversation
-        conv.meta["thread_id"] = doc.thread_id          # link the FTS row to its thread
-        result.conversations.append(conv)
-        result.add_thread(doc.thread)
-        for edge in doc.edges:
-            key = (edge.parent_thread_id, edge.child_thread_id)
-            if key not in seen_edges:
-                seen_edges.add(key)
-                result.add_edge(edge)
-        sources.append(index.IndexSource(
-            file=doc.rollout_path, content_hash=_fingerprint(conv), records=[conv]))
+    # The document-producing sources, in INGEST ORDER (see the merge policy above). Each
+    # entry is (label, adapter MODULE, the doc attribute naming its unit on disk, root).
+    # The module is held rather than its bound `ingest_sessions` so the call stays late-
+    # bound. The attribute differs because the units differ — a Codex session is one
+    # FILE, a Grok session is a DIRECTORY — and that string becomes the
+    # ingest_checkpoint key, so it is declared per source rather than guessed.
+    #
+    # Codex is unconditional: `sessions_root` is a required argument, so it is always
+    # something the caller named. Grok runs ONLY when a root was named.
+    todo = [(CODEX_ROLLOUT_SOURCE, codex_rollout, "rollout_path", sessions_root)]
+    if grok_root:
+        todo.append((GROK_SOURCE, grok, "session_dir", grok_root))
+
+    for label, adapter, path_attr, root in todo:
+        docs, source_errors = _ingest_docs(adapter, root, label)
+        errors.extend(source_errors)
+        for doc in docs:
+            errors.extend(_admit(result, doc, label, path_attr, claimed_by, seen_edges,
+                                 sources))
 
     state = codex_state.load_corpus(codex_home)
     for meta in state.threads.values():
-        if meta.id not in result.threads:               # rollout metadata takes priority
+        if meta.id not in result.threads:               # earlier sources take priority
             result.add_thread(meta)
     for edge in state.edges:
-        key = (edge.parent_thread_id, edge.child_thread_id)
-        if key not in seen_edges:
-            seen_edges.add(key)
-            result.add_edge(edge)
+        _add_edge(result, edge, seen_edges)
 
     conn = corpus.open_index(index_path)
     try:
@@ -318,6 +366,63 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None):
     finally:
         conn.close()
     return result, errors
+
+
+def _ingest_docs(adapter, root, label):
+    """One adapter's `ingest_sessions(root)` -> (docs, errors), every error attributed.
+
+    PER-SOURCE ISOLATION. Both adapters already survive a bad line, a bad file and a bad
+    session internally, so `ingest_sessions` is not expected to raise — but a failure
+    NEITHER of them models (an unreadable root, a shape the walk cannot handle) would
+    propagate out of `load_corpus` and zero an ingest of the OTHER providers that was
+    entirely healthy. One broken store must cost only its own source. Catching Exception
+    is therefore deliberate, and is the same call the `sidecar.py` build worker makes for
+    the same reason: the alternative is losing a corpus that was fine.
+    """
+    try:
+        docs, errors = adapter.ingest_sessions(root)
+    except Exception as exc:                # noqa: BLE001 — deliberate, see the docstring
+        return [], [{"source": label, "file": root, "stage": "ingest",
+                     "error": repr(exc)}]
+    return docs, [dict(err, source=label) for err in errors]
+
+
+def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources):
+    """Fold ONE parsed document into `result`, or refuse it as a collision.
+
+    Returns the error entries the attempt produced: empty when it was admitted, one
+    collision entry when its thread id already belongs to a DIFFERENT source. A repeated
+    id from the SAME source is admitted, because that is a resumed session (a second
+    rollout for one thread) or a copied store — the thread upserts and the conversation
+    dedupes by id, exactly as before this function existed.
+    """
+    thread_id = doc.thread_id
+    holder = claimed_by.get(thread_id)
+    if holder is not None and holder != label:
+        return [{"source": label, "file": getattr(doc, path_attr),
+                 "stage": "thread-id-collision",
+                 "error": "thread id %r is already held by %s; this %s session was NOT "
+                          "ingested" % (thread_id, holder, label)}]
+    claimed_by[thread_id] = label
+
+    conv = doc.conversation
+    conv.meta["thread_id"] = thread_id                  # link the FTS row to its thread
+    result.conversations.append(conv)
+    result.add_thread(doc.thread)
+    for edge in doc.edges:
+        _add_edge(result, edge, seen_edges)
+    sources.append(index.IndexSource(file=getattr(doc, path_attr),
+                                     content_hash=_fingerprint(conv), records=[conv]))
+    return []
+
+
+def _add_edge(result, edge, seen_edges):
+    """Add one spawn edge unless (parent, child) was already declared by any source. The
+    first declaration owns the edge's `status`; a later duplicate is dropped."""
+    key = (edge.parent_thread_id, edge.child_thread_id)
+    if key not in seen_edges:
+        seen_edges.add(key)
+        result.add_edge(edge)
 
 
 def _persist_graph(conn, result):
