@@ -143,6 +143,49 @@ def test_load_corpus_merges_rollouts_state_and_builds_the_index(tmp_path):
         conn.close()
 
 
+def test_load_corpus_can_ingest_GROK_ALONE_with_no_codex_store(tmp_path):
+    """A machine can hold a Grok store and no Codex store — and this one does.
+
+    Discovery reports the owner's Grok finding as naming no Codex home, so with Codex
+    unconditional the only way to import it was to invent a Codex path: `ingest_sessions`
+    would then glob nothing, return zero docs and zero errors, and the ingest would report
+    success for a Codex store that does not exist. An empty `sessions_root` now means "no
+    Codex", so the Grok-only case is expressible instead of faked.
+    """
+    grok_root = tmp_path / "grok"
+    idx = tmp_path / "index.sqlite"
+    _grok_store(str(grok_root))
+
+    c, errors = loaders.load_corpus("", str(idx), codex_home=str(tmp_path / "no_codex"),
+                                    grok_root=str(grok_root))
+
+    assert errors == [], f"a Grok-only ingest must not error: {errors}"
+    assert c.conversations, "the Grok conversation must be ingested"
+    assert set(c.threads), "the Grok thread must be present"
+
+    # And it must reach DISK, read back the way the sidecar reads it.
+    conn = corpus.open_index(str(idx))
+    try:
+        persisted = corpus.load_corpus(conn)
+        rows = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+    finally:
+        conn.close()
+    assert rows > 0
+    assert set(persisted.threads) == set(c.threads)
+
+
+def test_load_corpus_with_no_source_at_all_is_an_empty_corpus_not_a_crash(tmp_path):
+    """Naming neither root is a caller mistake, but it must degrade to nothing, not raise —
+    the index is still created so a later ingest has somewhere to land."""
+    idx = tmp_path / "index.sqlite"
+
+    c, errors = loaders.load_corpus("", str(idx), codex_home=str(tmp_path / "absent"))
+
+    assert errors == []
+    assert list(c.conversations) == []
+    assert os.path.isfile(str(idx)), "the index must still be created"
+
+
 def test_load_corpus_PERSISTS_the_spawn_graph_not_just_the_conversations(tmp_path):
     """The graph must survive in the INDEX, not only in the returned in-memory Corpus.
 

@@ -333,9 +333,19 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
     # FILE, a Grok session is a DIRECTORY — and that string becomes the
     # ingest_checkpoint key, so it is declared per source rather than guessed.
     #
-    # Codex is unconditional: `sessions_root` is a required argument, so it is always
-    # something the caller named. Grok runs ONLY when a root was named.
-    todo = [(CODEX_ROLLOUT_SOURCE, codex_rollout, "rollout_path", sessions_root)]
+    # Every source is OPT-IN by naming its root, Codex included. `sessions_root` stays the
+    # first positional argument for compatibility, but an empty one now means "no Codex"
+    # rather than "scan nothing and call it a Codex ingest".
+    #
+    # This matters for a real case, not a hypothetical: a machine can hold a Grok store and
+    # no Codex store at all, and the discovery panel reports exactly that ("this finding
+    # names no Codex home"). With Codex unconditional, importing Grok alone was impossible —
+    # the caller had to invent a Codex path to get past a required argument, and
+    # `ingest_sessions` would then glob nothing and report a perfectly successful ingest of
+    # it. Symmetry removes both the impossibility and the silent no-op.
+    todo = []
+    if sessions_root:
+        todo.append((CODEX_ROLLOUT_SOURCE, codex_rollout, "rollout_path", sessions_root))
     if grok_root:
         todo.append((GROK_SOURCE, grok, "session_dir", grok_root))
 

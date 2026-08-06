@@ -341,6 +341,23 @@ def _req_str(params, key):
     return value
 
 
+def _opt_str(params, key):
+    """An optional string param: absent or empty -> "", wrong type -> -32602.
+
+    Absent and empty collapse to the same thing deliberately. For an opt-in source root,
+    "the caller did not name this source" and "the caller named it as an empty string" are
+    the same intent, and treating the empty string as a VALID path would send a globbing
+    adapter at the process's cwd. A non-string is still an error, because that is a caller
+    bug rather than an omission.
+    """
+    if key not in params or params[key] is None:
+        return ""
+    value = params[key]
+    if not isinstance(value, str):
+        raise RpcError(-32602, "%s must be a string" % key)
+    return value
+
+
 def _req_int(params, key):
     """A required integer param; missing / non-int / bool -> -32602. Booleans are
     rejected even though ``bool`` is an ``int`` subclass, and a float is rejected too —
@@ -701,12 +718,29 @@ class Sidecar:
         (codex_rollout.py:361-362), so a typo'd root yields zero docs and zero errors and
         would otherwise report a perfectly "successful" build of nothing."""
         self._require_corpus()
-        sessions_root = _req_str(params, "sessions_root")
-        _reject_nonlocal_path(sessions_root, "sessions_root")
-        if not os.path.isdir(sessions_root):
+        # EVERY source is opt-in by naming its root, and at least one must be named.
+        #
+        # `sessions_root` was required, which made a Grok-only import impossible: a machine
+        # can hold a Grok store and no Codex store at all — discovery reports exactly that
+        # for the owner's Grok finding — and the caller then had to invent a Codex path to
+        # satisfy the argument, whereupon ingest_sessions globs nothing and the build
+        # reports success for a store that does not exist.
+        sessions_root = _opt_str(params, "sessions_root")
+        grok_root = _opt_str(params, "grok_root")
+        if not sessions_root and not grok_root:
             raise RpcError(-32602,
-                           "sessions_root must be an existing directory: %s"
-                           % _clean(sessions_root))
+                           "name at least one source: sessions_root (Codex) and/or "
+                           "grok_root (Grok Build)")
+        # Both roots must EXIST when named. Each adapter globs, so a typo'd root yields zero
+        # docs and zero errors — a silent, perfectly "successful" build of nothing, which is
+        # the failure mode this whole ingest path has been bitten by before.
+        for value, name in ((sessions_root, "sessions_root"), (grok_root, "grok_root")):
+            if not value:
+                continue
+            _reject_nonlocal_path(value, name)
+            if not os.path.isdir(value):
+                raise RpcError(-32602,
+                               "%s must be an existing directory: %s" % (name, _clean(value)))
         codex_home = _req_str(params, "codex_home")
         # Existence is NOT required here: codex_state.load_corpus skips a missing/busy
         # state DB by design (codex_state.py:96-98), so an absent one is a valid, silent
@@ -725,7 +759,7 @@ class Sidecar:
                                "build %s is still running; poll corpus.build_status"
                                % self._build_job["job_id"])
             job = {"job_id": "build-%d" % self._next_build_id, "state": "running",
-                   "sessions_root": sessions_root, "started_ms": _now_ms(),
+                   "sessions_root": sessions_root, "grok_root": grok_root, "started_ms": _now_ms(),
                    "finished_ms": None, "errors": [], "error": None,
                    "needs_reload": False}
             self._next_build_id += 1
@@ -733,12 +767,12 @@ class Sidecar:
         # OUTSIDE the lock: a synchronous runner executes the worker inline, and the worker
         # takes this same non-reentrant lock — starting it while held would deadlock.
         self._build_runner(
-            lambda: self._run_build(job, sessions_root, index_path, codex_home))
+            lambda: self._run_build(job, sessions_root, index_path, codex_home, grok_root))
         return {"job_id": job["job_id"], "state": "running",
-                "sessions_root": _clean(sessions_root),
+                "sessions_root": _clean(sessions_root), "grok_root": _clean(grok_root),
                 "started_ms": job["started_ms"]}
 
-    def _run_build(self, job, sessions_root, index_path, codex_home):
+    def _run_build(self, job, sessions_root, index_path, codex_home, grok_root=""):
         """THE WORKER. Runs off the request thread; touches ONLY the job record (under the
         lock) and thread-local objects. Values are stored RAW and projected at the wire in
         ``_corpus_build_status``, like every other text-bearing surface here.
@@ -755,7 +789,8 @@ class Sidecar:
         conversation ingest (loaders.py:310-311), so a FAILED build can still have changed
         the index and the live view must follow it."""
         try:
-            _built, errors = loaders.load_corpus(sessions_root, index_path, codex_home)
+            _built, errors = loaders.load_corpus(
+                sessions_root, index_path, codex_home, grok_root=grok_root)
         except Exception as exc:                      # noqa: BLE001 — see the docstring
             with self._build_lock:
                 job["error"] = "%s: %s" % (type(exc).__name__, exc)

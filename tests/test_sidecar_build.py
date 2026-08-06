@@ -133,6 +133,94 @@ def _build_params(tmp_path, n=2):
     return {"sessions_root": root, "codex_home": _codex_home(tmp_path)}
 
 
+# -------------------------------------------------------- multi-provider sources
+
+def _grok_root(tmp_path):
+    """A minimal Grok Build store: <enc-cwd>/<session-id>/ with summary.json + updates.jsonl."""
+    sess = tmp_path / "grok" / "C%3A%5Cwork" / "1111-2222"
+    sess.mkdir(parents=True)
+    (sess / "summary.json").write_text(json.dumps({
+        "info": {"id": "grok-sess-1", "cwd": "C:/work"},
+        "generated_title": "synthetic grok session",
+        "created_at": "2026-07-24T10:00:00.000000Z",
+        "last_active_at": "2026-07-24T10:05:00.000000Z",
+    }), encoding="utf-8")
+    (sess / "updates.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        {"method": "session/update", "timestamp": "2026-07-24T10:00:01.000000Z",
+         "params": {"sessionId": "grok-sess-1", "update": {
+             "sessionUpdate": "user_message_chunk",
+             "content": {"type": "text", "text": "synthetic prompt"}}}},
+        {"method": "session/update", "timestamp": "2026-07-24T10:00:02.000000Z",
+         "params": {"sessionId": "grok-sess-1", "update": {
+             "sessionUpdate": "agent_message_chunk",
+             "content": {"type": "text", "text": "synthetic reply"}}}},
+    ]) + "\n", encoding="utf-8")
+    return str(tmp_path / "grok")
+
+
+def test_build_accepts_a_GROK_ONLY_source_with_no_codex_sessions_root(tmp_path):
+    """A machine can hold a Grok store and no Codex store — and the owner's does.
+
+    `sessions_root` used to be required, so importing Grok alone meant inventing a Codex path;
+    `ingest_sessions` would then glob nothing and the build would report success for a store
+    that does not exist. Naming only `grok_root` must work.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    out = srv.dispatch("corpus.build", {
+        "grok_root": _grok_root(tmp_path), "codex_home": _codex_home(tmp_path)})
+
+    assert out["state"] == "running"          # the start reply is an ACCEPTANCE, not a result
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] == 1, status
+    assert status["errors"] == [], status
+    # And the Grok session must actually be in the graph the sidecar now serves.
+    assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["grok-sess-1"]
+
+
+def test_build_requires_at_least_one_named_source(tmp_path):
+    """Naming neither root is a caller bug and must be refused, not silently ingest nothing."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"codex_home": _codex_home(tmp_path)})
+    assert excinfo.value.code == -32602
+    assert "at least one source" in str(excinfo.value.message)
+
+
+def test_build_rejects_a_grok_root_that_does_not_exist(tmp_path):
+    """The same silent-no-op guard `sessions_root` gets: grok.ingest_sessions globs, so a
+    typo'd root yields zero docs and zero errors — a perfectly 'successful' build of nothing."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"grok_root": str(tmp_path / "nope"),
+                                      "codex_home": _codex_home(tmp_path)})
+    assert excinfo.value.code == -32602
+    assert "grok_root must be an existing directory" in str(excinfo.value.message)
+
+
+def test_build_rejects_a_unc_grok_root(tmp_path):
+    """UNC is an outbound SMB/NTLM vector, and the guard must fire BEFORE any isdir() —
+    os.path.isdir on a UNC path reaches over SMB itself, so a 'not a directory' wording
+    would mean the leak already happened."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"grok_root": r"\\evil.example\share",
+                                      "codex_home": _codex_home(tmp_path)})
+    assert excinfo.value.code == -32602
+    assert "existing directory" not in str(excinfo.value.message), \
+        "a UNC path must be refused by the path guard, not by an isdir() that already touched it"
+
+
+def test_build_rejects_a_non_string_grok_root(tmp_path):
+    """Absent means 'not this source'; a wrong TYPE is a caller bug and stays an error."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"sessions_root": _sessions_tree(str(tmp_path / "s"), n=1),
+                                      "grok_root": 42,
+                                      "codex_home": _codex_home(tmp_path)})
+    assert excinfo.value.code == -32602
+
+
 # ------------------------------------------------------------------ path safety
 
 def test_build_rejects_unc_and_relative_sessions_root(tmp_path):
@@ -304,7 +392,7 @@ def test_a_failed_build_still_refreshes_a_graph_it_already_committed(tmp_path, m
     (loaders.py:310-311), so a build can fail with the graph already on disk. The live view
     must follow the index in that case too — refreshing only on success would leave the
     sidecar reporting a graph the file no longer matches."""
-    def persist_then_die(sessions_root, index_path, codex_home):
+    def persist_then_die(sessions_root, index_path, codex_home, grok_root=""):
         conn = corpus.open_index(index_path)
         try:
             corpus.upsert_thread(conn, ThreadMeta(id="PARTIAL"))
@@ -606,7 +694,7 @@ def test_the_request_thread_sees_a_concurrent_workers_committed_rows(tmp_path, m
     timeouts are failsafes against a hang, never a timing assumption."""
     committed, resume = threading.Event(), threading.Event()
 
-    def fake_ingest(sessions_root, index_path, codex_home):
+    def fake_ingest(sessions_root, index_path, codex_home, grok_root=""):
         conn = corpus.open_index(index_path)         # the WORKER's own connection
         try:
             corpus.add_conversation(
