@@ -27,6 +27,7 @@ import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui
 import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
+import { ReaderOverlay } from "./ui/reader";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
 import { emptyStateLabel, VirtualList } from "./ui/virtualList";
@@ -88,6 +89,7 @@ export class CockpitApp {
    */
   private currentInput: LayoutInput | null = null;
   private currentSelect: string | null = null;
+  private readonly reader: ReaderOverlay;
   /** Fold linear chains into super-nodes when true (the aggregated↔expanded toggle). */
   private aggregated = false;
   /** How many nodes the last render hid behind "+N more", for the status line. */
@@ -122,6 +124,12 @@ export class CockpitApp {
       document.getElementById("search-provider") as HTMLSelectElement | null,
     );
     this.search.setHitHandler((hit) => void this.onHitSelected(hit));
+
+    // The transcript reader. `conversation.get` was implemented on both sides of the wire
+    // and never called by anything, so the app could FIND a conversation and not read it --
+    // the one thing a session browser exists for.
+    this.reader = new ReaderOverlay(ipc, requireEl("reader"));
+    this.search.setReadHandler((hit) => void this.reader.open(hit.conversation_id));
 
     // The app's PRIMARY action. Every pane below reads through the engine, and the
     // engine answers nothing until a corpus is attached — so without this control the

@@ -89,5 +89,9 @@
         <p class="muted">Select a node to inspect a thread.</p>
       </section>
     </div>
+    <!-- The transcript reader. Full-width because a 300px column cannot hold a readable
+         transcript, and the list and graph both stay on screen in this layout. Starts
+         `hidden`; ReaderOverlay owns its contents and its dialog semantics. -->
+    <div id="reader" hidden></div>
   </body>
 </html>

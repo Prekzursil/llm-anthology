@@ -37,6 +37,7 @@ export class SearchPanel {
   private readonly list: VirtualList<SearchHit>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private onHit: HitHandler | null = null;
+  private onRead: HitHandler | null = null;
   private latest = 0;
 
   constructor(
@@ -64,6 +65,11 @@ export class SearchPanel {
 
   setHitHandler(handler: HitHandler | null): void {
     this.onHit = handler;
+  }
+
+  /** Called when the user asks to READ a hit, as opposed to locating it in the graph. */
+  setReadHandler(handler: HitHandler | null): void {
+    this.onRead = handler;
   }
 
   /**
@@ -124,9 +130,15 @@ export class SearchPanel {
   }
 
   private renderHit(hit: SearchHit): HTMLElement {
-    const row = document.createElement("button");
+    // A DIV holding two buttons, not one button: the row carries two distinct actions
+    // (locate in the graph / read the transcript) and a button inside a button is invalid
+    // HTML that screen readers and browsers both handle unpredictably.
+    const row = document.createElement("div");
     row.className = "hit-row";
-    row.type = "button";
+
+    const locate = document.createElement("button");
+    locate.className = "hit-main";
+    locate.type = "button";
 
     const provider = document.createElement("span");
     provider.className = `provider-dot provider-${cssClass(hit.provider)}`;
@@ -145,10 +157,24 @@ export class SearchPanel {
     when.textContent = relativeWhen(hit.ts_ms, Date.now());
     if (hit.ts_ms !== undefined) when.dateTime = new Date(hit.ts_ms).toISOString();
 
-    row.append(provider, snippet, when);
-    row.addEventListener("click", () => {
+    locate.append(provider, snippet, when);
+    locate.addEventListener("click", () => {
       if (this.onHit !== null) this.onHit(hit);
     });
+
+    // Reading the transcript is the point of finding it, and until now there was no way to
+    // do it from anywhere in the app. Kept as its OWN control so the existing behaviour of
+    // the row -- locate this thread in the spawn graph -- is unchanged.
+    const read = document.createElement("button");
+    read.className = "hit-read";
+    read.type = "button";
+    read.textContent = "Read";
+    read.title = "Open the transcript";
+    read.addEventListener("click", () => {
+      if (this.onRead !== null) this.onRead(hit);
+    });
+
+    row.append(locate, read);
     return row;
   }
 

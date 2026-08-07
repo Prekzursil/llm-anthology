@@ -831,3 +831,187 @@ body,
   --row-hover: #eef1f8;
   --selected: #ffd54a;
 }
+
+/* -- transcript reader --------------------------------------------------------
+   A full-width overlay rather than a pane, because a transcript needs width and
+   this layout keeps the thread list and the spawn graph permanently on screen.
+   `hidden` does the showing/hiding, so the element is genuinely absent from the
+   a11y tree when closed rather than merely invisible. */
+#reader[hidden] {
+  display: none;
+}
+
+.reader {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.reader-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.reader-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.reader-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.reader-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reader-close {
+  flex: 0 0 auto;
+  min-height: var(--control-min);
+  min-width: var(--control-min);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reader-close:hover {
+  border-color: var(--accent);
+}
+
+/* The scroll container. Focusable (tabIndex 0 in reader.ts) so it can be scrolled
+   by keyboard — a plain overflow container cannot be (WCAG 2.1.1). */
+.reader-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-4);
+}
+
+/* One measure-limited column, centred. Long transcript lines across a 2560px
+   monitor are unreadable; ~90ch is the usual upper bound for prose that also has
+   to hold code and diffs without wrapping them. */
+.reader-turn,
+.reader-stub {
+  max-width: 90ch;
+  margin: 0 auto var(--space-5);
+}
+
+.reader-turn-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.reader-role {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.reader-when {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-block {
+  margin-bottom: var(--space-2);
+}
+
+/* A non-prose block says what it is. Bordered rather than coloured: the palette's
+   hues are the graph's categorical channel and reusing them here would imply a
+   relationship that does not exist. */
+.reader-badge {
+  display: inline-block;
+  margin-bottom: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* `pre` because transcripts are whitespace-significant (code, diffs, tool output).
+   `pre-wrap` + `anywhere` so a 4000-character single-line tool result wraps instead
+   of forcing the whole overlay to scroll sideways. */
+.reader-text {
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Non-prose blocks read as machine output, so they get the mono face and a rule
+   marking where the model stops and the tooling starts. */
+.reader-block-thinking .reader-text,
+.reader-block-tool-use .reader-text,
+.reader-block-tool-result .reader-text,
+.reader-block-code .reader-text,
+.reader-block-event .reader-text,
+.reader-block-unknown .reader-text {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.reader-stub {
+  color: var(--muted);
+}
+
+/* The hit row is a DIV holding two buttons (locate / read), so the hover and focus
+   affordances live on the children rather than on the row itself. */
+.hit-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--control-min);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hit-read {
+  flex: 0 0 auto;
+  min-height: var(--control-min);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hit-read:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
