@@ -117,6 +117,9 @@ export class CockpitApp {
       requireEl<HTMLInputElement>("search-input"),
       requireEl("search-results"),
       requireEl("search-status"),
+      // Optional: `requireEl` would throw on a shell without the control, and the panel
+      // already treats a null filter as "no filtering offered".
+      document.getElementById("search-provider") as HTMLSelectElement | null,
     );
     this.search.setHitHandler((hit) => void this.onHitSelected(hit));
 
@@ -242,6 +245,10 @@ export class CockpitApp {
   private async loadStats(): Promise<void> {
     try {
       const s = await ipc.corpusStats();
+      // The same call feeds the search filter, so its choices are the providers this corpus
+      // ACTUALLY holds rather than every provider the app can ingest -- offering "gemini"
+      // against a codex-only store is a filter that can only ever return nothing.
+      this.search.setProviders(s.providers);
       const providers = Object.entries(s.providers)
         .map(([p, n]) => `${p} ${n}`)
         .join(" · ");

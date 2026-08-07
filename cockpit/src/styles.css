@@ -327,6 +327,33 @@ body,
   text-overflow: ellipsis;
 }
 
+/* When a hit happened. Fixed-width and never shrinking, so the snippet is what gets
+   ellipsised on a narrow sidebar rather than the date being cut to "3d a…". */
+.hit-when {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* The provider filter. Full width under the search box so it reads as part of the same
+   control group, and it carries `hidden` until a corpus with 2+ providers is attached. */
+.search-filter {
+  width: 100%;
+  min-height: var(--control-min);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.search-filter[hidden] {
+  display: none;
+}
+
 .root-badge {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;

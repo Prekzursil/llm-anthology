@@ -45,6 +45,10 @@
         <h2 class="panel-title" id="search-title">Search</h2>
         <label class="visually-hidden" for="search-input">Search conversations</label>
         <input id="search-input" type="search" placeholder="Search conversations…" autocomplete="off" />
+        <label class="visually-hidden" for="search-provider">Filter by provider</label>
+        <!-- Populated from corpus.stats and hidden for a single-provider corpus, so it is
+             absent rather than useless when there is nothing to narrow. -->
+        <select id="search-provider" class="search-filter" hidden></select>
         <div id="search-status" class="muted" role="status" aria-live="polite"></div>
         <div id="search-results" class="list-viewport" role="group" aria-labelledby="search-title"></div>
 
