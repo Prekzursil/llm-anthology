@@ -249,7 +249,12 @@ export class CockpitApp {
 
   private async loadRoots(): Promise<void> {
     try {
-      this.rootsList.setItems(await ipc.graphRoots({ limit: 1000, order: "created" }));
+      // "recent", not "created". `order: "created"` sorts ASCENDING (sidecar.py's
+      // graph.roots), so with a 1000 cap the sidebar showed the user their one thousand
+      // OLDEST threads and silently hid everything since. On a 2,000-session store that
+      // means the list never contains anything from recent months. "recent" has existed
+      // in the engine the whole time and was simply never sent.
+      this.rootsList.setItems(await ipc.graphRoots({ limit: 1000, order: "recent" }));
     } catch {
       // With no corpus attached every graph read rejects. Show the list's own empty
       // state instead of rejecting out of the boot chain — `main.ts` fires `init()`
