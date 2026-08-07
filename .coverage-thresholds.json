@@ -20,6 +20,7 @@
       "command": "python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100",
       "status": "enforced",
       "note": "Also enforced independently by `addopts` in pyproject.toml, so a bare `python -m pytest` already fails below 100%. Measured 1261 passing at 100% branch coverage at HEAD 3a0cdbe. Do not pass `-q` on top of addopts: it becomes `-qq` and SUPPRESSES the pass/fail summary line, which reads as a broken suite.",
+      "python39Exemption": "CI gates the branch PERCENTAGE on 3.13 only (three OSes); the 3.9 leg runs the full suite and must pass every test, but with --cov-fail-under=0. Reason: 3.9 mis-traces `if cond: body` followed immediately by `continue` — a false condition jumps straight to the loop header, so the arc into the `continue` line reads as a partial branch even when a test provably drives both outcomes. Controlled: an identical 9-line function whose test asserts both paths ran reports 93% on 3.9 and 100% on 3.13. Four such arcs exist (codex_rollout.py, discover.py) and all four are covered on 3.13. This is an exemption for an EOL interpreter's measurement fidelity, NOT a relaxation of the standard - do not extend it to any other leg.",
       "blockPRCreation": true,
       "blockTaskCompletion": true
     },
