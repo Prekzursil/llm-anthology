@@ -238,8 +238,10 @@ or every one of them breaks.
 - If one is added, remember that a local pass being green does NOT mean CI is green: the
   working tree is CRLF and CI checks out the LF blob, and formatters can decide differently
   on the two forms. Verify against the blob (`git archive <rev> | tar -x -C <tmp>`).
-- What CI actually runs today: `python -m pytest` for the engine, and `npm run typecheck` /
-  `npm test` / `npm run build` for `js/` ONLY. Nothing enters `cockpit/` or `src-tauri/`.
+- What CI runs: FOUR pre-existing jobs — `test` (pytest, on a python × OS matrix), `js`,
+  `js-package` and `package` — none of which enters `cockpit/` or `src-tauri/`; plus the
+  `cockpit` job added to close exactly that gap (tsc · vitest · cargo test · clippy · tauri
+  build, on a windows + linux matrix, blocking).
 - All quality gates must pass before PR creation.
 
 ## Key Decisions

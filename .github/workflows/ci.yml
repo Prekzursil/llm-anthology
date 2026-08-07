@@ -110,3 +110,114 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  cockpit:
+    # WHY THIS JOB EXISTS.
+    #
+    # Before it, this file had exactly two test jobs: `test` (python -m pytest)
+    # and `js` (working-directory: js -- the SEPARATE TypeScript port). Neither
+    # ever entered cockpit/ or cockpit/src-tauri/. So 365 vitest tests, 18 cargo
+    # tests, the cockpit typecheck and the Tauri build had never run in CI even
+    # once, on any platform. A suite nothing executes is indistinguishable from
+    # no suite at all, and that gap is where an entire class of shipped bug
+    # lived: `main` was read as green while no gate had ever so much as compiled
+    # the code the release actually ships.
+    #
+    # Both platforms, because a Windows-only green run is the exact shape that
+    # hides a Linux gap -- sidecar.rs carries 12 cfg(windows)/cfg(not(windows))
+    # gates whose non-Windows arms no CI and no local run had ever compiled.
+    #
+    # Deliberately BLOCKING on both legs. A gate permitted to fail is not a gate,
+    # and continue-on-error produces the red-X-on-a-green-run state that trains
+    # reviewers to discount the whole check surface. fail-fast: false already
+    # buys the real benefit: a red linux leg does not cancel the windows one.
+    name: cockpit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: cockpit
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Tauri v2 links against webkit2gtk 4.1. The 4.0 packages are the Tauri v1
+      # ABI, not a fallback -- on ubuntu-24.04 (what ubuntu-latest resolves to
+      # today) they are not in the archive at all.
+      - name: install the GTK/WebKit toolchain Tauri v2 links against
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cockpit/package-lock.json
+
+      # Pinned rather than @stable: `clippy -D warnings` would turn every
+      # unrelated PR red the day a new Rust release adds a lint. 1.91.0 is the
+      # toolchain this code is developed against.
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: clippy
+
+      # The one deliberate deviation from this file's no-caching convention: a
+      # cold Rust/Tauri build is 10-20 min per leg, which the pip and npm installs
+      # above are not. cache-on-failure keeps a red lint run from re-paying that
+      # cost on every fix iteration.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cockpit/src-tauri -> target
+          shared-key: cockpit
+          cache-on-failure: true
+
+      - run: npm ci
+      # cockpit/package.json has no `typecheck` script (js/package.json does), so
+      # this is npx tsc directly rather than the `npm run typecheck` used above.
+      - run: npx tsc --noEmit
+      - run: npm test
+      # `tsc && vite build`. Also produces the ../dist that tauri.conf.json points
+      # frontendDist at, which the cargo steps below need to already exist.
+      - run: npm run build
+
+      # MUST precede every cargo AND tauri invocation, `cargo test` included.
+      # tauri.conf.json declares bundle.resources {"resources/engine": "engine"}
+      # and tauri-build's build.rs resolves that at COMPILE time -- a missing
+      # directory is a hard ResourcePathNotFound, not a warning. The directory is
+      # gitignored (.gitignore:46 -- a ~35MB staged interpreter), so a clean
+      # checkout has nothing there. An EMPTY directory is explicitly tolerated.
+      - name: materialise the gitignored engine resource directory
+        shell: bash
+        run: mkdir -p src-tauri/resources/engine
+
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: tauri build (nsis bundle)
+        if: runner.os == 'Windows'
+        run: npx tauri build
+
+      # bundle.targets is ["nsis"], which is Windows-only, and the vendored engine
+      # is a Windows CPython staged by a PowerShell-only script -- so a Linux
+      # bundle would be untrue regardless. --no-bundle scopes this leg to the
+      # compile + link, which is the part that genuinely has never run.
+      - name: tauri build (compile and link only)
+        if: runner.os == 'Linux'
+        run: npx tauri build --no-bundle
+
+      # Deliberately NO upload-artifact, unlike the `package` and `js-package`
+      # jobs above: the engine directory staged here is EMPTY, so the installer
+      # this produces is a compile receipt, not a shippable build. Uploading it
+      # would hand out an artifact no smoke test has validated.
