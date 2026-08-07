@@ -477,18 +477,35 @@ def _req_int(params, key):
     return value
 
 
+def _reject_unc_spelling(path, label):
+    """Reject a UNC / network path (``\\\\host\\share`` — a crafted target coerces an
+    outbound SMB/NTLM auth, the Windows hash-leak class).
+
+    Separate from :func:`_reject_nonlocal_path` because it must be judged on the path AS
+    WRITTEN. A caller that resolves first destroys the evidence on POSIX: ``\\\\host\\share``
+    contains no separator there, so it is an ordinary RELATIVE filename and
+    ``os.path.abspath`` prepends the cwd, producing
+    ``/current/dir/\\\\host\\share`` — no longer UNC-shaped, and absolute, so both checks
+    below pass something they should have refused. On Windows ``abspath`` preserves the UNC
+    prefix, which is why a Windows-only check of that ordering reported it safe; the CI
+    Linux and macOS legs are what disproved it."""
+    if path.replace("/", "\\").startswith("\\\\"):
+        raise RpcError(-32602, "%s must be a local path, not a UNC/network path" % label)
+
+
 def _reject_nonlocal_path(path, label):
     """Guard ANY caller-supplied filesystem path BEFORE any filesystem access: reject a
-    UNC / network path (``\\\\host\\share`` — a crafted target coerces an outbound SMB/NTLM
-    auth, the Windows hash-leak class) and any non-absolute path. Drive-absolute local
-    paths only.
+    UNC / network path and any non-absolute path. Drive-absolute local paths only.
+
+    Pass the path AS THE CALLER GAVE IT. If a caller needs to absolutize first (only
+    ``_reparse_rollout`` does, and it says why), it must run :func:`_reject_unc_spelling`
+    on the raw value BEFORE resolving.
 
     Labelled so every path-bearing method reports in its own terms; the concrete modules
     (``export``, ``maintenance``) then re-check UNC + parent-traversal + confinement as
     defence in depth, because a guard that lives only at the RPC edge is one refactor away
     from being bypassed."""
-    if path.replace("/", "\\").startswith("\\\\"):
-        raise RpcError(-32602, "%s must be a local path, not a UNC/network path" % label)
+    _reject_unc_spelling(path, label)
     if not os.path.isabs(path):
         raise RpcError(-32602, "%s must be an absolute local path" % label)
 
@@ -1168,7 +1185,10 @@ class Sidecar:
 
         WHY THE PATH IS GUARDED HERE. ``path`` is not caller-supplied — it comes out of the
         ``rollout_path`` column, which is why it slipped past the review that added
-        :func:`_reject_nonlocal_path` to the seven paths that DO arrive over the wire. That
+        :func:`_reject_nonlocal_path` to the seven paths that DO arrive over the wire.
+        (That review's list was also not complete on its own terms — ``graph.diff``'s
+        ``old_index``/``new_index`` are caller-supplied and were missed; they are guarded in
+        :meth:`_diff_operand` now. Treat "the seven" as history, not as an inventory.) That
         reasoning was wrong: ``discover`` offers found ``.sqlite`` files to ``corpus.open``, so
         a row can come from an index this machine never wrote. On Windows the existence check
         below is not a passive string test — resolving ``\\\\attacker\\share\\x`` makes the OS
@@ -1199,11 +1219,18 @@ class Sidecar:
         #
         # Resolving changes nothing semantically — `exists()` already resolved a relative
         # path against the process cwd — it only makes that resolution explicit and gives the
-        # guard an absolute string to judge. The security property survives: `abspath` keeps
-        # every UNC spelling recognisably UNC (`\\host\share`, `\\host@SSL\DavWWWRoot`,
-        # `//host/share`, `\\?\C:`), verified rather than assumed.
-        resolved = os.path.abspath(path)
+        # absoluteness check a real string to judge.
+        #
+        # ORDER IS LOAD-BEARING: the UNC check runs on the RAW value, before `abspath`. An
+        # earlier version resolved first and claimed `abspath` keeps every UNC spelling
+        # recognisably UNC — "verified rather than assumed". It was verified on Windows ONLY,
+        # where it is true, and it is FALSE on POSIX: `\\host\share` holds no separator there,
+        # so it is an ordinary relative name and `abspath` returns `/cwd/\\host\share` —
+        # not UNC-shaped and absolute, i.e. both checks pass a path they exist to refuse.
+        # The Linux and macOS CI legs failed on exactly that while Windows stayed green.
         try:
+            _reject_unc_spelling(path, "rollout_path")
+            resolved = os.path.abspath(path)
             _reject_nonlocal_path(resolved, "rollout_path")
         except RpcError as e:
             return None, "rollout rejected: %s" % e.message
@@ -1674,7 +1701,17 @@ class Sidecar:
           data is never modified — and the connection is closed before returning.
         * NEITHER present -> the corpus this sidecar already holds (``self.corpus``).
 
-        Supplying BOTH a path and an as-of for one side is ambiguous -> -32602."""
+        Supplying BOTH a path and an as-of for one side is ambiguous -> -32602.
+
+        The path is guarded by :func:`_reject_nonlocal_path` BEFORE the existence check, for
+        the reason spelled out on :meth:`_reparse_rollout`: on Windows, resolving
+        ``\\\\attacker\\share\\x.db`` is not a passive string test — the OS opens an SMB
+        session and offers the logged-in user's NTLM credentials, and ``sqlite3.connect``
+        right below would do it again. These two operands are caller-supplied and arrive
+        straight off the wire, so they were always in the class that guard covers; they were
+        simply missed when it was applied to the others. Unlike ``_reparse_rollout`` this
+        RAISES rather than returning a reason: ``graph.diff`` has one caller-chosen operand
+        per side, so there is nothing to skip past."""
         has_path = path_key in params
         has_time = time_key in params
         if has_path and has_time:
@@ -1685,6 +1722,7 @@ class Sidecar:
         if not has_path:
             return self.corpus
         path = _req_str(params, path_key)
+        _reject_nonlocal_path(path, path_key)
         if not os.path.isfile(path):
             raise RpcError(-32602, "%s not found: %s" % (path_key, path))
         conn = sqlite3.connect(path)

@@ -498,6 +498,38 @@ def test_graph_diff_bad_index_params_reject(tmp_path):
     assert ei2.value.code == -32602
 
 
+@pytest.mark.parametrize("key", ["old_index", "new_index"])
+def test_graph_diff_rejects_unc_operand_before_touching_the_filesystem(key, monkeypatch):
+    """A ``graph.diff`` operand path is caller-supplied and reaches ``os.path.isfile`` then
+    ``sqlite3.connect``. On Windows neither is a passive string test: resolving
+    ``\\\\attacker\\share\\x.db`` makes the OS open an SMB session and offer the logged-in
+    user's NTLM credentials. This is the same hash-leak class already guarded on the seven
+    other wire paths and on ``rollout_path``; these two were missed.
+
+    The monkeypatch is the point of the test, not scenery: it turns ANY filesystem access
+    into a distinct failure, so a guard that runs too LATE is caught rather than passing on
+    the strength of the right error code arriving for the wrong reason.
+    """
+    def _boom(_p):
+        raise AssertionError("filesystem was touched before the path was validated")
+
+    monkeypatch.setattr(sidecar.os.path, "isfile", _boom)
+    with pytest.raises(sidecar.RpcError) as ei:
+        _mem_server().dispatch("graph.diff", {key: r"\\attacker\share\x.db"})
+    assert ei.value.code == -32602
+    assert "local path" in ei.value.message and key in ei.value.message
+
+
+@pytest.mark.parametrize("key", ["old_index", "new_index"])
+def test_graph_diff_rejects_relative_operand(key):
+    """Absoluteness is the other half of the guard: a relative operand resolves against
+    whatever cwd the sidecar happens to hold, which is not a location the caller chose."""
+    with pytest.raises(sidecar.RpcError) as ei:
+        _mem_server().dispatch("graph.diff", {key: "relative/operand.db"})
+    assert ei.value.code == -32602
+    assert "absolute local path" in ei.value.message
+
+
 def test_graph_diff_requires_corpus():
     with pytest.raises(sidecar.RpcError) as ei:
         sidecar.Sidecar(None).dispatch("graph.diff", {})
