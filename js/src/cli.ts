@@ -7,8 +7,9 @@
  * identically. Nothing here is on the byte-for-byte-parity-tested renderer path; the
  * heavy lifting is delegated to the same ported modules the tests cover.
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as chatgpt from "./adapters/chatgpt.js";
 import * as claude from "./adapters/claude.js";
@@ -379,5 +380,49 @@ export function main(argv: string[]): number {
   return 0;
 }
 
-const invoked = process.argv[1] && /llm_anthology|cli\.js/.test(process.argv[1]);
-if (invoked) process.exit(main(process.argv.slice(2)));
+/**
+ * A path in the form two `import.meta.url`-vs-`argv[1]` comparisons can agree on.
+ *
+ * `realpathSync.native` rather than `realpathSync`: on Windows only the native form expands
+ * an 8.3 short name (`PREKZU~1`), and `os.tmpdir()` hands out short paths — so the plain
+ * form can leave two spellings of one file looking different. A path that does not exist
+ * cannot be canonicalised at all (that is not an error here: `argv[1]` may be anything),
+ * so it falls back to a lexical resolve and simply fails to match.
+ */
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return resolvePath(p);
+  }
+}
+
+/**
+ * Is this module the program the user actually started?
+ *
+ * This MUST compare resolved paths, not path spellings. The previous check was
+ * `/llm_anthology|cli\.js/.test(process.argv[1])`, and it silently broke the published
+ * package on every non-Windows machine:
+ *
+ *   * `npm install` on Linux/macOS links a bin as `node_modules/.bin/llm-anthology ->
+ *     ../llm-anthology/dist/cli.js`, so `argv[1]` is the SYMLINK — a string containing
+ *     neither `cli.js` nor `llm_anthology` (note the underscore: that is the PYTHON
+ *     package's name, never the npm bin's). The test returned false, `main()` never ran,
+ *     and the CLI exited 0 having done nothing at all — no output, no error, no file.
+ *   * On Windows npm writes a `.cmd` shim that runs `node ...\dist\cli.js`, so `argv[1]`
+ *     is the real file and the pattern matched. The bug was therefore invisible to every
+ *     local Windows check and only ever showed up in Linux CI.
+ *
+ * `resolve` is injected so the decision is testable against both installation shapes
+ * without creating real symlinks (which need elevation on Windows).
+ */
+export function isEntryPoint(
+  argv1: string | undefined,
+  moduleUrl: string,
+  resolve: (p: string) => string = canonicalPath,
+): boolean {
+  if (!argv1) return false;
+  return resolve(argv1) === resolve(fileURLToPath(moduleUrl));
+}
+
+if (isEntryPoint(process.argv[1], import.meta.url)) process.exit(main(process.argv.slice(2)));

@@ -5,12 +5,13 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as chatgptAdapter from "../src/adapters/chatgpt.js";
 import * as claudeAdapter from "../src/adapters/claude.js";
-import { main } from "../src/cli.js";
+import { isEntryPoint, main } from "../src/cli.js";
 import * as renderHtmlModule from "../src/render_html.js";
 import * as verifyModule from "../src/verify.js";
 
@@ -284,11 +285,59 @@ describe("fidelity report", () => {
 });
 
 describe("module entry point", () => {
-  it("runs main and exits when imported under the built cli.js name", async () => {
+  // The path shapes below are the whole point. `npm install` on Linux/macOS links a bin as
+  // node_modules/.bin/<name> -> ../<pkg>/dist/cli.js, so process.argv[1] is the SYMLINK.
+  // On Windows npm writes a .cmd shim that calls `node ...\dist\cli.js` instead, so argv[1]
+  // is the real file. A check that pattern-matches the argv[1] STRING therefore passes on
+  // Windows and silently does nothing on Linux — the CLI exits 0 having run no command.
+  // These cases pin both shapes so that asymmetry cannot come back.
+  const at = (p: string): string => resolvePath(p);
+  const urlOf = (p: string): string => pathToFileURL(p).href;
+
+  it("treats the npm bin SYMLINK as the entry point", () => {
+    const real = at("/pkg/node_modules/llm-anthology/dist/cli.js");
+    const link = at("/pkg/node_modules/.bin/llm-anthology");
+    // the resolver is what makes a symlink and its target the same file
+    const resolve = (p: string): string => (p === link ? real : p);
+    expect(isEntryPoint(link, urlOf(real), resolve)).toBe(true);
+  });
+
+  it("treats a direct `node dist/cli.js` invocation as the entry point", () => {
+    const real = at("/pkg/dist/cli.js");
+    expect(isEntryPoint(real, urlOf(real), (p) => p)).toBe(true);
+  });
+
+  it("is NOT the entry point when imported as a library by another program", () => {
+    const real = at("/pkg/dist/cli.js");
+    expect(isEntryPoint(at("/usr/bin/vitest"), urlOf(real), (p) => p)).toBe(false);
+  });
+
+  it("is NOT the entry point when the process has no argv[1] at all", () => {
+    expect(isEntryPoint(undefined, urlOf(at("/pkg/dist/cli.js")))).toBe(false);
+  });
+
+  it("does not throw when a path cannot be resolved on disk", () => {
+    // The real resolver (no injection) must survive a path that does not exist — otherwise
+    // merely importing the module could crash the importing program.
+    expect(isEntryPoint(at("/definitely/not/here.js"), urlOf(at("/pkg/dist/cli.js"))))
+      .toBe(false);
+  });
+
+  it("resolves REAL paths through the default resolver", () => {
+    // No injected resolver: this drives realpathSync against files that actually exist,
+    // which is the branch the injected-resolver cases above deliberately skip.
+    const self = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    expect(isEntryPoint(self, urlOf(self))).toBe(true);
+  });
+
+  it("runs main and exits when the process entry point IS this module", async () => {
     const originalArgv = process.argv;
     const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
     try {
-      process.argv = [originalArgv[0]!, "/tmp/cli.js", "--help"];
+      // the honest spelling: argv[1] is the module's own path, as it is in a real run
+      process.argv = [
+        originalArgv[0]!, fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "--help",
+      ];
       vi.resetModules();
       await import("../src/cli.js");
       expect(exit).toHaveBeenCalledWith(0);
