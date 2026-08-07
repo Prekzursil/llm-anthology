@@ -351,25 +351,51 @@ def test_a_nonlocal_path_is_rejected_for_grok_too_not_just_codex(tmp_path, monke
         conn.close()
 
 
-def test_a_relative_rollout_path_is_rejected_before_it_resolves_against_the_cwd(
-        tmp_path, monkeypatch):
-    """`_reject_nonlocal_path` also requires absoluteness, and reusing it WHOLE means
-    `_reparse_rollout` inherits that. Deliberate, not incidental: a relative string from the DB
-    would otherwise resolve against whatever directory the sidecar process happens to sit in.
+def test_a_relative_rollout_path_still_OPENS_it_is_resolved_not_rejected(tmp_path, monkeypatch):
+    """THE UNVERIFIED PREMISE ABOVE WAS SETTLED, AND IT WENT AGAINST THE GUARD.
 
-    It costs nothing in the sidecar's own world — `corpus.open` already forces `index_path`
-    absolute (sidecar.py:760) and `codex_home` absolute (:863), so every path the sidecar
-    indexes for itself is absolute. UNVERIFIED: an index built by `python -m llm_anthology`
-    from a RELATIVE source root stores relative `rollout_path` values (cli.py absolutizes only
-    `--out-index` / `--out-html`), and those conversations would now stub instead of opening.
-    The experiment that settles it: build an index via the CLI from a relative root, open it,
-    and check whether any conversation reports this rejection reason."""
-    asked = _spy_exists(monkeypatch)
-    srv, conn = _server(tmp_path, [("c1", "codex", "sessions/rollout.jsonl")])
+    An earlier version of this test asserted the opposite — that a relative `rollout_path` is
+    REJECTED — on the reasoning that reusing `_reject_nonlocal_path` whole is deliberate and
+    "costs nothing, because every path the sidecar indexes for itself is absolute". It carried
+    its own UNVERIFIED tag naming the settling experiment: build an index from a relative
+    source root and see whether those conversations stub.
+
+    That experiment was run (`.scratch/repro_relpath.py`). They stub. Same conversation,
+    absolute path -> `available=true`; relative path -> `available=false,
+    "rollout rejected: rollout_path must be an absolute local path"`. `cli.py` absolutizes
+    only `--out-index` and `--out-html`, so a CLI-built index genuinely stores relative
+    values. The absoluteness requirement was a REGRESSION, not a hardening.
+
+    The path is now resolved with `abspath` before the guard runs. That is not a weakening:
+    `exists()` already resolved a relative path against the process cwd, so the resolution
+    was always happening — it is just explicit now, and the guard judges the resolved form.
+    The UNC rejection, which is the actual hash-leak property, is untouched and still
+    mutation-proven below.
+    """
+    real = _codex_rollout_file(tmp_path)
+    relative = os.path.relpath(real, tmp_path)
+    monkeypatch.chdir(tmp_path)          # a relative path is only meaningful against a cwd
+    srv, conn = _server(tmp_path, [("c1", "codex", relative)])
     try:
-        conv, reason = srv._reparse_rollout("sessions/rollout.jsonl", "codex")
-        assert asked == [] and conv is None
-        assert "absolute" in reason, reason
+        conv, errors = srv._reparse_rollout(relative, "codex")
+        assert conv is not None, "a relative rollout path must still open, got %r" % (errors,)
+        assert "codex side of the story" in " ".join(
+            b.text for t in conv.turns for b in t.blocks if b.type == "text")
+    finally:
+        conn.close()
+
+
+def test_a_relative_path_that_resolves_to_UNC_is_still_rejected(tmp_path, monkeypatch):
+    """The resolution must not become a bypass. `abspath` keeps every UNC spelling
+    recognisably UNC, so a stored value that resolves onto a network share is still refused
+    before anything touches the filesystem."""
+    asked = _spy_exists(monkeypatch)
+    unc = "//attacker.invalid/share/x.jsonl"      # forward-slash UNC; abspath normalises it
+    srv, conn = _server(tmp_path, [("c1", "codex", unc)])
+    try:
+        conv, reason = srv._reparse_rollout(unc, "codex")
+        assert asked == [], "the filesystem was touched before the guard ran"
+        assert conv is None and "UNC" in reason, reason
     finally:
         conn.close()
 
@@ -489,18 +515,21 @@ def test_every_provider_the_engine_ingests_is_either_readable_or_explicitly_not(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive-relative is a Windows-only path shape")
-def test_a_drive_relative_path_is_rejected_on_windows(tmp_path, monkeypatch):
-    """The shape that broke the two fixtures above, pinned as behaviour in its own right.
+def test_a_drive_relative_path_resolves_against_the_current_drive_on_windows(
+        tmp_path, monkeypatch):
+    """"/x" on Windows is DRIVE-relative: Python 3.13 stopped calling it absolute, so it is
+    the shape that made two fixtures report a different reason per CI leg.
 
-    "/x" on Windows is DRIVE-relative: it resolves against whatever drive the sidecar process
-    is currently on, so the same stored string names a different file depending on the
-    process's cwd. Python 3.13 stopped calling that absolute; the guard rejects it, which is
-    the right answer for a path arriving from an untrusted index."""
+    It is now RESOLVED rather than rejected, for the same reason as the relative case above —
+    rejecting it was a regression, and `exists()` was resolving it against the current drive
+    anyway. What this pins is that the resolution happens and reaches the filesystem as an
+    absolute path, so the stored string cannot mean two different files in one process."""
     asked = _spy_exists(monkeypatch)
     srv, conn = _server(tmp_path, [("c1", "codex", "/definitely/not/here.jsonl")])
     try:
         conv, reason = srv._reparse_rollout("/definitely/not/here.jsonl", "codex")
-        assert asked == [] and conv is None
-        assert "absolute" in reason, reason
+        assert conv is None and reason == "rollout unavailable", reason
+        assert asked and os.path.isabs(asked[0]), (
+            "the guard should have handed the filesystem an ABSOLUTE path, got %r" % (asked,))
     finally:
         conn.close()

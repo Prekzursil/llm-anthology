@@ -1189,14 +1189,28 @@ class Sidecar:
         module, funcname, exists = entry
         if not path:
             return None, "rollout unavailable"
+        # RESOLVED first, then guarded. The guard rejects UNC *and* non-absolute paths, and
+        # applying it whole to this column imported an absoluteness requirement the column
+        # never satisfied: `cli.py` absolutizes only `--out-index` and `--out-html`, so an
+        # index the CLI built from a relative source root stores RELATIVE rollout paths.
+        # An earlier version of this code rejected those outright. That was a regression,
+        # measured end to end before being fixed: the same conversation went
+        # `available=true, turns=1` -> `available=false, "rollout rejected"`.
+        #
+        # Resolving changes nothing semantically — `exists()` already resolved a relative
+        # path against the process cwd — it only makes that resolution explicit and gives the
+        # guard an absolute string to judge. The security property survives: `abspath` keeps
+        # every UNC spelling recognisably UNC (`\\host\share`, `\\host@SSL\DavWWWRoot`,
+        # `//host/share`, `\\?\C:`), verified rather than assumed.
+        resolved = os.path.abspath(path)
         try:
-            _reject_nonlocal_path(path, "rollout_path")
+            _reject_nonlocal_path(resolved, "rollout_path")
         except RpcError as e:
             return None, "rollout rejected: %s" % e.message
-        if not exists(path):
+        if not exists(resolved):
             return None, "rollout unavailable"
         try:
-            doc, errors = getattr(module, funcname)(path)
+            doc, errors = getattr(module, funcname)(resolved)
         except OSError as e:
             return None, "rollout unreadable: %s" % e
         return doc.conversation, errors
