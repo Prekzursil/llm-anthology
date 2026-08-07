@@ -79,11 +79,34 @@ Also run `cd cockpit && npx tsc --noEmit` and `npm run build` — the build scri
 **Do not pass `-q` to pytest.** `pyproject.toml` addopts already contains it; a second one
 makes it `-qq`, which suppresses the pass/fail summary line and looks like a broken suite.
 
-**The TypeScript 100% is a TARGET, not an enforced gate.** `cockpit/vitest.config.ts` runs
-`environment: "node"` with no DOM, which makes `reader.ts`, `app.ts` and `virtualList.ts`
-structurally untestable rather than merely untested. Switching to jsdom/happy-dom is what
-unblocks it; until then any TS coverage number excludes those modules and flatters the
-codebase.
+**The TypeScript 100% is a TARGET, not an enforced gate.** Measured 2026-08-07:
+**75.85% statements** (1156/1524), 74.80% lines — over the 17 modules some test loads.
+
+That number flatters the codebase, but not for the reason an earlier version of this file
+gave. Six runtime modules are imported by **zero** test files and are excluded from the
+denominator outright: `app.ts`, `main.ts`, `ui/reader.ts`, `ui/search.ts`, `graph/canvas.ts`,
+`graph/elkLayout.ts`. (`ipc/types.ts` is absent too but has 0 runtime statements — correct,
+not a gap.)
+
+The earlier claim that `environment: "node"` makes those modules *structurally* untestable
+was wrong, in three measured ways:
+
+- `virtualList.ts` is loaded and covered at 4.41% — partially tested, not excluded.
+- `ipc/real.ts` sits at 3.03% with **zero** DOM references. It is blocked on mocking
+  `@tauri-apps/api`, and is testable under node today.
+- `elkLayout.ts` needs a browser `Worker`; `canvas.ts` needs a 2D `CanvasRenderingContext2D`.
+  **jsdom implements neither**, so the environment switch does not unblock those two at all.
+
+Flipping to jsdom on its own was measured to change coverage by exactly zero. A DOM is
+necessary for `app`/`reader`/`search`/`scrubber`/`virtualList` and sufficient for none of
+them — the missing thing is tests, so jsdom is worth adding *together with* tests that need
+it, not before. `canvas.ts` and the elk worker path stay browser-only and are covered by the
+headless probes in `cockpit/tools/` instead.
+
+**Reporting gotcha:** the vitest terminal table hides files that are at 100% on every metric,
+so it prints 10 of the 17 measured modules and looks as though seven tested files went
+missing. Use `--coverage.reporter=json-summary` and read `coverage-summary.json` for the real
+per-file list.
 
 ## Coverage
 

@@ -45,6 +45,9 @@ js/test/fixtures/adapter-parity.json
 # Staged engine interpreter (a ~35MB build artifact produced by cockpit/scripts/stage-engine.ps1)
 cockpit/src-tauri/resources/
 
+# Coverage output from `npx vitest run --coverage` (v8 provider writes here by default)
+cockpit/coverage/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
