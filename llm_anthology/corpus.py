@@ -180,7 +180,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
     title,
     body,
     content='',
-    detail=none
+    detail=none%(delete_opt)s
 );
 
 -- One row per Codex rollout thread (the spawn-graph nodes). updated_at_ms is
@@ -227,11 +227,26 @@ CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at_ms);
 """
 
 
+# `contentless_delete=1` lets a contentless FTS5 table retract a rowid's postings, which is
+# what makes re-indexing a GROWN session possible without leaving its old text matchable.
+# It landed in SQLite 3.43 and is measured working alongside `detail=none` here. On an older
+# build the option is simply omitted and `add_conversation` falls back to re-inserting under
+# a fresh rowid — correct, but the stale posting is orphaned rather than reclaimed.
+_CONTENTLESS_DELETE = sqlite3.sqlite_version_info >= (3, 43)
+
+
 def init_index(conn):
     """Apply the schema (and WAL) to an existing connection; return it. Idempotent —
-    every statement is IF NOT EXISTS, so re-running against a live index is a no-op."""
+    every statement is IF NOT EXISTS, so re-running against a live index is a no-op.
+
+    An index created before `contentless_delete` was added keeps its original FTS table:
+    the option cannot be set on an existing virtual table, and `IF NOT EXISTS` deliberately
+    leaves it alone rather than silently dropping a user's index to rebuild it."""
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(INDEX_SCHEMA)
+    conn.executescript(INDEX_SCHEMA % {
+        "delete_opt": (",\n    contentless_delete=1"\
+                       if _CONTENTLESS_DELETE else ""),
+    })
     return conn
 
 
@@ -267,25 +282,111 @@ def upsert_edge(conn, edge):
                  tuple(getattr(edge, c) for c in _EDGE_COLS))
 
 
+def _fts_can_delete(conn):
+    """Was `conversations_fts` created with `contentless_delete=1`?
+
+    A contentless FTS5 table rejects DELETE outright unless that option is set (SQLite
+    >= 3.43). It is read off the stored DDL rather than probed by attempting a delete, so a
+    failed statement never has to be swallowed mid-transaction. Indexes created BEFORE this
+    option was added will answer False forever — the option cannot be set on an existing
+    table — which is exactly why `add_conversation` keeps a second path.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='conversations_fts'"
+    ).fetchone()
+    return bool(row) and "contentless_delete" in (row[0] or "")
+
+
 def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
     """Index one ir.Conversation and return its rowid.
 
-    Idempotent by conversation_id: an already-present conversation is left untouched
-    and its existing rowid is returned, so a resumed ingest adds no duplicate row and
-    no duplicate FTS posting. `body` defaults to the title plus every block's text;
-    pass an explicit body to index a sanitized or truncated form instead.
+    Idempotent by conversation_id, and RE-INDEXES a conversation whose content changed.
+
+    THE BUG THIS FIXES. This used to early-return the existing rowid and touch nothing, so a
+    session that GREW after it was first indexed — a live session, which is the designed flow
+    — never became searchable. The new turns reached no index, `turn_count` and `char_count`
+    stayed frozen, the ingest reported zero errors, and the checkpoint still advanced, so
+    re-running the build did not repair it. With `corpus.create` refusing to clobber and no
+    reindex RPC, the only repair a user had was deleting the .sqlite by hand. The same
+    early-return stranded `rollout_path` when Codex moved a finished session into
+    `archived_sessions/`, so the reader reported "rollout unavailable" for a file that exists.
+
+    RETRACTING THE OLD TERMS is the hard half. The FTS table is contentless, so its postings
+    cannot be deleted unless it was created with `contentless_delete=1`. Two paths, and both
+    must leave no stale text matchable:
+
+      * a CURRENT index deletes the old posting and updates the row in place, keeping its
+        rowid stable;
+      * a LEGACY index (created before this option) cannot delete, so the row is re-inserted
+        under a fresh rowid and the stale posting is left orphaned. That is invisible to
+        search because every query INNER JOINs `conversations` on rowid — including the
+        `total` count, which shares the same FROM clause — but the index does grow, and only
+        a rebuild reclaims it.
+
+    An UNCHANGED conversation is still a genuine no-op: same rowid returned, no write, no
+    index churn on a resumed ingest.
+
+    `body` defaults to the title plus every block's text; pass an explicit body to index a
+    sanitized or truncated form instead.
     """
-    existing = conn.execute(
-        "SELECT rowid FROM conversations WHERE conversation_id=?", (conv.id,)).fetchone()
-    if existing is not None:
-        return existing[0]
     if body is None:
         body = _conversation_body(conv)
+    values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
+              conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path)
+    existing = conn.execute(
+        "SELECT rowid, %s FROM conversations WHERE conversation_id=?" % ",".join(_CONV_COLS),
+        (conv.id,)).fetchone()
+
+    if existing is not None:
+        # Positional, not by name: `row_factory` is not guaranteed to be `sqlite3.Row` here
+        # (several callers hand in a bare connection), and `existing["rowid"]` would raise
+        # on a plain tuple. The SELECT above pins the order as rowid followed by _CONV_COLS.
+        rowid, stored = existing[0], tuple(existing[1:])
+        if _fts_can_delete(conn):
+            # Re-index unconditionally. No fingerprint is consulted, because the only one
+            # available is the stored column tuple and `char_count` is the sole signal in it
+            # that tracks the body — so an edit of the SAME LENGTH reads as unchanged. That
+            # is not hypothetical: the first version of this compared the tuple, and a test
+            # swapping "alpha" for "bravo" (both five characters) silently skipped the
+            # re-index. Rewriting a row that did not change is cheap; missing one that did
+            # is the bug this whole function exists to fix.
+            conn.execute("DELETE FROM conversations_fts WHERE rowid=?", (rowid,))
+            conn.execute(
+                "UPDATE conversations SET %s WHERE rowid=?"
+                % ",".join("%s=?" % c for c in _CONV_COLS), values + (rowid,))
+            conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
+                         (rowid, conv.title, body))
+            return rowid
+
+        # LEGACY index: the old posting cannot be retracted at all, so the row has to move to
+        # a rowid the stale posting is not attached to. Here the fingerprint IS consulted,
+        # because every move orphans another posting and an unconditional re-index would
+        # grow the index on every rebuild.
+        #
+        # RESIDUAL, stated rather than hidden: on a legacy index a body edit of exactly the
+        # same length, with the same turn count and title, is indistinguishable from no
+        # change and will be skipped. Append-only rollout logs do not produce that shape --
+        # a session that grew is longer -- so it is not reachable by the real ingest path.
+        # Settling experiment: add a `body_hash` column and compare on it, which needs a
+        # schema migration that only helps indexes that must be rebuilt for other reasons.
+        if stored == values:
+            return rowid
+        # `MAX(rowid) + 1` is strictly greater than every LIVE row, so the new rowid was
+        # never used by a row that is still present. A plain DELETE-then-INSERT would not
+        # do: SQLite reuses the freed rowid when it was the highest, which re-attaches the
+        # stale posting to the new row and turns a missing hit into a FALSE one.
+        moved = conn.execute("SELECT MAX(rowid) + 1 FROM conversations").fetchone()[0]
+        conn.execute("UPDATE conversations SET rowid=? WHERE rowid=?", (moved, rowid))
+        conn.execute(
+            "UPDATE conversations SET %s WHERE rowid=?"
+            % ",".join("%s=?" % c for c in _CONV_COLS), values + (moved,))
+        conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
+                     (moved, conv.title, body))
+        return moved
+
     cur = conn.execute(
         "INSERT INTO conversations(%s) VALUES (%s)"
-        % (",".join(_CONV_COLS), _placeholders(_CONV_COLS)),
-        (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
-         conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path))
+        % (",".join(_CONV_COLS), _placeholders(_CONV_COLS)), values)
     conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
                  (cur.lastrowid, conv.title, body))
     return cur.lastrowid
