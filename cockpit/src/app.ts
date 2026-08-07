@@ -12,7 +12,13 @@
 import { ipc } from "./ipc";
 import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
 import { isMoreId, moreParentId } from "./graph/capFanOut";
-import { buildView, loadAllRoots, loadForest, rootsStatus } from "./graph/forest";
+import {
+  buildView,
+  graphEmptyLabel,
+  loadAllRoots,
+  loadForest,
+  rootsStatus,
+} from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
 import { diffToOverlay } from "./graph/diffOverlay";
 import { ElkLayoutEngine, LayoutTimeoutError } from "./graph/elkLayout";
@@ -30,19 +36,16 @@ import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { ReaderOverlay } from "./ui/reader";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
-import { emptyStateLabel, VirtualList } from "./ui/virtualList";
+import { VirtualList } from "./ui/virtualList";
 
 const ROOT_ROW_HEIGHT = 52;
 
-/**
- * What the graph pane says when it has nothing to draw. Applied through the SAME
- * `data-empty` mechanism the virtualized lists use (see `ui/virtualList`), so the rule
- * stays the already-tested `emptyStateLabel` rather than a second, parallel one. Without
- * it the pane is a bare black rectangle, indistinguishable from a broken renderer —
- * which is exactly how it read on a corpus-less boot.
+/*
+ * The graph pane's empty-state text and the rule choosing between its two forms now live
+ * in `graph/forest.ts` as `graphEmptyLabel`, next to the `complete` flag they depend on
+ * and where vitest can reach them. It is still applied through the SAME `data-empty`
+ * mechanism the virtualized lists use, so there is one rendering path, not two.
  */
-const GRAPH_EMPTY_LABEL =
-  "No spawn tree yet. Use “Open corpus…” in the top bar to attach a corpus index.";
 
 /** A cleared canvas, for the transition out of a graph that no longer has any nodes. */
 const EMPTY_GRAPH: PositionedGraph = { nodes: [], edges: [], width: 0, height: 0 };
@@ -109,7 +112,9 @@ export class CockpitApp {
    * The base (expanded) graph currently displayed, remembered so the aggregated
    * toggle and the diff overlay can re-derive from it without a refetch.
    */
-  private currentInput: LayoutInput | null = null;
+  private currentInput: (LayoutInput & { complete?: boolean }) | null = null;
+  /** Whether {@link currentInput} is the WHOLE graph; drives which empty state shows. */
+  private currentComplete = true;
   private currentSelect: string | null = null;
   private readonly reader: ReaderOverlay;
   /** Fold linear chains into super-nodes when true (the aggregated↔expanded toggle). */
@@ -341,9 +346,15 @@ export class CockpitApp {
    * point (forest, focus, time-travel) funnels through here so the toggle can
    * re-derive the view from the same base without a refetch.
    */
-  private async present(input: LayoutInput, selectId: string | null): Promise<void> {
+  private async present(
+    input: LayoutInput & { complete?: boolean },
+    selectId: string | null,
+  ): Promise<void> {
     this.currentInput = input;
     this.currentSelect = selectId;
+    // A SUBTREE render (focusThread) is always complete for what it claims to show, so
+    // an input with no flag defaults to complete. Only loadForest can decline to draw.
+    this.currentComplete = input.complete ?? true;
     // Fold (the aggregated toggle) then bound the widest layer. Both decisions live in
     // `graph/forest.ts`; see `graph/capFanOut.ts` for why the bound is not optional.
     const { view, hiddenCount, moreCounts } = buildView(input, this.aggregated);
@@ -389,7 +400,7 @@ export class CockpitApp {
    * there is one empty-state mechanism in this app rather than two.
    */
   private applyGraphEmptyState(nodeCount: number): void {
-    const label = emptyStateLabel(nodeCount, GRAPH_EMPTY_LABEL);
+    const label = graphEmptyLabel(nodeCount, this.currentComplete);
     if (label === null) this.graphPaneEl.removeAttribute("data-empty");
     else this.graphPaneEl.setAttribute("data-empty", label);
   }

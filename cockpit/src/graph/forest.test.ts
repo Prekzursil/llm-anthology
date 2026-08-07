@@ -14,6 +14,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildView,
   loadAllRoots,
+  FOREST_EMPTY_LABEL,
+  FOREST_INCOMPLETE_LABEL,
+  graphEmptyLabel,
   loadForest,
   MAX_FOREST_ROOTS,
   MAX_ROOTS,
@@ -521,5 +524,29 @@ describe("buildView", () => {
     const { view } = buildView(input, false);
     expect(view.nodes.map((n) => n.id).sort()).toEqual(input.nodes.map((n) => n.id).sort());
     expect(view.edges).toEqual([...input.edges].sort((a, b) => (a.child < b.child ? -1 : 1)));
+  });
+});
+
+describe("graphEmptyLabel", () => {
+  it("says nothing when there is a graph to draw", () => {
+    expect(graphEmptyLabel(1, true)).toBeNull();
+    // Even a truncated walk that still produced nodes gets no empty state — the pane is
+    // not empty, so an empty-state label would be a lie about what is on screen.
+    expect(graphEmptyLabel(1, false)).toBeNull();
+  });
+
+  it("tells an empty corpus how to attach one", () => {
+    expect(graphEmptyLabel(0, true)).toBe(FOREST_EMPTY_LABEL);
+    expect(graphEmptyLabel(0, true)).toContain("Open corpus");
+  });
+
+  it("distinguishes DECLINED TO DRAW from nothing to draw", () => {
+    // Both are a blank pane with zero nodes. Without this split the user is told to
+    // attach a corpus they have already attached, which is the wrong instruction and
+    // reads as the app failing to see their data.
+    const declined = graphEmptyLabel(0, false);
+    expect(declined).toBe(FOREST_INCOMPLETE_LABEL);
+    expect(declined).not.toBe(FOREST_EMPTY_LABEL);
+    expect(declined).not.toContain("Open corpus");
   });
 });

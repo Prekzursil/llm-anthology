@@ -258,6 +258,40 @@ export async function loadForest(api: ForestIpc, nowMs: number): Promise<Forest>
   return { nodes: [...nodeMap.values()], edges: [...edgeMap.values()], complete: true };
 }
 
+/**
+ * What the graph pane says when it has nothing to draw and there is nothing to attach.
+ * Without a label the pane is a bare black rectangle, indistinguishable from a broken
+ * renderer — which is exactly how it read on a corpus-less boot.
+ */
+export const FOREST_EMPTY_LABEL =
+  "No spawn tree yet. Use “Open corpus…” in the top bar to attach a corpus index.";
+
+/**
+ * What it says when it DECLINED to draw — {@link loadForest} hit {@link MAX_FOREST_ROOTS}
+ * or the walk failed, and returned an empty forest rather than a partial one.
+ *
+ * A separate string because the two states are pixel-identical (zero nodes, blank pane)
+ * and the advice is opposite. Telling someone to attach a corpus they have already
+ * attached reads as the app failing to see their data, and sends them to re-open a file
+ * that was never the problem.
+ */
+export const FOREST_INCOMPLETE_LABEL =
+  "This corpus has more root threads than the graph can draw in one pass. Nothing was " +
+  "drawn rather than showing part of the forest as if it were all of it — open a single " +
+  "thread from the sidebar to see its subtree.";
+
+/**
+ * Which empty-state label the graph pane should carry, or null when there IS a graph.
+ *
+ * Pure, and here rather than in `CockpitApp`, for the reason given at the top of this
+ * file: vitest runs `environment: "node"`, so a decision embedded in a DOM method cannot
+ * be tested at all.
+ */
+export function graphEmptyLabel(nodeCount: number, complete: boolean): string | null {
+  if (nodeCount > 0) return null;
+  return complete ? FOREST_EMPTY_LABEL : FOREST_INCOMPLETE_LABEL;
+}
+
 /** What {@link buildView} decided to draw, and what it left out. */
 export interface ForestView {
   /** The graph handed to ELK. */
