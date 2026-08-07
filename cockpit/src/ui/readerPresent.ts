@@ -142,6 +142,17 @@ export function stubExplanation(stub: ConversationStub): string {
       + "index recorded it. It may have been moved, deleted, or written to a drive that "
       + "is not mounted.";
   }
+  const rejected = /^rollout rejected: (.+)$/s.exec(reason);
+  if (rejected !== null) {
+    // A DIFFERENT situation from "unavailable": the path is recorded and the file may well
+    // exist, but the engine refused to touch it. Saying "moved or deleted" here would send
+    // the user hunting for a file that is sitting right where they left it. The engine's own
+    // wording is appended rather than paraphrased — it names which rule was broken, and a
+    // future rule added engine-side must not silently render as this one.
+    return "This conversation was indexed from a location the engine refused to read, so "
+      + "its transcript was not loaded. This protects you: opening a network path can leak "
+      + `your Windows credentials to whoever controls it. Reason given: ${rejected[1]}`;
+  }
   if (reason === "") return "This conversation has no readable transcript.";
   return `This conversation has no readable transcript: ${reason}`;
 }

@@ -152,6 +152,19 @@ describe("stubExplanation", () => {
     expect(text.toLowerCase()).toContain("export");
   });
 
+  it("explains a REJECTED rollout path as a safety refusal, not a missing file", () => {
+    // The engine grew a second rollout failure mode: a path that IS recorded but is refused
+    // before it is touched (a UNC target coerces an outbound SMB/NTLM auth). It is a
+    // DIFFERENT situation from "unavailable" — the file may well exist — and telling a user
+    // it was "moved or deleted" would send them looking for the wrong thing.
+    const text = stubExplanation(
+      stub("rollout rejected: rollout_path must be a local path, not a UNC/network path"));
+    expect(text.toLowerCase()).toContain("refused");
+    expect(text.toLowerCase()).not.toContain("deleted");
+    // the engine's own precise words still reach the user
+    expect(text).toContain("must be a local path, not a UNC/network path");
+  });
+
   it("never returns an empty explanation, even with no reason given", () => {
     expect(stubExplanation(stub("")).trim()).not.toBe("");
   });
