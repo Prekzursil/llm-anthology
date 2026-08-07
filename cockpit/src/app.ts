@@ -10,8 +10,9 @@
  */
 
 import { ipc } from "./ipc";
-import type { SearchHit, SpawnEdge, ThreadMeta, ThreadNode } from "./ipc";
-import { collapseLinearChains } from "./graph/aggregate";
+import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
+import { isMoreId, moreParentId } from "./graph/capFanOut";
+import { buildView, loadForest } from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
 import { diffToOverlay } from "./graph/diffOverlay";
 import { ElkLayoutEngine, LayoutTimeoutError } from "./graph/elkLayout";
@@ -31,7 +32,6 @@ import { TimeScrubber } from "./ui/scrubber";
 import { emptyStateLabel, VirtualList } from "./ui/virtualList";
 
 const ROOT_ROW_HEIGHT = 52;
-const EDGE_KEY_SEP = "\u0000";
 
 /**
  * What the graph pane says when it has nothing to draw. Applied through the SAME
@@ -90,6 +90,10 @@ export class CockpitApp {
   private currentSelect: string | null = null;
   /** Fold linear chains into super-nodes when true (the aggregated↔expanded toggle). */
   private aggregated = false;
+  /** How many nodes the last render hid behind "+N more", for the status line. */
+  private hiddenByCap = 0;
+  /** Per-placeholder hidden counts from the last render, keyed by `more:<parent>`. */
+  private moreCounts = new Map<string, number>();
   /** Tint what changed since the scrub point over the full forest when true. */
   private diffMode = false;
   /** The last scrub position (epoch ms), or null before any scrub. */
@@ -263,28 +267,13 @@ export class CockpitApp {
     }
   }
 
-  /** Merge every root subtree into the full forest and render it. */
+  /**
+   * Render the whole spawn forest. The fetch decision — one snapshot round-trip, or the
+   * legacy per-root walk when the engine has no `graph.at` — lives in `graph/forest.ts`
+   * so it can be tested without a DOM.
+   */
   private async showForest(): Promise<void> {
-    let nodeMap = new Map<string, ThreadNode>();
-    let edgeMap = new Map<string, SpawnEdge>();
-    try {
-      const roots = await ipc.graphRoots({ limit: 1000 });
-      for (const root of roots) {
-        const sub = await ipc.graphSubtree(root.id);
-        for (const n of sub.nodes) nodeMap.set(n.id, n);
-        for (const e of sub.edges) edgeMap.set(`${e.parent}${EDGE_KEY_SEP}${e.child}`, e);
-      }
-    } catch {
-      // Same reason as loadRoots. Discard any partial harvest rather than drawing a
-      // forest that is silently missing subtrees — a half-graph is a worse lie than an
-      // empty one in a tool whose whole subject is the graph.
-      nodeMap = new Map();
-      edgeMap = new Map();
-    }
-    await this.present(
-      { nodes: [...nodeMap.values()], edges: [...edgeMap.values()] },
-      null,
-    );
+    await this.present(await loadForest(ipc, Date.now()), null);
   }
 
   /** Focus one thread: render just its subtree and select its root. */
@@ -302,7 +291,11 @@ export class CockpitApp {
   private async present(input: LayoutInput, selectId: string | null): Promise<void> {
     this.currentInput = input;
     this.currentSelect = selectId;
-    const view = this.aggregated ? aggregateInput(input) : input;
+    // Fold (the aggregated toggle) then bound the widest layer. Both decisions live in
+    // `graph/forest.ts`; see `graph/capFanOut.ts` for why the bound is not optional.
+    const { view, hiddenCount, moreCounts } = buildView(input, this.aggregated);
+    this.hiddenByCap = hiddenCount;
+    this.moreCounts = moreCounts;
     await this.renderGraph(view, selectId);
   }
 
@@ -324,7 +317,11 @@ export class CockpitApp {
       this.applyGraphEmptyState(positioned.nodes.length);
       if (selectId !== null) this.canvas.select(selectId);
       const crossCount = positioned.edges.filter((e) => e.cross).length;
-      this.graphStatusEl.textContent = `${positioned.nodes.length} nodes · ${positioned.edges.length} edges · ${crossCount} cross-provider`;
+      // Say how many nodes are behind a "+N more". The graph becomes navigable by ceasing to
+      // be complete, and a user who is not told that will read a capped view as their whole
+      // corpus — on the measured store that would be ~102 nodes standing for 12,791.
+      const hidden = this.hiddenByCap > 0 ? ` · ${this.hiddenByCap} hidden behind “+N more”` : "";
+      this.graphStatusEl.textContent = `${positioned.nodes.length} nodes · ${positioned.edges.length} edges · ${crossCount} cross-provider${hidden}`;
     } catch (err) {
       const msg =
       err instanceof LayoutTimeoutError ? err.message : engineErrorText(err, "layout failed");
@@ -347,6 +344,13 @@ export class CockpitApp {
   private async onNodeSelected(id: string | null): Promise<void> {
     if (id === null) {
       this.detailEl.replaceChildren();
+      return;
+    }
+    if (isMoreId(id)) {
+      // A "+N more" placeholder is synthetic — `thread.get` would 404 on it and the catch
+      // below would then describe it as a dangling edge target, which is a different and
+      // wrong thing to tell the user.
+      this.renderMoreDetail(id);
       return;
     }
     try {
@@ -529,6 +533,41 @@ export class CockpitApp {
     this.paintDetail(meta.title || meta.id, rows, meta.preview);
   }
 
+  /**
+   * Detail for a "+N more" placeholder.
+   *
+   * It deliberately does NOT offer to expand in place. Showing N children of one parent
+   * costs the same whether you reached N by collapsing down or expanding up, so the
+   * measured collapse table is also the expansion curve: past ~200 siblings the layout
+   * exceeds its own guard, and the 4,844-child hub in the real corpus can never be fully
+   * expanded in a graph at all — not with a longer timeout, not with paging that
+   * accumulates. Those children belong in a list, which is what the pane beside the canvas
+   * is for; until that list can be driven from here, saying so plainly beats an "expand"
+   * button that would hang the UI.
+   */
+  private renderMoreDetail(id: string): void {
+    const parent = moreParentId(id);
+    const parentNode = this.currentInput?.nodes.find((n) => n.id === parent);
+    const hidden = this.moreCounts.get(id);
+    this.paintDetail(
+      hidden === undefined ? "hidden children" : `${hidden} hidden children`,
+      [
+        ["parent", parentNode?.title || parent],
+        [
+          "why",
+          "the graph draws a bounded number of children per node — layout cost is driven by "
+          + "the widest single layer, not by how big the graph is",
+        ],
+        [
+          "to see them",
+          "open the parent in the thread list; a list holds thousands of siblings, a "
+          + "laid-out graph cannot",
+        ],
+      ],
+      null,
+    );
+  }
+
   private renderDanglingDetail(id: string): void {
     this.paintDetail(
       id,
@@ -591,21 +630,3 @@ export class CockpitApp {
   }
 }
 
-/**
- * Fold a base graph's linear chains into super-nodes and re-shape the result as a
- * {@link LayoutInput} the canvas can lay out. Each super-node renders with its fold
- * label and synthetic id; its representative supplies the provider tint and creation
- * time, and the re-pointed, status-free aggregate edges carry the structure.
- */
-function aggregateInput(input: LayoutInput): LayoutInput {
-  const agg = collapseLinearChains(input.nodes, input.edges);
-  return {
-    nodes: agg.nodes.map((n) => ({
-      ...n.representative,
-      id: n.id,
-      title: n.label,
-      tokens: n.tokens,
-    })),
-    edges: agg.edges,
-  };
-}
