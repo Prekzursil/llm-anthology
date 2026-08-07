@@ -101,9 +101,11 @@ fn open_corpus(state: State<'_, EngineState>, index_path: String) -> Result<Valu
 #[tauri::command]
 fn create_corpus(index_path: String) -> Result<Value, String> {
     let mut client = SidecarClient::spawn_without_index()?;
-    let result = client.call("corpus.create", &json!({ "index_path": index_path }));
-    // `client` drops here, reaping the throwaway engine.
-    result
+    // `client` drops when this returns, reaping the throwaway engine. The call is the tail
+    // expression rather than a `let` binding: the binding was not load-bearing for drop order
+    // (`client` drops at end of scope either way) and clippy's `let_and_return` fires on it,
+    // which under the CI job's `-D warnings` is a hard failure.
+    client.call("corpus.create", &json!({ "index_path": index_path }))
 }
 
 /// Find AI session data already on this machine.
@@ -119,9 +121,9 @@ fn create_corpus(index_path: String) -> Result<Value, String> {
 #[tauri::command]
 fn discover_sources() -> Result<Value, String> {
     let mut client = SidecarClient::spawn_without_index()?;
-    let result = client.call("sources.discover", &json!({}));
-    // `client` drops here, reaping the throwaway engine.
-    result
+    // `client` drops when this returns, reaping the throwaway engine. See `create_corpus`
+    // for why this is a tail expression and not a `let` binding.
+    client.call("sources.discover", &json!({}))
 }
 
 #[tauri::command]

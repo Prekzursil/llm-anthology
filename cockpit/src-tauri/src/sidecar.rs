@@ -455,9 +455,21 @@ mod tests {
             out["findings"].is_array(),
             "findings must be an array the UI can iterate: {out}"
         );
+        // `roots_scanned` must be REPORTED, not necessarily non-zero. It counts only roots
+        // whose base directory exists (`discover.py:528`), so on a bare CI runner with no
+        // ~/.codex, ~/.grok, ~/.claude or ~/Downloads it is legitimately 0. The previous
+        // `>= 1` therefore asserted a property of the DEVELOPER'S MACHINE, not of this code,
+        // and was measured deterministically red in a clean Linux container — one
+        // `mkdir ~/Downloads` flipped it green, which is the tell.
+        //
+        // This test's job is the WIRE: that the index-less engine answers `sources.discover`
+        // with the shape the UI iterates. Whether discovery FINDS anything is behaviour of
+        // `discover.py`, which is tested properly on the Python side with an injected `Roots`
+        // pointing at a temp tree — exactly what that dataclass exists for. Asserting it here
+        // conflated the two and bought nothing the Python tests do not already cover.
         assert!(
-            out["stats"]["roots_scanned"].as_u64().unwrap_or(0) >= 1,
-            "at least one candidate root must have been scanned: {out}"
+            out["stats"]["roots_scanned"].is_number(),
+            "the scan must report how many roots it scanned: {out}"
         );
         // Bounded scanning is a hard requirement — an unbounded walk would hang the UI.
         assert!(
