@@ -15,6 +15,7 @@ import {
   buildView,
   loadAllRoots,
   loadForest,
+  MAX_FOREST_ROOTS,
   MAX_ROOTS,
   ROOTS_PAGE_SIZE,
   rootsStatus,
@@ -27,7 +28,8 @@ import type { RootsParams, SpawnEdge, ThreadNode } from "../ipc/types";
 const NOW = 1_770_000_000_000;
 
 function threadNode(id: string, createdMs: number | null = 1): ThreadNode {
-  return { id, title: id, provider: "codex", created_at_ms: createdMs, child_count: 0, depth: 0 };
+  return { id, title: id, provider: "codex", model_provider: "", created_at_ms: createdMs,
+           child_count: 0, depth: 0 };
 }
 
 /**
@@ -143,7 +145,7 @@ describe("loadForest", () => {
         return { nodes: [threadNode(id)], edges: [] };
       },
     });
-    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [] });
+    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [], complete: false });
   });
 
   it("returns an empty forest when even the roots call fails", async () => {
@@ -153,7 +155,7 @@ describe("loadForest", () => {
         throw new Error("not attached");
       },
     });
-    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [] });
+    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [], complete: false });
   });
 
   it("walks EVERY root, not just the first page", async () => {
@@ -182,9 +184,84 @@ describe("loadForest", () => {
         return Array.from({ length: params.limit ?? 100 }, (_, i) => threadNode(`r${offset + i}`));
       },
     });
-    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [] });
+    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [], complete: false });
     // And it gave up BEFORE spending a subtree round-trip per root.
     expect(api.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(0);
+  });
+
+  it("spends a BOUNDED number of subtree round-trips, whatever the corpus size", async () => {
+    // THE DEFECT. This walk costs one `graph.subtree` per root down a transport that is
+    // strictly sequential (`src-tauri/src/lib.rs:39-44` takes a mutex per command), and it
+    // used to read its ceiling from MAX_ROOTS — a constant sized for the SIDEBAR, which
+    // pays one request per 2,000 roots rather than one per root. Measured against this
+    // fixture before the fix: 9,000 serial round-trips for one render, no progress shown.
+    //
+    // `rootsApi` slices by `offset`/`limit` exactly the way `sidecar.py:1012` does
+    // (`nodes[offset:offset + limit]`), so a walk that failed to advance its offset would
+    // spin here rather than quietly passing — an earlier test in this file was vacuous for
+    // precisely that reason.
+    const roots = rootsApi(MAX_FOREST_ROOTS * 3);
+    const api = fakeIpc({ graphAt: undefined, graphRoots: roots.graphRoots });
+    await loadForest(api, NOW);
+    expect(api.calls.filter((c) => c.startsWith("graphSubtree(")).length)
+      .toBeLessThanOrEqual(MAX_FOREST_ROOTS);
+  });
+
+  it("keeps the ceiling clear of the measured corpus, and of one root page", () => {
+    // Scoped deliberately: the boundary test below reads MAX_FOREST_ROOTS on BOTH sides, so
+    // it pins the RELATIONSHIP (n draws, n+1 declines) and moves with the constant — it
+    // cannot notice the value itself drifting. This one pins the value.
+    //
+    // ~1,140 roots is the measured store (see ROOTS_PAGE_SIZE); a ceiling under that blanks
+    // the real corpus, which is a worse regression than the cost it would be buying. At or
+    // under ROOTS_PAGE_SIZE it would also reduce the walk to a single page and quietly
+    // retire the paging.
+    expect(MAX_FOREST_ROOTS).toBeGreaterThan(1140);
+    expect(MAX_FOREST_ROOTS).toBeGreaterThan(ROOTS_PAGE_SIZE);
+    // And it must stay well under the SIDEBAR's ceiling — sharing that one is the defect.
+    expect(MAX_FOREST_ROOTS).toBeLessThan(MAX_ROOTS);
+  });
+
+  it("draws a corpus of exactly the ceiling, and declines at one root more", async () => {
+    // Pins the boundary in both directions, so the cap cannot be off by one at the top.
+    const at = fakeIpc({ graphAt: undefined, graphRoots: rootsApi(MAX_FOREST_ROOTS).graphRoots });
+    const drawn = await loadForest(at, NOW);
+    expect(drawn.complete).toBe(true);
+    expect(at.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(MAX_FOREST_ROOTS);
+
+    const over = fakeIpc({
+      graphAt: undefined,
+      graphRoots: rootsApi(MAX_FOREST_ROOTS + 1).graphRoots,
+    });
+    expect(await loadForest(over, NOW)).toEqual({ nodes: [], edges: [], complete: false });
+    expect(over.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(0);
+  });
+
+  it("declines rather than flooding when an engine ignores `limit`", async () => {
+    // The ceiling must bound THIS loop, not depend on the engine's good manners. An engine
+    // that answers a 3,000-row request with 6,000 rows exhausts the walk in one page and its
+    // beyond-probe then finds nothing, so `loadAllRoots` truthfully reports the walk
+    // complete — and a cap derived from the REQUEST rather than the list in hand would wave
+    // 6,000 serial round-trips straight through. Measured before the fix: 6,000.
+    const api = fakeIpc({
+      graphAt: undefined,
+      async graphRoots(params: RootsParams = {}) {
+        if ((params.offset ?? 0) > 0) return [];
+        return Array.from({ length: MAX_FOREST_ROOTS * 2 }, (_, i) => threadNode(`r${i}`));
+      },
+    });
+    const out = await loadForest(api, NOW);
+    expect(api.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(0);
+    expect(out.complete).toBe(false);
+  });
+
+  it("reports a snapshot as a COMPLETE forest", async () => {
+    expect((await loadForest(fakeIpc(), NOW)).complete).toBe(true);
+  });
+
+  it("distinguishes an EMPTY corpus from a walk that could not finish", async () => {
+    const api = fakeIpc({ graphAt: undefined, graphRoots: async () => [] });
+    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [], complete: true });
   });
 });
 

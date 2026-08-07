@@ -58,6 +58,36 @@ export const ROOTS_PAGE_SIZE = 2000;
 export const MAX_ROOTS = 20_000;
 
 /**
+ * Root ceiling for the FALLBACK forest walk — far tighter than {@link MAX_ROOTS}, because
+ * the two walks buy roots at wildly different prices.
+ *
+ * The sidebar pays one `graph.roots` round-trip per {@link ROOTS_PAGE_SIZE} roots, so
+ * {@link MAX_ROOTS} costs it 11 requests. The forest fallback pays one `graph.subtree`
+ * round-trip PER ROOT on top of that, down a transport that is strictly sequential:
+ * `src-tauri/src/lib.rs:26-30` holds the sidecar behind an `Arc<Mutex<_>>`, every command
+ * takes that lock (`lib.rs:39-44`), and `src-tauri/src/sidecar.rs:70-71` correlates replies
+ * by id precisely because only one request is ever in flight. Sharing {@link MAX_ROOTS} with
+ * the sidebar therefore priced one render at 20,000 SERIAL requests, with nothing on screen
+ * between the first and the last.
+ *
+ * It is also why a concurrency pool is not the fix: parallel promises queue on that same
+ * mutex, so wall-clock is unchanged and only the pending count grows. Batching is not
+ * available either — `graph.subtree` takes ONE `thread_id` (`ipc/types.ts`), and the batch
+ * call it would need already exists as `graph.at`, whose absence is the only reason this
+ * path runs at all.
+ *
+ * 3,000 is set against the measured corpus rather than a latency budget: ~1,140 roots (see
+ * {@link ROOTS_PAGE_SIZE}) leaves 2.6x headroom, so every corpus this product has actually
+ * seen still draws. It sits ABOVE {@link ROOTS_PAGE_SIZE} deliberately, so the walk can
+ * still page instead of being quietly reduced to a single page.
+ *
+ * This bounds the worst case; it does not make the fallback fast. 3,000 serial round-trips
+ * is still a bad render — the fast path is `graph.at`, and this ceiling is the price of an
+ * engine that has not got one.
+ */
+export const MAX_FOREST_ROOTS = 3_000;
+
+/**
  * Newest first. `created` is ASCENDING in the engine (`sidecar.py` `_graph_roots`), so a
  * capped `created` walk returns the OLDEST page and hides everything since.
  */
@@ -149,33 +179,54 @@ export function rootsStatus(shown: number, complete: boolean): string {
   return `${grouped(shown)} thread${shown === 1 ? "" : "s"}`;
 }
 
+/** A spawn forest, and whether it is the WHOLE spawn forest. */
+export interface Forest extends LayoutInput {
+  /**
+   * True when `nodes`/`edges` are everything the engine has; false when a ceiling or a
+   * failure stopped the walk.
+   *
+   * When it is false the members are EMPTY rather than partial (see {@link loadForest}), so
+   * the flag is what separates the two graphs that otherwise look identical: `complete: true`
+   * with no nodes is a genuinely empty corpus, `complete: false` with no nodes is "this
+   * machine could not be shown its forest". Nothing else distinguishes them, and a caller
+   * that paints one empty state for both is telling the user the wrong thing half the time.
+   */
+  complete: boolean;
+}
+
 /**
  * Fetch the whole spawn forest.
  *
  * `graph.at(now)` returns it in ONE round-trip. The fallback below walks the roots and then
- * makes one `graph.subtree` call PER ROOT — a thousand-plus serial requests down a pipe that
- * is mutex-guarded to one in flight at a time, for a graph the engine can project in a single
- * query. It remains silently incomplete in one respect: a node in no root's subtree (a
- * dangling spawn target) is never fetched.
+ * makes one `graph.subtree` call PER ROOT — serial requests down a pipe that carries one at
+ * a time, for a graph the engine can project in a single query. It remains silently
+ * incomplete in one respect: a node in no root's subtree (a dangling spawn target) is never
+ * fetched.
  *
  * It is no longer incomplete in the OTHER respect. The walk used to ask for `limit: 1000` and
- * stop, dropping every root past the thousandth; it now pages to the end of the corpus via
- * {@link loadAllRoots}.
+ * stop, dropping every root past the thousandth; it now pages via {@link loadAllRoots}.
+ *
+ * What it no longer does is page WITHOUT LIMIT. Lifting the sidebar's cap to
+ * {@link MAX_ROOTS} silently repriced this loop from 1,000 serial round-trips to 20,000,
+ * because it read its ceiling from a constant sized for a walk that costs one request per
+ * 2,000 roots rather than one per root. The forest keeps its own, much tighter ceiling —
+ * {@link MAX_FOREST_ROOTS} — for that reason.
  *
  * The walk survives only because `graphAt` is OPTIONAL on the IPC surface (`types.ts` declares
  * it `graphAt?`), so an implementation without it must still work.
  *
  * A failure yields an EMPTY forest, never a partial one: in a tool whose whole subject is the
  * graph, a half-graph is a worse lie than a blank pane, because nothing distinguishes it from
- * a complete one. A root list the ceiling truncated is exactly that case — this pane has no
- * status line to qualify it with, so it gets the same treatment.
+ * a complete one. A root list a ceiling truncated is exactly that case, so it gets the same
+ * treatment — and either way the result says so in {@link Forest.complete}, which is the only
+ * thing standing between "we declined to draw this" and "there was nothing to draw".
  */
-export async function loadForest(api: ForestIpc, nowMs: number): Promise<LayoutInput> {
+export async function loadForest(api: ForestIpc, nowMs: number): Promise<Forest> {
   if (api.graphAt !== undefined) {
     try {
       // "now" means every node born by this instant — which is all of them.
       const snap = await api.graphAt(nowMs);
-      return { nodes: snap.nodes, edges: snap.edges };
+      return { nodes: snap.nodes, edges: snap.edges, complete: true };
     } catch {
       // Fall through to the walk rather than blanking a pane we could still fill.
     }
@@ -183,19 +234,28 @@ export async function loadForest(api: ForestIpc, nowMs: number): Promise<LayoutI
   const nodeMap = new Map<string, ThreadNode>();
   const edgeMap = new Map<string, SpawnEdge>();
   try {
-    const { roots, complete } = await loadAllRoots(api);
+    const { roots, complete } = await loadAllRoots(api, ROOTS_PAGE_SIZE, MAX_FOREST_ROOTS);
     // Blank rather than partial, per the contract above: a forest grown from a truncated
     // root list is a partial graph wearing a complete graph's clothes.
-    if (!complete) return { nodes: [], edges: [] };
+    //
+    // The second clause is NOT redundant with the first. `loadAllRoots` bounds the rows it
+    // ASKS FOR, which bounds `roots.length` only for an engine that honours `limit`; one that
+    // answers a 3,000-row request with 6,000 rows walks straight past the ceiling and can
+    // still report the walk complete, since its beyond-probe finds nothing after row 6,000.
+    // Taking the bound from the list actually in hand, rather than from the request we made,
+    // is what makes it a bound on THIS loop instead of a bound on the engine's good manners.
+    if (!complete || roots.length > MAX_FOREST_ROOTS) {
+      return { nodes: [], edges: [], complete: false };
+    }
     for (const root of roots) {
       const sub = await api.graphSubtree(root.id);
       for (const n of sub.nodes) nodeMap.set(n.id, n);
       for (const e of sub.edges) edgeMap.set(`${e.parent}${EDGE_KEY_SEP}${e.child}`, e);
     }
   } catch {
-    return { nodes: [], edges: [] };
+    return { nodes: [], edges: [], complete: false };
   }
-  return { nodes: [...nodeMap.values()], edges: [...edgeMap.values()] };
+  return { nodes: [...nodeMap.values()], edges: [...edgeMap.values()], complete: true };
 }
 
 /** What {@link buildView} decided to draw, and what it left out. */
