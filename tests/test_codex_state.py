@@ -120,7 +120,13 @@ def test_unmapped_live_columns_are_ignored():
     assert set(vars(root)) == {
         "id", "title", "model_provider", "tokens_used", "created_at_ms",
         "updated_at_ms", "git_branch", "cwd", "agent_role", "agent_nickname",
-        "preview", "rollout_path"}
+        "preview", "rollout_path", "adapter"}
+    # `adapter` is a real ThreadMeta field but is NOT sourced from this DB: it is derived
+    # from `conversations.provider` in corpus.load_corpus, and this adapter reads the live
+    # state DB, which has no conversations table. So it must stay at its default here.
+    # Note the live schema's own `source` column ("cli" — how the session was launched)
+    # is a DIFFERENT fact and stays unmapped; that is why the field is not called `source`.
+    assert root.adapter == ""
 
 
 def test_updated_at_ms_stays_none_when_the_column_is_absent():

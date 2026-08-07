@@ -13,7 +13,19 @@
 export interface ThreadNode {
   id: string;
   title: string;
+  /**
+   * The ADAPTER that produced this thread: "codex", "grok", "claude-code", ... — the same
+   * meaning `SearchHit.provider` and `corpus.stats.providers` carry. This is the field the
+   * provider palette keys on.
+   */
   provider: string;
+  /**
+   * The MODEL VENDOR the session ran against ("openai"), which is a DIFFERENT fact and is
+   * often empty. Never pass this to `providerTint`: measured over 250 real Codex rollouts
+   * it is 'openai' 92.8% of the time and absent for the rest, so tinting by it painted
+   * every Codex node the "unknown" grey. It used to be delivered as `provider`.
+   */
+  model_provider: string;
   /** Model slug; omitted by the sidecar's lean node projection. */
   model?: string;
   /** Tokens used; omitted when 0. */
@@ -85,7 +97,10 @@ export interface SearchResult {
 export interface ThreadMeta {
   id: string;
   title: string;
+  /** The ADAPTER — see `ThreadNode.provider`. */
   provider: string;
+  /** The MODEL VENDOR — see `ThreadNode.model_provider`. Not for tinting. */
+  model_provider: string;
   tokens: number | null;
   created_at_ms: number | null;
   updated_at_ms: number | null;

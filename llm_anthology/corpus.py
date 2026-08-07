@@ -62,6 +62,24 @@ class ThreadMeta:
     agent_nickname: str = ""
     preview: str = ""
     rollout_path: str = ""
+    #: The ADAPTER that produced this thread ("codex", "grok", "claude-code", ...) — the
+    #: same fact `conversations.provider` records, and what the wire calls `provider`.
+    #:
+    #: DERIVED at load time from that column, not stored on `threads` — the join already
+    #: carries the fact, so this needs no migration and works on indexes built before it
+    #: existed. It is therefore LAST in the field order and absent from `_THREAD_COLS`,
+    #: which keeps `ThreadMeta(*row)` positional construction valid.
+    #:
+    #: Distinct from `model_provider`, the MODEL VENDOR: measured over 250 real Codex
+    #: rollouts, `session_meta.model_provider` is 'openai' 92.8% of the time and absent
+    #: for the rest — never "codex". Conflating the two made every Codex node render as
+    #: the palette's "unknown" grey.
+    #:
+    #: NOT named `source`: the LIVE Codex state DB already has a `threads.source` column
+    #: meaning how the session was launched ("cli"), which `codex_state._THREAD_FIELD_MAP`
+    #: deliberately leaves unmapped. Reusing that name would invite someone to wire "cli"
+    #: in here, and a test asserts that column stays unmapped.
+    adapter: str = ""
 
 
 @dataclass
@@ -425,11 +443,24 @@ def get_checkpoint(conn, file):
 def load_corpus(conn):
     """Rebuild a Corpus's THREAD GRAPH from the index (threads + edges). Conversations
     are loaded by the existing IR pipeline, so a fresh Corpus's conversations list is
-    left empty for the caller to attach."""
+    left empty for the caller to attach.
+
+    `ThreadMeta.adapter` is filled here from `conversations.provider` rather than read
+    from a column: the adapter identity already exists in the index via the
+    `conversations.thread_id -> threads.id` join, so deriving it needs no migration and
+    works on indexes built before the field existed. Ordered by `conversation_id` so a
+    thread carrying more than one conversation resolves to the same adapter on every
+    load instead of whichever row the query planner happened to return first."""
     threads = {}
     for row in conn.execute("SELECT %s FROM threads" % ",".join(_THREAD_COLS)):
         meta = ThreadMeta(*row)
         threads[meta.id] = meta
+    for tid, provider in conn.execute(
+            "SELECT thread_id, provider FROM conversations "
+            "WHERE thread_id != '' ORDER BY conversation_id"):
+        meta = threads.get(tid)
+        if meta is not None and not meta.adapter:
+            meta.adapter = provider
     edges = [SpawnEdge(*row) for row in
              conn.execute("SELECT %s FROM thread_spawn_edges" % ",".join(_EDGE_COLS))]
     return Corpus(threads=threads, edges=edges)

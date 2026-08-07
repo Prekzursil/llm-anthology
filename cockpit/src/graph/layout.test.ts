@@ -15,7 +15,8 @@ import {
 } from "./layout";
 
 function tn(id: string, provider: string, title = id): ThreadNode {
-  return { id, title, provider, created_at_ms: 1, child_count: 0, depth: 0 };
+  return { id, title, provider, model_provider: "", created_at_ms: 1, child_count: 0,
+           depth: 0 };
 }
 
 const INPUT: LayoutInput = {

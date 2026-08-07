@@ -10,7 +10,8 @@ import {
 
 /** Build a synthetic ThreadNode; `tokens` omitted (undefined) unless given. */
 function tn(id: string, title: string, tokens?: number, provider = "claude"): ThreadNode {
-  const n: ThreadNode = { id, title, provider, created_at_ms: 1, child_count: 0, depth: 0 };
+  const n: ThreadNode = { id, title, provider, model_provider: "", created_at_ms: 1,
+    child_count: 0, depth: 0 };
   if (tokens !== undefined) n.tokens = tokens;
   return n;
 }
@@ -140,6 +141,8 @@ describe("collapseLinearChains", () => {
       id: "root",
       title: "",
       provider: "",
+      // an id known only from an edge has neither adapter nor model vendor
+      model_provider: "",
       created_at_ms: null,
       child_count: 0,
       depth: 0,
@@ -211,6 +214,7 @@ describe("foldSubtree", () => {
           id: "ghost",
           title: "",
           provider: "",
+          model_provider: "",
           created_at_ms: null,
           child_count: 0,
           depth: 0,

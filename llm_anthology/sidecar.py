@@ -108,6 +108,10 @@ Method status (all implemented; honest caveats inline)
                          span is retrievable — and ``score`` is POSITIONAL because
                          FTS5 ``rank`` collapses to a constant under ``detail=none``
                          (measured ``rank = -0.0`` for every row). Both are honest.
+                         Since ``rank`` carries no signal, results are ordered NEWEST
+                         FIRST with ``conversation_id`` breaking ties; that total order
+                         is what makes ``LIMIT``/``OFFSET`` paging partition the result
+                         set. ``score`` therefore ranks recency, not relevance.
 * ``thread.get``       — FULL metadata. ``rollout_path`` is withheld from the wire (a
                          local FS path) and surfaced only as ``has_rollout: bool``.
 * ``conversation.get`` — FULL re-parse for a Codex thread that has a readable rollout
@@ -1621,8 +1625,14 @@ class Sidecar:
         meta = cx.threads.get(tid)
         if meta is None:
             meta = corpus.ThreadMeta(id=tid)
+        # `provider` is the ADAPTER, the same fact `search.query` and `corpus.stats`
+        # report under that name. It used to carry `model_provider` — the MODEL VENDOR —
+        # so one wire name meant two different things depending on the surface, and the
+        # UI's provider palette (keyed on adapter names) matched nothing for real Codex
+        # threads, which record 'openai'. Both facts now travel, each under its own name.
         node = {"id": meta.id, "title": _clean(meta.title),
-                "provider": meta.model_provider, "created_at_ms": meta.created_at_ms,
+                "provider": meta.adapter, "model_provider": meta.model_provider,
+                "created_at_ms": meta.created_at_ms,
                 "child_count": cx.fan_out(tid),
                 "depth": cx.depth(tid)}
         if meta.tokens_used:
@@ -1644,7 +1654,8 @@ class Sidecar:
     def _thread_meta(self, m):
         """The full ThreadMeta projection for thread.get. ``rollout_path`` (a local FS
         path) is withheld and surfaced only as ``has_rollout``."""
-        return {"id": m.id, "title": _clean(m.title), "provider": m.model_provider,
+        return {"id": m.id, "title": _clean(m.title), "provider": m.adapter,
+                "model_provider": m.model_provider,
                 "tokens": m.tokens_used, "created_at_ms": m.created_at_ms,
                 "updated_at_ms": m.updated_at_ms, "git_branch": m.git_branch,
                 "cwd": _clean(m.cwd), "agent_role": m.agent_role,
@@ -1800,9 +1811,23 @@ class Sidecar:
         frm = ("FROM conversations_fts JOIN conversations c "
                "ON c.rowid = conversations_fts.rowid WHERE " + where)
         total = self.conn.execute("SELECT COUNT(*) " + frm, args).fetchone()[0]
+        # NEWEST FIRST, `conversation_id` breaking ties — a TOTAL order, which is what
+        # makes LIMIT/OFFSET paging correct instead of lucky.
+        #
+        # This was `ORDER BY rank`, which sorts by nothing here: the index is contentless
+        # with `detail=none`, so FTS5 has no column or position data to score with and
+        # `rank` collapses to one constant (measured -0.0 for all 49 matches on the
+        # synthetic corpus). A sort key equal for every row leaves the order unspecified,
+        # so pages partitioned the result set only by whatever scan order SQLite happened
+        # to pick. It is stable today; nothing promises it stays so once an index is added,
+        # a provider filter narrows the plan, or SQLite changes — and the failure mode is
+        # silent duplicate and dropped rows across pages, not an error.
+        #
+        # Recency is the honest substitute for relevance given rank carries no signal.
+        # An empty `created_at` sorts LAST under DESC rather than reading as epoch-old.
         rows = self.conn.execute(
             "SELECT c.conversation_id, c.thread_id, c.provider, c.title, c.created_at "
-            + frm + " ORDER BY rank LIMIT ? OFFSET ?",
+            + frm + " ORDER BY c.created_at DESC, c.conversation_id LIMIT ? OFFSET ?",
             args + [limit, offset]).fetchall()
         return total, rows
 

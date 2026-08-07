@@ -66,7 +66,10 @@ function labelOf(node: ThreadNode): string {
 
 /** A bare synthesized node for an id that appears only on an edge. */
 function bareNode(id: string): ThreadNode {
-  return { id, title: "", provider: "", created_at_ms: null, child_count: 0, depth: 0 };
+  // model_provider "" is the honest value for a synthesized node: an id that appears
+  // only on an edge has no threads-table row, so neither adapter nor vendor is known.
+  return { id, title: "", provider: "", model_provider: "", created_at_ms: null,
+           child_count: 0, depth: 0 };
 }
 
 /**

@@ -113,6 +113,7 @@ export function buildNodeIndex(input: LayoutInput): Map<string, ThreadNode> {
           id,
           title: "",
           provider: "",
+          model_provider: "",
           created_at_ms: null,
           child_count: 0,
           depth: 0,

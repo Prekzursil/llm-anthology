@@ -60,6 +60,24 @@ describe("provider palette", () => {
     expect(knownProviders().filter((p) => !engine.has(p))).toEqual([]);
   });
 
+  it("has NO tint for a model VENDOR, which is a different field", () => {
+    // The engine carries two facts that both read like "provider": the ADAPTER
+    // (ThreadNode.provider — "codex") and the MODEL VENDOR (ThreadNode.model_provider —
+    // "openai"). Graph nodes used to deliver the vendor under the name `provider`, and
+    // because no vendor string is a palette key, every Codex node on a real corpus drew
+    // the "unknown" grey. Measured: 'openai' in 92.8% of 250 real rollouts, absent in the
+    // rest, never "codex".
+    //
+    // The tempting wrong fix is to add "openai" here and watch the grey go away. That
+    // would paint by vendor and silently merge Codex and ChatGPT into one category. This
+    // pins the right fix: vendors are NOT palette keys — tint by `provider`.
+    for (const vendor of ["openai", "anthropic", "google", "xai"]) {
+      expect(knownProviders(), `${vendor} is a model vendor, not an adapter`)
+        .not.toContain(vendor);
+      expect(providerTint(vendor)).toBe(UNKNOWN_TINT);
+    }
+  });
+
   it("falls back to the unknown tint for a dangling node", () => {
     // A dangling spawn edge points at an id with no record, so its provider is "".
     expect(providerTint("")).toBe(UNKNOWN_TINT);

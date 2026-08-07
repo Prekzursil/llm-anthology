@@ -66,6 +66,29 @@ interface RawThread {
   turn_count?: number;
 }
 
+/**
+ * The MODEL VENDOR a real store records for a given ADAPTER — the `model_provider` half of
+ * the pair documented on `ThreadNode`. Derived rather than written onto all 15 fixture rows,
+ * but deliberately realistic: a real Codex rollout records 'openai', never 'codex'.
+ *
+ * That realism is the point. It makes the mock reproduce the actual hazard — anything that
+ * tints by `model_provider` collapses codex and chatgpt into one colour here too, rather
+ * than looking correct against a fixture that conveniently stored the adapter name twice.
+ * An unknown adapter (and a dangling node) yields "", the same as the engine.
+ */
+const VENDOR_OF_ADAPTER: Record<string, string> = {
+  codex: "openai",
+  chatgpt: "openai",
+  claude: "anthropic",
+  "claude-code": "anthropic",
+  grok: "xai",
+  gemini: "google",
+};
+
+function vendorOf(adapter: string | undefined): string {
+  return adapter === undefined ? "" : VENDOR_OF_ADAPTER[adapter] ?? "";
+}
+
 const T0 = 1_700_000_000_000; // fixed epoch base (2023-11-14T22:13:20Z)
 const CLAUDE_MODEL = "claude-opus-4-8";
 const CODEX_MODEL = "gpt-5-codex";
@@ -484,6 +507,7 @@ export class MockGraph {
       id: tid,
       title: raw?.title ?? "",
       provider: raw?.provider ?? "",
+      model_provider: vendorOf(raw?.provider),
       created_at_ms: raw?.created_at_ms ?? null,
       child_count: this.fanOut(tid),
       depth: this.depth(tid),
@@ -507,6 +531,7 @@ export class MockGraph {
       id: raw.id,
       title: raw.title,
       provider: raw.provider,
+      model_provider: vendorOf(raw.provider),
       tokens: raw.tokens ?? null,
       created_at_ms: raw.created_at_ms,
       updated_at_ms: raw.updated_at_ms ?? null,
@@ -763,8 +788,13 @@ export function createMockIpc(
         t.id.toLowerCase().includes(q)
       );
     });
-    // Newest first, mirroring an FTS `ORDER BY rank` proxy.
-    matches.sort((a, b) => b.created_at_ms - a.created_at_ms);
+    // Newest first, id breaking ties — the engine's stated contract
+    // (`ORDER BY c.created_at DESC, c.conversation_id`). The tiebreak matters: it is what
+    // makes the order TOTAL, so LIMIT/OFFSET paging partitions the result set instead of
+    // depending on sort stability. The engine used to say `ORDER BY rank`, which sorts by
+    // nothing under a `detail=none` contentless index; this mock was already right.
+    matches.sort((a, b) =>
+      b.created_at_ms - a.created_at_ms || a.id.localeCompare(b.id));
     const page = matches.slice(offset, offset + limit);
     const hits: SearchHit[] = page.map((t, i) => {
       const hit: SearchHit = {

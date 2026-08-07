@@ -26,6 +26,7 @@ function node(id: string, createdMs: number | null = null): ThreadNode {
     id,
     title: id,
     provider: "codex",
+    model_provider: "openai",
     created_at_ms: createdMs,
     child_count: 0,
     depth: 0,

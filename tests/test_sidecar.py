@@ -291,7 +291,11 @@ def test_graph_roots_default_order_and_synthesized_dangling_node():
     assert ids == ["t1", "ghost"]         # default: chronological, None-created last
 
     rich = roots[0]
-    assert rich["id"] == "t1" and rich["provider"] == "openai"
+    # t1 is the shape a real corpus has: the ADAPTER is codex (from its conversation)
+    # while the MODEL VENDOR recorded in the rollout is openai. Both travel, each under
+    # its own name; `provider` is the adapter, matching search.query and corpus.stats.
+    assert rich["id"] == "t1" and rich["provider"] == "codex"
+    assert rich["model_provider"] == "openai"
     assert rich["title"] == "root alpha" and ZW not in rich["title"]   # sanitized
     assert rich["preview"] == "first user line"
     assert rich["agent_nickname"] == "Ada" and rich["cwd"] == "/work/t1"
@@ -496,6 +500,33 @@ def test_graph_diff_bad_index_params_reject(tmp_path):
     with pytest.raises(sidecar.RpcError) as ei2:
         srv.dispatch("graph.diff", {"new_index": 123})            # path is not a string
     assert ei2.value.code == -32602
+
+
+def test_graph_node_provider_is_the_ADAPTER_and_matches_what_search_reports(tmp_path):
+    """`provider` must mean ONE thing across the whole wire: the adapter that produced
+    the conversation ("codex", "grok", ...). `search.query` and `corpus.stats` already
+    report `conversations.provider`, which is exactly that.
+
+    Graph nodes reported `threads.model_provider` under the same name, and that is a
+    different fact — the MODEL VENDOR. Measured over 250 real Codex rollouts,
+    `session_meta.model_provider` is 'openai' 92.8% of the time and absent for the rest;
+    it is never "codex". Since the UI keys its provider palette on adapter names, every
+    Codex node in a real corpus rendered the neutral "unknown" grey — the one colour
+    reserved for "we do not know what this is". The vendor is still worth reporting, so
+    it keeps its own field rather than being dropped.
+    """
+    conn = _track(corpus.open_index(str(tmp_path / "ix.db")))
+    _mk_thread(conn, "t1", model_provider="openai")      # what Codex actually records
+    _mk_conv(conn, "c1", "codex", "T", "body", thread_id="t1")
+    conn.commit()
+    cx = corpus.load_corpus(conn)
+
+    srv = sidecar.Sidecar(conn)
+    srv.corpus = cx
+    node = srv.dispatch("graph.subtree", {"thread_id": "t1"})["nodes"][0]
+
+    assert node["provider"] == "codex", "graph must report the ADAPTER, as search does"
+    assert node["model_provider"] == "openai", "the vendor keeps its own field"
 
 
 @pytest.mark.parametrize("key", ["old_index", "new_index"])
@@ -771,6 +802,45 @@ def test_export_run_missing_dest_and_requires_corpus(tmp_path):
 
 # ------------------------------------------------------------------ search.query
 
+def test_search_results_have_a_DETERMINISTIC_order_not_whatever_sqlite_returns():
+    """`ORDER BY rank` sorts by nothing here, so it cannot be relied on for paging.
+
+    The FTS index is contentless with `detail=none`, under which FTS5 has no per-column or
+    position data to score with and `rank` collapses to a single constant — measured
+    -0.0 for every one of 49 matches on the synthetic corpus. A sort key that is equal for
+    every row imposes NO order, so `LIMIT/OFFSET` paging over it partitions the result set
+    only by whatever scan order SQLite happens to choose. It happens to be stable today;
+    it is not promised to be, and an added index, a provider filter, or a different SQLite
+    build can change it — at which point pages silently duplicate and drop rows.
+
+    So the order is stated explicitly: newest first, `conversation_id` breaking ties. That
+    is a TOTAL order (ids are unique), which is what makes paging correct rather than
+    lucky. A conversation with no `created_at` sorts last rather than being treated as
+    epoch-old.
+    """
+    res = _mem_server().dispatch("search.query", {"q": "rocket"})
+    ids = [h["conversation_id"] for h in res["hits"]]
+    #   c-claude-1 2026-01-02 . c-codex-1 2026-01-01 . c-codex-2 (no date -> last)
+    assert ids == ["c-claude-1", "c-codex-1", "c-codex-2"]
+
+
+def test_search_pages_PARTITION_the_result_set():
+    """Every row appears exactly once across pages — no duplicate, no dropped row."""
+    srv = _mem_server()
+    total = srv.dispatch("search.query", {"q": "rocket"})["total"]
+    assert total == 3
+
+    paged = []
+    for offset in range(0, total):
+        page = srv.dispatch("search.query", {"q": "rocket", "limit": 1, "offset": offset})
+        paged.extend(h["conversation_id"] for h in page["hits"])
+
+    whole = [h["conversation_id"]
+             for h in srv.dispatch("search.query", {"q": "rocket"})["hits"]]
+    assert paged == whole                      # same rows, same order, one page at a time
+    assert len(set(paged)) == total            # and nothing seen twice
+
+
 def test_search_query_hits_total_and_sanitized_snippet():
     res = _mem_server().dispatch("search.query", {"q": "rocket"})
     assert res["total"] == 3
@@ -819,7 +889,8 @@ def test_search_query_requires_corpus():
 
 def test_thread_get_full_meta_sanitized():
     meta = _mem_server().dispatch("thread.get", {"thread_id": "t1"})
-    assert meta["id"] == "t1" and meta["provider"] == "openai"
+    assert meta["id"] == "t1" and meta["provider"] == "codex"   # adapter, not vendor
+    assert meta["model_provider"] == "openai"                    # vendor keeps its field
     assert meta["title"] == "root alpha" and ZW not in meta["title"]
     assert meta["cwd"] == "/work/t1" and meta["agent_nickname"] == "Ada"
     assert meta["preview"] == "first user line"
