@@ -295,6 +295,12 @@ export class CockpitApp {
   private async focusThread(threadId: string): Promise<void> {
     const sub = await ipc.graphSubtree(threadId);
     await this.present({ nodes: sub.nodes, edges: sub.edges }, threadId);
+    // `present` highlights the node through `canvas.select()`, which is documented at
+    // `canvas.ts:104` as NOT firing the selection callback — so arriving here from the
+    // sidebar or a search hit moved the graph while leaving the detail pane showing the
+    // previous thread, or nothing at all. Clicking a thread and being told nothing about it
+    // is not a graph feature.
+    await this.onNodeSelected(threadId);
   }
 
   /**
