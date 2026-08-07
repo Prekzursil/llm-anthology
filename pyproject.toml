@@ -41,9 +41,9 @@ dependencies = ["markdown-it-py>=2.2", "zstandard>=0.22"]
 dev = ["pytest>=7", "pytest-cov>=4"]
 
 [project.urls]
-Homepage = "https://github.com/Prekzursil/LLM_Anthology"
-Source = "https://github.com/Prekzursil/LLM_Anthology"
-Issues = "https://github.com/Prekzursil/LLM_Anthology/issues"
+Homepage = "https://github.com/Prekzursil/ai-sessions-render"
+Source = "https://github.com/Prekzursil/ai-sessions-render"
+Issues = "https://github.com/Prekzursil/ai-sessions-render/issues"
 
 [project.scripts]
 llm-anthology = "llm_anthology.cli:main"

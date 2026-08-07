@@ -9,7 +9,7 @@ It is two things in one binary:
 - an **engine** (Python) that ingests every provider into one shared model, indexes it for full-text search, and renders faithful HTML + Markdown, and
 - a **cockpit** (Tauri desktop app) that shows the whole corpus as a **cross-provider spawn tree** — which agent session spawned which — with time-travel, diffing, and fidelity-gated export.
 
-Everything runs offline. The engine makes zero network requests, the pages it emits are locked down so *they* can't either, and the desktop app runs its engine behind an OS-level sandbox that has no network capability at all.
+Everything runs offline. The engine makes zero network requests, and the pages it emits are locked down so *they* can't either. The desktop app additionally confines its engine to a Job Object so no engine can outlive the app (see [Privacy and security](#privacy-and-security) for exactly what is and is not enforced).
 
 ---
 
@@ -60,11 +60,16 @@ The three capabilities inherited when that app was retired (see [Lineage](#linea
 ## Architecture
 
 ```
- exports / session stores
-   (claude · chatgpt · gemini · codex rollouts + state)
-            │
-            ▼
+ EXPORTS                          SESSION STORES
+ (claude · chatgpt ·              (codex rollouts + state DB · grok)
+  gemini · codex tasks)                   │
+            │                             │
+            ▼                             ▼
       adapters ──▶ provider-agnostic IR ──▶ corpus + SQLite/FTS5 index
+            │            (render only)            │
+            │   the CLI renders an export to HTML/Markdown; only the SESSION
+            │   STORES on the right are ingested into the corpus the cockpit
+            │   reads. Claude Code has an adapter that is not yet wired in.
             │                                    │
             │                    ┌───────────────┼────────────────┐
             ▼                    ▼               ▼                ▼
@@ -90,15 +95,14 @@ The engine is a **stdio** JSON-RPC server — deliberately not a localhost HTTP 
 
 Requires **Python ≥ 3.9**. The only third-party runtime dependency is [markdown-it-py](https://github.com/executablebooks/markdown-it-py) (MIT).
 
-```bash
-pip install llm-anthology
-```
+> **Not on PyPI yet.** The `llm-anthology` name is unregistered, so install from
+> source until a release is published.
 
-That installs the `llm-anthology` command (short alias: `anth`). From a clone:
+Installing gives you the `llm-anthology` command (short alias: `anth`):
 
 ```bash
-git clone https://github.com/Prekzursil/LLM_Anthology
-cd LLM_Anthology
+git clone https://github.com/Prekzursil/ai-sessions-render
+cd ai-sessions-render
 pip install -e ".[dev]"
 python -m pytest
 ```
@@ -164,7 +168,8 @@ out/claude/
 - **The output can't phone home either.** Every rendered page ships `default-src 'none'`, contains no scripts, inlines its CSS, and defangs remote images into labelled links.
 - **Exports are treated as untrusted input.** Raw HTML in message bodies is escaped; every anchor is rewritten against an http/https allowlist that **fails closed**; `javascript:`/`data:`/`file:` URLs are defanged to inert text.
 - **Hidden-unicode neutralisation** (`sanitize.py`). Zero-width and bidi formats, the TAG block, **variation selectors** (the 256-value invisible-text smuggling channel), private-use, unassigned, lone surrogates and invisible Hangul fillers are all flagged — position-aware, so legitimate emoji survive. Badged visibly in HTML (forensic), stripped in Markdown and filenames (safe copy).
-- **OS-level engine sandbox.** The cockpit spawns its engine through one raw `CreateProcessW` that does three things at once: an **AppContainer** with no `internetClient` capability (the engine literally cannot reach the network), a **Job Object** with `KILL_ON_JOB_CLOSE` (no orphaned engine outlives the app), and `CREATE_NO_WINDOW`.
+- **OS-level engine confinement.** The cockpit spawns its engine through one raw `CreateProcessW` with a **Job Object** carrying `KILL_ON_JOB_CLOSE` (no orphaned engine outlives the app) and `CREATE_NO_WINDOW` (no console flash). Both are active in the shipped binary.
+- **AppContainer network isolation is BUILT BUT NOT ENABLED.** An AppContainer membrane with no `internetClient` capability is implemented and unit-tested (`cockpit/src-tauri/src/sidecar.rs`), but production spawns with `SpawnOpts::job_only()` — so the engine runs with your normal user network access. It does not *use* the network (see the point above), but nothing at the OS level currently stops it. Enabling the membrane is a code change, not a setting: the export destinations have to be granted to the package SID first.
 - **Cloud research is metadata-only, and that is enforced.** The optional research plane may summarise your corpus via an LLM. What may cross to it is a **strict allowlist of structural metadata** — ids, provider, timestamps, turn/char counts — and nothing else. Free text, including conversation **titles**, is excluded *by construction*: a title is derived from raw message content (the Codex adapter builds it from the first user message), so letting titles cross would leak raw content. Both layers are mutation-pinned by `tools/privacy_mutation_check.py`, which fails if re-adding the leak keeps the suite green.
 - **Repo hygiene.** `.gitignore` blocks rendered output and real conversation data. Every example and test uses synthetic content only.
 

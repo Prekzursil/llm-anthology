@@ -1781,16 +1781,61 @@ def _parse_args(args):
     return parser.parse_args(args)
 
 
+def _as_utf8(stream):
+    """Force a REAL stdio stream to UTF-8, returning it.
+
+    THE BUG THIS FIXES, measured. ``_dumps`` uses ``ensure_ascii=False``, so a response
+    carries real non-ASCII characters. On Windows ``sys.stdout`` defaults to the machine's
+    ANSI code page (cp1252 here), so the first ``─`` ``→`` ``✓`` or CJK character in ANY
+    response killed the process outright::
+
+        UnicodeEncodeError: 'charmap' codec can't encode character '\\u2500'
+
+    exit 1, zero bytes written, no JSON-RPC error — the host just sees the pipe close. Those
+    characters are not exotic in this corpus; agentic transcripts are full of box drawing and
+    check marks. (Em-dashes and curly quotes are NOT affected: cp1252 encodes them, which is
+    part of why this went unnoticed.)
+
+    It went unnoticed for two compounding reasons, and BOTH masks had to be lifted to see it:
+    this developer's box has ``PYTHONIOENCODING=utf-8`` persisted at User scope, so it is
+    immune while a stock Windows box is not; and every fixture in the suite was pure ASCII,
+    so unsetting that variable alone still left all 1,225 tests green. The Tauri host passes a
+    null ``lpEnvironment`` (``hardened_spawn.rs``), so the shipped engine inherits whatever
+    the user happens to have — for everyone but this developer, nothing.
+
+    stdin gets the same treatment: a search query containing CJK has to DECODE correctly on
+    the way in, and it faces the identical code-page default.
+
+    Newline mode is deliberately left alone. Windows text mode emits ``\\r\\n``, which is
+    untidy for a line-delimited protocol, but the host reads with ``buf.trim_end()``
+    (``cockpit/src-tauri/src/sidecar.rs:66``) and has always handled it. Changing transport
+    framing while fixing an encoding bug would be an unverified change riding along with a
+    verified one.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError, LookupError):
+            # A stream that refuses (already detached, or not a text wrapper) must not turn
+            # a hardening step into a new startup crash.
+            pass
+    return stream
+
+
 def main(argv=None, stdin=None, stdout=None):
     """Open the index (from ``--index`` or $LLM_ANTHOLOGY_INDEX; None -> no corpus) and serve on
     the given streams (defaulting to the real stdio). This is the entrypoint the cockpit
-    launches as ``python -m llm_anthology.sidecar --index <path>``."""
+    launches as ``python -m llm_anthology.sidecar --index <path>``.
+
+    Only the REAL stdio is forced to UTF-8 (see :func:`_as_utf8`). A caller that hands in its
+    own streams owns their encoding, and silently mutating them would be a surprise."""
     args = sys.argv[1:] if argv is None else list(argv)
     path = _parse_args(args).index or os.environ.get("LLM_ANTHOLOGY_INDEX")
     conn = corpus.open_index(path) if path else None
     try:
-        Sidecar(conn).serve(stdin if stdin is not None else sys.stdin,
-                            stdout if stdout is not None else sys.stdout)
+        Sidecar(conn).serve(stdin if stdin is not None else _as_utf8(sys.stdin),
+                            stdout if stdout is not None else _as_utf8(sys.stdout))
     finally:
         if conn is not None:             # release the index on EOF/shutdown
             conn.close()

@@ -17,14 +17,14 @@
   ],
   "license": "MIT",
   "author": "Prekzursil",
-  "homepage": "https://github.com/Prekzursil/LLM_Anthology",
+  "homepage": "https://github.com/Prekzursil/ai-sessions-render",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Prekzursil/LLM_Anthology.git",
+    "url": "git+https://github.com/Prekzursil/ai-sessions-render.git",
     "directory": "js"
   },
   "bugs": {
-    "url": "https://github.com/Prekzursil/LLM_Anthology/issues"
+    "url": "https://github.com/Prekzursil/ai-sessions-render/issues"
   },
   "type": "module",
   "engines": {

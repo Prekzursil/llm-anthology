@@ -22,7 +22,12 @@ import pathlib
 import subprocess
 import sys
 
-REPO = pathlib.Path(r"C:\Users\Prekzursil\.local\opt\llm-anthology")
+# Resolved from THIS FILE, never hardcoded. This was an absolute path to the
+# PRE-REBRAND directory, which has not existed since e9cc3c8 -- so the script crashed
+# with FileNotFoundError on every run, while README.md cited it as proof that the
+# privacy boundary is mutation-pinned. A security assurance nobody can execute is
+# worse than none, because it is believed.
+REPO = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ["tests/test_redact.py", "tests/test_research.py",
          "tests/test_redaction_e2e.py", "tests/test_sidecar.py"]
 
