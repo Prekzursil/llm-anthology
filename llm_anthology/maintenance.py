@@ -50,7 +50,11 @@ THE SAFETY PROPERTY IS THE PLANNER/EXECUTOR SPLIT, not an implementation detail:
         The recovery half. Moves every relocated file back to its recorded original
         path, and is itself gated: dry-run by default, and it fails loud rather than
         overwrite a file that has since taken the original name or guess at a move it
-        cannot account for.
+        cannot account for. It also refuses a manifest whose entries collide — two
+        recorded moves sharing an original, or sharing a checkpoint copy — for exactly
+        the reason the executor refuses that shape: this loop too decides the whole
+        batch before the first move, so a collision looks free at check time and is
+        discovered only by destroying something.
         CONFINEMENT HERE IS SELF-REFERENTIAL AND IS NOT AN ANTI-TAMPER GUARANTEE: each
         recorded path is re-validated against the roots recorded in the SAME manifest,
         so editing a path alone is caught, but editing a root along with it is not —
@@ -267,7 +271,9 @@ class MaintenanceResult:
 
 # Ported from MaintenancePlanner.ProtectedPathMarkers. These name the owner's LIVE
 # Codex store; a maintenance op must never touch it even if the caller mislabelled the
-# copy's store kind. Compared against a `\`-normalised, case-folded path.
+# copy's store kind. Compared against a `\`-normalised, case-folded REAL path as well as
+# the literal one, and against write DESTINATIONS as well as targets — see
+# `_spells_protected`, which explains why either half alone leaves the store reachable.
 PROTECTED_PATH_MARKERS = (
     "\\.codex\\sessions\\",
     "\\.codex\\state_5.sqlite",
@@ -357,13 +363,39 @@ def _require_confined(path, root, label):
                                                            verdict[1]))
 
 
+def _spells_protected(path):
+    """True if `path` names a protected store location under ANY spelling of it.
+
+    The literal string AND its realpath are both tested, because neither alone is
+    sufficient. The literal catches a path that merely SPELLS a marker even when nothing
+    is on disk. The realpath is what closes the hole: the marker test is a substring
+    match, so `\\.codex\\\\sessions\\` (a doubled separator), `\\.codex\\.\\sessions\\` (a
+    `.` component), an 8.3 short name, and a directory junction pointing into the live
+    store each name the protected file while matching no marker — and every one of them
+    satisfies `_classify`, whose own realpath resolves them straight back inside the
+    store. The markers describe a PHYSICAL location, so they have to be compared against
+    one; comparing only the caller's string made the guard a spelling contest.
+
+    A trailing separator is appended before comparing, so a marker also matches the
+    DIRECTORY it names rather than only files beneath it. `...\\sessionsfoo` still does
+    not match `\\sessions\\`, because the separator has to land immediately after.
+    """
+    for text in (path, os.path.realpath(path)):
+        normalized = text.replace("/", "\\").lower().rstrip("\\") + "\\"
+        if any(marker.lower() in normalized for marker in PROTECTED_PATH_MARKERS):
+            return True
+    return False
+
+
 def _is_protected(copy):
-    """Ported from MaintenancePlanner.IsProtected: the LIVE store is untouchable, and
-    so is any path spelling one of the protected markers."""
+    """Ported from MaintenancePlanner.IsProtected: the LIVE store is untouchable, and so
+    is any path naming one of the protected markers. The store-kind half cannot fire on
+    an RPC request — that layer has no way to know a copy is LIVE and labels every target
+    UNKNOWN — so the marker half is the live-store defence in practice, and it resolves
+    before it compares."""
     if copy.store_kind is SessionStoreKind.LIVE:
         return True
-    normalized = copy.file_path.replace("/", "\\").lower()
-    return any(marker.lower() in normalized for marker in PROTECTED_PATH_MARKERS)
+    return _spells_protected(copy.file_path)
 
 
 # ------------------------------------------------------------------- the planner
@@ -425,6 +457,15 @@ def plan_maintenance(request):
         destination_root = _require_root(request.destination_root, "destination root")
     effective_root = _effective_destination_root(request.action, destination_root,
                                                  checkpoint_root)
+    # The marker rule guarded TARGETS only, which left the other direction open: nothing
+    # stopped a run writing INTO the live store, and an ARCHIVE whose destination_root is
+    # `<x>\.codex\sessions` put session files there. That is corruption rather than loss —
+    # Codex then reads files it never wrote — and no checkpoint can undo it, because for a
+    # DELETE the checkpoint root IS the misplaced destination. Refused once, here, for
+    # whichever of the two roots produced the effective root.
+    if _spells_protected(effective_root):
+        raise MaintenanceRefused(
+            "refusing to write into a protected store path: %r" % effective_root)
 
     allowed = []
     blocked = []
@@ -665,11 +706,29 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
     destination_root = doc["destination_root"]
     pending = []
     unaccounted = []
+    seen_originals = set()
+    seen_relocated = set()
     for entry in doc["moves"]:
         original = entry["source"]
         relocated = entry["destination"]
         _require_confined(original, store_root, "restore target")
         _require_confined(relocated, destination_root, "checkpoint copy")
+        # The same pre-flight-then-batch shape the executor guards, for the same two
+        # reasons: this loop decides the whole batch BEFORE the first move, so two entries
+        # sharing an ORIGINAL both see it free and the second silently overwrites the file
+        # the first just restored, and two sharing a CHECKPOINT COPY both see it present
+        # and the second raises FileNotFoundError after a partial restore. Checked over
+        # every entry including the ones skipped below, or a skipped duplicate slips past.
+        original_key = os.path.normcase(original)
+        relocated_key = os.path.normcase(relocated)
+        if original_key in seen_originals:
+            raise MaintenanceRefused("recorded original %r appears twice; the second "
+                                     "restore would overwrite the first" % original)
+        if relocated_key in seen_relocated:
+            raise MaintenanceRefused("recorded checkpoint copy %r appears twice; one "
+                                     "file cannot be restored twice" % relocated)
+        seen_originals.add(original_key)
+        seen_relocated.add(relocated_key)
         if not os.path.lexists(relocated):
             if os.path.lexists(original):
                 continue                        # never moved (or already restored)

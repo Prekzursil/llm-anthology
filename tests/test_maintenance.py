@@ -223,6 +223,86 @@ def test_plan_blocks_live_store_kind_and_protected_markers(tmp_path):
     assert preview.required_typed_confirmation == "DELETE 1 FILE"   # derived from ALLOWED
 
 
+@pytest.mark.parametrize("spelling", ["doubled-separator", "dot-component"])
+def test_plan_blocks_a_protected_path_however_it_is_spelled(tmp_path, spelling):
+    """The marker test has to run on the RESOLVED path, not on the caller's string.
+
+    `_classify` resolves a target with realpath and finds it lexically and physically
+    inside the store; `_is_protected` then compares its markers against the LITERAL
+    `file_path`. So any spelling that normalises to the protected file satisfies
+    confinement and matches no marker. Measured before the fix: both spellings below
+    reached ALLOWED and `execute_maintenance` relocated the live session file.
+
+    This is the whole live-store defence in practice, not a second line of it — the RPC
+    layer builds every target with `store_kind=UNKNOWN` (sidecar.py:1552), so the
+    `SessionStoreKind.LIVE` half of the guard can never fire on a request that arrived
+    over the wire. Neither spelling needs a filesystem link or any privilege.
+    """
+    root, paths = _store(tmp_path, ".codex/sessions/s.jsonl")
+    head = os.path.join(root, ".codex")
+    tail = os.path.join("sessions", "s.jsonl")
+    sneaky = (head + os.sep + os.sep + tail if spelling == "doubled-separator"
+              else os.path.join(head, ".", tail))
+    assert sneaky != paths[0]                        # a different string...
+    assert os.path.isfile(sneaky)                    # ...naming the same physical file
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(sneaky)], root, tmp_path))
+    assert preview.allowed == () and preview.plan == ()
+    assert [b.reason for b in preview.blocked] == ["protected"]
+    assert os.path.isfile(paths[0])
+
+
+@pytest.mark.skipif(not _DIR_LINKS, reason="directory links unavailable on this host")
+def test_plan_blocks_a_protected_path_reached_through_a_directory_link(tmp_path):
+    """The same hole by the mechanism a person creates on purpose: a directory link
+    inside the store pointing at the live session directory — a symlink on POSIX, an
+    NTFS junction on Windows, which needs no elevation. Confinement is satisfied because
+    the link resolves to somewhere still INSIDE the store, so the marker test is the only
+    thing that can refuse it, and `<store>\\innocent\\s.jsonl` spells no marker.
+
+    Not load-bearing for coverage — the spelling cases above reach the same branch on
+    every host — but it is the mechanism that makes the hole reachable without anyone
+    crafting an odd path.
+    """
+    root, paths = _store(tmp_path, ".codex/sessions/s.jsonl")
+    _link_dir(str(tmp_path / "store" / "innocent"),
+              os.path.join(root, ".codex", "sessions"))
+    through_link = os.path.join(root, "innocent", "s.jsonl")
+    assert os.path.isfile(through_link)              # the link really reaches it
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE, [_copy(through_link)], root, tmp_path))
+    assert [b.reason for b in preview.blocked] == ["protected"]
+    assert os.path.isfile(paths[0])
+
+
+@pytest.mark.parametrize("action,field", [
+    (mt.MaintenanceAction.ARCHIVE, "destination_root"),
+    (mt.MaintenanceAction.DELETE, "checkpoint_root"),
+])
+def test_plan_refuses_to_write_into_a_protected_store_path(tmp_path, action, field):
+    """The marker rule guarded TARGETS only, so nothing stopped a run writing INTO the
+    live store. Measured before the fix: an ARCHIVE whose destination_root is
+    `<x>\\.codex\\sessions` put the session file there.
+
+    Both roots below reach the same effective root through
+    `_effective_destination_root`, and both arrive from the client on the wire
+    (sidecar.py:1521-1530 only rejects them for being non-local), so both are pinned.
+    This is corruption rather than loss — Codex then reads session files it never wrote —
+    and a checkpoint cannot undo it, because the checkpoint is what got misplaced.
+    """
+    root, paths = _store(tmp_path, "a.jsonl")
+    protected = str(tmp_path / ".codex" / "sessions")
+    fields = dict(action=action, targets=(_copy(paths[0]),), store_root=root,
+                  checkpoint_root=str(tmp_path / "checkpoints"),
+                  destination_root=("" if action is mt.MaintenanceAction.DELETE
+                                    else str(tmp_path / "archive")))
+    fields[field] = protected
+    with pytest.raises(mt.MaintenanceRefused, match="protected"):
+        mt.plan_maintenance(mt.MaintenanceRequest(**fields))
+    assert not os.path.exists(protected)             # the planner stayed pure
+    assert os.path.isfile(paths[0])
+
+
 def test_plan_warns_review_on_a_hot_target(tmp_path):
     root, paths = _store(tmp_path, "a.jsonl")
     preview = mt.plan_maintenance(
@@ -1157,6 +1237,57 @@ def test_restore_refuses_a_tampered_destination_outside_the_checkpoint_root(tmp_
         json.dump(doc, fh)
     with pytest.raises(mt.MaintenanceRefused, match="UNC"):
         mt.restore_checkpoint(result.manifest_path, apply=True)
+
+
+def test_restore_refuses_a_manifest_that_recovers_two_copies_onto_one_original(tmp_path):
+    """The executor refuses a plan whose DESTINATIONS collide, and states the reason: the
+    occupancy check runs over the whole plan before the first move, so a shared
+    destination looks free both times and the second move overwrites the first file's
+    bytes. `restore_checkpoint` has the identical shape — it builds `pending` in a
+    pre-flight loop and only then moves — and carried no such guard.
+
+    Measured before the fix: a manifest naming one original twice restored one file and
+    then silently overwrote it with the other, returning executed=True. That is the one
+    outcome a recovery tool must never produce, and it is worse here than in the executor
+    because the bytes it destroys are the bytes it was invoked to bring back.
+    """
+    root, paths = _store(tmp_path, "a.jsonl", "b.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "a"), _copy(paths[1], "b")], root, tmp_path))
+    result = mt.execute_maintenance(preview, "DELETE 2 FILES", apply=True)
+    quarantined = {m.destination: _read_bytes(m.destination) for m in result.moves}
+    doc = _read_json(result.manifest_path)
+    doc["moves"][1]["source"] = doc["moves"][0]["source"]      # both aim at a.jsonl
+    with open(result.manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    with pytest.raises(mt.MaintenanceRefused, match="appears twice"):
+        mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert not os.path.exists(paths[0])                        # nothing was restored...
+    assert {p: _read_bytes(p) for p in quarantined} == quarantined   # ...nor consumed
+
+
+def test_restore_refuses_a_manifest_that_recovers_one_copy_twice(tmp_path):
+    """The other half of the same pre-flight gap, and the one that fails loudest if left
+    alone: two entries naming ONE checkpoint copy both pass the pre-flight (the copy is
+    still there when it is checked), the first move consumes it, and the second raises an
+    uncaught FileNotFoundError. Measured before the fix: exactly that, after a partial
+    restore, with the manifest left reading "executed" — so the operator is handed a
+    half-recovered batch and a status that denies it happened.
+    """
+    root, paths = _store(tmp_path, "a.jsonl", "b.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "a"), _copy(paths[1], "b")], root, tmp_path))
+    result = mt.execute_maintenance(preview, "DELETE 2 FILES", apply=True)
+    doc = _read_json(result.manifest_path)
+    doc["moves"][1]["destination"] = doc["moves"][0]["destination"]
+    with open(result.manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    with pytest.raises(mt.MaintenanceRefused, match="appears twice"):
+        mt.restore_checkpoint(result.manifest_path, apply=True)
+    assert not os.path.exists(paths[0]) and not os.path.exists(paths[1])
+    assert _read_json(result.manifest_path)["status"] == "executed"   # not half-flipped
 
 
 def test_restore_refuses_a_manifest_with_an_unknown_status(tmp_path):
