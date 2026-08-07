@@ -94,3 +94,31 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+> ### ACTIVE EXCEPTION to the push rule above — read before pushing this repo
+>
+> The block above is a generic template appended by `bd init`. It currently contradicts a
+> deliberate decision about THIS repo, and the same exception is recorded in `CLAUDE.md`.
+>
+> As of 2026-08-07 there are **40 commits on `main` that are intentionally unpushed.** That is
+> not stranded work. No CI job enters `cockpit/` or `cockpit/src-tauri/`, so 365 vitest tests,
+> 18 cargo tests, the typecheck and the Tauri build have never run in CI. Pushing before that
+> job exists makes the work *visible* without making it *validated*. The agreed order is:
+> cockpit CI job on a windows + linux matrix first, then push.
+>
+> **Precedence:** the owner's explicit decision outranks a template rule. Do not auto-push this
+> repo. When the cockpit CI job is merged and green, this exception expires — delete it then.
+>
+> **Also note before pushing:** beads syncs issue data to `refs/dolt/data` on the git remote and
+> auto-push is enabled by default when a remote exists. **This repo is public.** Confirm
+> `git-push: false` in `.beads/config.yaml`, or that the tracker holds nothing private, before
+> the first push.
+
+## Windows caution on the "non-interactive flags" advice above
+
+`-Force` is not a universal safety flag on this machine. **`New-Item -ItemType File -Force` on
+an EXISTING file recreates it empty and destroys its content** — it does not mean "ensure
+exists". Guard it (`if (-not (Test-Path $p)) { New-Item -ItemType File $p }`) and use
+`Set-Content`/`Out-File` to write content. Prefer the agent Write tool over shell here-strings:
+a here-string payload is scanned as if it were a command, and a document quoting a destructive
+command gets the write blocked.
