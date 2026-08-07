@@ -140,7 +140,13 @@ def test_discover_runs_for_real_and_reports_structure(monkeypatch):
 
     assert set(out) >= {"findings", "stats"}
     assert isinstance(out["findings"], list)
-    assert out["stats"]["roots_scanned"] >= 1
+    # SHAPE, not count. `roots_scanned >= 1` contradicted this test's own premise and failed
+    # on the Linux and macOS CI legs with `assert 0 >= 1`: a clean runner has no session
+    # store to scan, so zero is the CORRECT answer there, not a defect. Asserting a floor of
+    # 1 only ever measured "the developer's machine has Codex/Claude installed". The Rust
+    # side of this same assertion was already relaxed to a type check for this reason.
+    assert isinstance(out["stats"]["roots_scanned"], int)
+    assert out["stats"]["roots_scanned"] >= 0
     assert out["stats"]["elapsed_seconds"] >= 0
     json.dumps(out)
     for f in out["findings"]:
