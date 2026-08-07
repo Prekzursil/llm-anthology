@@ -4,17 +4,49 @@
  * The round-trip count is the point of the first half. It was 1 + N SERIAL requests over a
  * pipe that carries one at a time, and "it still worked" is exactly why nobody noticed — a
  * performance defect has no failing assertion unless something counts the calls.
+ *
+ * The `loadAllRoots` half is the same shape of defect one level down: a `limit` that was
+ * never reached in testing has no failing assertion either, and a list that stops early
+ * while looking complete is indistinguishable from a corpus that simply ends there.
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { buildView, loadForest, type ForestIpc } from "./forest";
+import {
+  buildView,
+  loadAllRoots,
+  loadForest,
+  MAX_ROOTS,
+  ROOTS_PAGE_SIZE,
+  rootsStatus,
+  type ForestIpc,
+  type RootsIpc,
+} from "./forest";
 import { DEFAULT_MAX_CHILDREN, MORE_ID_PREFIX } from "./capFanOut";
-import type { SpawnEdge, ThreadNode } from "../ipc/types";
+import type { RootsParams, SpawnEdge, ThreadNode } from "../ipc/types";
 
 const NOW = 1_770_000_000_000;
 
 function threadNode(id: string, createdMs: number | null = 1): ThreadNode {
   return { id, title: id, provider: "codex", created_at_ms: createdMs, child_count: 0, depth: 0 };
+}
+
+/**
+ * A `graph.roots` over a corpus of exactly `total` roots, sliced the way the ENGINE slices:
+ * `sidecar.py`'s `_graph_roots` answers `nodes[offset:offset + limit]` with no server-side
+ * clamp on `limit`. Getting that detail right is what makes "a short page means the end"
+ * a fact about the wire rather than an assumption about it.
+ */
+function rootsApi(total: number): RootsIpc & { calls: RootsParams[] } {
+  const all = Array.from({ length: total }, (_, i) => threadNode(`r${i}`));
+  const calls: RootsParams[] = [];
+  return {
+    calls,
+    async graphRoots(params: RootsParams = {}) {
+      calls.push(params);
+      const offset = params.offset ?? 0;
+      return all.slice(offset, offset + (params.limit ?? 100));
+    },
+  };
 }
 
 /** An ipc whose every method records that it was called. */
@@ -57,7 +89,7 @@ describe("loadForest", () => {
     const api = fakeIpc({ graphAt: undefined });
     const out = await loadForest(api, NOW);
     expect(api.calls).toEqual([
-      'graphRoots({"limit":1000,"order":"recent"})',
+      `graphRoots({"limit":${ROOTS_PAGE_SIZE},"offset":0,"order":"recent"})`,
       "graphSubtree(r1)",
       "graphSubtree(r2)",
     ]);
@@ -65,11 +97,15 @@ describe("loadForest", () => {
   });
 
   it("asks the fallback for RECENT roots, not the ascending default", async () => {
-    // `created` is ascending in the engine, so a 1000 cap returns the OLDEST thousand and
-    // silently hides everything since — on a 2,000-session store, every recent month.
+    // `created` is ascending in the engine, so a capped `created` walk returns the OLDEST
+    // page and silently hides everything since — on a 2,000-session store, every recent month.
     const graphRoots = vi.fn(async () => [] as ThreadNode[]);
     await loadForest(fakeIpc({ graphAt: undefined, graphRoots }), NOW);
-    expect(graphRoots).toHaveBeenCalledWith({ limit: 1000, order: "recent" });
+    expect(graphRoots).toHaveBeenCalledWith({
+      limit: ROOTS_PAGE_SIZE,
+      offset: 0,
+      order: "recent",
+    });
   });
 
   it("falls back to the walk when the snapshot rejects", async () => {
@@ -118,6 +154,144 @@ describe("loadForest", () => {
       },
     });
     expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [] });
+  });
+
+  it("walks EVERY root, not just the first page", async () => {
+    // The walk used to ask for one page and stop, so a corpus with more roots than the
+    // page size lost the remainder — and the canvas drew the survivors as if that were
+    // the whole forest.
+    const roots = rootsApi(ROOTS_PAGE_SIZE + 500);
+    const api = fakeIpc({ graphAt: undefined, graphRoots: roots.graphRoots });
+    const out = await loadForest(api, NOW);
+    expect(api.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(
+      ROOTS_PAGE_SIZE + 500,
+    );
+    expect(out.nodes).toHaveLength(2 * (ROOTS_PAGE_SIZE + 500));
+  });
+
+  it("returns an EMPTY forest when a ceiling truncated the root list", async () => {
+    // Same rule the mid-walk failure above follows. This pane has no status line, so a
+    // forest grown from a truncated root list would be a partial graph wearing a complete
+    // graph's clothes — and nothing on screen could tell the two apart.
+    const api = fakeIpc({
+      graphAt: undefined,
+      // A corpus that never runs out: every page comes back full, so only the ceiling
+      // can stop the walk.
+      async graphRoots(params: RootsParams = {}) {
+        const offset = params.offset ?? 0;
+        return Array.from({ length: params.limit ?? 100 }, (_, i) => threadNode(`r${offset + i}`));
+      },
+    });
+    expect(await loadForest(api, NOW)).toEqual({ nodes: [], edges: [] });
+    // And it gave up BEFORE spending a subtree round-trip per root.
+    expect(api.calls.filter((c) => c.startsWith("graphSubtree("))).toHaveLength(0);
+  });
+});
+
+describe("loadAllRoots", () => {
+  it("returns all 1,140 roots of the measured corpus, not the first 1,000", async () => {
+    // THE DEFECT. The sidebar asked for `limit: 1000` against a store holding ~1,140 roots
+    // (2,112 threads minus 972 distinct children), so 140 threads were unreachable and the
+    // list said nothing about a remainder. A cap with no disclosure reads as "this is
+    // everything" — the same class as the 1000-OLDEST ordering and the "1432 hits" printed
+    // over a list of 200.
+    const api = rootsApi(1140);
+    const { roots, complete } = await loadAllRoots(api, 1000);
+    expect(roots).toHaveLength(1140);
+    expect(complete).toBe(true);
+    expect(api.calls).toEqual([
+      { limit: 1000, offset: 0, order: "recent" },
+      { limit: 1000, offset: 1000, order: "recent" },
+    ]);
+  });
+
+  it("costs exactly ONE round-trip when the corpus fits in a page", async () => {
+    // The page size is chosen to be larger than the measured corpus, so the ordinary case
+    // must not pay for the paging that protects the pathological one.
+    const api = rootsApi(1140);
+    const { roots, complete } = await loadAllRoots(api);
+    expect(roots).toHaveLength(1140);
+    expect(complete).toBe(true);
+    expect(api.calls).toHaveLength(1);
+  });
+
+  it("reports an empty corpus as complete", async () => {
+    const { roots, complete } = await loadAllRoots(rootsApi(0));
+    expect(roots).toEqual([]);
+    expect(complete).toBe(true);
+  });
+
+  it("stops at the ceiling and reports the walk as INCOMPLETE", async () => {
+    const api = rootsApi(250);
+    const { roots, complete } = await loadAllRoots(api, 100, 200);
+    expect(roots).toHaveLength(200);
+    expect(complete).toBe(false);
+  });
+
+  it("does not claim truncation for a corpus that is exactly the ceiling", async () => {
+    // "We got a full last page" does NOT mean more exist. One extra one-row probe settles
+    // it exactly, so the disclosure is never a lie in the other direction either.
+    const api = rootsApi(200);
+    const { roots, complete } = await loadAllRoots(api, 100, 200);
+    expect(roots).toHaveLength(200);
+    expect(complete).toBe(true);
+    // Not `.at(-1)`: this tsconfig targets ES2020, where `Array.prototype.at` does not exist.
+    expect(api.calls[api.calls.length - 1]).toEqual({ limit: 1, offset: 200, order: "recent" });
+  });
+
+  it("never asks for more rows than the ceiling allows it to keep", async () => {
+    const api = rootsApi(1000);
+    await loadAllRoots(api, 400, 500);
+    expect(api.calls.map((c) => c.limit)).toEqual([400, 100, 1]);
+  });
+
+  it("asks for RECENT order on every page, not just the first", async () => {
+    // A walk that forgot the order on page 2 would page through two DIFFERENT sortings and
+    // silently duplicate some roots while dropping others.
+    const api = rootsApi(1140);
+    await loadAllRoots(api, 1000);
+    expect(api.calls.every((c) => c.order === "recent")).toBe(true);
+  });
+
+  it("terminates on a non-positive page size instead of asking for zero rows forever", async () => {
+    // `Math.min(0, …)` would ask for nothing, receive nothing, and never advance the
+    // offset — a hang, not an error, which is the worst way for this to fail.
+    const api = rootsApi(3);
+    const { roots, complete } = await loadAllRoots(api, 0);
+    expect(roots).toHaveLength(3);
+    expect(complete).toBe(true);
+  });
+
+  it("propagates a failure rather than passing off a partial walk as the corpus", async () => {
+    // Each caller has its own failure policy (the sidebar empties the list, the forest
+    // blanks the pane); inventing a third one here would hide the error from both.
+    const api: RootsIpc = {
+      async graphRoots() {
+        throw new Error("not attached");
+      },
+    };
+    await expect(loadAllRoots(api)).rejects.toThrow("not attached");
+  });
+});
+
+describe("rootsStatus", () => {
+  it("counts the threads when the list is everything", () => {
+    expect(rootsStatus(1140, true)).toBe("1,140 threads");
+  });
+
+  it("does not pluralise a single thread", () => {
+    expect(rootsStatus(1, true)).toBe("1 thread");
+  });
+
+  it("says nothing for an empty corpus — the list shows its own empty state", () => {
+    // Two messages saying "nothing here" stacked on top of each other reads as a fault.
+    expect(rootsStatus(0, true)).toBe("");
+  });
+
+  it("SAYS SO when a ceiling truncated the walk", () => {
+    // The entire point of the pair: whatever the cap is, the user is never shown a
+    // truncated list that looks complete.
+    expect(rootsStatus(MAX_ROOTS, false)).toBe("showing the first 20,000 threads · more exist");
   });
 });
 

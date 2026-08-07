@@ -12,7 +12,7 @@
 import { ipc } from "./ipc";
 import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
 import { isMoreId, moreParentId } from "./graph/capFanOut";
-import { buildView, loadForest } from "./graph/forest";
+import { buildView, loadAllRoots, loadForest, rootsStatus } from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
 import { diffToOverlay } from "./graph/diffOverlay";
 import { ElkLayoutEngine, LayoutTimeoutError } from "./graph/elkLayout";
@@ -53,10 +53,32 @@ function requireEl<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+/**
+ * The thread list's status line, mounted above `#roots-list`.
+ *
+ * Built here rather than declared in `index.html` for the same reason the search panel's
+ * `#search-status` is declared there and this one is not: the markup is out of this change's
+ * scope, and the element needs no styling of its own — `.muted` and the `role`/`aria-live`
+ * pair are exactly what `#search-status` already uses, so the two status lines look and
+ * announce identically. `#sidebar` is a flex column, so inserting a self-sizing child above
+ * the list shifts nothing else.
+ */
+function mountRootsStatus(list: HTMLElement): HTMLElement {
+  const el = document.createElement("div");
+  el.id = "roots-status";
+  el.className = "muted";
+  el.setAttribute("role", "status");
+  el.setAttribute("aria-live", "polite");
+  list.before(el);
+  return el;
+}
+
 export class CockpitApp {
   private readonly canvas: SpawnTreeCanvas;
   private readonly engine = new ElkLayoutEngine();
   private readonly rootsList: VirtualList<ThreadNode>;
+  /** Says how many threads the list holds — and, when a ceiling cut the walk, that it did. */
+  private readonly rootsStatusEl = mountRootsStatus(requireEl("roots-list"));
   private readonly search: SearchPanel;
 
   private readonly corpusBar: CorpusBar;
@@ -268,17 +290,27 @@ export class CockpitApp {
 
   private async loadRoots(): Promise<void> {
     try {
-      // "recent", not "created". `order: "created"` sorts ASCENDING (sidecar.py's
-      // graph.roots), so with a 1000 cap the sidebar showed the user their one thousand
-      // OLDEST threads and silently hid everything since. On a 2,000-session store that
-      // means the list never contains anything from recent months. "recent" has existed
-      // in the engine the whole time and was simply never sent.
-      this.rootsList.setItems(await ipc.graphRoots({ limit: 1000, order: "recent" }));
+      // EVERY root, not the first 1,000. This list is virtualized, so the rows past the
+      // thousandth cost nothing to render — the old `limit: 1000` bounded what the user was
+      // ALLOWED TO SEE for no rendering benefit at all. Measured on the build corpus: ~1,140
+      // roots (2,112 threads minus 972 distinct children), so 140 threads were unreachable
+      // and the list gave no hint that it stopped early. `loadAllRoots` pages to the end of
+      // the corpus; `rootsStatus` speaks up when a ceiling stopped it anyway.
+      //
+      // (It also still asks for "recent" rather than the engine's ASCENDING "created"
+      // default — under any cap, `created` returns the OLDEST page and hides every recent
+      // month. That ordering lives in `graph/forest.ts` now, next to the paging it qualifies.)
+      const { roots, complete } = await loadAllRoots(ipc);
+      this.rootsList.setItems(roots);
+      this.rootsStatusEl.textContent = rootsStatus(roots.length, complete);
     } catch {
       // With no corpus attached every graph read rejects. Show the list's own empty
       // state instead of rejecting out of the boot chain — `main.ts` fires `init()`
       // with `void`, so that rejection was unhandled and the whole UI stayed blank.
       this.rootsList.setItems([]);
+      // And say nothing above it: a stale "1,140 threads" over an empty list would be the
+      // very lie this pair exists to prevent.
+      this.rootsStatusEl.textContent = "";
     }
   }
 

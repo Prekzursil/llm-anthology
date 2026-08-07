@@ -1165,6 +1165,19 @@ class Sidecar:
 
         So each provider brings its own parser AND its own existence check, since "the
         rollout is there" means a file for two of them and a directory for the third.
+
+        WHY THE PATH IS GUARDED HERE. ``path`` is not caller-supplied — it comes out of the
+        ``rollout_path`` column, which is why it slipped past the review that added
+        :func:`_reject_nonlocal_path` to the seven paths that DO arrive over the wire. That
+        reasoning was wrong: ``discover`` offers found ``.sqlite`` files to ``corpus.open``, so
+        a row can come from an index this machine never wrote. On Windows the existence check
+        below is not a passive string test — resolving ``\\\\attacker\\share\\x`` makes the OS
+        open an SMB session and offer the logged-in user's NTLM credentials. So the same guard
+        runs BEFORE ``exists``, and the trust boundary is the value's ORIGIN, not its column.
+
+        It is caught rather than propagated because this function is documented never to
+        raise, and ``_research_local`` loops every row: one poisoned row must skip, not take
+        the whole local synthesis down with it.
         """
         entry = _REPARSERS.get(provider)
         if entry is None:
@@ -1174,7 +1187,13 @@ class Sidecar:
             # file to whichever parser happens to be wired.
             return None, "no reader for provider %r" % provider
         module, funcname, exists = entry
-        if not path or not exists(path):
+        if not path:
+            return None, "rollout unavailable"
+        try:
+            _reject_nonlocal_path(path, "rollout_path")
+        except RpcError as e:
+            return None, "rollout rejected: %s" % e.message
+        if not exists(path):
             return None, "rollout unavailable"
         try:
             doc, errors = getattr(module, funcname)(path)

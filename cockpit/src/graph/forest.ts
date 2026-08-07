@@ -1,11 +1,14 @@
 /**
- * The two decisions behind "draw the whole spawn forest", as PURE functions.
+ * The decisions behind "draw the whole spawn forest" and "list every thread", as PURE
+ * functions.
  *
  * They live here rather than inside `CockpitApp` for the same reason `emptyStateLabel` does:
  * this project's vitest runs `environment: "node"` with no DOM, so a decision embedded in a
  * method that also touches `document` cannot be tested at all. Splitting the decision from the
- * painting is the only reason either of these has a test rather than a promise.
+ * painting is the only reason any of these has a test rather than a promise.
  *
+ *   * {@link loadAllRoots} — how much of the root list a caller actually gets.
+ *   * {@link rootsStatus}  — what the sidebar SAYS about that, when it is not everything.
  *   * {@link loadForest} — HOW MANY round-trips the forest costs, and what it contains.
  *   * {@link buildView}  — what the canvas is actually handed, after folding and level-of-detail.
  */
@@ -13,7 +16,14 @@
 import { collapseLinearChains } from "./aggregate";
 import { capFanOut, isMoreId } from "./capFanOut";
 import type { LayoutInput } from "./layout";
-import type { GraphSnapshot, RootsParams, SpawnEdge, Subtree, ThreadNode } from "../ipc/types";
+import type {
+  GraphSnapshot,
+  RootOrder,
+  RootsParams,
+  SpawnEdge,
+  Subtree,
+  ThreadNode,
+} from "../ipc/types";
 
 /** Field separator for an edge key: U+0000 cannot appear in a record id. */
 const EDGE_KEY_SEP = "\u0000";
@@ -25,21 +35,127 @@ export interface ForestIpc {
   graphSubtree(threadId: string, depth?: number): Promise<Subtree>;
 }
 
+/** The (smaller) slice {@link loadAllRoots} needs. */
+export type RootsIpc = Pick<ForestIpc, "graphRoots">;
+
+/**
+ * Roots per `graph.roots` page.
+ *
+ * Deliberately larger than the measured corpus's root count (~1,140 — 2,112 threads minus
+ * 972 distinct children), so the ordinary case still costs exactly ONE round-trip. This
+ * bounds the size of a single PAYLOAD; it is not a bound on how much of the corpus the user
+ * is allowed to see, because {@link loadAllRoots} keeps asking until the corpus runs out.
+ */
+export const ROOTS_PAGE_SIZE = 2000;
+
+/**
+ * Hard ceiling on a roots walk.
+ *
+ * The stdio pipe is mutex-guarded to one request in flight, so a truly unbounded walk could
+ * pin it. Unlike the `limit: 1000` this replaces, reaching this ceiling is DISCLOSED — see
+ * {@link rootsStatus}. A cap is not the defect; a cap nobody is told about is.
+ */
+export const MAX_ROOTS = 20_000;
+
+/**
+ * Newest first. `created` is ASCENDING in the engine (`sidecar.py` `_graph_roots`), so a
+ * capped `created` walk returns the OLDEST page and hides everything since.
+ */
+export const ROOTS_ORDER: RootOrder = "recent";
+
+/** What a roots walk found, and whether that is all of them. */
+export interface RootsWalk {
+  roots: ThreadNode[];
+  /** True when the walk reached the end of the corpus; false when {@link MAX_ROOTS} cut it. */
+  complete: boolean;
+}
+
+/**
+ * Every root in the corpus, paged, up to {@link MAX_ROOTS}.
+ *
+ * Replaces a bare `graphRoots({ limit: 1000 })`, which on the measured store returned 1,000
+ * of ~1,140 roots and left the caller no way to know. Three options were on the table — raise
+ * the cap, page it, or merely disclose the truncation — and paging is the one that makes the
+ * common case COMPLETE rather than just better-labelled: raising a cap only moves the cliff,
+ * and disclosure alone leaves 140 threads permanently unreachable. The sidebar list is
+ * virtualized, so the extra rows cost nothing to draw; the cap was only ever a transport
+ * bound, and paging is how you lift a transport bound without unbounding the transport.
+ *
+ * Termination is EXACT rather than heuristic: the engine answers `nodes[offset:offset + limit]`
+ * with no server-side clamp on `limit`, so a page shorter than requested can only mean there
+ * were no more rows to give. When the ceiling stops the walk instead, one extra one-row probe
+ * separates "there are more" from "the corpus happened to be exactly this size" — so
+ * `complete` is never a guess, in either direction.
+ *
+ * Rejects rather than returning a partial walk: the sidebar and the forest have different
+ * failure policies (empty the list vs. blank the pane), and inventing a third one here would
+ * hide the error from both.
+ */
+export async function loadAllRoots(
+  api: RootsIpc,
+  pageSize: number = ROOTS_PAGE_SIZE,
+  maxRoots: number = MAX_ROOTS,
+): Promise<RootsWalk> {
+  // A page size of 0 would ask for nothing, receive nothing, and never advance the offset:
+  // a hang rather than an error, which is the worst way for this loop to fail.
+  const size = Math.max(1, pageSize);
+  const roots: ThreadNode[] = [];
+  while (roots.length < maxRoots) {
+    // Never ask for rows the ceiling will not let us keep.
+    const limit = Math.min(size, maxRoots - roots.length);
+    const page = await api.graphRoots({ limit, offset: roots.length, order: ROOTS_ORDER });
+    // Not `push(...page)`: a page can be thousands of rows, and spreading them as arguments
+    // is a stack limit waiting to be found by the biggest corpus rather than the smallest.
+    for (const root of page) roots.push(root);
+    if (page.length < limit) return { roots, complete: true };
+  }
+  const beyond = await api.graphRoots({ limit: 1, offset: roots.length, order: ROOTS_ORDER });
+  return { roots, complete: beyond.length === 0 };
+}
+
+/** Thousands-grouped, so a four-digit count is readable at a glance. */
+function grouped(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * The line above the sidebar's thread list.
+ *
+ * Enforces the rule the old `limit: 1000` broke: the user is never shown a truncated list
+ * that looks complete. A complete walk is a plain count; a walk a ceiling stopped is
+ * qualified in the same breath, not in a tooltip nobody opens. Same shape as
+ * `searchPresent`'s `resultStatus`, which had to learn this after printing "1,432 hits" over
+ * a list holding 200.
+ *
+ * Silent for an empty corpus: `VirtualList` already paints its own empty state there, and two
+ * stacked "nothing here" messages read as a fault rather than as an empty corpus.
+ */
+export function rootsStatus(shown: number, complete: boolean): string {
+  if (!complete) return `showing the first ${grouped(shown)} threads · more exist`;
+  if (shown === 0) return "";
+  return `${grouped(shown)} thread${shown === 1 ? "" : "s"}`;
+}
+
 /**
  * Fetch the whole spawn forest.
  *
- * `graph.at(now)` returns it in ONE round-trip. The fallback below asks for up to 1000 roots
- * and then makes one `graph.subtree` call PER ROOT — over a thousand serial requests down a
- * pipe that is mutex-guarded to one in flight at a time, for a graph the engine can project in
- * a single query. That path was also silently incomplete twice over: roots past the 1000th
- * were dropped, and a node in no root's subtree (a dangling spawn target) was never fetched.
+ * `graph.at(now)` returns it in ONE round-trip. The fallback below walks the roots and then
+ * makes one `graph.subtree` call PER ROOT — a thousand-plus serial requests down a pipe that
+ * is mutex-guarded to one in flight at a time, for a graph the engine can project in a single
+ * query. It remains silently incomplete in one respect: a node in no root's subtree (a
+ * dangling spawn target) is never fetched.
+ *
+ * It is no longer incomplete in the OTHER respect. The walk used to ask for `limit: 1000` and
+ * stop, dropping every root past the thousandth; it now pages to the end of the corpus via
+ * {@link loadAllRoots}.
  *
  * The walk survives only because `graphAt` is OPTIONAL on the IPC surface (`types.ts` declares
  * it `graphAt?`), so an implementation without it must still work.
  *
  * A failure yields an EMPTY forest, never a partial one: in a tool whose whole subject is the
  * graph, a half-graph is a worse lie than a blank pane, because nothing distinguishes it from
- * a complete one.
+ * a complete one. A root list the ceiling truncated is exactly that case — this pane has no
+ * status line to qualify it with, so it gets the same treatment.
  */
 export async function loadForest(api: ForestIpc, nowMs: number): Promise<LayoutInput> {
   if (api.graphAt !== undefined) {
@@ -54,9 +170,11 @@ export async function loadForest(api: ForestIpc, nowMs: number): Promise<LayoutI
   const nodeMap = new Map<string, ThreadNode>();
   const edgeMap = new Map<string, SpawnEdge>();
   try {
-    // "recent", not the engine's ascending "created" default: with a 1000 cap, `created`
-    // returns the thousand OLDEST threads and hides everything since.
-    for (const root of await api.graphRoots({ limit: 1000, order: "recent" })) {
+    const { roots, complete } = await loadAllRoots(api);
+    // Blank rather than partial, per the contract above: a forest grown from a truncated
+    // root list is a partial graph wearing a complete graph's clothes.
+    if (!complete) return { nodes: [], edges: [] };
+    for (const root of roots) {
       const sub = await api.graphSubtree(root.id);
       for (const n of sub.nodes) nodeMap.set(n.id, n);
       for (const e of sub.edges) edgeMap.set(`${e.parent}${EDGE_KEY_SEP}${e.child}`, e);

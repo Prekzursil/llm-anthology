@@ -165,8 +165,19 @@ def test_an_unknown_provider_is_a_reason_not_a_crash(tmp_path):
         conn.close()
 
 
-@pytest.mark.parametrize("path", ["", "/definitely/not/here.jsonl"])
-def test_a_missing_path_is_unavailable_rather_than_an_error(tmp_path, path):
+@pytest.mark.parametrize("leaf", ["", "gone.jsonl"])
+def test_a_missing_path_is_unavailable_rather_than_an_error(tmp_path, leaf):
+    """Two ways to have no rollout — an empty column, or a path to a file that is not there.
+    Both are "unavailable", neither is an error.
+
+    The missing path is built from `tmp_path` so it is DRIVE-absolute. It used to be the
+    literal "/definitely/not/here.jsonl", which is absolute on POSIX but drive-RELATIVE on
+    Windows since Python 3.13 changed `ntpath.isabs` (measured: 3.14.6/nt returns False for
+    "/x", posixpath returns True). That was harmless while nothing checked absoluteness; now
+    that `_reparse_rollout` reuses `_reject_nonlocal_path` it would report a DIFFERENT reason
+    on each half of the windows+linux CI matrix. The fixture carried the platform assumption,
+    not the code."""
+    path = str(tmp_path / leaf) if leaf else ""
     srv, conn = _server(tmp_path, [("c1", "codex", path)])
     try:
         conv, reason = srv._reparse_rollout(path, "codex")
@@ -248,19 +259,248 @@ def test_the_local_research_tier_reads_every_provider_not_just_codex(tmp_path):
         conn.close()
 
 
+# ------------------------------------------------------- non-local rollout paths
+#
+# A SECOND defect in the same function. `rollout_path` arrives from the DATABASE, and every
+# other path-bearing entry point in this engine — `index_path`, `codex_home`, `dest_path`,
+# `destination_root`, `manifest_path` — is passed through `_reject_nonlocal_path` BEFORE any
+# filesystem call. `_reparse_rollout` was the one that was not: it handed the stored string
+# straight to `os.path.isfile` / `os.path.isdir`.
+#
+# On Windows that call is not a passive string test. Resolving `\\attacker\share\x` makes the
+# OS open an SMB session to `attacker` and offer the logged-in user's NTLM credentials — the
+# hash-leak / relay class. A hostile or corrupted `.sqlite` is enough to carry such a row, and
+# `discover` OFFERS found indexes to `corpus.open`, so it need not be an index this machine
+# wrote.
+#
+# These tests replace the provider's existence check with a SPY, for two reasons: it measures
+# the property that actually matters — was the filesystem reached AT ALL, not merely what was
+# returned — and it means the RED run of this file cannot emit a single SMB packet while the
+# guard is still missing.
+
+
+def _spy_exists(monkeypatch, provider="codex"):
+    """Swap `provider`'s existence check for a recorder that always answers "no". Returns the
+    list of paths it was asked about, so a test can assert the filesystem was never reached.
+
+    Patching the TABLE rather than `os.path.isfile` keeps the blast radius to one provider and
+    mirrors how the rest of this file patches adapter modules."""
+    module, funcname, _real = sidecar._REPARSERS[provider]
+    asked = []
+
+    def spy(path):
+        asked.append(path)
+        return False
+
+    monkeypatch.setitem(sidecar._REPARSERS, provider, (module, funcname, spy))
+    return asked
+
+
+def test_the_exists_spy_really_does_fire_for_an_ordinary_path(tmp_path, monkeypatch):
+    """DETECTOR CONTROL for every `asked == []` assertion below.
+
+    A spy that never fires would make those assertions vacuous — they would pass just as
+    happily against a completely unguarded function. Prove it fires on a path the guard lets
+    through before reading any `asked == []` as evidence of anything."""
+    asked = _spy_exists(monkeypatch)
+    local = str(tmp_path / "rollout.jsonl")
+    srv, conn = _server(tmp_path, [("c1", "codex", local)])
+    try:
+        conv, reason = srv._reparse_rollout(local, "codex")
+        assert asked == [local], "the spy never fired, so `asked == []` proves nothing"
+        assert conv is None and reason == "rollout unavailable"    # the spy answered "no"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("hostile", [
+    r"\\attacker\share\rollout.jsonl",          # the classic UNC / SMB-coercion target
+    "//attacker/share/rollout.jsonl",           # same target, forward slashes
+    r"\\attacker@SSL\DavWWWRoot\x.jsonl",       # the WebDAV spelling of the same coercion
+    r"\\?\UNC\attacker\share\rollout.jsonl",    # a UNC wearing a device prefix
+    r"\\?\C:\Windows\x.jsonl",                  # Win32 device namespace
+    r"\\.\pipe\evil",                           # device namespace, named pipe
+])
+def test_a_nonlocal_rollout_path_never_reaches_the_filesystem(tmp_path, monkeypatch, hostile):
+    """The security property stated as behaviour: for a UNC or device path the existence check
+    is NEVER called. Asserting only on the returned reason would be strictly weaker — an
+    implementation could stat the path first and still return a tidy string, having already
+    leaked the credential."""
+    asked = _spy_exists(monkeypatch)
+    srv, conn = _server(tmp_path, [("c1", "codex", hostile)])
+    try:
+        conv, reason = srv._reparse_rollout(hostile, "codex")
+        assert asked == [], (
+            "%r reached the filesystem; on Windows that IS the SMB/NTLM coercion" % hostile)
+        assert conv is None
+        assert "local path" in reason, reason
+    finally:
+        conn.close()
+
+
+def test_a_nonlocal_path_is_rejected_for_grok_too_not_just_codex(tmp_path, monkeypatch):
+    """Grok's existence check is `os.path.isdir`, which coerces exactly the same SMB auth. The
+    guard has to sit ahead of the dispatch, not inside one provider's branch."""
+    asked = _spy_exists(monkeypatch, "grok")
+    hostile = r"\\attacker\share\session"
+    srv, conn = _server(tmp_path, [("c1", "grok", hostile)])
+    try:
+        conv, reason = srv._reparse_rollout(hostile, "grok")
+        assert asked == [] and conv is None and "local path" in reason
+    finally:
+        conn.close()
+
+
+def test_a_relative_rollout_path_is_rejected_before_it_resolves_against_the_cwd(
+        tmp_path, monkeypatch):
+    """`_reject_nonlocal_path` also requires absoluteness, and reusing it WHOLE means
+    `_reparse_rollout` inherits that. Deliberate, not incidental: a relative string from the DB
+    would otherwise resolve against whatever directory the sidecar process happens to sit in.
+
+    It costs nothing in the sidecar's own world — `corpus.open` already forces `index_path`
+    absolute (sidecar.py:760) and `codex_home` absolute (:863), so every path the sidecar
+    indexes for itself is absolute. UNVERIFIED: an index built by `python -m llm_anthology`
+    from a RELATIVE source root stores relative `rollout_path` values (cli.py absolutizes only
+    `--out-index` / `--out-html`), and those conversations would now stub instead of opening.
+    The experiment that settles it: build an index via the CLI from a relative root, open it,
+    and check whether any conversation reports this rejection reason."""
+    asked = _spy_exists(monkeypatch)
+    srv, conn = _server(tmp_path, [("c1", "codex", "sessions/rollout.jsonl")])
+    try:
+        conv, reason = srv._reparse_rollout("sessions/rollout.jsonl", "codex")
+        assert asked == [] and conv is None
+        assert "absolute" in reason, reason
+    finally:
+        conn.close()
+
+
+def test_an_ordinary_local_rollout_still_opens(tmp_path):
+    """THE REGRESSION GUARD. A guard that blocks legitimate paths is not a fix. No spy here —
+    this goes all the way to the real parser and the real bytes on disk."""
+    path = _codex_rollout_file(tmp_path)
+    srv, conn = _server(tmp_path, [("c1", "codex", path)])
+    try:
+        conv, errors = srv._reparse_rollout(path, "codex")
+        assert conv is not None, errors
+        assert "codex side of the story" in _text_of(conv)
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows path shape")
+def test_a_mapped_drive_path_is_treated_as_local(tmp_path, monkeypatch):
+    """DISCLOSED RESIDUAL, pinned so nobody mistakes it for coverage.
+
+    `Z:\\share\\x` may be a mapped NETWORK drive, and this guard does NOT reject it. It cannot:
+    a mapped drive is textually indistinguishable from a local one, so telling them apart needs
+    a WinAPI call (`GetDriveType` == DRIVE_REMOTE) — a second, platform-specific, subtly
+    different validator, which is precisely what reusing `_reject_nonlocal_path` exists to
+    avoid. Blocking all drive letters instead would reject `D:`/`E:` and every legitimate path
+    on this machine.
+
+    The residual is also far smaller than the UNC one: a mapped drive resolves only because the
+    user ALREADY authenticated to it, so there is no fresh credential coercion — the SMB
+    session exists either way. What this pins is that such a path still reaches the existence
+    check rather than being silently rejected."""
+    asked = _spy_exists(monkeypatch)
+    mapped = r"Z:\share\rollout.jsonl"
+    srv, conn = _server(tmp_path, [("c1", "codex", mapped)])
+    try:
+        conv, reason = srv._reparse_rollout(mapped, "codex")
+        assert asked == [mapped], "a drive-letter path must still be offered to the filesystem"
+        assert conv is None and reason == "rollout unavailable"
+    finally:
+        conn.close()
+
+
+def test_conversation_get_stubs_a_hostile_row_instead_of_raising(tmp_path, monkeypatch):
+    """End to end through the RPC the reader pane calls. The rejection must arrive as a STUB,
+    not an exception: `_reparse_rollout` is documented never to raise, and `conversation.get`
+    is what a UI hits the moment discovery offers it a hostile index."""
+    asked = _spy_exists(monkeypatch)
+    srv, conn = _server(tmp_path, [("c1", "codex", r"\\attacker\share\x.jsonl")])
+    try:
+        out = srv.dispatch("conversation.get", {"id": "c1"})
+        assert asked == []
+        assert out["available"] is False and "local path" in out["reason"]
+    finally:
+        conn.close()
+
+
+def test_one_hostile_row_does_not_abort_the_whole_local_research_tier(tmp_path, monkeypatch):
+    """`_research_local` loops every row. Letting the guard's RpcError escape would turn ONE
+    poisoned row into a total denial of the local synthesis — so the rejection degrades to a
+    reason string and the loop simply skips that conversation.
+
+    The spy here WRAPS the real `isfile` instead of replacing it, so the good row is genuinely
+    parsed off disk while the hostile row is still proven never to be stat-ed."""
+    seen = {}
+
+    class Backend:
+        def synthesize(self, prompt):
+            seen["prompt"] = prompt
+            return "ok"
+
+    module, funcname, real_isfile = sidecar._REPARSERS["codex"]
+    asked = []
+
+    def wrapped(path):
+        asked.append(path)
+        return real_isfile(path)
+
+    monkeypatch.setitem(sidecar._REPARSERS, "codex", (module, funcname, wrapped))
+    good = _codex_rollout_file(tmp_path)
+    srv, conn = _server(tmp_path, [
+        ("c1", "codex", r"\\attacker\share\x.jsonl"),
+        ("c2", "codex", good),
+    ])
+    srv.local_backend = Backend()
+    try:
+        out = srv.dispatch("research.synthesize", {"tier": "local"})
+        assert out["conversation_count"] == 1, out
+        assert asked == [good], "the hostile row was stat-ed: %r" % (asked,)
+        assert "codex side of the story" in seen["prompt"]
+    finally:
+        conn.close()
+
+
 def test_every_provider_the_engine_ingests_is_either_readable_or_explicitly_not(tmp_path):
     """No provider may fall through to a default parser. This is the invariant that stops
-    the original defect from coming back the next time an adapter is added."""
+    the original defect from coming back the next time an adapter is added.
+
+    Drive-absolute for the same reason as `test_a_missing_path_is_unavailable_rather_than_an
+    _error`: "/nope" is drive-RELATIVE on Windows, so it would now be rejected by the path
+    guard rather than reported missing, and this invariant would read differently on each half
+    of the CI matrix."""
     from llm_anthology import discover
 
+    missing = str(tmp_path / "nope.jsonl")
     srv, conn = _server(tmp_path, [("c1", "codex", "")])
     try:
         for provider in sorted({s.provider for s in discover.PROVIDERS}):
-            conv, reason = srv._reparse_rollout("/nope", provider)
+            conv, reason = srv._reparse_rollout(missing, provider)
             assert conv is None
             # Either "there is no file there" or "there is no reader for this" — never a
             # silent success from someone else's parser.
             assert reason in ("rollout unavailable",) or "reader" in reason, (
                 "%s -> %r" % (provider, reason))
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-relative is a Windows-only path shape")
+def test_a_drive_relative_path_is_rejected_on_windows(tmp_path, monkeypatch):
+    """The shape that broke the two fixtures above, pinned as behaviour in its own right.
+
+    "/x" on Windows is DRIVE-relative: it resolves against whatever drive the sidecar process
+    is currently on, so the same stored string names a different file depending on the
+    process's cwd. Python 3.13 stopped calling that absolute; the guard rejects it, which is
+    the right answer for a path arriving from an untrusted index."""
+    asked = _spy_exists(monkeypatch)
+    srv, conn = _server(tmp_path, [("c1", "codex", "/definitely/not/here.jsonl")])
+    try:
+        conv, reason = srv._reparse_rollout("/definitely/not/here.jsonl", "codex")
+        assert asked == [] and conv is None
+        assert "absolute" in reason, reason
     finally:
         conn.close()
