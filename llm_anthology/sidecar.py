@@ -218,7 +218,30 @@ from llm_anthology import (
     sanitize,
     timetravel,
 )
-from llm_anthology.adapters import codex_rollout
+from llm_anthology.adapters import claude_code, codex_rollout, grok
+
+# Per-provider single-conversation readers: (module, function name, existence check).
+#
+# `exists` differs per provider because "the rollout is there" is a different question for
+# each: Codex and Claude Code store a FILE path, Grok stores a session DIRECTORY. One shared
+# `os.path.isfile` guard is what made every Grok conversation report itself as missing.
+#
+# The parser is held as a NAME and resolved with getattr at call time, not captured here as
+# a function object. Everything else in this module is reached through a live module
+# attribute (`export.serialize_graph`, `loaders.load_corpus`), and the tests patch those
+# module attributes accordingly; a table of bound functions would silently ignore such a
+# patch, so a test could pass while exercising the real parser it believed it had replaced.
+#
+# A provider ABSENT from this table has no per-conversation reader at all — the export
+# formats (chatgpt/claude/gemini/codex export) put many conversations in one file, so a path
+# does not identify one. Absent is a real, reported answer, never a fall-through to a default
+# parser. `tests/test_sidecar_reparse.py` asserts that over every `discover.PROVIDERS` entry,
+# so the next adapter added cannot silently inherit somebody else's parser.
+_REPARSERS = {
+    "codex": (codex_rollout, "parse_rollout_file", os.path.isfile),
+    "claude-code": (claude_code, "parse_transcript_file", os.path.isfile),
+    "grok": (grok, "parse_session", os.path.isdir),
+}
 
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
 # are used directly where they apply).
@@ -1116,20 +1139,45 @@ class Sidecar:
             "WHERE conversation_id=?", (cid,)).fetchone()
         if row is None:
             raise RpcError(THREAD_NOT_FOUND, "conversation not found: %s" % cid)
-        conv, info = self._reparse_rollout(row["rollout_path"])
+        conv, info = self._reparse_rollout(row["rollout_path"], row["provider"])
         if conv is None:
             return self._conversation_stub(row, info)
         return self._serialize_conversation(conv, info)
 
-    def _reparse_rollout(self, path):
-        """Re-parse a rollout file into ``(ir.Conversation, errors)``, or
-        ``(None, reason)`` when the path is empty/missing/unreadable. Never raises —
-        the failure modes degrade to a reason string. Shared by ``conversation.get``
-        (which stubs on None) and the LOCAL research tier (which skips None)."""
-        if not path or not os.path.isfile(path):
+    def _reparse_rollout(self, path, provider):
+        """Re-parse one conversation into ``(ir.Conversation, errors)``, or
+        ``(None, reason)`` when it cannot be read. Never raises — every failure mode
+        degrades to a reason string. Shared by ``conversation.get`` (which stubs on None)
+        and the LOCAL research tier (which skips None).
+
+        WHY `provider` IS A PARAMETER. This used to call ``codex_rollout.parse_rollout_file``
+        unconditionally, ignoring the ``provider`` column in the very row that supplied the
+        path, and it broke the two non-Codex readers in opposite ways:
+
+          * **Grok became unreadable.** Its ``rollout_path`` is a session DIRECTORY, so a
+            single ``os.path.isfile`` guard rejected it and every Grok conversation reported
+            "rollout unavailable" — indistinguishable from a deleted file.
+          * **Claude Code was read WRONG.** Its ``rollout_path`` is a ``.jsonl``, so the
+            guard passed and the Codex parser consumed it happily: both formats are JSONL
+            with a ``type`` field, so nothing raised, it simply produced a different
+            conversation from the one on disk. A reader showing the wrong transcript is
+            worse than one showing none, because nothing signals it.
+
+        So each provider brings its own parser AND its own existence check, since "the
+        rollout is there" means a file for two of them and a directory for the third.
+        """
+        entry = _REPARSERS.get(provider)
+        if entry is None:
+            # An EXPORT-based provider (chatgpt/claude/gemini/codex export) keeps many
+            # conversations in one file, so a path alone does not identify one — there is
+            # no per-conversation reader to dispatch to. Say that, rather than hand the
+            # file to whichever parser happens to be wired.
+            return None, "no reader for provider %r" % provider
+        module, funcname, exists = entry
+        if not path or not exists(path):
             return None, "rollout unavailable"
         try:
-            doc, errors = codex_rollout.parse_rollout_file(path)
+            doc, errors = getattr(module, funcname)(path)
         except OSError as e:
             return None, "rollout unreadable: %s" % e
         return doc.conversation, errors
@@ -1182,9 +1230,9 @@ class Sidecar:
         conversation with no readable rollout simply contributes nothing."""
         transcripts = []
         for row in self.conn.execute(
-                "SELECT conversation_id, rollout_path FROM conversations "
+                "SELECT conversation_id, provider, rollout_path FROM conversations "
                 "ORDER BY conversation_id").fetchall():
-            conv, _info = self._reparse_rollout(row["rollout_path"])
+            conv, _info = self._reparse_rollout(row["rollout_path"], row["provider"])
             if conv is not None:
                 transcripts.append(_raw_transcript(conv))
         prompt = "\n\n".join([_LOCAL_INSTRUCTION, *transcripts])
