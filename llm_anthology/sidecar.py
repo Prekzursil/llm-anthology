@@ -341,6 +341,90 @@ def _req_str(params, key):
     return value
 
 
+def fts_match_expression(raw):
+    """Turn arbitrary user text into an FTS5 MATCH expression that cannot raise.
+
+    THE BUG THIS FIXES. The query string was bound straight into ``MATCH ?``. The binding was
+    never an injection risk — it is a real parameter — but FTS5 parses the BOUND VALUE as a
+    query *expression*, so ordinary typing crashes the search. Measured against the live
+    index, every one of these raised ``sqlite3.OperationalError`` rather than returning
+    results:
+
+        foo(          fts5: syntax error near ""
+        a AND         fts5: syntax error near ""
+        "unclosed     unterminated string
+        NEAR/         fts5: syntax error near "/"
+        *             unknown special query
+        a OR OR b     fts5: syntax error near "OR"
+
+    A user typing a bracket got an exception. That is the whole defect.
+
+    THE FIX, and its deliberate trade-off. Each whitespace-separated token becomes a QUOTED
+    PHRASE, with embedded quotes doubled per FTS5's own escaping rule, and the phrases are
+    ANDed implicitly. A quoted phrase is opaque to the FTS5 expression parser, so no input can
+    reach it as syntax — which is what makes this total rather than a list of patched cases.
+
+    The cost is that FTS5's operator vocabulary (AND/OR/NOT/NEAR, parentheses) stops being
+    reachable from the search box, and typing AND now searches for the word "and". That is the
+    right default for a box labelled "Search conversations…": the overwhelmingly common input
+    is words, and today those same operators are mostly a way to crash it. Prefix search is
+    kept, because ``foo*`` is a thing people genuinely type and FTS5 supports ``"foo"*``.
+
+    WHY EACH QUOTED TERM MUST BE A SINGLE TOKEN. Quoting alone is not enough, and the first
+    version of this function was wrong in a way that mattered. ``corpus.py`` builds the index
+    ``detail=none`` (a measured choice: p95 33ms over 2.2M records), and **detail=none cannot
+    execute phrase queries at all** — ``fts5: phrase queries are not supported (detail!=full)``.
+    A quoted string holding two tokens IS a phrase. So ``"file.py"`` still raised, because the
+    tokenizer splits it into ``file`` + ``py``. Every path, hyphenated word, apostrophe and
+    version number a user types was still a crash, which is most of what people search for in
+    a corpus of coding sessions.
+
+    The terms are therefore split on the tokenizer's own boundary before quoting, so no term
+    can ever be a phrase. The split rule is "runs of alphanumerics", which is unicode61's
+    documented separator rule; it was checked against SQLite's actual tokenizer over 32 inputs
+    (ASCII punctuation, paths, URLs, CJK, RTL, fullwidth, emoji, soft hyphen) and agreed on
+    32/32, while a deliberately-wrong rule disagreed on 14/32 — so the check can fail.
+    (`.scratch/probe_tokenizer.py`.)
+
+    Consequence worth stating plainly: ``file.py`` searches for ``file`` AND ``py``, not for
+    the exact string. Exact-phrase search is not a feature this index can offer at all;
+    offering it would mean rebuilding every index at ``detail=full``.
+
+    Returns "" for input with no usable token, which the caller must treat as "no results"
+    rather than passing on — an empty MATCH is itself a syntax error.
+    """
+    parts = []
+    for token in (raw or "").split():
+        # A trailing "*" is the user asking for a prefix match; it binds to the last term.
+        prefix = token.endswith("*")
+        terms = _tokenize(token)
+        if not terms:
+            continue
+        for term in terms[:-1]:
+            parts.append('"%s"' % term)
+        parts.append('"%s"*' % terms[-1] if prefix else '"%s"' % terms[-1])
+    return " ".join(parts)
+
+
+def _tokenize(text):
+    """Split `text` the way FTS5's unicode61 tokenizer does: runs of alphanumerics.
+
+    Everything else is a separator, so the result can never contain a character that would
+    reach the FTS5 expression parser — which is what makes quoting the terms safe rather than
+    merely usual. See `fts_match_expression` for how this rule was verified.
+    """
+    out, cur = [], []
+    for ch in text:
+        if ch.isalnum():
+            cur.append(ch)
+        elif cur:
+            out.append("".join(cur))
+            cur = []
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
 def _opt_str(params, key):
     """An optional string param: absent or empty -> "", wrong type -> -32602.
 
@@ -1583,8 +1667,14 @@ class Sidecar:
     def _run_search(self, query, limit, offset, provider):
         """Mirror corpus.search's contentless-FTS JOIN, adding the offset/provider/total
         the cockpit needs (the library primitive offers only limit)."""
+        match = fts_match_expression(query)
+        if not match:
+            # No usable token — e.g. the user typed only punctuation or whitespace. An empty
+            # MATCH is itself an FTS5 syntax error, so this must short-circuit rather than be
+            # passed on. Zero results is the honest answer to a query with no terms.
+            return 0, []
         where = "conversations_fts MATCH ?"
-        args = [query]
+        args = [match]
         if provider is not None:
             where += " AND c.provider = ?"
             args.append(provider)
