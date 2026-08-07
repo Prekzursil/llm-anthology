@@ -274,6 +274,86 @@ describe("loadAllRoots", () => {
   });
 });
 
+describe("loadAllRoots deduplicates across page seams", () => {
+  /** An engine whose pages OVERLAP, as a live corpus that grew mid-walk would produce. */
+  function overlappingApi(pages: string[][]) {
+    let call = 0;
+    return {
+      graphRoots: async () => {
+        const page = pages[Math.min(call, pages.length - 1)] ?? [];
+        call += 1;
+        return page.map((id) => threadNode(id));
+      },
+    } as unknown as Parameters<typeof loadAllRoots>[0];
+  }
+
+  it("renders a thread ONCE even when two pages both contain it", async () => {
+    // Real for this app: it ingests LIVE sessions, so a row can shift between offset-based
+    // page requests and arrive twice. Two identical rows in the sidebar both open the same
+    // thread — confusing, and the same silently-wrong class as the truncation being fixed.
+    const { roots } = await loadAllRoots(overlappingApi([
+      ["a", "b"],
+      ["b", "c"],
+      [],
+    ]), 2);
+    expect(roots.map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  /**
+   * An engine that SLICES BY OFFSET, the way the real one does
+   * (`sidecar.py`: `nodes[offset:offset + limit]`).
+   *
+   * The call-index fixture above cannot be used for the termination test: it ignores `offset`
+   * entirely, so it returns the same sequence no matter what the walk asks for and an offset
+   * bug is invisible to it. Mutation testing caught that — driving the offset by the distinct
+   * count (the hang) left the old test GREEN.
+   */
+  function offsetApi(rows: string[]) {
+    return {
+      graphRoots: async (p: { limit: number; offset: number }) =>
+        rows.slice(p.offset, p.offset + p.limit).map((id) => threadNode(id)),
+    } as unknown as Parameters<typeof loadAllRoots>[0];
+  }
+
+  it("TERMINATES when a whole page is duplicates", async () => {
+    // The trap in the obvious fix, and the reason `received` exists. `[a,b,a,b,c]` sliced at
+    // offset 2 returns a FULL page containing nothing new. If the offset were driven by the
+    // distinct count it would never move past 2, the same page would be fetched forever, and
+    // the sidebar would hang — strictly worse than the duplicate row being fixed.
+    const { roots, complete } = await loadAllRoots(offsetApi(["a", "b", "a", "b", "c"]), 2);
+    expect(roots.map((r) => r.id)).toEqual(["a", "b", "c"]);
+    expect(complete).toBe(true);
+  });
+
+  it("de-duplicates against a real offset-sliced engine too", async () => {
+    const { roots } = await loadAllRoots(offsetApi(["a", "b", "b", "c", "d"]), 2);
+    expect(roots.map((r) => r.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("keeps the FIRST occurrence, so the engine's order survives", async () => {
+    // Every page must be exactly `limit` rows or the walk stops there — a short page IS the
+    // end-of-corpus signal. My first version of this test handed back 2 rows for a limit of
+    // 3, so it never reached the second page and "failed" on a correctly-working loop.
+    //
+    // Discriminating by construction: `a` reappears in page 2. First-occurrence gives
+    // [a,b,c]; last-occurrence would give [b,c,a].
+    const { roots } = await loadAllRoots(overlappingApi([["a", "b"], ["c", "a"], []]), 2);
+    expect(roots.map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("still reports an incomplete walk correctly when duplicates are present", async () => {
+    // Dedup must not make a capped walk look complete: the ceiling bounds rows RECEIVED, and
+    // the beyond-probe still decides completeness.
+    const api = {
+      graphRoots: async (p: { limit: number; offset: number }) =>
+        Array.from({ length: p.limit }, (_, i) => threadNode(`r${(p.offset + i) % 3}`)),
+    } as unknown as Parameters<typeof loadAllRoots>[0];
+    const { roots, complete } = await loadAllRoots(api, 2, 6);
+    expect(complete).toBe(false);
+    expect(new Set(roots.map((r) => r.id)).size).toBe(roots.length);
+  });
+});
+
 describe("rootsStatus", () => {
   it("counts the threads when the list is everything", () => {
     expect(rootsStatus(1140, true)).toBe("1,140 threads");

@@ -100,16 +100,29 @@ export async function loadAllRoots(
   // a hang rather than an error, which is the worst way for this loop to fail.
   const size = Math.max(1, pageSize);
   const roots: ThreadNode[] = [];
-  while (roots.length < maxRoots) {
+  const seen = new Set<string>();
+  // `received` drives the OFFSET and the ceiling; `roots.length` is the DISTINCT count. They
+  // are deliberately different numbers, and conflating them is a hang rather than a bug you
+  // notice: this app ingests LIVE sessions, so a row genuinely can shift between two
+  // offset-based requests and arrive twice. If the offset advanced by distinct rows, a page
+  // of pure duplicates would never move it and the same page would be fetched forever.
+  let received = 0;
+  while (received < maxRoots) {
     // Never ask for rows the ceiling will not let us keep.
-    const limit = Math.min(size, maxRoots - roots.length);
-    const page = await api.graphRoots({ limit, offset: roots.length, order: ROOTS_ORDER });
+    const limit = Math.min(size, maxRoots - received);
+    const page = await api.graphRoots({ limit, offset: received, order: ROOTS_ORDER });
+    received += page.length;
     // Not `push(...page)`: a page can be thousands of rows, and spreading them as arguments
     // is a stack limit waiting to be found by the biggest corpus rather than the smallest.
-    for (const root of page) roots.push(root);
+    // First occurrence wins, so the order the engine chose survives de-duplication.
+    for (const root of page) {
+      if (seen.has(root.id)) continue;
+      seen.add(root.id);
+      roots.push(root);
+    }
     if (page.length < limit) return { roots, complete: true };
   }
-  const beyond = await api.graphRoots({ limit: 1, offset: roots.length, order: ROOTS_ORDER });
+  const beyond = await api.graphRoots({ limit: 1, offset: received, order: ROOTS_ORDER });
   return { roots, complete: beyond.length === 0 };
 }
 
