@@ -355,10 +355,23 @@ export interface DiscoveryResult {
  * would make the app read the user's live private store without being asked.
  */
 export interface BuildParams {
-  /** The date-nested `YYYY/MM/DD/rollout-*.jsonl` tree. Must be an existing directory. */
-  sessions_root: string;
-  /** The Codex home whose `state_5.sqlite` spawn graph is merged in. */
-  codex_home: string;
+  /**
+   * The Codex date-nested `YYYY/MM/DD/rollout-*.jsonl` tree. OPTIONAL: every source is
+   * opt-in by naming its root, and `corpus.build` refuses only when NONE is named. A
+   * machine can hold a Grok store and no Codex store at all.
+   */
+  sessions_root?: string;
+  /**
+   * A Grok Build session store (`<enc-cwd>/<session-id>/`). Opt-in, like the above.
+   */
+  grok_root?: string;
+  /**
+   * The Codex home whose `state_5.sqlite` spawn graph is merged in. OPTIONAL, and omitting
+   * it means "no state graph" — NOT "go find one". The engine used to fall through to the
+   * live `~/.codex` when this was absent, which is how an automated probe read the owner's
+   * real sessions; that fallback is gone and omission is now the safe choice.
+   */
+  codex_home?: string;
 }
 
 /** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:737-739`). */

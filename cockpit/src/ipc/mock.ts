@@ -830,7 +830,10 @@ export function createMockIpc(
       return {
         job_id: buildJob.id,
         state: "running",
-        sessions_root: params.sessions_root,
+        // Echo whichever source was named. Every root is opt-in now, so a Grok-only build
+        // carries no `sessions_root` at all — defaulting to "" mirrors the engine, which
+        // reports `_clean(sessions_root)` on an unnamed root rather than omitting the key.
+        sessions_root: params.sessions_root ?? params.grok_root ?? "",
         started_ms: T0,
       };
     },

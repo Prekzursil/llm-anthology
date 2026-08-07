@@ -289,6 +289,22 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * import it cannot satisfy. The settling check is a new `StoreSpec` row: if one is ever
  * added with `report="base"`, this rule needs a capability field from the engine instead.
  */
+/**
+ * The one provider this rule name-checks, and why the structural rule is no longer enough.
+ *
+ * The derivation below reads a store's SHAPE rather than its name, because shape encoded the
+ * capability: a base-reporting store (Codex) names a home and an item tree separately, a
+ * subdir-reporting one names only the tree. That held while Codex was the sole importable
+ * store. It does not any more — Grok and Claude Code are BOTH subdir-reporting, and only Grok
+ * has an ingest path (`loaders.load_corpus` takes `grok_root`; nothing calls the Claude Code
+ * adapter yet). Two identical shapes, different capabilities, so shape cannot decide it.
+ *
+ * This is a stopgap and should be replaced: the ENGINE knows which providers it can ingest and
+ * the UI is guessing. The settling change is a capability field on the discovery finding —
+ * then this constant and the name-check both disappear.
+ */
+const GROK_PROVIDER = "grok";
+
 export function deriveBuildParams(
   finding: DiscoveryFinding,
 ): { build: BuildParams; missing: "" } | { build: null; missing: string } {
@@ -299,10 +315,23 @@ export function deriveBuildParams(
       missing: "the scan reported no item root for this store, so there is nothing to point an import at",
     };
   }
+
+  // A GROK store is importable on its own. `corpus.build` takes `grok_root` and needs
+  // nothing else: `codex_home` is optional and omitting it means "no Codex state graph to
+  // merge", which is exactly true here. The finding's `path` IS the sessions root
+  // `grok.ingest_sessions` takes (its spec reports `subdir` for that reason), so no
+  // derivation is needed beyond naming it.
+  if (finding.provider === GROK_PROVIDER) {
+    return { build: { grok_root: finding.path }, missing: "" };
+  }
+
   if (samePath(finding.path, itemsRoot)) {
+    // A subdir-reporting store that is NOT Grok. Claude Code is the live example: an
+    // adapter for it exists, but `loaders.load_corpus` does not call it yet, so there is
+    // genuinely no ingest to offer and saying otherwise would be inventing a capability.
     return {
       build: null,
-      missing: "this app's only import reads Codex session stores, and this finding names no Codex home",
+      missing: `this app cannot import a ${finding.provider} store yet — it reads Codex and Grok session stores`,
     };
   }
   return { build: { sessions_root: itemsRoot, codex_home: finding.path }, missing: "" };

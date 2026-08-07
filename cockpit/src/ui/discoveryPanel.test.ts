@@ -93,6 +93,27 @@ function codexStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
 }
 
 /** The Claude Code shape: `report="subdir"`, so `path` and `items_root` are the SAME. */
+/**
+ * A Grok Build store as `discover.py` reports it: subdir-reporting, so `path` IS the sessions
+ * root `grok.ingest_sessions` takes and `items_root` is the same directory. Structurally
+ * identical to a Claude Code finding, which is precisely why shape alone can no longer decide
+ * importability.
+ */
+function grokStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
+  return finding({
+    provider: "grok",
+    kind: "session_store",
+    path: "C:\\Users\\me\\.grok\\sessions",
+    count: 68,
+    detail: {
+      ingestable: 68,
+      items_root: "C:\\Users\\me\\.grok\\sessions",
+      sessions: 68,
+    },
+    ...over,
+  });
+}
+
 function claudeCodeStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
   return finding({
     provider: "claude-code",
@@ -305,6 +326,26 @@ describe("deriveBuildParams", () => {
     });
   });
 
+  it("derives a GROK-ONLY import: grok_root alone, no Codex paths", () => {
+    // Grok is subdir-reporting like Claude Code — path === items_root — but unlike it, the
+    // engine CAN ingest it: `loaders.load_corpus` takes `grok_root`, and `codex_home` is
+    // optional because an unnamed home simply means no state graph to merge. So the shape
+    // rule that refuses Claude Code must NOT refuse this.
+    const derived = deriveBuildParams(grokStore());
+
+    expect(derived.build).toEqual({ grok_root: "C:\\Users\\me\\.grok\\sessions" });
+    expect(derived.missing).toBe("");
+  });
+
+  it("does NOT invent a codex_home for a Grok store", () => {
+    // Passing one would merge a Codex state graph into a Grok-only import, and passing the
+    // LIVE default is the exact behaviour that once let an automated probe read real
+    // private sessions.
+    const derived = deriveBuildParams(grokStore());
+    expect(derived.build?.codex_home).toBeUndefined();
+    expect(derived.build?.sessions_root).toBeUndefined();
+  });
+
   it("refuses when the finding names only the item tree", () => {
     // report="subdir" (Claude Code): path === items_root, so no Codex home exists anywhere
     // in the finding. Defaulting one would point the ingest at a tree where
@@ -312,7 +353,7 @@ describe("deriveBuildParams", () => {
     // success having imported zero conversations.
     const derived = deriveBuildParams(claudeCodeStore());
     expect(derived.build).toBeNull();
-    expect(derived.missing).toContain("no Codex home");
+    expect(derived.missing).toContain("cannot import a claude-code store yet");
   });
 
   it("refuses when the scan reported no item root at all", () => {
@@ -829,7 +870,7 @@ describe("DiscoveryPanelController.activate", () => {
     const h = harness();
     await h.controller.activate(claudeCodeStore());
     expect(h.ipc.builds).toEqual([]);
-    expect(h.controller.current.status).toContain("no Codex home");
+    expect(h.controller.current.status).toContain("cannot import a claude-code store yet");
   });
 
   it("creates and attaches an index before importing when nothing is open", async () => {
