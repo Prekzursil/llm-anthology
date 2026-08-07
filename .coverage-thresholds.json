@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SINGLE SOURCE OF TRUTH for coverage in this repo; overrides any skill's own coverage logic. This project has THREE stacks, so the flat `thresholds`/`enforcement` pair below is the PYTHON gate (the only one enforced today) and `stacks` carries the per-stack detail. Do NOT lower the Python numbers: pyproject.toml `addopts` enforces them independently, so relaxing them here would create two disagreeing sources of truth.",
+  "thresholds": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100,
+    "statements": 100
+  },
+  "enforcement": {
+    "command": "python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100",
+    "blockPRCreation": true,
+    "blockTaskCompletion": true,
+    "description": "Orchestrator agents MUST check coverage against these thresholds before marking any task complete or creating a PR. If coverage drops below any threshold, the task fails."
+  },
+  "stacks": {
+    "python": {
+      "target": "llm_anthology",
+      "thresholds": { "lines": 100, "branches": 100, "functions": 100, "statements": 100 },
+      "command": "python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100",
+      "status": "enforced",
+      "note": "Also enforced independently by `addopts` in pyproject.toml, so a bare `python -m pytest` already fails below 100%. Measured 1261 passing at 100% branch coverage at HEAD 3a0cdbe. Do not pass `-q` on top of addopts: it becomes `-qq` and SUPPRESSES the pass/fail summary line, which reads as a broken suite.",
+      "blockPRCreation": true,
+      "blockTaskCompletion": true
+    },
+    "typescript": {
+      "target": "cockpit/src",
+      "thresholds": { "lines": 100, "branches": 100, "functions": 100, "statements": 100 },
+      "command": "npx vitest run --coverage",
+      "status": "target-not-yet-enforceable",
+      "note": "100% is the agreed TARGET, set deliberately before it is reachable so the goal is unambiguous. It CANNOT be enforced yet, and a red result here means the blocker below rather than broken tooling: cockpit/vitest.config.ts runs `environment: \"node\"` with no DOM, so reader.ts, app.ts and virtualList.ts are STRUCTURALLY untestable rather than merely untested. No threshold fixes that; only switching to jsdom/happy-dom can. Any number measured before that switch is also flattering, because it excludes those modules entirely.",
+      "unblockedBy": "Phase 1a - switch vitest to jsdom/happy-dom, MEASURE, then flip blockPRCreation/blockTaskCompletion to true.",
+      "blockPRCreation": false,
+      "blockTaskCompletion": false
+    },
+    "rust": {
+      "target": "cockpit/src-tauri",
+      "thresholds": null,
+      "command": "cargo test",
+      "status": "tests-run-no-coverage-gate",
+      "note": "18 tests exist. No coverage instrumentation is configured (cargo-tarpaulin is not installed) and none is planned for the first release; `cargo test` passing is the bar. As of HEAD 3a0cdbe these have never run in CI - see Phase 1d.",
+      "blockPRCreation": false,
+      "blockTaskCompletion": false
+    }
+  }
+}

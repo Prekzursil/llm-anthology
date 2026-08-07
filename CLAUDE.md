@@ -303,3 +303,21 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+> ### ACTIVE EXCEPTION to the push rule above — read before pushing
+>
+> The beads block is a generic template and it currently contradicts a deliberate decision
+> about THIS repo. As of 2026-08-07 there are **38 commits on `main` that are intentionally
+> unpushed**, and that is not stranded work.
+>
+> **Why:** no CI job enters `cockpit/` or `src-tauri/`, so 365 vitest tests, 18 cargo tests,
+> the typecheck and the Tauri build have never run in CI. Pushing before that job exists makes
+> the work *visible* without making it *validated*. The agreed sequence is: add the cockpit CI
+> job on a windows + linux matrix FIRST (Phase 1d), then push (Phase 1e), so every commit lands
+> checked.
+>
+> **Precedence:** the owner's explicit in-session decision outranks a template rule. Do not
+> auto-push this repo to satisfy the block above. Once the cockpit CI job is merged and green,
+> this exception expires and the normal rule resumes — delete this note then.
+>
+> Full reasoning and the rest of the plan: `.scratch/maturation/OPEN-ITEMS.md` (gitignored).

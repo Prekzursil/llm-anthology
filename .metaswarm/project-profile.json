@@ -1,0 +1,54 @@
+{
+  "metaswarm_version": "0.12.0",
+  "distribution": "plugin",
+  "installed_at": "2026-08-07T15:49:00Z",
+  "updated_at": "2026-08-07T15:49:00Z",
+  "$comment": "Detection is recorded as MEASURED, not as the template's defaults. This project is multi-stack: a Python engine is primary, with a Tauri cockpit (TypeScript + Rust) and a separate TypeScript port under js/. The flat fields below describe the PRIMARY stack because that is what consumers of this file expect; `stacks` carries the rest.",
+  "detection": {
+    "language": "Python",
+    "framework": null,
+    "test_runner": "pytest",
+    "linter": null,
+    "formatter": null,
+    "package_manager": "npm",
+    "type_checker": "tsc",
+    "ci": "github-actions",
+    "git_hooks": null
+  },
+  "detection_notes": {
+    "language": "Primary is Python (root pyproject.toml, package `llm-anthology` 0.1.0). Also TypeScript (cockpit/ and js/, both with tsconfig.json) and Rust (cockpit/src-tauri/Cargo.toml).",
+    "framework": "Tauri v2 for the desktop cockpit. Not in metaswarm's framework table, so the field is null rather than guessed.",
+    "linter": "NONE configured. `.ruff_cache/` exists but was created 2026-08-07 by an external agent hook running ruff ad-hoc; ruff appears in neither pyproject.toml nor any workflow. Recorded as null deliberately.",
+    "formatter": "NONE configured, same reasoning as linter.",
+    "package_manager": "npm, from cockpit/package-lock.json. Not applicable to the Python engine.",
+    "ci": "`.github/workflows/ci.yml` has exactly two jobs: `test` (python -m pytest) and `js` (working-directory: js). NEITHER enters cockpit/ or src-tauri/, so 365 vitest tests and 18 cargo tests have never run in CI.",
+    "git_hooks": "None. `.git/hooks/` holds only samples; no pre-commit config, no husky."
+  },
+  "stacks": {
+    "python": { "root": ".", "package": "llm_anthology", "test": "python -m pytest", "in_ci": true },
+    "cockpit_ts": { "root": "cockpit", "test": "npx vitest run", "typecheck": "npx tsc --noEmit", "build": "npm run build", "in_ci": false },
+    "cockpit_rust": { "root": "cockpit/src-tauri", "test": "cargo test", "in_ci": false },
+    "js_port": { "root": "js", "test": "npm test", "in_ci": true }
+  },
+  "choices": {
+    "coverage_threshold": 100,
+    "external_tools": false,
+    "visual_review": false,
+    "ci_pipeline": true,
+    "git_hooks": false
+  },
+  "choice_notes": {
+    "coverage_threshold": "100 for Python (already enforced by pyproject addopts) and 100 as an unenforceable TARGET for TypeScript. See .coverage-thresholds.json for the per-stack detail and why TS cannot be gated until vitest moves off environment:'node'.",
+    "external_tools": "Left false, but BOTH are installed and available if wanted: codex-cli 0.145.0 and gemini 0.45.2. Enabling requires .metaswarm/external-tools.yaml.",
+    "visual_review": "Left false ON PURPOSE. The template's playwright/visual-review skill is not in this repo, and the repo already ships purpose-built headless probes under cockpit/tools/ (smoke_boot, verify_capfanout, probe_keyboard_reach, probe_focus_survives_repaint, trace_tab, contrast_probe) that answer sharper questions than a screenshot would.",
+    "ci_pipeline": "GitHub Actions exists but is INCOMPLETE — see detection_notes.ci. Adding a cockpit job on a windows+linux matrix is Phase 1d of the agreed plan.",
+    "git_hooks": "Left false; none configured today and none requested."
+  },
+  "commands": {
+    "test": "python -m pytest",
+    "coverage": "python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100",
+    "lint": null,
+    "typecheck": "cd cockpit && npx tsc --noEmit",
+    "format_check": null
+  }
+}
