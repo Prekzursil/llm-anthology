@@ -85,10 +85,21 @@ def _build_index(args):
     # parent directory, so do that here exactly as the demo branch has to.
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 
-    # Announce before the work: a real sessions tree takes minutes and load_corpus
-    # exposes no progress hook (loaders.py:310 calls index.build_index WITHOUT its
-    # `progress=` callback), so this line is the only thing standing between the user
-    # and a silent terminal.
+    # Announce before the work: a real sessions tree takes minutes and the call below
+    # passes no `progress=`, so this line is the only thing standing between the user
+    # and a silent terminal. NOT because there is no hook — `load_corpus` accepts one
+    # (loaders.py:319) and forwards it to `index.build_index` after every committed
+    # chunk (loaders.py:428). An earlier version of this comment denied that any such
+    # hook existed at all; that was true when it was written and the forward has since
+    # been added, so per-chunk CLI progress is a one-line change AT THIS CALL SITE
+    # rather than a change in loaders. Whether to wire it is an OPEN decision, not a
+    # settled one — nothing here records a reason for leaving it unwired.
+    #
+    # The dead phrasing is deliberately PARAPHRASED above rather than quoted back:
+    # `tests/test_citation_anchors.py` bans it as a literal substring of this file, and
+    # a gate that cannot tell a quotation from an assertion is the right trade — a
+    # re-assertion must not be able to hide inside quote marks. Do not restore the
+    # quote and then relax the gate.
     print("INDEX_BUILDING", args.src, "->", args.out_index, flush=True)
     # Disclose the state store BEFORE reading it. With no --codex-home, load_corpus
     # falls back to the LIVE Codex store ($CODEX_HOME, else ~/.codex — see

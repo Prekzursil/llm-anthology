@@ -545,7 +545,7 @@ def _build_error(err):
     rollout is attacker-influenced text and must not relay a hidden-unicode payload.
 
     ``file`` is indexed directly rather than guarded: every producer sets it
-    (codex_rollout.py:336, :340, :366), so a guard here would be an unreachable branch, and
+    (codex_rollout.py:343, :347, :435), so a guard here would be an unreachable branch, and
     a future producer that omitted it should fail LOUDLY rather than silently leak the
     absolute path this function exists to strip."""
     projected = dict(err)
@@ -734,25 +734,25 @@ class Sidecar:
     # `build` starts the work and returns a handle, and `build_status` reports on it.
     #
     # WHY THE WORKER NEVER TOUCHES self.conn. corpus.open_index builds its connection with
-    # sqlite3's DEFAULT check_same_thread=True (corpus.py:241), so any use of self.conn off
+    # sqlite3's DEFAULT check_same_thread=True (corpus.py:274), so any use of self.conn off
     # the request thread raises ProgrammingError — measured, not assumed. The worker is
-    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:308) and
-    # closes (loaders.py:312) its OWN connection inside the worker thread, so the two
+    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:419) and
+    # closes (loaders.py:430) its OWN connection inside the worker thread, so the two
     # connections are thread-confined by construction. They do share the file, which is
-    # exactly what WAL (corpus.py:233) is for: the request thread keeps reading committed
+    # exactly what WAL (corpus.py:263) is for: the request thread keeps reading committed
     # rows while the worker writes, and a transient collision is already typed as -32002.
     #
-    # NO CANCEL, DELIBERATELY. The only cooperative abort point in the stack is
-    # index.build_index's per-chunk `progress` callback (index.py:171-172), and
-    # loaders.load_corpus does not forward one (loaders.py:310 calls build_index with no
-    # progress=), so there is no hook to honour a cancel through — and the phase BEFORE it,
-    # codex_rollout.ingest_sessions, has no hook at all. Killing the thread outright is not
-    # safe in CPython and would abandon an open sqlite connection mid-transaction. Shipping
-    # a cancel that only fires after the longest phase already finished would be a lie, so
-    # none is offered. What stands in for it: build_index commits and advances its
-    # checkpoint after every chunk (index.py:168-170), so an abandoned build leaves a
-    # VALID, partially-populated index and the next build RESUMES from the last committed
-    # batch instead of restarting. Recovery is "run it again", not "cancel".
+    # NO CANCEL. The only cooperative abort point is index.build_index's per-chunk
+    # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
+    # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
+    # IS DEAD: load_corpus takes `progress` (loaders.py:319) and forwards it
+    # (loaders.py:428). True now, and narrower: the worker (sidecar.py:928) passes none, a
+    # call-site gap, not an architectural one. What still holds: the phase BEFORE it,
+    # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
+    # longest phase would be a lie, and killing the thread is unsafe in CPython. What
+    # stands in for it: build_index commits and advances its checkpoint every chunk
+    # (index.py:168-170), so an abandoned build leaves a VALID, partially-populated index
+    # and the next RESUMES from the last committed batch. Recovery is "run it again".
 
     def _corpus_create(self, params):
         """Initialise an EMPTY index at ``index_path`` — the explicit CREATE verb.
@@ -835,15 +835,15 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is REQUIRED and never defaulted, exactly as ``dedup.scan`` requires
-        it and for the same measured reason: ``loaders.load_corpus`` with ``codex_home``
-        None falls back to the LIVE Codex store (codex_state.py:127-130), and an automated
-        probe really did read the owner's real sessions that way. An ingest of private data
-        must be something the caller named. Both paths are refused if UNC (an outbound
-        SMB/NTLM vector) or relative.
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:876) — but is
+        never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
+        measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
+        LIVE Codex store (codex_state.py:127-130), and an automated probe really did read
+        the owner's real sessions that way. Omitting it means "no state graph", never "go
+        find one". Both paths are refused if UNC (an outbound SMB/NTLM vector) or relative.
 
         ``sessions_root`` must also be an existing DIRECTORY. ingest_sessions globs
-        (codex_rollout.py:361-362), so a typo'd root yields zero docs and zero errors and
+        (codex_rollout.py:425), so a typo'd root yields zero docs and zero errors and
         would otherwise report a perfectly "successful" build of nothing."""
         self._require_corpus()
         # EVERY source is opt-in by naming its root, and at least one must be named.
@@ -922,7 +922,7 @@ class Sidecar:
         returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
-        conversation ingest (loaders.py:310-311), so a FAILED build can still have changed
+        conversation ingest (loaders.py:421-428), so a FAILED build can still have changed
         the index and the live view must follow it."""
         try:
             _built, errors = loaders.load_corpus(
@@ -946,8 +946,8 @@ class Sidecar:
 
         WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
         Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
-        loaders.py:281), while ``_persist_graph`` UPSERTS that run into the tables a previous
-        build already populated (loaders.py:346-350). The in-app flow is "open an existing
+        loaders.py:366), while ``_persist_graph`` UPSERTS that run into the tables a previous
+        build already populated (loaders.py:725-686, INSERT OR REPLACE). The in-app flow is "open an existing
         corpus, then ingest more sessions into it", so taking the returned object would drop
         every previously-ingested thread from the live view while the index on disk still
         held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].

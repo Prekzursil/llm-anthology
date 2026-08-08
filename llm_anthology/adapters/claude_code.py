@@ -1,8 +1,9 @@
 """Claude Code transcripts (~/.claude/projects/<slug>/...jsonl) -> IR + spawn graph.
 
 The owner's LARGEST store by a wide margin: 27,770 files, of which 162 are SESSIONS
-and 12,613 are SUBAGENT transcripts. `discover.py:305-309` already finds it and says
-"no adapter in this repository reads that shape yet" — this is that adapter.
+and 12,613 are SUBAGENT transcripts. `discover.py:309` already finds it — its StoreSpec
+carried a note reading "no adapter in this repository reads that shape yet", and this is
+that adapter, so the note has been corrected in place (`discover.py:306-308`).
 
 A session is ONE append-only JSONL file, unlike Grok (a directory) and like a Codex
 rollout. Every line is a self-describing record `{type, timestamp, sessionId, uuid,
@@ -92,7 +93,7 @@ Nine traps this adapter is built around:
     `sessionId` is preserved in `meta['reported_session_id']` so a mismatch is visible
     rather than silent.
 
- 4. THE CHILD OWNS ITS EDGE — deliberately NOT grok's shape. `grok.py:595-610` has the
+ 4. THE CHILD OWNS ITS EDGE — deliberately NOT grok's shape. `grok.py:626-636` has the
     PARENT read its `subagents/` directory. Doing that here would walk the 12,613-file
     subtree twice (once to build a parent's edge list, once to ingest the children as
     documents) and would give one parent a 1,238-element edge list. Instead each child
@@ -129,7 +130,7 @@ Nine traps this adapter is built around:
 
  9. PERFORMANCE IS A FIRST-CLASS CONSTRAINT AT 12,775 FILES. `os.walk` is used instead
     of `glob.glob('**')`: it needs no `glob.escape` around real directory names (a
-    percent/bracket-bearing slug is a genuine hazard — see `grok.py:603`), it does not
+    percent/bracket-bearing slug is a genuine hazard — see `grok.py:632-633`), it does not
     follow directory symlinks, and it yields a stable order when sorted. One walk, one
     read per file, one pass per line, O(1) dict updates — nothing is keyed by parent,
     so nothing is quadratic in a session's 78-to-1238 children. `iter_documents` is a
@@ -151,7 +152,7 @@ from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
 #: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1634` surfaces it to
-#: the UI as `provider`. It matches `discover.py:307`'s StoreSpec label so the panel and
+#: the UI as `provider`. It matches `discover.py:309`'s StoreSpec label so the panel and
 #: the ingest name one store the same way, and it is deliberately NOT "claude" —
 #: `adapters/claude.py` owns that for the claude.ai account export, which is a different
 #: product and a different shape.
@@ -692,7 +693,7 @@ class _Reader:
         edges = []
         # trap 4: the child declares its own edge; a session declares none. A child
         # with no parent yields nothing — half an edge would render as a spawn that
-        # never happened (`grok.py:477-478`).
+        # never happened (`grok.py:516-517` makes the same call for the same reason).
         if is_child and layout.parent_id:
             edges.append(corpus.SpawnEdge(layout.parent_id, tid, spawn_kind))
         return ClaudeCodeDoc(conversation=conv, thread=thread, edges=edges,

@@ -501,6 +501,42 @@ def test_gemini_harvest_second_turn_finds_record_already_claimed():
     assert matched == 1
 
 
+def test_a_DUPLICATE_prompt_is_placed_arbitrarily_but_never_lost():
+    """Pins the real guarantee of "TRUE grouping", which is narrower than the name.
+
+    The join is exact on prompt TEXT, and a prompt is not unique — "thanks", "continue",
+    "ok". For a repeated one the loop takes the first index not already `claimed`, i.e.
+    whichever conversation was walked first, NOT the one that turn belongs to. Nothing
+    downstream can notice: the turn is matched, `claimed` advances, and the matched count
+    is unchanged.
+
+    So the guarantee is placement-exactly-once, not placement-correctly. Here two separate
+    conversations each say "thanks" and there are two such Takeout records. Whatever the
+    walk order, both records must be placed, each exactly once, and none may reach the
+    "unmatched" bucket — that part IS a promise and this holds it. Which conversation gets
+    which is deliberately NOT asserted, because the code does not decide it on any
+    principle and a test pretending otherwise would be pinning an accident.
+    """
+    records = [{"verb": "Prompted", "prompt": "thanks"},
+               {"verb": "Prompted", "prompt": "thanks"},
+               {"verb": "Prompted", "prompt": "unique to the second"}]
+    harvest = [
+        {"id": "g1", "title": "First", "turns": [{"role": "user", "text": "thanks"}]},
+        {"id": "g2", "title": "Second", "turns": [
+            {"role": "user", "text": "unique to the second"},
+            {"role": "user", "text": "thanks"}]},
+    ]
+    groups, matched = loaders.gemini_groups_from_harvest(records, harvest)
+
+    assert matched == 3, "every record is placed"
+    assert not any(g["id"] == "unmatched" for g in groups), "and none is dropped"
+    placed = sorted(i for g in groups for i in g["turn_idxs"])
+    assert placed == [0, 1, 2], "each record is placed exactly once, no index repeated"
+    # The unique prompt is the one case the join really can get right, so it IS asserted.
+    second = [g for g in groups if g["id"] == "g2"][0]
+    assert 2 in second["turn_idxs"], "a UNIQUE prompt must land in its own conversation"
+
+
 def test_gemini_gap_heuristic_on_empty_records():
     assert loaders.gemini_groups_from_gaps([]) == []           # `if cur` false path
 

@@ -183,7 +183,31 @@ def _gemini_ts(rec):
 
 def gemini_groups_from_harvest(records, harvest):
     """TRUE grouping: join each harvested web turn to its Takeout record by exact
-    normalised prompt text. Unmatched Takeout records are reported, never dropped."""
+    normalised prompt text. Unmatched Takeout records are reported, never dropped.
+
+    WHERE "TRUE" OVERSTATES IT. The join is exact on the prompt TEXT, not on identity, and
+    a prompt is not unique. For a repeated one — "thanks", "continue", "ok", "go on" — the
+    loop below takes the first index not already `claimed`, which is whichever conversation
+    happened to be walked first, not the one that turn belongs to. So a duplicate prompt
+    CAN be filed under the wrong conversation, and neither the caller nor the fidelity
+    report can tell: the turn is matched, `claimed` advances, and the count reported as
+    matched is unchanged.
+
+    The guarantee this actually offers is therefore narrower than the name: every Takeout
+    record is placed exactly once and none is dropped (leftovers become the "unmatched"
+    group), and a prompt that is UNIQUE within the export lands in the right conversation.
+    A duplicate prompt is placed arbitrarily but not lost.
+
+    Still called TRUE grouping relative to `gemini_groups_from_gaps`, which infers
+    conversation boundaries from timestamp gaps and is labelled PROVISIONAL — this one is
+    driven by real harvested structure. The label distinguishes the two SOURCES, not a
+    claim of per-turn correctness.
+
+    What would settle the residual: match within a conversation's own turn ORDER rather
+    than against one flat `by_prompt` pool, so a repeated prompt resolves against the
+    sequence it sits in. Not done here — it changes assignment for real exports and wants
+    a fidelity fixture with duplicate prompts to measure against first.
+    """
     by_prompt = {}
     for i, r in enumerate(records):
         key = _norm(r.get("prompt"))
@@ -257,10 +281,27 @@ def _fingerprint(conv):
     """A lightweight, stable content fingerprint for an ingested conversation.
 
     Keyed on (id, updated_at, turn count) so an APPENDED-TO rollout (a later
-    updated_at / more turns) re-ingests while an unchanged one is skipped. Correctness
-    does not rest on it — corpus.add_conversation is idempotent by conversation_id, so
-    even a fingerprint collision cannot duplicate a posting; it only drives the fast
-    resume/skip path in index.build_index.
+    updated_at / more turns) re-ingests while an unchanged one is skipped.
+
+    A DEFENCE THAT DID NOT ADDRESS THE RISK. This used to say correctness does not rest on
+    the fingerprint, because `corpus.add_conversation` is idempotent by conversation_id and
+    so a collision "cannot duplicate a posting". True, and beside the point: idempotence
+    only helps on calls that HAPPEN. A collision means `index.build_index` SKIPS the source,
+    `add_conversation` is never called for it at all, and the index keeps serving the old
+    text. The failure mode is a MISSED RE-INDEX, not a duplicated one, and idempotence is
+    no protection against it — the same shape as the defect `test_corpus_reindex.py`
+    documents, one layer up.
+
+    So correctness DOES rest on it, and the honest statement is that the residual is
+    currently unreachable rather than harmless: a miss needs an edit that leaves the id,
+    `updated_at` AND turn count all identical, and all three adapters derive `updated_at`
+    from the last record they read, so appending moves it. An in-place edit of an existing
+    turn is the shape that would slip through. LATENT — no such producer exists today,
+    UNVERIFIED for any store hand-edited or written by a future adapter.
+
+    What would settle it: fingerprint the body rather than its proxies (the file's size and
+    mtime, or a hash of the assembled text). Not done here, because the fingerprint is
+    computed per source on every build and the cheap key is the reason a resume is fast.
     """
     return index.hash_content(json.dumps([conv.id, conv.updated_at, len(conv.turns)]))
 

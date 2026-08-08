@@ -117,7 +117,7 @@ PRUNED_DIR_NAMES = frozenset({
     "AppData", "Library", "System Volume Information", "$RECYCLE.BIN",
     ".cache", ".gradle", ".m2", ".nuget", ".cargo", ".rustup", ".conda",
     "Windows", "Program Files", "Program Files (x86)",
-    # this app's own rendered output. loaders.py:56-58 already refuses to INGEST a
+    # this app's own rendered output. loaders.py:64-66 already refuses to INGEST a
     # `_site` tree ("never ingest our own output"); offering one back as a discovery
     # would recreate that bug from the other end.
     "_site", "_codex_site",
@@ -303,9 +303,9 @@ PROVIDERS = (
               markers=(("state_db", "state_5.sqlite"),),
               item_depth=5, report="base"),
 
-    # Claude Code writes one .jsonl transcript per session under
-    # ~/.claude/projects/<slug>/. NOTE for a caller: no adapter in this repository
-    # reads that shape yet, so this finding is "here is data", not "openable today".
+    # Claude Code writes one .jsonl transcript per session under ~/.claude/projects/<slug>/.
+    # This finding IS openable: `adapters/claude_code.py:1-6` reads that shape and
+    # `sidecar.py:246` wires it in. (Said "no adapter reads it yet" until that adapter landed.)
     StoreSpec(provider="claude-code", root="claude_home", subdir="projects",
               item_patterns=("*.jsonl",), item_depth=2, report="subdir",
               dir_counter="project_dirs"),

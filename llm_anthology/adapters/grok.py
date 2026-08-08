@@ -119,10 +119,15 @@ from llm_anthology import corpus, ir
 #:
 #: NOT for `ThreadMeta.model_provider` — that field is the MODEL VENDOR and takes
 #: :data:`GROK_MODEL_VENDOR`. (The comment here previously defended putting this label in
-#: that field on the grounds that `sidecar.py:1390` surfaced it as the thread's provider.
-#: That is no longer true — `sidecar.py:1634` surfaces `provider = meta.adapter` and
-#: passes `model_provider` separately — so the defence cited behaviour that no longer
-#: exists and is removed rather than left to re-justify the same mistake.)
+#: that field on the grounds that the graph node surfaced `model_provider` as the thread's
+#: provider. That WAS true when it was written — `git show a361759:llm_anthology/sidecar.py`
+#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1634`
+#: surfaces `provider = meta.adapter` and passes `model_provider` separately. That old
+#: anchor is deliberately spelled as a GIT REVISION and not as a live `<file>:<line>`,
+#: because line 1390 of today's sidecar is unrelated code in `_metadata_search`: a reader
+#: following it would land nowhere, and a live-looking citation into a former file state is
+#: exactly the drift this repo pins against. The defence is recorded, and refuted, rather
+#: than left to re-justify the same mistake.)
 GROK_PROVIDER = "grok"
 
 #: The MODEL VENDOR for `ThreadMeta.model_provider` — a DIFFERENT vocabulary from the
