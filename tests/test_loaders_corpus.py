@@ -774,6 +774,79 @@ def test_a_RESUMED_session_merges_legs_that_carry_NO_item_id(tmp_path):
         "an id-less replay collapses; an id-less NEW turn survives"
 
 
+def test_one_item_id_rendered_TWO_ways_keeps_the_fuller_rendering(tmp_path):
+    """`Turn.uuid` marks where a turn STARTS, not how far it extends: codex_rollout.py:283
+    opens an assistant turn with the first item id of a run and accumulates the rest of
+    the run into it, so a resumed leg that cuts the run differently re-states the same id
+    with a different body.
+
+    MEASURED on the real store: 3 such turns across the 236 merges, all in one 66-leg
+    thread, and every one DIVERGENT — neither body a prefix of the other (94 blocks /
+    12,044 chars against 35 / 17,012 for the same id). Keeping whichever landed first
+    would silently truncate a message by thousands of characters. This was found by
+    falsifying the merge against real data AFTER the synthetic tests were already green,
+    which is the only reason it is not still shipping.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        # the run is cut short here — this leg saw only the opening of the answer
+        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
+                               "content": [{"type": "output_text", "text": "short"}]},
+             "2026-07-24T10:00:01.000Z"),
+    ])
+    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
+                               "content": [{"type": "output_text",
+                                            "text": "the whole answer, at length"}]},
+             "2026-07-24T12:00:01.000Z"),
+    ])
+    home.mkdir()
+
+    c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    merged = c.conversations[0]
+    assert len(merged.turns) == 1, "one provider item stays one turn"
+    assert [b.text for b in merged.turns[0].blocks] == ["the whole answer, at length"], \
+        "the fuller rendering replaces the truncated one, in place"
+    # a lossy reconciliation must be visible, not silent
+    assert merged.meta["merge_divergent_turns"] == 1
+
+
+def test_a_leg_that_re_states_a_turn_WORSE_does_not_shrink_it(tmp_path):
+    """The mirror of the test above, and the control that proves it is choosing rather
+    than just preferring whatever came last. Order the same divergence the other way —
+    full rendering first, truncated second — and the full one must survive.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
+                               "content": [{"type": "output_text",
+                                            "text": "the whole answer, at length"}]},
+             "2026-07-24T10:00:01.000Z"),
+    ])
+    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
+                               "content": [{"type": "output_text", "text": "short"}]},
+             "2026-07-24T12:00:01.000Z"),
+    ])
+    home.mkdir()
+
+    c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    merged = c.conversations[0]
+    assert [b.text for b in merged.turns[0].blocks] == ["the whole answer, at length"]
+    assert "merge_divergent_turns" not in merged.meta, \
+        "nothing was replaced, so nothing is reported"
+
+
 def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
     """A merged conversation is stitched from more than one file, so the single
     `rollout_path` the reader opens can no longer describe where it came from. The legs

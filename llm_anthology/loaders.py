@@ -497,14 +497,37 @@ def _turn_key(turn):
             tuple((b.type, b.text) for b in turn.blocks))
 
 
+def _turn_weight(turn):
+    """How much a rendering of a turn actually carries, for choosing between two of them.
+
+    Characters rather than block count: the measured divergence had the FEWER blocks and
+    the MORE text (35 blocks / 17,012 chars against 94 / 12,044), so counting blocks picks
+    the emptier one.
+    """
+    return sum(len(b.text) for b in turn.blocks)
+
+
 def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     """Fold a LATER rollout of an already-admitted thread into the conversation it
     continues, rather than letting it overwrite that conversation in the index.
 
-    Filtering is one-directional and one-shot: the incoming leg is compared against the
-    turns admitted BEFORE it, snapshotted first. A turn repeated WITHIN a single rollout
-    is the adapter's own output and is left exactly as it came — this function's job is
-    to reconcile files, not to second-guess one.
+    The incoming leg is filtered against every turn admitted so far. The FIRST leg is
+    never filtered at all — it is admitted whole by `_admit` and never passes through
+    here — so a rollout's own internal repeats survive exactly as the adapter emitted
+    them; only a LATER leg re-stating something already held is dropped.
+
+    ONE PROVIDER ID, TWO RENDERINGS. `Turn.uuid` marks where a turn STARTS, not how far
+    it extends: `codex_rollout.py:283` opens an assistant turn with the id of the first
+    item in a run and then accumulates the rest of the run into it. A resumed leg can cut
+    that run differently, so the same id can arrive carrying a different body. MEASURED:
+    3 such turns across the 236 real merges, all in one 66-leg thread, and all DIVERGENT
+    — neither body was a prefix of the other (94 blocks/12,044 chars against 35
+    blocks/17,012 chars for the same id). Keeping whichever arrived first would silently
+    truncate a message by thousands of characters, which is a smaller copy of the very
+    bug this function exists to remove. The RICHER rendering wins instead, and the count
+    is recorded in `meta["merge_divergent_turns"]` so a lossy reconciliation is visible
+    rather than silent. Unioning the two bodies was rejected: the legs chunk the same
+    prose differently, so a union duplicates text on screen instead of losing it.
 
     WHICH SIDE WINS, per field, and why:
       * turns          — appended in file order, minus anything already present. 156 of
@@ -523,12 +546,25 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
                          kept in `meta["rollout_paths"]` so the earlier legs stay visible
                          rather than being silently folded away.
     """
-    seen = {_turn_key(t) for t in prior.turns}
+    # key -> POSITION, not the turn itself: a divergent rendering has to replace the one
+    # already held, and `list.index` would find the wrong element whenever two turns
+    # compare equal as dataclasses.
+    seen = {}
+    for i, turn in enumerate(prior.turns):
+        seen.setdefault(_turn_key(turn), i)
+
+    divergent = 0
     for turn in doc.conversation.turns:
         key = _turn_key(turn)
-        if key not in seen:
-            seen.add(key)
+        pos = seen.get(key)
+        if pos is None:
+            seen[key] = len(prior.turns)
             prior.turns.append(turn)
+        elif key[0] == "id" and _turn_weight(turn) > _turn_weight(prior.turns[pos]):
+            prior.turns[pos] = turn                 # same item, fuller rendering
+            divergent += 1
+        # A body-keyed repeat is byte-identical by construction, so there is nothing to
+        # choose between the two copies and the one already held stands.
 
     path = getattr(doc, path_attr)
     later = doc.conversation
@@ -537,6 +573,9 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     prior.meta["rollout_path"] = path
     prior.meta["tokens_used"] = max(prior.meta.get("tokens_used", 0) or 0,
                                     later.meta.get("tokens_used", 0) or 0)
+    if divergent:
+        prior.meta["merge_divergent_turns"] = (
+            prior.meta.get("merge_divergent_turns", 0) + divergent)
 
     # The thread node is upserted by id, so a bare `add_thread` would let the resumed
     # leg's title/preview replace the original's. Carry only the fields that genuinely
