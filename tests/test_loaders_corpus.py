@@ -24,7 +24,7 @@ import json
 import os
 import sqlite3
 
-from llm_anthology import corpus, index, loaders
+from llm_anthology import corpus, index, ir, loaders
 from llm_anthology.adapters import grok
 
 
@@ -642,6 +642,68 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     assert errors == [], "a resumed/repeated same-source id must not be reported"
     assert set(c.threads) == {"C1", _G1}
     assert [(e.parent_thread_id, e.child_thread_id) for e in c.edges] == [("P1", "C1")]
+
+
+def _blank_thread_id_grok_doc(session_dir, conv_id):
+    """A Grok doc whose THREAD id is blank, injected rather than fixtured.
+
+    Deliberately synthetic, and the reason is the finding: the shipped Grok adapter cannot
+    produce one. `grok.py:523` derives `sid` as
+    `info.id or params.sessionId or _dir_id(session_dir)`, and `_dir_id` is the directory
+    basename (`grok.py:238`), which is never empty for a real session directory — grok.py:64-67
+    says that fallback exists precisely so an id of "" cannot happen. So a SECOND blank-id
+    source does not exist among today's two adapters, and injecting the doc is the only way
+    to drive `_admit`'s handling of a blank id. Same stubbing idiom as the grok-root probe
+    above.
+    """
+    conv = ir.Conversation(id=conv_id, title="an id-less session", provider="grok")
+    return grok.GrokDoc(conversation=conv, thread=corpus.ThreadMeta(id=""),
+                        session_dir=session_dir)
+
+
+def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, monkeypatch):
+    """A blank thread id identifies NOTHING, so it can never be a collision.
+
+    THE DEFECT: `_admit` claimed `doc.thread_id` with no guard for "". The first source to
+    yield an id-less session therefore OWNED the `""` key, and every LATER source's id-less
+    session was refused and silently never ingested — reported as "thread id '' is already
+    held by codex-rollout", which reads as an id conflict when neither session had an id at
+    all. `holder != label` means same-source blanks were fine, so the loss is specifically
+    CROSS-source.
+
+    The repo had already settled this question one module over: `dedup.py:339-345` excludes
+    blank ids from its own map because "an id that identifies nothing maps onto nothing", and
+    names codex_rollout's real blank-id case as the reason. This pins the same rule in the
+    ingest path.
+
+    REACHABILITY, stated honestly. The codex side genuinely produces `thread_id == ""`
+    (`codex_rollout.py:296` falls through to `_id_from_path`, which returns "" when the
+    filename carries no UUID) — asserted as a control below so this test cannot pass on a
+    fixture that quietly grew an id. The grok side cannot (see the helper above), so today
+    the cross-source loss is LATENT rather than live: it becomes reachable the moment any
+    third adapter can emit a blank id. The `_admit` contract is wrong either way.
+    """
+    sessions = tmp_path / "sessions"
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    # No session_meta, and no UUID in the filename -> a genuinely blank thread id.
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-plainname.jsonl", [
+        _user("alpha bravo charlie", "2026-07-24T10:00:01.000Z"),
+    ])
+    groot = str(tmp_path / "grok_sessions")
+    os.makedirs(groot, exist_ok=True)
+    grok_dir = os.path.join(groot, _ENC_CWD, "no-id-session")
+    monkeypatch.setattr(grok, "ingest_sessions", lambda root: (
+        [_blank_thread_id_grok_doc(grok_dir, "GROK-NO-THREAD-ID")], []))
+
+    c, errors = loaders.load_corpus(str(sessions), str(tmp_path / "index.sqlite"),
+                                    grok_root=groot)
+
+    # CONTROL: the codex fixture really is id-less. Without this the test would still pass
+    # if that rollout started carrying an id, and would then be asserting nothing.
+    assert "" in c.threads, "the codex fixture stopped producing a blank thread id"
+    # THE REGRESSION: neither id-less session is a collision, and BOTH are ingested.
+    assert [e for e in errors if e["stage"] == "thread-id-collision"] == [], errors
+    assert {conv.id for conv in c.conversations} == {"", "GROK-NO-THREAD-ID"}
 
 
 def test_a_broken_grok_store_does_not_cost_the_codex_ingest(tmp_path):

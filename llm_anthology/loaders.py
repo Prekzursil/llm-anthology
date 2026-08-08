@@ -413,15 +413,38 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources):
     id from the SAME source is admitted, because that is a resumed session (a second
     rollout for one thread) or a copied store — the thread upserts and the conversation
     dedupes by id, exactly as before this function existed.
+
+    A BLANK id neither claims nor collides — see the comment on the guard below.
     """
     thread_id = doc.thread_id
-    holder = claimed_by.get(thread_id)
-    if holder is not None and holder != label:
-        return [{"source": label, "file": getattr(doc, path_attr),
-                 "stage": "thread-id-collision",
-                 "error": "thread id %r is already held by %s; this %s session was NOT "
-                          "ingested" % (thread_id, holder, label)}]
-    claimed_by[thread_id] = label
+    # A blank id is not an identity, so it can neither claim the key nor collide on it.
+    # Without this guard the first source to yield an id-less session OWNED the `""` key and
+    # every LATER source's id-less session was refused as a collision and never ingested —
+    # silent cross-source data loss, reported as "thread id '' is already held by
+    # codex-rollout", which reads as an id conflict when neither session had an id at all.
+    # `codex_rollout` really does derive `thread_id == ""` for a rollout with no
+    # `session_meta` and no UUID in its filename (`codex_rollout.py:296` ->
+    # `_id_from_path`), so the blank is a real input, not a defensive hypothetical.
+    #
+    # `dedup.py:339-345` settled the same question for its own map and states the rule this
+    # follows: "an id that identifies nothing maps onto nothing."
+    #
+    # SKIPPED rather than keyed by path. `claimed_by` has exactly one reader — the check
+    # immediately below — so nothing downstream needs blank-id dedup, and a path key could
+    # never collide anyway (each source contributes a distinct unit on disk). Keying blanks
+    # by path would add an entry with no reader and imply a collision class that does not
+    # exist.
+    #
+    # The real guard is untouched: two DIFFERENT sources claiming the same NON-blank id are
+    # still refused, because that genuinely re-points a subtree and drops a conversation.
+    if thread_id:
+        holder = claimed_by.get(thread_id)
+        if holder is not None and holder != label:
+            return [{"source": label, "file": getattr(doc, path_attr),
+                     "stage": "thread-id-collision",
+                     "error": "thread id %r is already held by %s; this %s session was NOT "
+                              "ingested" % (thread_id, holder, label)}]
+        claimed_by[thread_id] = label
 
     conv = doc.conversation
     conv.meta["thread_id"] = thread_id                  # link the FTS row to its thread
