@@ -43,9 +43,9 @@ Method status (all implemented; honest caveats inline)
                          the ingest on a background thread and returns a job handle, because
                          the client is one mutex-guarded stdio pipe and a blocking build
                          would freeze every other RPC for the length of the ingest. ONE job
-                         at a time (a second start -> -32004). ``sessions_root`` and
-                         ``codex_home`` are both REQUIRED and both refused if UNC or
-                         relative; ``codex_home`` is never defaulted because
+                         at a time (a second start -> -32004). THREE opt-in source roots —
+                         ``sessions_root``, ``grok_root``, ``claude_root`` — at least one
+                         named, each refused if UNC/relative, NONE defaulted: defaulting is how
                          ``loaders.load_corpus`` would otherwise read the owner's LIVE Codex
                          store. An in-memory index -> -32005 (the worker reopens the index
                          BY PATH, and a second connect to ':memory:' is a different
@@ -114,11 +114,11 @@ Method status (all implemented; honest caveats inline)
                          set. ``score`` therefore ranks recency, not relevance.
 * ``thread.get``       — FULL metadata. ``rollout_path`` is withheld from the wire (a
                          local FS path) and surfaced only as ``has_rollout: bool``.
-* ``conversation.get`` — FULL re-parse for a Codex thread that has a readable rollout
-                         file; a documented ``{available:false,reason}`` stub when the
-                         rollout path is empty, missing, or unreadable (e.g. a
-                         non-Codex provider that carries no rollout). Never raises on a
-                         bad file — it degrades to the stub.
+* ``conversation.get`` — FULL re-parse from EVERY rollout leg the index recorded for the
+                         conversation, folded with the ingest's own merge policy, so the
+                         transcript spans what the FTS body was built from; a documented
+                         ``{available:false,reason}`` stub when no leg is readable. Never
+                         raises on a bad file — it degrades to the stub.
 * ``research.synthesize``     — FULL. TWO-TIER synthesis over the corpus. The default
                          tier (``tier:"cloud"``, or absent) redacts EVERY indexed
                          conversation to a ``redact.MetadataView`` and hands ONLY that
@@ -734,19 +734,19 @@ class Sidecar:
     # `build` starts the work and returns a handle, and `build_status` reports on it.
     #
     # WHY THE WORKER NEVER TOUCHES self.conn. corpus.open_index builds its connection with
-    # sqlite3's DEFAULT check_same_thread=True (corpus.py:274), so any use of self.conn off
+    # sqlite3's DEFAULT check_same_thread=True (corpus.py:303), so any use of self.conn off
     # the request thread raises ProgrammingError — measured, not assumed. The worker is
-    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:419) and
-    # closes (loaders.py:430) its OWN connection inside the worker thread, so the two
+    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:436) and
+    # closes (loaders.py:447) its OWN connection inside the worker thread, so the two
     # connections are thread-confined by construction. They do share the file, which is
-    # exactly what WAL (corpus.py:263) is for: the request thread keeps reading committed
+    # exactly what WAL (corpus.py:292) is for: the request thread keeps reading committed
     # rows while the worker writes, and a transient collision is already typed as -32002.
     #
     # NO CANCEL. The only cooperative abort point is index.build_index's per-chunk
     # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
-    # IS DEAD: load_corpus takes `progress` (loaders.py:319) and forwards it
-    # (loaders.py:428). True now, and narrower: the worker (sidecar.py:928) passes none, a
+    # IS DEAD: load_corpus takes `progress` (loaders.py:320) and forwards it
+    # (loaders.py:445). True now, and narrower: the worker (sidecar.py:945) passes none, a
     # call-site gap, not an architectural one. What still holds: the phase BEFORE it,
     # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
     # longest phase would be a lie, and killing the thread is unsafe in CPython. What
@@ -835,16 +835,26 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:876) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:890) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
         LIVE Codex store (codex_state.py:127-130), and an automated probe really did read
         the owner's real sessions that way. Omitting it means "no state graph", never "go
         find one". Both paths are refused if UNC (an outbound SMB/NTLM vector) or relative.
 
-        ``sessions_root`` must also be an existing DIRECTORY. ingest_sessions globs
+        EVERY source root must be an existing DIRECTORY. ingest_sessions globs
         (codex_rollout.py:425), so a typo'd root yields zero docs and zero errors and
-        would otherwise report a perfectly "successful" build of nothing."""
+        would otherwise report a perfectly "successful" build of nothing.
+
+        THREE source roots now, each OPTIONAL and each opt-in: ``sessions_root`` (Codex
+        rollouts), ``grok_root`` (a Grok Build session store) and ``claude_root`` (a
+        Claude Code transcript tree). At least one must be named. ``claude_root`` was
+        added because wiring the adapter into ``loaders.load_corpus`` alone would have
+        left it unreachable from the app one layer up: the cockpit never calls that
+        function, it drives THIS method. The same no-fallback rule governs it as governs
+        ``grok_root`` — ``~/.claude`` is the owner's largest store and holds private
+        medical material, so an unnamed root means "no Claude Code store", never "go find
+        one"."""
         self._require_corpus()
         # EVERY source is opt-in by naming its root, and at least one must be named.
         #
@@ -855,14 +865,18 @@ class Sidecar:
         # reports success for a store that does not exist.
         sessions_root = _opt_str(params, "sessions_root")
         grok_root = _opt_str(params, "grok_root")
-        if not sessions_root and not grok_root:
+        claude_root = _opt_str(params, "claude_root")
+        if not sessions_root and not grok_root and not claude_root:
             raise RpcError(-32602,
-                           "name at least one source: sessions_root (Codex) and/or "
-                           "grok_root (Grok Build)")
-        # Both roots must EXIST when named. Each adapter globs, so a typo'd root yields zero
-        # docs and zero errors — a silent, perfectly "successful" build of nothing, which is
-        # the failure mode this whole ingest path has been bitten by before.
-        for value, name in ((sessions_root, "sessions_root"), (grok_root, "grok_root")):
+                           "name at least one source: sessions_root (Codex), "
+                           "grok_root (Grok Build) and/or claude_root (Claude Code)")
+        # EVERY root must EXIST when named. Each adapter walks or globs, so a typo'd root
+        # yields zero docs and zero errors — a silent, perfectly "successful" build of
+        # nothing, which is the failure mode this whole ingest path has been bitten by
+        # before. `claude_code.ingest_sessions` documents a missing root as ([], []), an
+        # honest empty result for the ADAPTER and a false success for a user who mistyped.
+        for value, name in ((sessions_root, "sessions_root"), (grok_root, "grok_root"),
+                            (claude_root, "claude_root")):
             if not value:
                 continue
             _reject_nonlocal_path(value, name)
@@ -895,7 +909,8 @@ class Sidecar:
                                "build %s is still running; poll corpus.build_status"
                                % self._build_job["job_id"])
             job = {"job_id": "build-%d" % self._next_build_id, "state": "running",
-                   "sessions_root": sessions_root, "grok_root": grok_root, "started_ms": _now_ms(),
+                   "sessions_root": sessions_root, "grok_root": grok_root,
+                   "claude_root": claude_root, "started_ms": _now_ms(),
                    "finished_ms": None, "errors": [], "error": None,
                    "needs_reload": False}
             self._next_build_id += 1
@@ -903,12 +918,14 @@ class Sidecar:
         # OUTSIDE the lock: a synchronous runner executes the worker inline, and the worker
         # takes this same non-reentrant lock — starting it while held would deadlock.
         self._build_runner(
-            lambda: self._run_build(job, sessions_root, index_path, codex_home, grok_root))
+            lambda: self._run_build(job, sessions_root, index_path, codex_home, grok_root,
+                                    claude_root))
         return {"job_id": job["job_id"], "state": "running",
                 "sessions_root": _clean(sessions_root), "grok_root": _clean(grok_root),
-                "started_ms": job["started_ms"]}
+                "claude_root": _clean(claude_root), "started_ms": job["started_ms"]}
 
-    def _run_build(self, job, sessions_root, index_path, codex_home, grok_root=""):
+    def _run_build(self, job, sessions_root, index_path, codex_home, grok_root="",
+                   claude_root=""):
         """THE WORKER. Runs off the request thread; touches ONLY the job record (under the
         lock) and thread-local objects. Values are stored RAW and projected at the wire in
         ``_corpus_build_status``, like every other text-bearing surface here.
@@ -922,11 +939,12 @@ class Sidecar:
         returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
-        conversation ingest (loaders.py:421-428), so a FAILED build can still have changed
+        conversation ingest (loaders.py:438-445), so a FAILED build can still have changed
         the index and the live view must follow it."""
         try:
             _built, errors = loaders.load_corpus(
-                sessions_root, index_path, codex_home, grok_root=grok_root)
+                sessions_root, index_path, codex_home, grok_root=grok_root,
+                claude_root=claude_root)
         except Exception as exc:                      # noqa: BLE001 — see the docstring
             with self._build_lock:
                 job["error"] = "%s: %s" % (type(exc).__name__, exc)
@@ -946,8 +964,8 @@ class Sidecar:
 
         WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
         Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
-        loaders.py:366), while ``_persist_graph`` UPSERTS that run into the tables a previous
-        build already populated (loaders.py:725-686, INSERT OR REPLACE). The in-app flow is "open an existing
+        loaders.py:378), while ``_persist_graph`` UPSERTS that run into the tables a previous
+        build already populated (loaders.py:772-686, INSERT OR REPLACE). The in-app flow is "open an existing
         corpus, then ingest more sessions into it", so taking the returned object would drop
         every previously-ingested thread from the live view while the index on disk still
         held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].
@@ -1160,7 +1178,7 @@ class Sidecar:
             "WHERE conversation_id=?", (cid,)).fetchone()
         if row is None:
             raise RpcError(THREAD_NOT_FOUND, "conversation not found: %s" % cid)
-        conv, info = self._reparse_rollout(row["rollout_path"], row["provider"])
+        conv, info = self._reparse_conversation(row)
         if conv is None:
             return self._conversation_stub(row, info)
         return self._serialize_conversation(conv, info)
@@ -1288,15 +1306,15 @@ class Sidecar:
                 "conversation_count": len(views)}
 
     def _research_local(self):
-        """The LOCAL tier: re-parse every conversation that has a readable rollout and
-        synthesize over its RAW transcript text via the on-box ``local_backend``. The
-        raw prompt is built here and never reaches ``research`` or the network; a
-        conversation with no readable rollout simply contributes nothing."""
+        """The LOCAL tier: re-parse every conversation from ALL its rollout legs — the same
+        fold ``conversation.get`` uses, and the SECOND place this defect lived; see
+        :meth:`_reparse_conversation` — and synthesize over that RAW text via the on-box
+        ``local_backend``. Nothing here reaches ``research`` or the network."""
         transcripts = []
         for row in self.conn.execute(
                 "SELECT conversation_id, provider, rollout_path FROM conversations "
                 "ORDER BY conversation_id").fetchall():
-            conv, _info = self._reparse_rollout(row["rollout_path"], row["provider"])
+            conv, _info = self._reparse_conversation(row)
             if conv is not None:
                 transcripts.append(_raw_transcript(conv))
         prompt = "\n\n".join([_LOCAL_INSTRUCTION, *transcripts])
@@ -1830,6 +1848,82 @@ class Sidecar:
             + frm + " ORDER BY c.created_at DESC, c.conversation_id LIMIT ? OFFSET ?",
             args + [limit, offset]).fetchall()
         return total, rows
+
+    def _reparse_conversation(self, row):
+        """Re-parse ONE conversation from EVERY rollout leg the index recorded for it, and
+        fold them exactly as the ingest did -> ``(ir.Conversation, errors)`` or
+        ``(None, reason)``. Never raises; :meth:`_reparse_rollout` carries that guarantee
+        per leg and nothing here can escape it.
+
+        WHY THIS EXISTS. A resumed Codex session writes a new rollout per resume, and
+        ``loaders._merge_resumed_leg`` folds those legs into ONE conversation, so the FTS
+        body spans all of them. ``conversations.rollout_path`` names only the LAST leg (the
+        file ``codex resume`` continues). Re-parsing that single path — which is what this
+        method replaced — meant a search could MATCH text and then open a transcript that
+        did not contain it. Measured on the real store: 236 conversations merged from 1189
+        files, the widest spanning 66 legs, so for those 236 the reader was showing a
+        fraction of what search could find.
+
+        ONE MERGE POLICY, NOT TWO. The fold is ``loaders.fold_leg_turns`` — the same
+        function the ingest calls, deliberately reused rather than reimplemented. A private
+        copy here would be free to drift, and the drift would be silent: both sides would
+        still return a plausible transcript, they would simply stop being the same one.
+
+        THE SINGLE-LEG PATH IS BYTE-IDENTICAL TO BEFORE. Fewer than two recorded legs falls
+        straight through to ``_reparse_rollout`` on the ``conversations`` column, so the
+        un-merged majority — and every index built before ``conversation_rollouts`` existed,
+        where the leg list reads back empty for everything — behaves exactly as it did.
+        That is the whole migration story: no rebuild is required, and a rebuild repairs.
+
+        A LEG THAT NO LONGER READS IS DISCLOSED, NOT HIDDEN. It is skipped and counted in
+        ``meta["rollout_legs_unreadable"]``; the reader now knows how many legs it was meant
+        to fold, so rendering a partial transcript in silence would replace the old lie with
+        a new one. When the FIRST leg is the missing one the title and ``created_at`` come
+        from the earliest leg that DID read, so they can differ from the indexed row — the
+        file that supplied them is gone, and inventing them back would be worse.
+
+        The leg PATHS stay off the wire. ``meta`` carries counts plus the single basenamed
+        resume target, because a local filesystem path is exactly what every other surface
+        here refuses to relay.
+
+        TWO CALLERS, BECAUSE THE DEFECT HAD TWO INSTANCES. ``conversation.get`` is the one
+        the user sees, but :meth:`_research_local` re-parses raw transcripts for the on-box
+        synthesis tier and read the same single ``rollout_path`` — so a local summary
+        silently described a fraction of the corpus (953 of the 1189 measured files would
+        never have reached it). Closing one and not the other would have left the residual
+        alive while looking fixed, so both go through here.
+        [Cost, stated: a merged conversation now parses every leg rather than one, about 2x
+        the files on the measured store. Acceptable for a tier that already re-parses the
+        whole corpus, and the alternative is synthesizing over a silently truncated one.]
+        """
+        legs = corpus.rollout_legs(self.conn, row["conversation_id"])
+        if len(legs) < 2:
+            return self._reparse_rollout(row["rollout_path"], row["provider"])
+        merged, errors, divergent, missing = None, [], 0, []
+        for path in legs:
+            conv, info = self._reparse_rollout(path, row["provider"])
+            if conv is None:
+                missing.append(info)
+                continue
+            errors.extend(info)
+            if merged is None:
+                merged = conv
+                continue
+            divergent += loaders.fold_leg_turns(merged.turns, conv.turns)
+            merged.updated_at = max(merged.updated_at, conv.updated_at)
+        if merged is None:
+            # Indexing is safe rather than defensive: `legs` is non-empty here, so every
+            # leg took exactly one of the two branches above and an empty `merged` means
+            # they all failed. The FIRST reason is the useful one — it names the earliest
+            # leg that broke, which is where the store diverged from the index.
+            return None, missing[0]
+        merged.meta["rollout_legs"] = len(legs)
+        merged.meta["rollout_path"] = legs[-1]
+        if missing:
+            merged.meta["rollout_legs_unreadable"] = len(missing)
+        if divergent:
+            merged.meta["merge_divergent_turns"] = divergent
+        return merged, errors
 
     def _conversation_stub(self, row, reason):
         """A documented, honest partial for a conversation whose transcript body is not

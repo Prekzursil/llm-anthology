@@ -12,13 +12,13 @@ module ADDS that layer without touching ir.py:
                   with the four graph helpers (roots / children_of / depth / fan_out)
                   that render the 895-edge spawn tree.
 
-It also owns the ON-DISK contract the parallel build agents write into: INDEX_SCHEMA
-(a contentless FTS5 table over conversation records + a threads table + a
-thread_spawn_edges table + a resumable ingest_checkpoint table, WAL) and the thin
+It also owns the ON-DISK contract the parallel build agents write into: INDEX_SCHEMA (a
+contentless FTS5 table over conversation records + threads + thread_spawn_edges + a
+conversation_rollouts leg table + a resumable ingest_checkpoint table, WAL) and the thin
 row<->dataclass mapping (upsert_thread / upsert_edge / add_conversation / search /
-set_checkpoint / get_checkpoint / load_corpus). Defining that mapping ONCE, next to
-the dataclasses and the DDL, is what keeps the fan-out of ingest agents from drifting
-into N incompatible INSERTs.
+set_checkpoint / get_checkpoint / set_conversation_rollouts / rollout_legs / load_corpus).
+Defining that mapping ONCE, next to the dataclasses and the DDL, is what keeps the fan-out
+of ingest agents from drifting into N incompatible INSERTs.
 
 Phase-0 MEASURED facts this contract is built around (ground truth, not guesses):
   * corpus = 2,249,530 records over 13,711 files — the FTS index is sized for millions,
@@ -238,6 +238,29 @@ CREATE TABLE IF NOT EXISTS ingest_checkpoint (
     content_hash TEXT NOT NULL DEFAULT ''
 );
 
+-- Every rollout file ONE conversation was stitched from, in merge order. A resumed Codex
+-- session writes a new rollout per resume, and `loaders._merge_resumed_leg` folds those
+-- legs into one conversation — measured on the live store, 236 conversations spanning 1189
+-- files, the widest 66 legs. `conversations.rollout_path` holds only the LAST leg (the file
+-- `codex resume` continues), so without this table the reader could open just that one
+-- while the FTS body already spanned every leg: a search could match text and open a
+-- transcript that does not contain it.
+--
+-- A TABLE rather than a column on `conversations`, and the choice is forced. Every
+-- statement here is IF NOT EXISTS, so an index built before a change keeps its ORIGINAL
+-- shape: a new COLUMN would silently not exist on an existing index and every INSERT
+-- naming it would fail, which would mean either an ALTER-TABLE migration or asking users
+-- to delete their corpus. A new TABLE simply appears, empty, the first time the new engine
+-- opens an old index — the reader then falls back to `conversations.rollout_path` (exactly
+-- the pre-change behaviour) and a plain rebuild repopulates it, because `_persist_graph`
+-- runs ahead of the checkpoint-skippable conversation ingest.
+CREATE TABLE IF NOT EXISTS conversation_rollouts (
+    conversation_id TEXT NOT NULL,
+    leg_index       INTEGER NOT NULL,
+    rollout_path    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (conversation_id, leg_index)
+);
+
 -- Spawn-tree walk helpers.
 CREATE INDEX IF NOT EXISTS idx_edges_parent ON thread_spawn_edges(parent_thread_id);
 CREATE INDEX IF NOT EXISTS idx_edges_child  ON thread_spawn_edges(child_thread_id);
@@ -259,7 +282,13 @@ def init_index(conn):
 
     An index created before `contentless_delete` was added keeps its original FTS table:
     the option cannot be set on an existing virtual table, and `IF NOT EXISTS` deliberately
-    leaves it alone rather than silently dropping a user's index to rebuild it."""
+    leaves it alone rather than silently dropping a user's index to rebuild it.
+
+    That same rule is why a NEW FACT is added as a new TABLE and never as a column on an
+    existing one. `conversation_rollouts` appears — empty — the first time this runs against
+    an index that predates it, and every reader treats "no rows" as "not recorded yet" and
+    falls back; a new COLUMN would instead be silently absent and every INSERT naming it
+    would raise, which is a migration, not a no-op."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(INDEX_SCHEMA % {
         "delete_opt": (",\n    contentless_delete=1"\
@@ -417,6 +446,31 @@ def set_checkpoint(conn, file, offset, content_hash):
         "VALUES (?,?,?)", (file, offset, content_hash))
 
 
+def set_conversation_rollouts(conn, conversation_id, paths):
+    """Record, IN ORDER, every rollout file `conversation_id` was stitched from.
+
+    REPLACES the whole list rather than appending, because the ingest is authoritative: a
+    leg the user deleted must disappear from the record too, or the reader is sent at a
+    file the ingest itself no longer believes in. An unchanged list is a genuine no-op —
+    the stored order is compared first — so a resumed or repeated build writes nothing and
+    the table does not churn. (The comparison is not an optimisation: `_merge_resumed_leg`
+    appends one IndexSource per LEG carrying the same merged conversation, so a 66-leg
+    thread would otherwise rewrite its 66 rows 66 times.)
+
+    Not `INSERT OR REPLACE` per row: that grows the list monotonically, because a row whose
+    `leg_index` no longer exists has nothing to be replaced BY and would survive forever.
+    """
+    paths = list(paths)
+    if rollout_legs(conn, conversation_id) == paths:
+        return
+    conn.execute("DELETE FROM conversation_rollouts WHERE conversation_id=?",
+                 (conversation_id,))
+    conn.executemany(
+        "INSERT INTO conversation_rollouts(conversation_id, leg_index, rollout_path) "
+        "VALUES (?,?,?)",
+        [(conversation_id, i, path) for i, path in enumerate(paths)])
+
+
 # -------------------------------------------------------------- read contract
 
 def search(conn, query, limit=50):
@@ -428,6 +482,19 @@ def search(conn, query, limit=50):
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
         "WHERE conversations_fts MATCH ? ORDER BY rank LIMIT ?" % cols,
         (query, limit)).fetchall()
+
+
+def rollout_legs(conn, conversation_id):
+    """Every rollout file recorded for `conversation_id`, in the order they were merged.
+
+    [] for a conversation with no recorded legs — which is BOTH "this id is not in the
+    index" and "this index predates `conversation_rollouts`". The caller must treat the
+    empty answer as "not recorded", never as "this conversation has no rollout": the
+    fallback is `conversations.rollout_path`, which every index has always carried.
+    """
+    return [row[0] for row in conn.execute(
+        "SELECT rollout_path FROM conversation_rollouts WHERE conversation_id=? "
+        "ORDER BY leg_index", (conversation_id,))]
 
 
 def get_checkpoint(conn, file):

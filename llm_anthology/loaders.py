@@ -10,10 +10,10 @@ time-gap heuristic is used. That label is propagated into the report so a reader
 never mistakes the heuristic for ground truth.
 
 `load_corpus` (the cockpit ingest) is the one MULTI-PROVIDER loader: it merges the LIVE
-stores — Codex rollouts, an optional Grok session store, and the Codex state graph — into
-one Corpus and one index. Adding a provider there is one entry in its `todo` table plus
-one optional root argument; the merge, edge de-duplication, id-collision and error-
-attribution policies are shared and are documented on that function.
+stores — Codex rollouts, an optional Grok session store, an optional Claude Code
+transcript tree, and the Codex state graph — into one Corpus and one index. Adding a
+provider there is one entry in its `todo` table plus one optional root argument; the
+merge, edge de-duplication, id-collision and error-attribution policies are shared.
 """
 import glob
 import json
@@ -22,8 +22,8 @@ import re
 from datetime import datetime, timedelta
 
 from llm_anthology import corpus, index
-from llm_anthology.adapters import (chatgpt, claude, codex, codex_rollout, codex_state,
-                                    gemini, grok)
+from llm_anthology.adapters import (chatgpt, claude, claude_code, codex, codex_rollout,
+                                    codex_state, gemini, grok)
 
 GAP = timedelta(minutes=30)
 _WS = re.compile(r"\s+")
@@ -314,35 +314,47 @@ def _fingerprint(conv):
 #: DIFFERENT source is a cross-provider collision.
 CODEX_ROLLOUT_SOURCE = "codex-rollout"
 GROK_SOURCE = "grok"
+CLAUDE_CODE_SOURCE = "claude-code"
 
 
 def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
-                grok_root=None):
+                grok_root=None, claude_root=None):
     """Build the cockpit Corpus and its FTS5 index in one pass, over one or more providers.
 
     Ingests the Codex rollout logs under `sessions_root` (the DATE-NESTED
     YYYY/MM/DD/rollout-*.jsonl tree) for conversation content and the per-thread graph
     node each carries; OPTIONALLY ingests a Grok Build session store under `grok_root`
-    (the `<enc-cwd>/<session-id>/` tree, whose `subagents/` metas are the only other
-    source of spawn edges in this repository); MERGES the live Codex state DB spawn graph
-    ($CODEX_HOME/state_5.sqlite — opened read-only + immutable, retried-then-skipped if
-    busy or absent); and builds the contentless FTS5 index at `index_path` over every
-    ingested conversation, whatever its provider.
+    (the `<enc-cwd>/<session-id>/` tree, whose `subagents/` metas are one other source of
+    spawn edges); OPTIONALLY ingests a Claude Code transcript tree under `claude_root`
+    (the `<slug>/<session-uuid>.jsonl` projects tree, whose `subagents/` CHILD transcripts
+    each declare their own spawn edge from their PATH); MERGES the live Codex state DB
+    spawn graph ($CODEX_HOME/state_5.sqlite — opened read-only + immutable,
+    retried-then-skipped if busy or absent); and builds the contentless FTS5 index at
+    `index_path` over every ingested conversation, whatever its provider.
 
-    `grok_root` IS NEVER DEFAULTED. Omit it and no Grok store is read at all — there is
-    deliberately no `~/.grok` fallback, unlike `codex_home`, whose fallback to the LIVE
-    store is how an automated probe once read the owner's real sessions (which is why
-    `sidecar.py`'s `corpus.build` RPC requires `codex_home` explicitly). A Grok store
-    holds private material; reading one has to be something the caller named.
+    NEITHER `grok_root` NOR `claude_root` IS EVER DEFAULTED. Omit one and that store is
+    not read at all — there is deliberately no `~/.grok` and no `~/.claude` fallback,
+    unlike `codex_home`, whose fallback to the LIVE store is how an automated probe once
+    read the owner's real sessions (which is why `sidecar.py`'s `corpus.build` RPC makes
+    every root explicit). Both stores hold private material — `~/.claude` is the largest
+    of the three and holds medical and pharmaceutical conversations — so reading either
+    has to be something the caller NAMED. There is no convenience default anywhere in the
+    stack, and `test_a_claude_code_store_is_NEVER_read_unless_claude_root_names_it` pins
+    that by watching the adapter entrypoint in both states rather than by checking that
+    no threads happened to appear.
 
     MERGE POLICY, in ingest order, so "which source wins for what" stays answerable:
       1. Codex rollouts claim their thread ids first. Their metadata (a title / preview
          from the ACTUAL first prompt) WINS over every later source, as before.
       2. Grok claims only ids no earlier source claimed, and brings its own thread
          metadata and spawn edges verbatim for those.
-      3. The Codex state DB fills in threads no earlier source covered — unchanged, it
+      3. Claude Code claims only ids neither of those claimed. It is placed AFTER them
+         rather than by any judgement of authority: appending leaves every existing
+         priority exactly as it was, so wiring a third provider cannot change what a
+         two-provider ingest produced.
+      4. The Codex state DB fills in threads no earlier source covered — unchanged, it
          remains the gap-filler — and contributes its authoritative spawn edges.
-      4. Spawn edges are de-duplicated by (parent, child) across ALL sources; the first
+      5. Spawn edges are de-duplicated by (parent, child) across ALL sources; the first
          source to declare an edge owns its `status`.
 
     CROSS-PROVIDER THREAD-ID COLLISION. `Corpus.threads` is keyed by thread id and
@@ -375,8 +387,11 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
     # entry is (label, adapter MODULE, the doc attribute naming its unit on disk, root).
     # The module is held rather than its bound `ingest_sessions` so the call stays late-
     # bound. The attribute differs because the units differ — a Codex session is one
-    # FILE, a Grok session is a DIRECTORY — and that string becomes the
-    # ingest_checkpoint key, so it is declared per source rather than guessed.
+    # FILE, a Grok session is a DIRECTORY, a Claude Code session is one FILE again — and
+    # that string becomes the ingest_checkpoint key, so it is declared per source rather
+    # than guessed. Claude Code's is `transcript_path`, the attribute its own doc carries
+    # (`claude_code.py:263-277`), NOT `rollout_path`: the two adapters agree on the SHAPE
+    # of the unit and disagree on the NAME, which is precisely why this column exists.
     #
     # Every source is OPT-IN by naming its root, Codex included. `sessions_root` stays the
     # first positional argument for compatibility, but an empty one now means "no Codex"
@@ -393,6 +408,8 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
         todo.append((CODEX_ROLLOUT_SOURCE, codex_rollout, "rollout_path", sessions_root))
     if grok_root:
         todo.append((GROK_SOURCE, grok, "session_dir", grok_root))
+    if claude_root:
+        todo.append((CLAUDE_CODE_SOURCE, claude_code, "transcript_path", claude_root))
 
     for label, adapter, path_attr, root in todo:
         docs, source_errors = _ingest_docs(adapter, root, label)
@@ -462,7 +479,7 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     THE CLAIM THIS DOCSTRING USED TO MAKE was that a same-source repeat needed nothing
     doing, because "the thread upserts and the conversation dedupes by id, exactly as
     before this function existed". The second half died when `corpus.add_conversation`
-    was changed to re-index rather than early-return (corpus.py:318-331): dedupes-by-id
+    was changed to re-index rather than early-return (corpus.py:347-360): dedupes-by-id
     became OVERWRITES-by-id. Two rollouts of one resumed session then meant two records
     with one `conversations.conversation_id`, and the later simply replaced the earlier —
     2 files in, 1 row out, the older leg's turns unsearchable, 0 errors, exit 0.
@@ -565,6 +582,49 @@ def _turn_weight(turn):
     return sum(len(b.text) for b in turn.blocks)
 
 
+def fold_leg_turns(prior_turns, incoming_turns):
+    """Fold ONE later leg's turns into `prior_turns` IN PLACE; return how many turns the
+    incoming leg replaced because it rendered them more fully.
+
+    THE MERGE POLICY, and the ONLY copy of it. `_merge_resumed_leg` folds legs at INGEST
+    time; `sidecar._reparse_conversation` folds the same legs again at READ time, because
+    the index stores the leg list and not the merged transcript. Those two must agree turn
+    for turn or the reader and the search index disagree in a new way — so the policy lives
+    here once and both call it. A second private copy would be free to drift, and the drift
+    would be invisible: both sides would still "work", they would simply show different
+    conversations. `tests/test_sidecar_merged_legs.py` asserts the two sequences are equal.
+
+    The rules, unchanged from where they were measured:
+      * a turn already present is DROPPED — `codex resume` re-states the prefix, and 78 of
+        the 236 real merges partially overlap this way;
+      * a NEW turn is appended in file order (156 of the 236 are fully disjoint);
+      * one provider item id arriving with a DIFFERENT body is a divergence: the RICHER
+        rendering replaces the one already held, in place, and is counted. Keeping whichever
+        arrived first silently truncated a message by thousands of characters on the real
+        store. A body-keyed repeat is byte-identical by construction, so there is nothing to
+        choose between the two copies and the one already held stands.
+
+    `seen` maps a key to a POSITION, not to the turn itself: a divergent rendering has to
+    replace the one already held, and `list.index` would find the wrong element whenever two
+    turns compare equal as dataclasses.
+    """
+    seen = {}
+    for i, turn in enumerate(prior_turns):
+        seen.setdefault(_turn_key(turn), i)
+
+    divergent = 0
+    for turn in incoming_turns:
+        key = _turn_key(turn)
+        pos = seen.get(key)
+        if pos is None:
+            seen[key] = len(prior_turns)
+            prior_turns.append(turn)
+        elif key[0] == "id" and _turn_weight(turn) > _turn_weight(prior_turns[pos]):
+            prior_turns[pos] = turn                 # same item, fuller rendering
+            divergent += 1
+    return divergent
+
+
 def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     """Fold a LATER rollout of an already-admitted thread into the conversation it
     continues, rather than letting it overwrite that conversation in the index.
@@ -602,52 +662,28 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
       * rollout_path   — the LATEST leg's, because that is the file `codex resume`
                          continues and the one the reader should open. The full list is
                          kept in `meta["rollout_paths"]` rather than folding the earlier
-                         legs away silently — but see the residual immediately below.
+                         legs away silently, and persisted — see immediately below.
 
-    RESIDUAL, DISCLOSED RATHER THAN HIDDEN: `meta["rollout_paths"]` and
-    `meta["merge_divergent_turns"]` reach the returned in-memory Corpus ONLY. `_CONV_COLS`
-    (corpus.py:168) has no meta column, so neither is persisted, and the cockpit never
-    sees the returned object — it spawns a sidecar against the index FILE.
+    WHERE THE LEG LIST GOES. `meta["rollout_paths"]` reaches the returned in-memory Corpus
+    AND the index: `_persist_graph` writes it to `conversation_rollouts` (one row per leg,
+    in this order) on every build, and `sidecar._reparse_conversation` reads it back and
+    folds the same legs with `fold_leg_turns` — the function this one uses — so the reader
+    renders what the FTS body was built from.
 
-    The user-visible consequence is a real inconsistency, not a cosmetic one:
-    `_conversation_get` re-parses a single file (`sidecar.py:1169`,
-    `row["rollout_path"]`), which for a merged conversation is the LAST leg. So the FTS
-    body now matches text from every leg while the reader can only render the last one —
-    a search hit that opens to a transcript not containing it. Before this merge existed
-    the two were consistent because both were confined to the last leg; the merge made
-    search strictly better and left the reader behind.
+    That was NOT true when this merge landed, and the gap was user-visible rather than
+    cosmetic: nothing persisted the list, so the reader re-parsed the single
+    `conversations.rollout_path`, which for a merged conversation is the LAST leg. The FTS
+    body spanned every leg while the transcript held one, so a search could match text and
+    open a conversation that did not contain it. The residual was disclosed here rather
+    than hidden, and closing it is what `conversation_rollouts` exists for.
 
-    Settling it needs the leg list on DISK — a `conversation_rollouts` table, or a JSON
-    column on `conversations` — plus `_reparse_rollout` folding the legs the same way
-    this function does. That spans corpus.py's schema and sidecar.py's reader and is
-    deliberately NOT bundled into the ingest fix.
-
-    Note for whoever picks that up: the test pinning `rollout_paths` asserts on the
-    in-memory conversation, so it does NOT cover the persisted path and must not be read
-    as proving one exists. That is the same in-memory-is-not-disk blind spot that hid the
-    three defects this area was just fixed for, reproduced once more while fixing them.
+    `meta["merge_divergent_turns"]` is still in-memory only, and deliberately: the reader
+    RE-DERIVES it from its own fold, so it always describes what that render actually
+    reconciled. A stored count would claim a merge the reader may not have been able to do
+    — a leg the user deleted since the build is skipped, and the count must shrink with it.
     """
-    # key -> POSITION, not the turn itself: a divergent rendering has to replace the one
-    # already held, and `list.index` would find the wrong element whenever two turns
-    # compare equal as dataclasses.
-    seen = {}
-    for i, turn in enumerate(prior.turns):
-        seen.setdefault(_turn_key(turn), i)
-
-    divergent = 0
-    for turn in doc.conversation.turns:
-        key = _turn_key(turn)
-        pos = seen.get(key)
-        if pos is None:
-            seen[key] = len(prior.turns)
-            prior.turns.append(turn)
-        elif key[0] == "id" and _turn_weight(turn) > _turn_weight(prior.turns[pos]):
-            prior.turns[pos] = turn                 # same item, fuller rendering
-            divergent += 1
-        # A body-keyed repeat is byte-identical by construction, so there is nothing to
-        # choose between the two copies and the one already held stands.
-
     path = getattr(doc, path_attr)
+    divergent = fold_leg_turns(prior.turns, doc.conversation.turns)
     later = doc.conversation
     prior.updated_at = max(prior.updated_at, later.updated_at)
     prior.meta["rollout_paths"] = prior.meta.get("rollout_paths", []) + [path]
@@ -692,7 +728,8 @@ def _add_edge(result, edge, seen_edges):
 
 
 def _persist_graph(conn, result):
-    """Write the assembled thread graph into the index.
+    """Write the assembled thread graph — and each conversation's rollout LEGS — into the
+    index.
 
     WHY THIS EXISTS: `index.build_index` persists only conversations — it calls
     `corpus.add_conversation` and `corpus.set_checkpoint` and never touches the `threads`
@@ -717,6 +754,16 @@ def _persist_graph(conn, result):
     ingest makes contention a live concern rather than a theoretical one. `upsert_thread`
     and `upsert_edge` are INSERT OR REPLACE, so a re-run upserts instead of duplicating and
     the documented idempotence of `load_corpus` is preserved.
+
+    THE ROLLOUT LEGS RIDE HERE, NOT IN `add_conversation`, and the placement is the whole
+    reason an index that predates `conversation_rollouts` REPAIRS itself. `build_index` is
+    checkpoint-skippable: a rebuild over unchanged files matches the stored content_hash and
+    never calls `add_conversation` at all, so a leg write living there would never fire for
+    exactly the corpora that are missing the rows. This runs unconditionally on every build.
+    `conv.meta["rollout_paths"]` is subscripted rather than `.get()`-ed for the same reason
+    `_merge_resumed_leg` subscripts its thread node: `_admit` sets it for EVERY admitted
+    conversation, so an absent key is a broken invariant that should say so immediately
+    rather than quietly persist an empty leg list over a good one.
     """
     def do(op):
         return index._retry(op)
@@ -725,4 +772,7 @@ def _persist_graph(conn, result):
         do(lambda m=meta: corpus.upsert_thread(conn, m))
     for edge in result.edges:
         do(lambda e=edge: corpus.upsert_edge(conn, e))
+    for conv in result.conversations:
+        do(lambda c=conv: corpus.set_conversation_rollouts(
+            conn, c.id, c.meta["rollout_paths"]))
     do(conn.commit)

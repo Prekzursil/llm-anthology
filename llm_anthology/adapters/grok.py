@@ -113,7 +113,7 @@ from urllib.parse import unquote
 from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
-#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1634` surfaces it to
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1652` surfaces it to
 #: the UI as `provider`. `ThreadMeta` has no model field, so the model id travels in
 #: `Conversation.meta['model_id']`.
 #:
@@ -121,7 +121,7 @@ from llm_anthology import corpus, ir
 #: :data:`GROK_MODEL_VENDOR`. (The comment here previously defended putting this label in
 #: that field on the grounds that the graph node surfaced `model_provider` as the thread's
 #: provider. That WAS true when it was written — `git show a361759:llm_anthology/sidecar.py`
-#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1634`
+#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1652`
 #: surfaces `provider = meta.adapter` and passes `model_provider` separately. That old
 #: anchor is deliberately spelled as a GIT REVISION and not as a live `<file>:<line>`,
 #: because line 1390 of today's sidecar is unrelated code in `_metadata_search`: a reader

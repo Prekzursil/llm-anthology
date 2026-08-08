@@ -206,12 +206,170 @@ def test_build_still_rejects_a_UNC_codex_home_when_it_IS_named(tmp_path):
 
 
 def test_build_requires_at_least_one_named_source(tmp_path):
-    """Naming neither root is a caller bug and must be refused, not silently ingest nothing."""
+    """Naming neither root is a caller bug and must be refused, not silently ingest nothing.
+
+    The message ENUMERATES the roots, because it is the only place a caller learns which
+    sources exist. A refusal that still named two after a third was wired would send an
+    integrator looking for a parameter the engine has and the error denies.
+    """
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
         srv.dispatch("corpus.build", {"codex_home": _codex_home(tmp_path)})
     assert excinfo.value.code == -32602
-    assert "at least one source" in str(excinfo.value.message)
+    message = str(excinfo.value.message)
+    assert "at least one source" in message
+    for name in ("sessions_root", "grok_root", "claude_root"):
+        assert name in message, message
+
+
+# --------------------------------------------------------------- claude code source
+
+def _claude_root(tmp_path):
+    """A minimal Claude Code transcript tree: `<projects>/<slug>/<session>.jsonl`.
+
+    SYNTHETIC, and that is the hard constraint on this whole surface: the real store is
+    `~/.claude/projects`, which holds the owner's private conversations. No test here
+    reads it and the engine never defaults to it.
+    """
+    proj = tmp_path / "claude" / "C--work-repo"
+    proj.mkdir(parents=True)
+    (proj / "cc-sess-1.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "timestamp": "2026-08-07T09:00:00.000Z", "uuid": "u-1",
+         "parentUuid": None, "sessionId": "cc-sess-1", "cwd": "C:/work/repo",
+         "gitBranch": "main", "version": "2.1.220",
+         "message": {"role": "user", "content": "synthetic claude code prompt"}},
+        {"type": "assistant", "timestamp": "2026-08-07T09:00:02.000Z", "uuid": "a-1",
+         "parentUuid": "u-1", "sessionId": "cc-sess-1", "version": "2.1.220",
+         "message": {"role": "assistant", "model": "claude-opus-5",
+                     "content": [{"type": "text", "text": "synthetic reply"}]}},
+    ]) + "\n", encoding="utf-8")
+    return str(tmp_path / "claude")
+
+
+def test_build_accepts_a_CLAUDE_CODE_ONLY_source(tmp_path):
+    """Wiring `loaders.load_corpus` alone would have repeated the very defect being fixed.
+
+    The cockpit does not call `load_corpus`; it drives THIS RPC. An adapter reachable from
+    the loader but not from `corpus.build` is still unreachable from the app, so the
+    engine-side wiring is only half the fix and this is the half that proves the other.
+    Asserting the thread reaches `graph.roots` — the sidecar's own view, rebuilt from the
+    index FILE — is what makes it an end-to-end claim rather than a signature check.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    out = srv.dispatch("corpus.build", {"claude_root": _claude_root(tmp_path)})
+
+    assert out["state"] == "running"      # the start reply is an ACCEPTANCE, not a result
+    assert out["claude_root"].endswith("claude")
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] == 1, status
+    assert status["errors"] == [], status
+    assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["cc-sess-1"]
+
+
+def test_build_accepts_claude_code_ALONGSIDE_the_other_roots(tmp_path):
+    """All three roots in one call: the new source must merge, not displace."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    srv.dispatch("corpus.build", {
+        "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=1),
+        "grok_root": _grok_root(tmp_path),
+        "claude_root": _claude_root(tmp_path),
+        "codex_home": _codex_home(tmp_path)})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] == 3, status
+    assert sorted(n["id"] for n in srv.dispatch("graph.roots", {})) == \
+        ["P1", "cc-sess-1", "grok-sess-1"]
+
+
+def test_build_rejects_a_claude_root_that_does_not_exist(tmp_path):
+    """The same silent-no-op guard the other roots get: `claude_code.ingest_sessions`
+    walks, and a missing root yields ([], []) by design — an honest empty result for the
+    adapter, but a perfectly 'successful' build of nothing for a user who typo'd a path."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"claude_root": str(tmp_path / "nope")})
+    assert excinfo.value.code == -32602
+    assert "claude_root must be an existing directory" in str(excinfo.value.message)
+
+
+def test_build_rejects_a_unc_claude_root(tmp_path):
+    """UNC is an outbound SMB/NTLM vector, and the guard must fire BEFORE any isdir() —
+    `os.path.isdir` on a UNC path reaches over SMB itself, so an 'existing directory'
+    wording would mean the leak already happened.
+
+    THE POSITIVE WORDING IS ASSERTED, not merely the -32602. Written the negative way
+    ("`existing directory` not in message") this test PASSED against the unwired engine,
+    which refused the call as "name at least one source" — a green result reporting a
+    guard that had never run. A code-only or absence-only assertion cannot tell an
+    unrecognised parameter from a guarded one.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"claude_root": r"\\evil.example\share"})
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value.message)
+    assert "claude_root must be a local path, not a UNC/network path" == message, message
+    assert "existing directory" not in message, \
+        "a UNC path must be refused by the path guard, not by an isdir() that touched it"
+
+
+def test_build_rejects_a_non_string_claude_root(tmp_path):
+    """Absent means 'not this source'; a wrong TYPE is a caller bug and stays an error."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path),
+                                      "claude_root": 42})
+    assert excinfo.value.code == -32602
+
+
+def test_the_worker_is_handed_the_claude_root_the_caller_named(tmp_path, monkeypatch):
+    """The root must reach `loaders.load_corpus`, not merely be validated and dropped.
+
+    Validation and forwarding are separate steps and a build that validated `claude_root`
+    then ingested nothing would look IDENTICAL from the reply: state "running", then
+    "done", zero errors. There is no `~/.claude` default anywhere in the stack, so the
+    only honest way to know the store was read is to watch the argument arrive.
+    """
+    seen = {}
+
+    def capture(sessions_root, index_path, codex_home, **kwargs):
+        seen["sessions_root"] = sessions_root
+        seen.update(kwargs)
+        return corpus.Corpus(), []
+
+    monkeypatch.setattr(sidecar.loaders, "load_corpus", capture)
+    srv, _ = _server(tmp_path, runner=_sync)
+    croot = _claude_root(tmp_path)
+    srv.dispatch("corpus.build", {"claude_root": croot})
+
+    assert seen["claude_root"] == croot
+    assert seen["sessions_root"] == "", "no Codex root was named, so none may be invented"
+
+
+def test_the_running_job_records_the_claude_root_it_was_started_with(tmp_path):
+    """The job record must carry the root, not just the closure the worker runs under.
+
+    SCOPE, stated because the wider claim is not true: `build_status` does NOT report
+    `claude_root`, and neither does it report `grok_root` — only `sessions_root`
+    (sidecar.py:_corpus_build_status). So this asserts on the job RECORD, which is what
+    the start reply is projected from, and pins nothing about a poller being able to see
+    which stores a running job covers. That gap is real and pre-dates this change: both
+    non-Codex roots are stored on the job and read back by nothing. Widening
+    `build_status` would change a wire shape the cockpit's `types.ts`/`mock.ts` mirror,
+    which is a deliberate call for whoever owns that surface rather than a side effect of
+    adding a third source.
+    """
+    pending, runner = _deferred()
+    srv, _ = _server(tmp_path, runner=runner)
+    croot = _claude_root(tmp_path)
+    out = srv.dispatch("corpus.build", {"claude_root": croot})
+
+    assert srv.dispatch("corpus.build_status", {})["state"] == "running"
+    assert srv._build_job["claude_root"] == croot
+    assert out["claude_root"] == croot and out["sessions_root"] == ""
+    pending[0]()
 
 
 def test_build_rejects_a_grok_root_that_does_not_exist(tmp_path):
@@ -450,7 +608,8 @@ def test_a_failed_build_still_refreshes_a_graph_it_already_committed(tmp_path, m
     (loaders.py:310-311), so a build can fail with the graph already on disk. The live view
     must follow the index in that case too — refreshing only on success would leave the
     sidecar reporting a graph the file no longer matches."""
-    def persist_then_die(sessions_root, index_path, codex_home, grok_root=""):
+    def persist_then_die(sessions_root, index_path, codex_home, grok_root="",
+                         claude_root=""):
         conn = corpus.open_index(index_path)
         try:
             corpus.upsert_thread(conn, ThreadMeta(id="PARTIAL"))
@@ -752,7 +911,7 @@ def test_the_request_thread_sees_a_concurrent_workers_committed_rows(tmp_path, m
     timeouts are failsafes against a hang, never a timing assumption."""
     committed, resume = threading.Event(), threading.Event()
 
-    def fake_ingest(sessions_root, index_path, codex_home, grok_root=""):
+    def fake_ingest(sessions_root, index_path, codex_home, grok_root="", claude_root=""):
         conn = corpus.open_index(index_path)         # the WORKER's own connection
         try:
             corpus.add_conversation(

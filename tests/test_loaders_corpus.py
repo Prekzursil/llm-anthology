@@ -2,30 +2,36 @@
 
 SYNTHETIC fixtures ONLY. No real conversation content, thread id, path, or DB appears
 here: the state DB is built in a tmp dir and the real $CODEX_HOME is never read, because
-`codex_home` is always passed explicitly, and no Grok store is read unless `grok_root`
-names one explicitly — the owner's real `~/.grok` holds private material and is never
-touched by this file or by the code it exercises. Every fixture mirrors the measured
-shapes (date-nested rollout-*.jsonl, a threads / thread_spawn_edges state DB, and a
-`<enc-cwd>/<session-id>/` Grok session directory) but never their content.
+`codex_home` is always passed explicitly; no Grok store is read unless `grok_root` names
+one explicitly; and no Claude Code store is read unless `claude_root` names one — the
+owner's real `~/.grok` and `~/.claude` hold private material (the latter including
+medical and pharmaceutical conversations) and neither is touched by this file or by the
+code it exercises. Every fixture mirrors the measured shapes (date-nested
+rollout-*.jsonl, a threads / thread_spawn_edges state DB, a `<enc-cwd>/<session-id>/`
+Grok session directory, and a `<slug>/<session-uuid>.jsonl` Claude Code transcript tree)
+but never their content.
 
-load_corpus stitches four merged work-units together:
+load_corpus stitches five merged work-units together:
   * codex_rollout.ingest_sessions  — conversation content + a per-thread node + spawn edge
   * grok.ingest_sessions            — the same contract for a Grok Build session store,
                                       OPT-IN via `grok_root` (never defaulted)
+  * claude_code.ingest_sessions     — the same contract for a Claude Code transcript
+                                      tree, OPT-IN via `claude_root` (never defaulted)
   * codex_state.load_corpus         — the authoritative spawn graph (threads + edges)
   * index.build_index               — the contentless FTS5 index over every conversation
 
-The tests pin the MERGE POLICY (rollout thread metadata wins, Grok claims only ids no
-earlier source claimed, the state graph fills the remaining gaps; edges are de-duplicated
-by (parent, child)), the CROSS-PROVIDER COLLISION policy, per-source failure isolation,
-and the end-to-end index (searchable, thread-linked, complete, idempotent on a re-run).
+The tests pin the MERGE POLICY (rollout thread metadata wins, later sources claim only
+ids no earlier source claimed, the state graph fills the remaining gaps; edges are
+de-duplicated by (parent, child)), the CROSS-PROVIDER COLLISION policy, per-source
+failure isolation, and the end-to-end index (searchable, thread-linked, complete,
+idempotent on a re-run).
 """
 import json
 import os
 import sqlite3
 
 from llm_anthology import corpus, index, ir, loaders
-from llm_anthology.adapters import grok
+from llm_anthology.adapters import claude_code, grok
 
 
 # ------------------------------------------------------------------- fixtures
@@ -919,16 +925,16 @@ def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
     are recorded rather than silently folded away — an ingest that quietly rewrites what
     it read is the failure mode this whole area exists to prevent.
 
-    SCOPE OF THIS TEST, stated because the wider claim is not true yet: it asserts on the
-    RETURNED corpus, in memory. `_CONV_COLS` (corpus.py:168) has no meta column, so
-    `rollout_paths` is NOT persisted and the cockpit — which reads the index file, never
-    this object — cannot see it. So this pins that the merge RECORDS its legs, and pins
-    nothing whatsoever about the reader being able to open them. `_merge_resumed_leg`
-    carries the full residual.
+    SCOPE OF THIS TEST, and the correction it carries. It asserts on the RETURNED corpus,
+    in memory. That used to be the WHOLE story — the leg list reached no column, so the
+    cockpit, which reads the index file and never this object, could not see it — and this
+    docstring said so. It is no longer true: `_persist_graph` writes the legs to
+    `conversation_rollouts` and `sidecar._reparse_conversation` folds them back.
 
-    Keeping it deliberately: the recording is the half that is real, and an honestly
-    scoped assertion is worth more than deleting it or letting it imply a disk guarantee
-    it does not test.
+    The scoping stays anyway, because an in-memory assertion still is not a disk assertion
+    and reading one as the other is precisely the blind spot that hid four defects in this
+    area. The DISK half is pinned in `tests/test_sidecar_merged_legs.py`, which reads the
+    rows back through a bare `sqlite3.connect` and then opens the conversation over the RPC.
     """
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
@@ -1156,3 +1162,336 @@ def test_a_grok_only_ingest_needs_no_codex_rollouts(tmp_path):
         assert [r["conversation_id"] for r in index.search(conn, "oscar")] == [_G2]
     finally:
         conn.close()
+
+
+# --------------------------------------------- multi-provider (Claude Code) fixtures
+#
+# PRIVACY, and it is the reason every value below is invented rather than sampled. The
+# real Claude Code store is `~/.claude/projects`, the owner's LARGEST session store and
+# the one holding private medical and pharmaceutical conversations. NOTHING in this file
+# reads it: `claude_root` is a keyword argument with no default and no `~/.claude`
+# fallback, exactly as `grok_root` has no `~/.grok` fallback, so there is no code path
+# from these tests to that store. The SHAPES here are taken from the adapter's own
+# docstring and tests, never from the store.
+
+#: `<claude_root>/<slug>/<session-uuid>.jsonl` is a SESSION and
+#: `<claude_root>/<slug>/<session-uuid>/subagents/agent-<id>.jsonl` is one of its
+#: children — the layout `claude_code.classify_path` reads the whole spawn graph out of,
+#: so a fixture that flattened it would exercise no edge at all.
+_CC_SLUG = "C--Users-me-work-repo"
+_CC_SESSION = "0198d5e6-3a4b-7c52-8f13-000000000001"
+#: SHORT HEX, the measured child-id shape — deliberately NOT uuid-shaped, so the child's
+#: thread id exercises the parent-qualifying branch rather than the verbatim one.
+_CC_AGENT = "a97926b10"
+_CC_CHILD = "%s/%s" % (_CC_SESSION, _CC_AGENT)
+#: 24-char ISO stamps, the measured width.
+_CC_TS = "2026-08-07T09:00:00.000Z"
+_CC_TS2 = "2026-08-07T09:05:00.000Z"
+
+
+def _cc_transcript(path, sid, user_text, agent_text):
+    """One synthetic Claude Code JSONL transcript. There is NO header record — identity
+    and provenance come from the path and from the first record carrying a field — so
+    every line repeats `sessionId`/`version` the way a real append-only log does."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    records = [
+        {"type": "user", "timestamp": _CC_TS, "uuid": "u-1", "parentUuid": None,
+         "sessionId": sid, "cwd": "C:/Users/me/work/repo", "gitBranch": "main",
+         "version": "2.1.220",
+         "message": {"role": "user", "content": user_text}},
+        {"type": "assistant", "timestamp": _CC_TS2, "uuid": "a-1", "parentUuid": "u-1",
+         "sessionId": sid, "version": "2.1.220",
+         "message": {"role": "assistant", "model": "claude-opus-5",
+                     "content": [{"type": "text", "text": agent_text}]}},
+    ]
+    _write_text(path, "\n".join(json.dumps(r) for r in records) + "\n")
+    return path
+
+
+def _claude_code_store(root):
+    """The standard two-transcript store: one SESSION and one of its subagents.
+    Returns (session_path, subagent_path)."""
+    session = _cc_transcript(
+        os.path.join(root, _CC_SLUG, _CC_SESSION + ".jsonl"), _CC_SESSION,
+        "tangelo umbrella", "vermilion")
+    child = _cc_transcript(
+        os.path.join(root, _CC_SLUG, _CC_SESSION, "subagents",
+                     "agent-%s.jsonl" % _CC_AGENT), _CC_SESSION,
+        "wolfram xenon", "yarrow")
+    return session, child
+
+
+# ---------------------------------------------------- multi-provider (Claude Code)
+
+def test_load_corpus_can_ingest_CLAUDE_CODE_ALONE_with_no_codex_store(tmp_path):
+    """The symmetry Grok already has, for the store that had NO ingest path at all.
+
+    `adapters/claude_code.py` exposed exactly the `ingest_sessions(root)` contract this
+    loader documents and was reachable from nothing but a single-file reparse — the
+    "complete, tested, called by nothing" shape. A Claude-Code-only machine is also the
+    common case for this store (it is the harness's own transcript tree), so it must
+    stand alone rather than only as a passenger on a Codex ingest.
+    """
+    croot = str(tmp_path / "claude_projects")
+    idx = str(tmp_path / "index.sqlite")
+    _claude_code_store(croot)
+
+    c, errors = loaders.load_corpus("", idx, claude_root=croot)
+
+    assert errors == []
+    assert {conv.id for conv in c.conversations} == {_CC_SESSION, _CC_CHILD}
+    assert set(c.threads) == {_CC_SESSION, _CC_CHILD}
+    # the spawn edge the CHILD's path declares — a session declares none
+    assert c.roots() == [_CC_SESSION]
+    assert c.children_of(_CC_SESSION) == [_CC_CHILD]
+
+    # ...and all of it on DISK, read back the way the sidecar reads it. An in-memory
+    # assertion is not a disk assertion: the cockpit never sees the returned object.
+    assert _reopen_graph(idx).children_of(_CC_SESSION) == [_CC_CHILD]
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 2
+        assert len(corpus.search(conn, "tangelo")) == 1, "the SESSION must be searchable"
+        assert len(corpus.search(conn, "wolfram")) == 1, "and so must the SUBAGENT"
+        row = conn.execute("SELECT thread_id, provider FROM conversations "
+                           "WHERE conversation_id=?", (_CC_SESSION,)).fetchone()
+        assert row["thread_id"] == _CC_SESSION and row["provider"] == "claude-code"
+    finally:
+        conn.close()
+
+
+def test_load_corpus_ingests_claude_code_ALONGSIDE_codex_and_grok(tmp_path):
+    """One call, one index, THREE providers — and every input reaches the index.
+
+    The per-provider tests each pass with the other providers absent, so only this one
+    can catch a merge that homogenises vendors, drops a source's edges, or lets one
+    provider's ids shadow another's.
+    """
+    sessions, home, groot, idx = _both_stores(tmp_path)
+    croot = str(tmp_path / "claude_projects")
+    _claude_code_store(croot)
+
+    c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
+                                    claude_root=croot)
+
+    assert errors == []
+    assert {conv.id for conv in c.conversations} == {
+        "C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
+    assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2, _CC_SESSION, _CC_CHILD}
+    # each provider keeps its OWN model vendor — the merge must not homogenise them
+    assert c.threads[_CC_SESSION].model_provider == "anthropic"
+    assert c.threads["C1"].model_provider == "openai"
+    assert c.threads[_G1].model_provider == "xai"
+    # edges from all three providers, still de-duplicated by (parent, child)
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == \
+        [(_G1, _G2), (_CC_SESSION, _CC_CHILD), ("C1", "S3"), ("P1", "C1")]
+    assert c.roots() == [_G1, _CC_SESSION, "C2", "P1"]
+
+    # THE INDEX, not the returned corpus: content from EVERY input must be searchable
+    # on disk, because that file is the only thing the cockpit ever reads.
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 6
+        for word, cid in (("bravo", "C1"), ("foxtrot", "C2"), ("juliett", _G1),
+                          ("oscar", _G2), ("tangelo", _CC_SESSION),
+                          ("wolfram", _CC_CHILD)):
+            assert [r["conversation_id"] for r in index.search(conn, word)] == [cid], word
+    finally:
+        conn.close()
+    assert _reopen_graph(idx).children_of(_CC_SESSION) == [_CC_CHILD]
+
+
+def test_a_claude_code_store_is_NEVER_read_unless_claude_root_names_it(tmp_path):
+    """No `~/.claude` fallback, ever — the both-states proof, and the hardest constraint
+    on this whole change.
+
+    `~/.claude` holds the owner's private conversations, including medical and
+    pharmaceutical material. `codex_home=None` already falls back to the LIVE Codex store
+    and an automated probe really did read the owner's real sessions that way; that is
+    the measured precedent this must not repeat. A test asserting merely "no Claude Code
+    threads appear" would pass EVEN WITH a fallback whenever the default path happens to
+    be empty or absent, so it would measure nothing. This watches the adapter entrypoint
+    itself: not called at all with no root, called with EXACTLY the named root otherwise.
+    """
+    sessions, home, groot, idx = _both_stores(tmp_path)
+    croot = str(tmp_path / "claude_projects")
+    _claude_code_store(croot)
+    seen = []
+
+    def spy(root):
+        seen.append(root)
+        return [], []
+
+    cc_ingest = claude_code.ingest_sessions
+    claude_code.ingest_sessions = spy
+    try:
+        # STATE 1 — no claude_root: the adapter must never be reached, so no path (least
+        # of all a defaulted `~/.claude`) can be read.
+        c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot)
+        assert seen == [], "load_corpus read a Claude Code store without being given one"
+        assert errors == []
+        assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}      # unchanged
+
+        # STATE 2 — with claude_root: the same probe FIRES, and with the named root. A
+        # detector silent in both states would measure nothing.
+        loaders.load_corpus(sessions, str(tmp_path / "i2.sqlite"), codex_home=home,
+                            grok_root=groot, claude_root=croot)
+        assert seen == [croot]
+    finally:
+        claude_code.ingest_sessions = cc_ingest
+
+
+def test_a_claude_code_thread_id_collision_is_REPORTED_and_never_overwrites(tmp_path):
+    """A Claude Code transcript whose PATH-derived id equals a Codex thread id must cost
+    a REPORT, not a silent overwrite.
+
+    Reachable, not hypothetical: a session's thread id is its FILENAME STEM
+    (`claude_code.classify_path`), so any transcript named `<codex-thread-id>.jsonl` —
+    a rename, a copied store, a hand-made fixture — collides. `Corpus.threads` is keyed
+    by thread id and `conversations.conversation_id` is UNIQUE, so the second claimant
+    would re-point the first's subtree AND have its conversation silently discarded.
+    """
+    sessions, home, groot, idx = _both_stores(tmp_path)
+    croot = str(tmp_path / "claude_projects")
+    _claude_code_store(croot)
+    collider = _cc_transcript(os.path.join(croot, _CC_SLUG, "C1.jsonl"), "C1",
+                              "zircon periwinkle", "amaranth")
+
+    c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
+                                    claude_root=croot)
+
+    # the refusal is REPORTED, attributed, and points at the refused transcript
+    collisions = [e for e in errors if e["stage"] == "thread-id-collision"]
+    assert len(collisions) == 1, errors
+    assert collisions[0]["source"] == "claude-code"
+    assert collisions[0]["file"] == collider
+    assert "C1" in collisions[0]["error"] and "codex-rollout" in collisions[0]["error"]
+    # the Codex thread C1 is untouched, in memory AND on disk
+    assert c.threads["C1"].model_provider == "openai"
+    assert c.threads["C1"].git_branch == "feat/x"
+    assert _reopen_graph(idx).threads["C1"].model_provider == "openai"
+    # the refused transcript contributed no conversation — to the corpus or the index
+    assert {conv.id for conv in c.conversations} == {
+        "C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
+    conn = corpus.open_index(idx)
+    try:
+        assert corpus.search(conn, "zircon") == [], \
+            "a refused session must not reach the index either"
+        assert index.count(conn) == 6
+    finally:
+        conn.close()
+    # the non-colliding Claude Code transcripts still ingested — one bad id costs itself
+    assert {_CC_SESSION, _CC_CHILD} <= set(c.threads)
+
+
+def test_a_broken_claude_code_store_does_not_cost_the_other_sources(tmp_path):
+    """Per-source isolation, for the source that walks 27,770 files on the real store.
+
+    `claude_code.ingest_sessions` survives a bad line and an unreadable file internally,
+    but a failure it does not model would otherwise propagate out of `load_corpus` and
+    zero a Codex+Grok ingest that was entirely healthy.
+    """
+    sessions, home, groot, idx = _both_stores(tmp_path)
+    croot = str(tmp_path / "claude_projects")
+    _claude_code_store(croot)
+
+    def boom(root):
+        raise RuntimeError("claude code store is unreadable")
+
+    cc_ingest = claude_code.ingest_sessions
+    claude_code.ingest_sessions = boom
+    try:
+        c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
+                                        claude_root=croot)
+    finally:
+        claude_code.ingest_sessions = cc_ingest
+
+    assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}
+    assert [(e["source"], e["stage"], e["file"]) for e in errors] == \
+        [("claude-code", "ingest", croot)]
+    assert "unreadable" in errors[0]["error"]
+
+
+def test_a_claude_code_inclusive_re_run_duplicates_no_row(tmp_path):
+    """Idempotence must hold with the third provider in the mix, on the graph AND the
+    conversations — the cockpit re-ingests into an existing index."""
+    sessions, home, groot, idx = _both_stores(tmp_path)
+    croot = str(tmp_path / "claude_projects")
+    _claude_code_store(croot)
+
+    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
+                        claude_root=croot)
+    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
+                        claude_root=croot)  # replay
+
+    conn = corpus.open_index(idx)
+    try:
+        threads = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+        edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
+        assert (threads, edges) == (7, 4), (threads, edges)
+        assert index.count(conn) == 6
+        assert index.posting_count(conn) == 6
+    finally:
+        conn.close()
+
+
+def test_a_REPEATED_claude_code_thread_id_MERGES_instead_of_overwriting(tmp_path):
+    """The new source flows through `_merge_resumed_leg`, so that path is exercised here.
+
+    REACHABLE, not hypothetical: a SESSION's thread id is its filename STEM, so the same
+    `<session-uuid>.jsonl` under two project slugs — a copied or moved store — repeats an
+    id from the SAME source. That is not a collision (the collision rule is keyed on id
+    AND source), so it merges, exactly as a repeated Grok session id under two cwd folders
+    does.
+
+    Two things would break silently without this. `_merge_resumed_leg` subscripts
+    `result.threads[doc.thread.id]` with no fallback — deliberately, because a missing node
+    means a broken invariant and it says so with a KeyError — which holds only because
+    `ClaudeCodeDoc.thread_id` is an ALIAS of `thread.id` rather than an independently
+    derived value. And `conversations.conversation_id` is UNIQUE, so without the merge the
+    second file would OVERWRITE the first on disk: two files in, one row out, the first
+    unsearchable, zero errors. That is the 47%-data-loss shape this area was just fixed
+    for, and the reason the assertion below is against the INDEX and not the corpus.
+    """
+    croot = str(tmp_path / "claude_projects")
+    idx = str(tmp_path / "index.sqlite")
+    _cc_transcript(os.path.join(croot, _CC_SLUG, _CC_SESSION + ".jsonl"), _CC_SESSION,
+                   "azimuth borealis", "cinnabar")
+    _cc_transcript(os.path.join(croot, "D--other-checkout", _CC_SESSION + ".jsonl"),
+                   _CC_SESSION, "dulcimer eglantine", "fennel")
+
+    c, errors = loaders.load_corpus("", idx, claude_root=croot)
+
+    assert errors == [], "a same-source repeat is not a collision"
+    assert [conv.id for conv in c.conversations] == [_CC_SESSION], \
+        "the two files are ONE conversation, not two rows fighting over one id"
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 1
+        assert len(corpus.search(conn, "azimuth")) == 1, \
+            "the FIRST transcript must stay searchable after the second is merged in"
+        assert len(corpus.search(conn, "dulcimer")) == 1
+    finally:
+        conn.close()
+
+
+def test_progress_is_forwarded_for_claude_code_sources_too(tmp_path):
+    """A Claude Code transcript must be a real `IndexSource`, not a thread node bolted on.
+
+    `progress` firing with the TRANSCRIPT PATH as its `file` is the only way to know the
+    document reached `build_index` — i.e. that it is indexed, checkpointed and resumable
+    like a rollout. It also pins the `path_attr` choice: the unit on disk for this
+    provider is a FILE (`transcript_path`), not a directory as it is for Grok, and that
+    string becomes the ingest_checkpoint key.
+    """
+    croot = str(tmp_path / "claude_projects")
+    idx = str(tmp_path / "index.sqlite")
+    session, child = _claude_code_store(croot)
+    seen = []
+
+    loaders.load_corpus("", idx, claude_root=croot,
+                        progress=lambda file, offset: seen.append((file, offset)))
+
+    files = [f for f, _ in seen]
+    assert all(isinstance(f, str) and isinstance(o, int) for f, o in seen), seen
+    assert session in files and child in files, files
