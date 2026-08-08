@@ -1088,7 +1088,12 @@ export function createMockIpc(
    * snapshot). A status that invented its own path would let a panel read the ingest source
    * off the poll and show somewhere the build never touched.
    */
-  let buildJob: { id: string; polls: number; sessionsRoot: string } | null = null;
+  // All three roots are held SEPARATELY rather than collapsed into one field: the engine
+  // reports each as itself, and a single `sessionsRoot` is what let a Grok path be echoed
+  // as the Codex tree.
+  let buildJob:
+    | { id: string; polls: number; sessionsRoot: string; grokRoot: string; claudeRoot: string }
+    | null = null;
 
   // -- annotation / dedup / maintenance state -------------------------------------
   //
@@ -1265,24 +1270,28 @@ export function createMockIpc(
       if (sessionsRoot !== "") requireLocalPath(sessionsRoot, "sessions_root");
       if (grokRoot !== "") requireLocalPath(grokRoot, "grok_root");
       if (claudeRoot !== "") requireLocalPath(claudeRoot, "claude_root");
-      // Echo whichever source was named. Every root is opt-in now, so a Grok- or
-      // Claude-Code-only build carries no `sessions_root` at all — falling through mirrors
-      // the engine, which reports `_clean(sessions_root)` rather than omitting the key.
+      // Each root is echoed AS ITSELF. This used to collapse all three into
+      // `sessions_root` (`sessionsRoot || grokRoot || claudeRoot`) on the reasoning that a
+      // Grok-only build "carries no sessions_root at all, so falling through mirrors the
+      // engine". MEASURED against the engine, that is backwards: a Grok-only
+      // `corpus.build` returns `sessions_root: ''` AND `grok_root: <path>` — all three
+      // keys, `_clean`ed, with the unnamed ones empty. So the mock was reporting a Grok
+      // path in the field that means "the Codex tree", and any UI reading `sessions_root`
+      // to say what it imported said the wrong thing in dev and the right thing only
+      // against the real engine.
       //
-      // `claude_root` is carried because the engine gained it and a mock that accepts a
-      // narrower set than the engine makes the UI's new import path untestable here — the
-      // failure mode six other divergences in this file were just fixed for. The empty
-      // string means ABSENT rather than invalid, matching the engine exactly: it falls
-      // through to the refusal above instead of being validated.
-      buildJob = {
-        id: "mock-build-1",
-        polls: 0,
-        sessionsRoot: sessionsRoot || grokRoot || claudeRoot,
-      };
+      // `claude_root` is carried for the same reason the other five divergences in this
+      // file were fixed: a mock that accepts or reports a narrower shape than the engine
+      // makes the real contract untestable here. The empty string means ABSENT rather
+      // than invalid, matching the engine exactly — it falls through to the refusal above
+      // instead of being validated.
+      buildJob = { id: "mock-build-1", polls: 0, sessionsRoot, grokRoot, claudeRoot };
       return {
         job_id: buildJob.id,
         state: "running",
-        sessions_root: buildJob.sessionsRoot,
+        sessions_root: sessionsRoot,
+        grok_root: grokRoot,
+        claude_root: claudeRoot,
         started_ms: T0,
       };
     },
@@ -1324,6 +1333,11 @@ export function createMockIpc(
         job_id: buildJob.id,
         state: running ? "running" : "done",
         sessions_root: buildJob.sessionsRoot,
+        // Unlike the start reply, STATUS omits a root that was not named — measured, and
+        // it is the module's stated convention that optional fields are the ones dropped
+        // when falsy. The asymmetry is the engine's, not an invention here.
+        ...(buildJob.grokRoot ? { grok_root: buildJob.grokRoot } : {}),
+        ...(buildJob.claudeRoot ? { claude_root: buildJob.claudeRoot } : {}),
         started_ms: T0,
         indexed_conversations: Math.min(buildJob.polls, MOCK_BUILD_POLLS) * 400,
         errors: [],
@@ -1491,7 +1505,7 @@ export function createMockIpc(
 
     /**
      * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
-     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1353-1355`).
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1366-1368`).
      * Getting this wrong here would make a per-field editor look correct in preview while
      * blanking the other two fields against the real engine.
      */
@@ -1594,7 +1608,7 @@ export function createMockIpc(
      * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
      * argument being required is a safety property of this call — an automated probe once
      * read the owner's live Codex store through a defaulted home
-     * (`llm_anthology/sidecar.py:1447-1452`) — so a UI that forgot to collect it must fail
+     * (`llm_anthology/sidecar.py:1460-1452`) — so a UI that forgot to collect it must fail
      * here too, not only against the engine.
      *
      * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
@@ -1675,7 +1689,7 @@ export function createMockIpc(
           throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
         }
         // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
-        // kind (`llm_anthology/sidecar.py:1574`).
+        // kind (`llm_anthology/sidecar.py:1587`).
         const copy: MaintenanceCopy = {
           session_id: target.session_id ?? "",
           file_path: target.file_path,
@@ -1936,7 +1950,7 @@ export function createMockIpc(
       }
       if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
-      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1608-1609`), so a
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1621-1622`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: apply,

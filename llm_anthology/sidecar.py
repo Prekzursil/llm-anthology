@@ -544,10 +544,10 @@ def _build_error(err):
     other path on this surface, and every remaining value is sanitized — a malformed
     rollout is attacker-influenced text and must not relay a hidden-unicode payload.
 
-    ``file`` is indexed directly rather than guarded: every producer sets it
-    (codex_rollout.py:343, :347, :435), so a guard here would be an unreachable branch, and
-    a future producer that omitted it should fail LOUDLY rather than silently leak the
-    absolute path this function exists to strip."""
+    ``file`` is indexed directly rather than guarded: every producer sets it — the rollout
+    parser (codex_rollout.py:343, :347, :435) and ALSO loaders' own ``_ingest_docs`` /
+    ``_admit`` and the Grok and Claude Code adapters, which this list used to omit — so a
+    guard here would be unreachable, and a new producer should fail LOUD, not leak a path."""
     projected = dict(err)
     projected["file"] = os.path.basename(projected["file"])
     return _sanitize_tree(projected)
@@ -1019,6 +1019,19 @@ class Sidecar:
                   "started_ms": snapshot["started_ms"],
                   "indexed_conversations": indexed,
                   "errors": [_build_error(e) for e in snapshot["errors"]]}
+        # The other two roots the job records. They were stored and read by NOTHING, which
+        # is worse than either alternative — they cost a field on the job and a reader on
+        # the wire while answering no question. A client that polls rather than holding the
+        # start reply (the only place they surfaced) could not recover which non-Codex
+        # stores the job covered, and for a Grok- or Claude-Code-only build
+        # `sessions_root` is EMPTY, so the status described the source not at all.
+        #
+        # Emitted only when named, matching this module's stated convention that optional
+        # fields are the ones omitted when falsy — so a Codex-only status is unchanged
+        # byte for byte, and the cockpit's mirror of this shape does not have to care.
+        for key in ("grok_root", "claude_root"):
+            if snapshot.get(key):
+                result[key] = _clean(snapshot[key])
         if snapshot["finished_ms"] is not None:
             result["finished_ms"] = snapshot["finished_ms"]
         if snapshot["error"] is not None:

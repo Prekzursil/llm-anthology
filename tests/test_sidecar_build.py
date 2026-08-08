@@ -178,6 +178,31 @@ def test_build_accepts_a_GROK_ONLY_source_with_no_codex_sessions_root(tmp_path):
     assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["grok-sess-1"]
 
 
+def test_status_reports_WHICH_non_codex_roots_the_job_covers(tmp_path):
+    """A poller must be able to tell what the running job actually reads.
+
+    `corpus.build` records all three roots on the job, and `corpus.build_status` projected
+    only `sessions_root` — so `grok_root` and `claude_root` were written and read by
+    nothing. That is worse than either alternative: the fields cost a wire shape and a
+    reader while answering no question. A client that polls (rather than holding the start
+    reply, which is the only place they appeared) could not recover which non-Codex stores
+    the job covered — and for a Grok- or Claude-Code-only build, `sessions_root` is EMPTY,
+    so the status said nothing whatsoever about the source.
+
+    Reported only when named, matching the wire convention the module documents: fields
+    marked optional are the ones the sidecar omits when falsy. A two-provider build's
+    status is therefore byte-identical to before.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path)})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status.get("grok_root"), "a Grok-only job must say it read a Grok store"
+    assert "claude_root" not in status, "an unnamed root is omitted, not reported empty"
+    assert not status.get("sessions_root"), "and no Codex root was named"
+
+
 def test_build_accepts_grok_with_codex_home_OMITTED_entirely(tmp_path):
     """The real Grok-only shape: a grok_root and NOTHING else.
 

@@ -1598,12 +1598,22 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
       job_id: "mock-build-1",
       state: "running",
       sessions_root: "C:\\me\\.codex\\sessions",
+      grok_root: "",
+      claude_root: "",
       started_ms: 1_700_000_000_000,
     });
-    // Every root is opt-in, so a GROK-ONLY build names no Codex root at all and the echo
-    // falls through to the Grok one rather than reporting an empty source.
-    expect((await createMockIpc().corpusBuild({ grok_root: "C:\\me\\grok" })).sessions_root)
-      .toBe("C:\\me\\grok");
+    // A GROK-ONLY build reports the Grok root AS grok_root, and `sessions_root` EMPTY.
+    //
+    // This asserted the opposite — that the echo "falls through to the Grok one rather
+    // than reporting an empty source" — and that was a divergence dressed as a
+    // convenience. Measured against the engine: a Grok-only `corpus.build` returns
+    // `sessions_root: ''` alongside `grok_root: <path>`, all three keys present. So the
+    // mock was putting a Grok path in the field that means "the Codex tree", and any UI
+    // reading `sessions_root` to report what it imported was right against the engine and
+    // wrong in every dev run — the direction that is hardest to notice.
+    const grokOnly = await createMockIpc().corpusBuild({ grok_root: "C:\\me\\grok" });
+    expect(grokOnly.sessions_root).toBe("");
+    expect(grokOnly.grok_root).toBe("C:\\me\\grok");
     // With NEITHER root named the engine raises -32602 "name at least one source"
     // (`sidecar.py:858-861`) — a pure params check needing no filesystem — and the mock now
     // does too. Otherwise an empty build form succeeds in every dev run and fails only
