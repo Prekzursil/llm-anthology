@@ -39,11 +39,13 @@ Four properties are load-bearing, and each is enforced by a test:
     Downloads, 107 in Documents, 196 on Desktop): a full default scan is well under a
     second.
 
-  * TOTAL. A missing root, an unreadable directory, a permission error, a symlink or a
-    Windows junction, or a corrupt SQLite file is recorded and skipped — never fatal.
-    Recursion cannot run away: symlinked/junctioned directories are not descended
-    (``os.DirEntry.is_dir(follow_symlinks=False)`` is False for a junction, verified on
-    this box), and independently of that the depth cap bounds any cycle.
+  * TOTAL. A missing root, an unreadable directory, a permission error, a SYMLINK, or a
+    corrupt SQLite file is recorded and skipped — never fatal. (A Windows JUNCTION is
+    traversed, not skipped; see ``_is_dir`` for the measurement and why that is left as-is.)
+    Recursion cannot run away: SYMLINKED directories are not descended
+    (``os.DirEntry.is_dir(follow_symlinks=False)`` is False for a directory symlink), and
+    independently of that the depth cap bounds any cycle — which is what bounds a JUNCTION,
+    because a junction is NOT excluded by that check (see ``_walk``).
 
 Adding a provider is a TABLE EDIT, not new scan code: append an ``ExportSpec`` or a
 ``StoreSpec`` to ``PROVIDERS``. Only providers whose on-disk shape this repository
@@ -271,7 +273,7 @@ class IndexSpec:
 #: is known — Grok/xAI joined the table that way, once `.scratch/GROK-SCHEMA.md`
 #: measured its store and `adapters/grok.py` could read it.
 PROVIDERS = (
-    # corpus.py:161,179 — the index schema; conversations + conversations_fts identify
+    # corpus.py:179,197 — the index schema; conversations + conversations_fts identify
     # an index this app wrote, regardless of what the file is called.
     IndexSpec(provider="anthology",
               required_tables=("conversations", "conversations_fts"),
@@ -327,7 +329,7 @@ PROVIDERS = (
               item_patterns=(ItemPattern("session_updates", "updates.jsonl"),),
               item_depth=3, report="subdir", dir_counter="session_dirs"),
 
-    # adapters/chatgpt.py:1 and cli.py:11 — the native export is conversations.json.
+    # adapters/chatgpt.py:1 and cli.py:8 — the native export is conversations.json.
     # Claude's export uses the SAME filename, so neither claims it alone; `chat.html`
     # is the disambiguating sibling (OBSERVED beside a real ChatGPT export on this
     # machine, not read from a specification).
@@ -339,14 +341,14 @@ PROVIDERS = (
                patterns=("conversations.json", "conversations-*.json"),
                sibling_any=("chat.html",)),
 
-    # adapters/claude.py:1 and cli.py:9. loaders.py:39-42 names the real sibling set
+    # adapters/claude.py:1 and cli.py:7. loaders.py:46-47 names the real sibling set
     # that a Claude export directory carries — that is what disambiguates it from a
     # ChatGPT export of the same filename, without opening either file.
     ExportSpec(provider="claude", patterns=("conversations.json",),
                sibling_any=("users.json", "memories.json", "design_chats",
                             "reflections", "projects.json")),
 
-    # adapters/codex.py:1 and cli.py:11 — the task export. A unique filename.
+    # adapters/codex.py:1 and cli.py:9 — the task export. A unique filename.
     ExportSpec(provider="codex", patterns=("codex.json",), confidence=CONF_HIGH),
 
     # adapters/gemini.py:1,8 — Google Takeout "Gemini Apps" activity, probed from the
@@ -418,7 +420,7 @@ def _reject_nonlocal(path):
 
     A crafted ``\\\\host\\share`` target coerces an outbound SMB/NTLM authentication —
     the Windows hash-leak class — so it is refused rather than stat'ed. Mirrors
-    ``sidecar._reject_nonlocal_path`` (sidecar.py:355).
+    ``sidecar._reject_nonlocal_path`` (sidecar.py:500).
     """
     if path.replace("/", "\\").startswith("\\\\"):
         raise ValueError("root must be a local path, not a UNC/network path: %s" % path)
@@ -463,11 +465,11 @@ def _walk(base, max_depth, state):
     """Yield ``(dirpath, entry, sibling_names)`` for every FILE at most ``max_depth``
     below ``base``.
 
-    The single bounded traversal every scan uses. It never descends into a symlink or a
-    Windows junction (``is_dir(follow_symlinks=False)`` is False for both — verified
-    against the real ``~/.claude/skills`` junction on this box), never descends into a
-    pruned name, never exceeds ``max_depth``, and stops entirely once the file budget is
-    spent. Those three bounds are independent, so a directory cycle terminates even if
+    The single bounded traversal every scan uses. It never descends into a directory
+    SYMLINK and never READS THROUGH a symlink of any kind (see ``_is_link``), never
+    descends into a pruned name, never exceeds ``max_depth``, and stops entirely once the
+    file budget is spent. Those three bounds are independent, so a directory cycle
+    terminates even if
     one of them were wrong. An unreadable directory is recorded and skipped; it can
     never abort the walk.
     """
@@ -487,6 +489,25 @@ def _walk(base, max_depth, state):
                 if depth + 1 < max_depth and entry.name not in PRUNED_DIR_NAMES:
                     stack.append((entry.path, depth + 1))
                 continue
+            # A SYMLINK IS NEVER READ THROUGH. `_is_dir` already refuses to DESCEND one,
+            # but a link to a FILE used to fall through to here and be yielded — and every
+            # consumer opens BY PATH, which follows: measured, `discover()` returned
+            # export_file findings for a link whose real content sat outside every scanned
+            # root, and `_head` on it returned that outside file's bytes.
+            #
+            # The sharp edge is not confinement but EGRESS: a link named
+            # `conversations.json` aimed at `\\host\share\x` turns that open() into an
+            # outbound SMB/NTLM authentication — a credential leak out of a first-run scan
+            # the user never pointed anywhere. The `except OSError` in the readers prevents
+            # the crash, not the connection.
+            #
+            # Skipped HERE rather than in `_head` because `_sqlite_shape` also opens by
+            # path, so a link to a `.db` would otherwise stay reachable through the index
+            # route (both were live in the measurement). One skip where entries are
+            # produced covers every consumer, including future ones — and it makes the file
+            # side agree with the dir side, which had already decided not to traverse links.
+            if _is_link(entry, state):
+                continue
             state.files_examined += 1
             if state.exhausted:
                 return
@@ -494,14 +515,55 @@ def _walk(base, max_depth, state):
 
 
 def _is_dir(entry, state):
-    """True for a real directory. A symlink/junction reports False and is therefore
-    never descended; an entry that cannot be stat'ed is treated as a non-directory so a
-    single bad entry cannot abort the walk."""
+    """True for a directory that is descended.
+
+    A directory SYMLINK reports False here and is therefore never descended. A WINDOWS
+    JUNCTION DOES NOT — measured on this box (Python 3.14, `_winapi.CreateJunction`):
+    a junction reports ``is_dir(follow_symlinks=False)`` True, ``is_symlink()`` False and
+    ``os.path.islink()`` False, so it is traversed and only the depth cap bounds it. An
+    earlier version of this docstring claimed False "for both, verified against the real
+    ``~/.claude/skills`` junction" — but that artifact measures as ``is_symlink()`` True,
+    i.e. it is a directory SYMLINK, not a junction, so the verification was performed
+    against the wrong reparse type and the generalisation to junctions never held.
+
+    The consequence is scope, not egress: a junction's target must be a local volume path,
+    so it cannot aim a read at ``\\\\host\\share`` the way a symlink can (which is why
+    ``_is_link`` guards the egress case and this does not). It does mean a junction inside
+    a scanned root widens the scan past that root — left as-is deliberately, because
+    someone may junction a store in on purpose and changing it is a behaviour decision,
+    not a bug fix.
+
+    An entry that cannot be stat'ed is treated as a non-directory so a single bad entry
+    cannot abort the walk.
+    """
     try:
         return entry.is_dir(follow_symlinks=False)
     except OSError as exc:                       # pragma: no cover - needs a race
         state.note_error(entry.path, exc)
         return False
+
+
+def _is_link(entry, state):
+    """True for a symlink — which this scanner SKIPS rather than reads through.
+
+    The skip is recorded via ``note_error`` rather than dropped, because the panel already
+    surfaces a count of skipped locations: a link that is silently ignored looks identical
+    to a link that was never there, and the operator would have no way to learn why their
+    file was not found.
+
+    An entry that cannot be stat'ed is treated AS A LINK, i.e. skipped. That is the
+    opposite of ``_is_dir``'s tolerance, and deliberately so: ``_is_dir`` fails open because
+    mis-classifying a directory only costs some traversal, whereas here the thing being
+    avoided is opening a path whose real target is unknown. Skipping cannot abort the walk.
+    """
+    try:
+        if not entry.is_symlink():
+            return False
+    except OSError as exc:                       # pragma: no cover - needs a race
+        state.note_error(entry.path, exc)
+        return True
+    state.note_error(entry.path, "skipped: a symbolic link is never read through")
+    return True
 
 
 def _existing_dir(path):
@@ -714,7 +776,17 @@ def _sqlite_shape(path, specs, state):
     without triggering journal recovery, and with no possibility of mutating it. Only
     table NAMES and row COUNTS are read — never a row.
     """
-    esc = path.replace("?", "%3f").replace("#", "%23")
+    # `%` FIRST, and the order is the whole correctness argument: URI mode DECODES `%HH`,
+    # so an un-escaped `%` means the path SQLite resolves is not the path on disk. Measured:
+    # `Chat%20Export.sqlite` — exactly what a browser download produces — resolved to
+    # `Chat Export.sqlite`, which does not exist, and `a%41b.sqlite` to `aAb.sqlite`. The
+    # failure was SILENT and total: the suffix and 16-byte magic gates in `_match_index`
+    # both use a plain `open()` (no decoding), so only this connection failed, `tables`
+    # came back None, the finding was dropped, and first-run discovery reported "No AI
+    # session data found in the usual places" with the index sitting in the scanned folder.
+    # Escaping `%` LAST would re-escape the `%` of `%3f`/`%23` into `%253f`/`%2523` and
+    # break the two cases this line already handled.
+    esc = (path.replace("%", "%25").replace("?", "%3f").replace("#", "%23"))
     conn = None
     try:
         conn = sqlite3.connect("file:%s?mode=ro&immutable=1" % esc, uri=True)

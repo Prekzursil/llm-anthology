@@ -27,6 +27,23 @@ def _touch(path, data=b"x"):
     return path
 
 
+def _can_symlink():
+    """Probe once: file symlinks need Developer Mode / elevation on Windows."""
+    import tempfile
+    d = tempfile.mkdtemp()
+    target = os.path.join(d, "t")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write("t")
+    try:
+        os.symlink(target, os.path.join(d, "l"))
+        return True
+    except OSError:                          # env capability probe, not app code
+        return False
+
+
+_SYMLINKS = _can_symlink()
+
+
 def _corpus_index(path):
     """A real, minimal corpus index — the same schema corpus.open_index writes."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -183,6 +200,106 @@ def test_built_corpus_index_detected_with_row_counts(tmp_path, empty_roots):
     assert hits[0].path == path
     assert hits[0].confidence == discover.CONF_HIGH
     assert hits[0].detail["conversations"] == 0        # a real, empty index
+
+
+@pytest.mark.parametrize("name", [
+    "Chat%20Export.sqlite",      # exactly what a browser download produces
+    "a%41b.sqlite",              # %41 decodes to 'A' — the path SQLite opens is not this
+    "100%.sqlite",               # a bare % not followed by hex digits
+    "%25already.sqlite",         # a literal %25 must not be double-unescaped
+])
+def test_a_percent_in_the_filename_does_not_hide_a_real_index(tmp_path, empty_roots,
+                                                              name):
+    """A `%` in the path must not make a real index INVISIBLE to discovery.
+
+    The URI the shape probe builds is opened with ``uri=True``, and URI mode decodes
+    ``%HH``. Escaping only ``?`` and ``#`` therefore hands SQLite a path that is not the
+    path on disk: ``Chat%20Export.sqlite`` resolves to ``Chat Export.sqlite``, which does
+    not exist.
+
+    The failure is SILENT and total. `_match_index` passes the suffix gate and the 16-byte
+    magic gate — both use a plain ``open()``, which does no decoding — and only the
+    connection fails. `tables is None`, the finding is dropped, and first-run discovery
+    reports "No AI session data found in the usual places" while the index sits in the
+    folder it just scanned. The only trace is a counted error the panel renders as
+    "1 location was skipped".
+
+    `100%` and `%25already` are the CONTROLS: a bare `%` is not a valid escape so it
+    already opened, and `%25` must survive exactly one round of escaping rather than being
+    re-escaped into `%2525`. Keeping them here means a fix that over-escapes fails too.
+    """
+    path = _corpus_index(str(tmp_path / "idx" / name))
+    hits = _by(discover.discover(empty_roots), kind=discover.KIND_BUILT_INDEX)
+    assert [h.path for h in hits] == [path]
+    assert hits[0].confidence == discover.CONF_HIGH
+
+
+def test_a_percent_in_a_PARENT_DIRECTORY_does_not_hide_a_real_index(tmp_path):
+    """The same defect one level up — the escape sees the whole path, not just the name.
+
+    Called out separately because the filename cases above would pass while this failed if
+    a fix only sanitised the basename. `Downloads\\Chat%20Exports\\anthology.db` is an
+    entirely ordinary shape: a browser-named FOLDER holding a corpus.
+    """
+    holder = tmp_path / "idx" / "Chat%20Exports"
+    path = _corpus_index(str(holder / "anthology.sqlite"))
+    for name in ("codex", "claude", "user"):
+        os.makedirs(str(tmp_path / name), exist_ok=True)
+    roots = discover.Roots(codex_home=str(tmp_path / "codex"),
+                           claude_home=str(tmp_path / "claude"),
+                           user_dirs=(str(tmp_path / "user"),),
+                           index_dirs=(str(tmp_path / "idx"),))
+    hits = _by(discover.discover(roots), kind=discover.KIND_BUILT_INDEX)
+    assert [h.path for h in hits] == [path]
+
+
+@pytest.mark.skipif(not _SYMLINKS, reason="file symlinks unavailable on this host")
+def test_a_symlink_is_never_read_through_and_the_skip_is_recorded(tmp_path, empty_roots):
+    """A symlinked FILE inside a scanned root must NOT be opened.
+
+    `_is_dir` uses `follow_symlinks=False`, so a link is never DESCENDED — but before this
+    fix it fell through to the file branch and was yielded, and every consumer opens BY
+    PATH, which follows. Measured two independent ways: `discover()` returned two
+    export_file findings for a link whose real content sat outside every scanned root, and
+    `_head` on that link returned the outside file's bytes with zero errors noted.
+
+    Why it matters beyond confinement: a link named `conversations.json` pointing at
+    `\\\\host\\share\\x` makes that `open()` an outbound SMB/NTLM authentication — a
+    credential leak from a first-run scan the user never aimed anywhere. The `except OSError`
+    around the read prevents the crash, not the connection. This test uses a LOCAL outside
+    target on purpose: the property under test is read-through, and pointing a test at a
+    real UNC host would perform the very egress being prevented.
+
+    Fixed at the WALK, not at `_head`: `_sqlite_shape` also opens by path, so a link to a
+    `.db` would have stayed reachable through the index route. Skipping links once, where
+    entries are produced, closes every consumer including future ones — and it makes the
+    file side agree with the dir side, which had already decided not to traverse links.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "private-export.json"
+    victim.write_text('[{"title": "must not be read"}]', encoding="utf-8")
+    victim_db = _corpus_index(str(outside / "private.sqlite"))
+
+    scanned = tmp_path / "user"
+    os.symlink(str(victim), str(scanned / "conversations.json"))
+    os.symlink(victim_db, str(tmp_path / "idx" / "linked.sqlite"))
+
+    # The CONTROL: a real file beside the link must still be found, or a fix that simply
+    # stopped detecting exports would pass this test.
+    real = scanned / "real-dir" / "conversations.json"
+    real.parent.mkdir()
+    real.write_text('[{"title": "a genuine export"}]', encoding="utf-8")
+
+    result = discover.discover(empty_roots)
+    paths = [f.path.lower() for f in result.findings]
+    assert not any("conversations.json" in p and "real-dir" not in p for p in paths), \
+        "the symlinked export was read through: %s" % paths
+    assert not any("linked.sqlite" in p for p in paths), \
+        "the symlinked index was opened: %s" % paths
+    assert any("real-dir" in p for p in paths), "the control export must still be found"
+    # Not silent: the panel already renders a skip count, so the operator can see it.
+    assert any("conversations.json" in e for e in result.stats.errors)
 
 
 def test_unrelated_sqlite_file_is_not_a_built_index(tmp_path, empty_roots):
