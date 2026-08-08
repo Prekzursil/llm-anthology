@@ -36,5 +36,8 @@ features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Isolation",
+    # GetDriveTypeW, for refusing a mapped NETWORK drive BEFORE any filesystem call
+    # touches it. See `reject_remote_drive` in lib.rs.
+    "Win32_Storage_FileSystem",
 ]
 

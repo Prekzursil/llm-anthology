@@ -117,11 +117,12 @@ fn reject_unc_spelling(index_path: &str) -> Result<(), String> {
 /// - This runs AFTER `is_file()`, since `canonicalize` needs the file to exist. It therefore
 ///   prevents ATTACHING a corpus over SMB — which also protects sqlite, whose locking is
 ///   unreliable on a network share — but it does NOT prevent the outbound connection
-///   `is_file()` already made. Blocking the connection itself needs a check that runs BEFORE
-///   the probe: `GetDriveTypeW` == `DRIVE_REMOTE` for the mapped-drive case (a local MUP
-///   lookup, no network round trip) plus a `symlink_metadata` ancestor walk for the link case.
-///   `GetDriveTypeW` needs the `Win32_Storage_FileSystem` feature added to `windows-sys` in
-///   Cargo.toml, so it is deliberately NOT done here.
+///   `is_file()` already made. The MAPPED-DRIVE half of that is now closed upstream by
+///   `reject_remote_drive`, which asks `GetDriveTypeW` before any filesystem call (this
+///   paragraph used to say that check was "deliberately NOT done here" pending a
+///   `Win32_Storage_FileSystem` feature; the feature is in Cargo.toml and the check is wired).
+///   The SYMLINK half is still open: a link has no remote drive type, so it is caught only
+///   here, after the probe. Closing it needs a `symlink_metadata` ancestor walk.
 /// - On Linux and macOS this is INERT: a canonicalized path on an NFS or cifs mount is
 ///   `/mnt/share/index.db`, indistinguishable from a local path without consulting the mount
 ///   table. The raw-spelling guard still covers `//host/share` there.
@@ -158,6 +159,73 @@ fn reject_unc_resolution(
     Ok(())
 }
 
+/// `DRIVE_REMOTE` from `GetDriveTypeW`. Named rather than inlined so the test reads as the
+/// Windows contract it is, not as a magic 4.
+const DRIVE_REMOTE: u32 = 4;
+
+/// Judge a drive type. PURE — the caller does the syscall, exactly as `reject_unc_resolution`
+/// has the caller do the resolution, so the rejecting branch is testable without mounting a
+/// share.
+///
+/// `None` means "could not ask" (a non-drive-letter path, or a non-Windows build) and is
+/// deliberately NOT a rejection: this guard is an early-out for a case the later
+/// `reject_unc_resolution` still catches, so failing open here loses nothing. Failing CLOSED
+/// would refuse ordinary POSIX paths, where the question cannot even be posed.
+fn reject_remote_drive(index_path: &str, drive_type: Option<u32>) -> Result<(), String> {
+    if drive_type == Some(DRIVE_REMOTE) {
+        return Err(format!(
+            "{index_path} is on a mapped network drive; a corpus index must be a local file"
+        ));
+    }
+    Ok(())
+}
+
+/// The drive type of a path's ROOT, or `None` when the question does not apply.
+///
+/// WHY THIS RUNS BEFORE `is_file()`. `reject_unc_resolution` judges the CANONICALIZED path, so
+/// it only fires after the filesystem has already been touched — it stops the corpus being
+/// ATTACHED over SMB but not the outbound connection that answering `is_file()` already made.
+/// Two costs follow from that, and this closes both:
+///
+/// - AVAILABILITY, the one actually likely to bite. A DISCONNECTED mapping puts a multi-minute
+///   blocking stat on the `#[tauri::command]` thread with no cancel and no timeout — the UI
+///   simply stops. Measured on this repo's own UNC test: 12.85s and 13.18s against an
+///   unreachable host with the guard neutered, versus 0.00s with it in place, and a prior
+///   measurement recorded 272,061 ms against a black-holed address.
+/// - SECURITY. That outbound stat is the SMB/NTLM handshake, so preventing it — rather than
+///   refusing afterwards — is the difference between not attaching and not connecting.
+///
+/// `GetDriveTypeW` is a local mount-table lookup: no network round trip, so asking is cheap
+/// even for a dead mapping. It takes the drive ROOT (`Z:\`), not the full path.
+#[cfg(windows)]
+fn drive_type_of(index_path: &str) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    // Only a drive-letter path has a drive type to ask about. A UNC spelling never reaches
+    // here (the lexical guard runs first) and a relative path has no root.
+    let bytes = index_path.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", bytes[0] as char))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `root` is a NUL-terminated UTF-16 buffer that outlives the call, which is the
+    // whole of GetDriveTypeW's contract. It cannot fail — an unknown root answers
+    // DRIVE_UNKNOWN/DRIVE_NO_ROOT_DIR, both of which fall through as "not remote".
+    Some(unsafe { GetDriveTypeW(root.as_ptr()) })
+}
+
+#[cfg(not(windows))]
+fn drive_type_of(_index_path: &str) -> Option<u32> {
+    // Inert by design: there are no drive letters, and a cifs/NFS mount is indistinguishable
+    // from a local path without reading the mount table. `reject_unc_resolution` documents the
+    // same limitation for the same reason.
+    None
+}
+
 /// Reject an `index_path` that is not an existing LOCAL file. Split out from the command so the
 /// rule is unit-testable without constructing a Tauri `State`.
 ///
@@ -178,6 +246,21 @@ fn reject_unc_resolution(
 /// already caused the SHELL to touch that host before Tauri returns a string to us. That is the
 /// dialog's network contact, not this app's, and it is not fixable from here.
 fn validate_index_path(index_path: &str) -> Result<(), String> {
+    validate_index_path_with(index_path, drive_type_of)
+}
+
+/// The rule, with the drive-type lookup INJECTED.
+///
+/// Split out purely so the ORDERING is testable. The whole value of the remote-drive check is
+/// that it runs before `is_file()`; a test of `reject_remote_drive` alone would still pass with
+/// the call deleted, or moved after the filesystem touch, which is exactly the mistake worth
+/// catching. With the lookup injected, a test can hand it DRIVE_REMOTE for a path that does not
+/// exist and prove the remote refusal WINS over the not-found one — which can only happen if
+/// the check ran first.
+fn validate_index_path_with(
+    index_path: &str,
+    drive_type: impl Fn(&str) -> Option<u32>,
+) -> Result<(), String> {
     reject_unc_spelling(index_path)?;
     let path = std::path::Path::new(index_path);
     if !path.is_absolute() {
@@ -185,10 +268,14 @@ fn validate_index_path(index_path: &str) -> Result<(), String> {
             "{index_path} is not a full path; name the corpus index by its absolute path"
         ));
     }
+    // BEFORE any filesystem call. A mapped network drive answers `is_file()` by going out on
+    // the wire, so asking first is what keeps a dead mapping from freezing the command thread
+    // and a live one from completing an SMB handshake we are about to refuse anyway.
+    reject_remote_drive(index_path, drive_type(index_path))?;
     if path.is_file() {
-        // It exists and it is a file — but "file" is not yet "local file". A mapped network
-        // drive or a symlink reaches a share without ever being spelled `\\host\...`, so the
-        // spelling guard above cannot see it. See `reject_unc_resolution`.
+        // It exists and it is a file — but "file" is not yet "local file". A SYMLINK reaches a
+        // share without ever being spelled `\\host\...` and without a remote drive type, so
+        // neither guard above can see it. See `reject_unc_resolution`.
         return reject_unc_resolution(index_path, std::fs::canonicalize(path));
     }
     // Distinguish the two reasons, because "it's a folder" and "it's not there" send the
@@ -524,7 +611,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_info, reject_unc_resolution, validate_index_path};
+    #[cfg(windows)]
+    use super::drive_type_of;
+    use super::{
+        app_info, reject_remote_drive, reject_unc_resolution, validate_index_path,
+        validate_index_path_with, DRIVE_REMOTE,
+    };
 
     /// BOTH-STATES test for the open-vs-create guard. The passing case alone would not
     /// prove anything: the guard's whole purpose is to FAIL on a path the Python layer
@@ -672,6 +764,86 @@ mod tests {
     /// the CI matrix. The canonical strings below are verbatim copies of what the real
     /// `fs::canonicalize` returned in that measurement, so they are a recording, not an
     /// invention.
+    #[test]
+    fn reject_remote_drive_refuses_a_mapped_network_drive_before_touching_it() {
+        // DRIVE_REMOTE is what `GetDriveTypeW` answers for a `net use` mapping. The syscall
+        // is the caller's, exactly as the resolution is in the sibling below, so the refusing
+        // branch is testable without mounting a share — which needs privileges, mutates the
+        // machine, and could never run on the CI matrix.
+        let err = reject_remote_drive(r"Z:\index.db", Some(DRIVE_REMOTE)).unwrap_err();
+        assert!(
+            err.contains("mapped network drive"),
+            "wrong refusal for a remote drive: {err}"
+        );
+
+        // The literal, because every assertion above refers to the constant SYMBOLICALLY and
+        // would therefore follow it anywhere. Mutation testing caught exactly that: changing
+        // `DRIVE_REMOTE` from 4 to 99 left the whole suite GREEN while a real mapped drive —
+        // which Windows reports as 4 — sailed straight through the guard. This is a Win32 API
+        // contract value, not a choice, so it is pinned as one.
+        assert_eq!(DRIVE_REMOTE, 4, "GetDriveTypeW reports DRIVE_REMOTE as 4");
+    }
+
+    #[test]
+    fn reject_remote_drive_lets_every_other_answer_through() {
+        // Fails OPEN on purpose, and the control matters: a guard that refused anything it
+        // could not classify would reject ordinary local paths (DRIVE_FIXED), removable media,
+        // and EVERY path on Linux and macOS, where `None` is the only possible answer. This is
+        // an early-out for one case; `reject_unc_resolution` still catches what it misses.
+        for answer in [None, Some(0u32), Some(2), Some(3), Some(5), Some(6)] {
+            assert!(
+                reject_remote_drive(r"C:\index.db", answer).is_ok(),
+                "a non-remote drive type {answer:?} must not be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_remote_drive_check_runs_before_the_filesystem_is_touched() {
+        // The ordering IS the fix. `reject_remote_drive` passing in isolation would survive
+        // the call being deleted, or moved below `is_file()` — and moved below is the subtly
+        // wrong version, because by then the multi-minute stat has already happened and the
+        // SMB handshake with it.
+        //
+        // Proven without mounting a share: hand it DRIVE_REMOTE for a path that does NOT
+        // exist. If the check runs first the answer is the remote refusal; if it runs after
+        // `is_file()`, the answer is "no corpus index at". Only one ordering produces this.
+        let err = validate_index_path_with(r"Z:\nonexistent\index.db", |_| Some(DRIVE_REMOTE))
+            .unwrap_err();
+        assert!(
+            err.contains("mapped network drive"),
+            "the remote-drive refusal must win over not-found, or the check ran too late: {err}"
+        );
+
+        // Control: the same non-existent path with a LOCAL drive type falls through to the
+        // ordinary not-found message, so the test above is measuring the drive type rather
+        // than just the path being absent.
+        let local = validate_index_path_with(r"Z:\nonexistent\index.db", |_| Some(3)).unwrap_err();
+        assert!(
+            local.contains("no corpus index at"),
+            "a local drive type must not be refused as remote: {local}"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn drive_type_of_asks_only_about_drive_letter_paths() {
+        // The adapter's own contract, which is where a wrong answer would be silent: anything
+        // without a drive letter has no drive type, so it must return None rather than
+        // stumble into a syscall with a malformed root.
+        assert_eq!(drive_type_of("relative\\index.db"), None);
+        assert_eq!(drive_type_of(r"\\host\share\index.db"), None);
+        assert_eq!(drive_type_of("C"), None);
+        assert_eq!(
+            drive_type_of("4:\\index.db"),
+            None,
+            "a digit is not a drive letter"
+        );
+        // The system drive exists and is local, so this both proves the syscall is reached
+        // and pins that it does not answer DRIVE_REMOTE for it.
+        assert!(matches!(drive_type_of(r"C:\Windows"), Some(t) if t != DRIVE_REMOTE));
+    }
+
     #[test]
     fn reject_unc_resolution_refuses_a_path_that_resolves_off_the_local_disk() {
         let resolving_to = |canonical: &str| Ok(std::path::PathBuf::from(canonical));
