@@ -143,7 +143,7 @@ def test_the_explicit_body_argument_still_wins(conn):
     assert _hits(conn, "secret") == 0, "the explicit body was ignored on update"
 
 
-def test_the_current_schema_can_retract_terms_in_place(conn, request):
+def test_the_current_schema_can_retract_terms_in_place(conn):
     """The tidiness difference between the two schemas, stated rather than assumed.
 
     On the current schema the rowid is STABLE across an update, because the old posting can
@@ -152,11 +152,41 @@ def test_the_current_schema_can_retract_terms_in_place(conn, request):
     """
     first = corpus.add_conversation(conn, _conv("c1", "t", ["alpha"]))
     second = corpus.add_conversation(conn, _conv("c1", "t", ["bravo and then some more"]))
-    if request.node.callspec.params["conn"] == "current":
-        assert first == second, "the current schema should update in place"
+    if corpus._fts_can_delete(conn):
+        assert first == second, "an index that can delete should update in place"
     else:
-        assert first != second, "a legacy index must move, since it cannot delete"
+        assert first != second, "an index that cannot delete must move"
     assert _hits(conn, "bravo") == 1 and _hits(conn, "alpha") == 0
+
+
+def test_the_current_param_really_does_get_the_deleting_schema_on_this_build(conn, request):
+    """Why the two tests above branch on the CAPABILITY and not on the param name.
+
+    `init_index` adds `contentless_delete=1` only when
+    `_CONTENTLESS_DELETE = sqlite3.sqlite_version_info >= (3, 43)` (`corpus.py:253,263-265`).
+    Below 3.43 the "current" fixture therefore produces a table that is structurally
+    LEGACY, and a test branching on the param name would demand in-place update from an
+    index that cannot delete — red on an old-SQLite runner for a purely environmental
+    reason, on a CI matrix that spans 3.9 through 3.13 on three operating systems.
+
+    A `pytest.skip` guard was the obvious fix and is the weaker one: it buys green by
+    abandoning the assertion exactly where the schema differs. Branching on
+    `_fts_can_delete` keeps BOTH tests running on every build and asserts the behaviour
+    that build actually has.
+
+    This test is the control that keeps the param name honest. On a modern SQLite the name
+    and the capability must agree; if they ever stop agreeing, the NAME is what is lying,
+    and this fails to say so rather than letting the suite drift.
+    """
+    can_delete = corpus._fts_can_delete(conn)
+    if sqlite3.sqlite_version_info >= (3, 43):
+        assert can_delete == (request.node.callspec.params["conn"] == "current"), (
+            "on SQLite %s the 'current' fixture must get contentless_delete and 'legacy' "
+            "must not" % sqlite3.sqlite_version)
+    else:
+        assert not can_delete, (
+            "SQLite %s predates contentless_delete, so NEITHER fixture can retract a "
+            "posting and both must take the move path" % sqlite3.sqlite_version)
 
 
 def test_a_legacy_move_never_lands_on_a_rowid_the_stale_posting_owns(conn):
@@ -171,7 +201,7 @@ def test_a_legacy_move_never_lands_on_a_rowid_the_stale_posting_owns(conn):
         assert _hits(conn, stale) == 0, "%s still matches after four re-indexes" % stale
 
 
-def test_a_same_length_body_edit_is_re_indexed_on_the_CURRENT_schema(conn, request):
+def test_a_same_length_body_edit_is_re_indexed_on_the_CURRENT_schema(conn):
     """The fingerprint gap, pinned where it is closed.
 
     `char_count` is the only stored signal that tracks the body, so an edit of the same
@@ -182,7 +212,7 @@ def test_a_same_length_body_edit_is_re_indexed_on_the_CURRENT_schema(conn, reque
     """
     corpus.add_conversation(conn, _conv("c1", "t", ["alpha"]))
     corpus.add_conversation(conn, _conv("c1", "t", ["bravo"]))     # same length, exactly
-    if request.node.callspec.params["conn"] == "current":
+    if corpus._fts_can_delete(conn):
         assert _hits(conn, "bravo") == 1 and _hits(conn, "alpha") == 0
     else:
         assert _hits(conn, "alpha") == 1, (
