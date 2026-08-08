@@ -2,13 +2,29 @@
 /**
  * `llm-anthology` — render ChatGPT / Claude / Gemini session exports to faithful HTML + Markdown.
  *
- * Fully local and offline: this tool never opens a network connection. Mirrors the
- * Python `llm-anthology` CLI (llm_anthology/cli.py + loaders.py + build.py) so the two rails behave
- * identically. Nothing here is on the byte-for-byte-parity-tested renderer path; the
- * heavy lifting is delegated to the same ported modules the tests cover.
+ * Fully local and offline: this tool never opens a network connection. Ported from the
+ * Python `llm-anthology` CLI (llm_anthology/cli.py + loaders.py + build.py).
+ *
+ * WHAT PARITY ACTUALLY MEANS HERE. For the four commands this rail implements — claude,
+ * chatgpt, gemini, demo — the loader, report and exit-code behaviour matches the python
+ * rail and is pinned by test/cli.test.ts. It is NOT true that the two CLIs behave
+ * identically overall, and an earlier version of this comment said so; these are the
+ * measured residuals, none of which this file closes:
+ *
+ *   * python has two subcommands this rail does not: `codex` (a third export shape, whose
+ *     absence matters because feeding codex.json to `chatgpt` yields zero conversations
+ *     silently) and `index` (the SQLite corpus the cockpit reads). cli.py:47,62.
+ *   * `chatgpt <dir>`: a real ChatGPT Data Export ships the corpus SHARDED as
+ *     conversations-000.json … conversations-NNN.json, and loaders.py:120-135 contributes
+ *     every shard. loadChatgpt below accepts only a file, so a directory argument loads
+ *     nothing here. UNVERIFIED whether any packaged consumer passes a directory — nothing
+ *     in this repo does, and no test covers it either way.
+ *
+ * Nothing here is on the byte-for-byte-parity-tested renderer path; the heavy lifting is
+ * delegated to the same ported modules the tests cover.
  */
 import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, join, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as chatgpt from "./adapters/chatgpt.js";
@@ -63,6 +79,8 @@ interface LoadError {
 interface Report {
   conversations: number;
   rendered: number;
+  turns: number;
+  empty_conversations: number;
   fidelity_passed: number;
   failed: unknown[];
   errors: LoadError[];
@@ -122,9 +140,18 @@ function renderCorpus(
 
   writeIndex(outDir, index, theme);
   writeText(join(outDir, "_hidden-char-audit.json"), JSON.stringify(auditRows, null, 2));
+  // A conversation that parses cleanly but carries NO turns is a silent false-success:
+  // feeding a Codex-shaped export to the ChatGPT loader yields 1 conversation / 0 turns /
+  // 0 errors, so real content vanishes while the caller sees a clean load. Count turns so
+  // the caller — and main()'s exit code — can tell "rendered" from "rendered something".
+  // Mirrors build.py:112-118, field order included.
+  const turns = index.reduce((sum, row) => sum + row[2], 0);
+  const empty = index.filter((row) => row[2] === 0).length;
   const report: Report = {
     conversations: n,
     rendered: index.length,
+    turns,
+    empty_conversations: empty,
     fidelity_passed: index.length - failed.length,
     failed,
     errors,
@@ -160,6 +187,16 @@ function writeIndex(
 
 function printReport(r: Report): void {
   console.log("CONVERSATIONS_RENDERED", r.rendered, "of", r.conversations);
+  console.log("TURNS_RENDERED", r.turns);
+  if (r.empty_conversations) {
+    // loud, because the usual cause is a wrong-provider or drifted export -- a case that
+    // otherwise renders blank pages and reports success
+    console.log(
+      "EMPTY_CONVERSATIONS",
+      r.empty_conversations,
+      "(no turns parsed - wrong provider, or the export format changed)",
+    );
+  }
   console.log("FIDELITY_GATE_PASSED", r.fidelity_passed, "of", r.rendered);
   console.log("HIDDEN_CHAR_CONVERSATIONS", r.hidden_char_conversations);
   console.log("ERRORS", r.errors.length);
@@ -185,9 +222,26 @@ function loadClaude(src: string, outDir: string): [Conversation[], LoadError[]] 
     const conv = all.filter((f) => basename(f) === "conversations.json");
     const design = all.filter((f) => basename(dirname(f)) === "design_chats");
     files = conv.length || design.length ? [...conv, ...design] : all;
-    const outAbs = join(outDir);
-    files = files.filter((f) => !f.startsWith(outAbs));
   }
+  // Never ingest our own output — the site dir often lives inside the source dir. 1:1 with
+  // loaders.py:63-66, and every part of that line is load-bearing:
+  //
+  //   * `resolvePath` on BOTH sides (python's os.path.abspath). Comparing the two argv
+  //     spellings raw makes the filter a no-op whenever they differ: `claude <abs>/export
+  //     export/site` left an absolute file list against a relative prefix, nothing matched,
+  //     and the second run happily re-ingested the `_fidelity-report.json` the first wrote.
+  //   * `+ sep`. Without the trailing separator the prefix test also matches a SIBLING whose
+  //     name merely begins with out_dir's: out_dir `export/site` swallowed a real
+  //     `export/site-backup/conversations.json`, so the corpus rendered 0 of 0, ERRORS 0,
+  //     exit 0 — a whole export lost with nothing on stdout to say so.
+  //   * placement AFTER the isFile/else split, not inside the else. Python filters both
+  //     branches, so naming one file inside out_dir drops it there; doing it in the
+  //     directory branch only re-rendered that file on this rail.
+  //
+  // No `if (outDir)` guard, unlike python's: outDir cannot be empty here — main() returns 2
+  // before calling this when either positional is missing.
+  const outAbs = resolvePath(outDir) + sep;
+  files = files.filter((f) => !resolvePath(f).startsWith(outAbs));
   for (const f of files) {
     let data: unknown;
     try {
@@ -377,6 +431,12 @@ export function main(argv: string[]): number {
     return 2;
   }
   printReport(report);
+  // Exit 3 = "loaded, but produced nothing usable" (cli.py:194-195). Returning 0 here made a
+  // wrong-provider or drifted export indistinguishable from a good run: the corpus rendered
+  // blank pages and every automated caller saw success. A genuinely empty input (0
+  // conversations) is not an error -- there was nothing to lose. Content that went in and
+  // did not come out is.
+  if (report.conversations > 0 && report.turns === 0) return 3;
   return 0;
 }
 

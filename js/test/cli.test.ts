@@ -246,6 +246,125 @@ describe("gemini", () => {
   });
 });
 
+describe("out_dir is never ingested", () => {
+  // loaders.py:63-66 drops any input file under out_dir with
+  //     out_abs = os.path.abspath(out_dir) + os.sep
+  //     [f for f in files if not os.path.abspath(f).startswith(out_abs)]
+  // and BOTH halves of that expression carry weight, so both are pinned below:
+  //   * `+ os.sep` — without it a SIBLING directory whose name merely begins with
+  //     out_dir's name ("export/site-backup" against out_dir "export/site") is dropped,
+  //     and a real export silently renders as nothing at all;
+  //   * `abspath` — without it the test compares two raw SPELLINGS, so an absolute src
+  //     with a relative out_dir makes the filter a no-op and the rail re-ingests the
+  //     `_fidelity-report.json` its own previous run wrote.
+  // The filter also sits AFTER python's isfile/isdir split, so it covers a src that names
+  // one file inside out_dir; cli.ts had it inside the directory branch only.
+  const exportTree = (): string => {
+    const exp = join(root, "export");
+    mkdirSync(join(exp, "site-backup"), { recursive: true });
+    write(join(exp, "site-backup", "conversations.json"), claudeExport());
+    return exp;
+  };
+
+  it("keeps a real export whose directory merely PREFIXES out_dir", () => {
+    const exp = exportTree();
+    const out = join(exp, "site"); // …/export/site is a string prefix of …/export/site-backup
+    expect(main(["claude", exp, out])).toBe(0);
+    expect(Number(report(out).rendered)).toBe(1);
+  });
+
+  it("CONTROL: the same export with a non-prefixing out_dir", () => {
+    const exp = exportTree();
+    const out = join(root, "rendered");
+    expect(main(["claude", exp, out])).toBe(0);
+    expect(Number(report(out).rendered)).toBe(1);
+  });
+
+  it("never re-ingests its own output, however src and out_dir are spelled", () => {
+    const exp = join(root, "export");
+    mkdirSync(exp, { recursive: true });
+    write(join(exp, "notes.json"), claudeExport()); // a renamed export → the *.json fallback
+    const cwd = process.cwd();
+    try {
+      process.chdir(root);
+      // src ABSOLUTE, out_dir RELATIVE — the mixed spelling is the whole point. Built from
+      // process.cwd() post-chdir so both sides use the spelling the OS itself reports
+      // (a Windows temp dir can be handed out in 8.3 short form, which neither
+      // os.path.abspath nor path.resolve expands).
+      const srcAbs = join(process.cwd(), "export");
+      const outRel = join("export", "site");
+      const outAbs = join(srcAbs, "site");
+      expect(main(["claude", srcAbs, outRel])).toBe(0);
+      expect(Number(report(outAbs).rendered)).toBe(1);
+      // run 1 left _fidelity-report.json inside out_dir; run 2 must not read it back in
+      expect(main(["claude", srcAbs, outRel])).toBe(0);
+      expect(Number(report(outAbs).rendered)).toBe(1);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("drops a single-file src that lives inside out_dir", () => {
+    const out = join(root, "site");
+    mkdirSync(out, { recursive: true });
+    const src = write(join(out, "conversations.json"), claudeExport());
+    expect(main(["claude", src, out])).toBe(0);
+    expect(Number(report(out).rendered)).toBe(0);
+  });
+});
+
+describe("exit 3 — loaded, but produced nothing usable", () => {
+  // cli.py:194-195 `if report["conversations"] and not report["turns"]: return 3`, over the
+  // turns/empty_conversations counts build.py:117-118 puts in the report. Without them a
+  // wrong-provider or drifted export renders blank pages and every scripted caller sees 0.
+  it("returns 3 when a conversation loads but carries no turns", () => {
+    // users.json is a file a REAL claude export directory ships (loaders.py:44-52); the
+    // adapter wraps any object as one conversation, so this is the ordinary pipeline.
+    const src = write(join(root, "users.json"), { uuid: "u", name: "users" });
+    const out = join(root, "out");
+    expect(main(["claude", src, out])).toBe(3);
+    const rep = report(out);
+    expect(Number(rep.conversations)).toBe(1);
+    expect(Number(rep.turns)).toBe(0);
+    expect(Number(rep.empty_conversations)).toBe(1);
+  });
+
+  it("a genuinely empty input is exit 0 — there was nothing to lose", () => {
+    const src = write(join(root, "claude.json"), []);
+    const out = join(root, "out");
+    expect(main(["claude", src, out])).toBe(0);
+    expect(Number(report(out).conversations)).toBe(0);
+  });
+
+  it("a PARTIALLY empty corpus still exits 0 and counts the empties", () => {
+    const src = write(join(root, "cg.json"), chatgptExport());
+    const proj = write(join(root, "proj.json"), [
+      { conversation_id: "b", current_node: null, mapping: {} }, // parses, zero turns
+    ]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", src, out, "--projects", proj])).toBe(0);
+    const rep = report(out);
+    expect(Number(rep.turns)).toBe(2);
+    expect(Number(rep.empty_conversations)).toBe(1);
+  });
+
+  it("prints TURNS_RENDERED always and EMPTY_CONVERSATIONS only when there are empties", () => {
+    const lines = (): string =>
+      vi.mocked(console.log).mock.calls.map((c) => c.join(" ")).join("\n");
+
+    const good = write(join(root, "claude.json"), claudeExport());
+    expect(main(["claude", good, join(root, "out")])).toBe(0);
+    expect(lines()).toContain("TURNS_RENDERED 2");
+    expect(lines()).not.toContain("EMPTY_CONVERSATIONS");
+
+    vi.mocked(console.log).mockClear();
+    const empty = write(join(root, "users.json"), { uuid: "u" });
+    expect(main(["claude", empty, join(root, "out2")])).toBe(3);
+    expect(lines()).toContain("TURNS_RENDERED 0");
+    expect(lines()).toContain("EMPTY_CONVERSATIONS 1");
+  });
+});
+
 describe("fidelity report", () => {
   it("records a fidelity failure in the report", () => {
     const spy = vi.spyOn(verifyModule, "verify").mockReturnValue({
@@ -266,7 +385,14 @@ describe("fidelity report", () => {
     });
     const src = write(join(root, "claude.json"), claudeExport());
     const out = join(root, "out");
-    expect(main(["claude", src, out])).toBe(0);
+    // 3, not 0: the conversation loaded and nothing came out of it, which is exactly the
+    // state cli.py:194-195 reserves exit 3 for. `errors` is populated but that is not what
+    // decides the code — n counts the conversation, index stays empty, so turns is 0. This
+    // expectation used to read 0 and that WAS the divergence: measured against the python
+    // rail with render_conversation_html monkeypatched to raise, cli.main returns 3 with
+    // conversations=1 rendered=0 turns=0 errors=1. Isolation itself is unchanged — one bad
+    // record still costs only itself, which is what the errors assertion below pins.
+    expect(main(["claude", src, out])).toBe(3);
     expect((report(out).errors as Array<{ stage: string }>).some((e) => e.stage === "render")).toBe(true);
     spy.mockRestore();
   });
