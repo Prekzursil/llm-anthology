@@ -560,8 +560,31 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
                          restarts; summing would double-count the former.
       * rollout_path   — the LATEST leg's, because that is the file `codex resume`
                          continues and the one the reader should open. The full list is
-                         kept in `meta["rollout_paths"]` so the earlier legs stay visible
-                         rather than being silently folded away.
+                         kept in `meta["rollout_paths"]` rather than folding the earlier
+                         legs away silently — but see the residual immediately below.
+
+    RESIDUAL, DISCLOSED RATHER THAN HIDDEN: `meta["rollout_paths"]` and
+    `meta["merge_divergent_turns"]` reach the returned in-memory Corpus ONLY. `_CONV_COLS`
+    (corpus.py:168) has no meta column, so neither is persisted, and the cockpit never
+    sees the returned object — it spawns a sidecar against the index FILE.
+
+    The user-visible consequence is a real inconsistency, not a cosmetic one:
+    `_conversation_get` re-parses a single file (`sidecar.py:1169`,
+    `row["rollout_path"]`), which for a merged conversation is the LAST leg. So the FTS
+    body now matches text from every leg while the reader can only render the last one —
+    a search hit that opens to a transcript not containing it. Before this merge existed
+    the two were consistent because both were confined to the last leg; the merge made
+    search strictly better and left the reader behind.
+
+    Settling it needs the leg list on DISK — a `conversation_rollouts` table, or a JSON
+    column on `conversations` — plus `_reparse_rollout` folding the legs the same way
+    this function does. That spans corpus.py's schema and sidecar.py's reader and is
+    deliberately NOT bundled into the ingest fix.
+
+    Note for whoever picks that up: the test pinning `rollout_paths` asserts on the
+    in-memory conversation, so it does NOT cover the persisted path and must not be read
+    as proving one exists. That is the same in-memory-is-not-disk blind spot that hid the
+    three defects this area was just fixed for, reproduced once more while fixing them.
     """
     # key -> POSITION, not the turn itself: a divergent rendering has to replace the one
     # already held, and `list.index` would find the wrong element whenever two turns

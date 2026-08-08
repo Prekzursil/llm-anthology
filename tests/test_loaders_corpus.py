@@ -918,6 +918,17 @@ def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
     `rollout_path` the reader opens can no longer describe where it came from. The legs
     are recorded rather than silently folded away — an ingest that quietly rewrites what
     it read is the failure mode this whole area exists to prevent.
+
+    SCOPE OF THIS TEST, stated because the wider claim is not true yet: it asserts on the
+    RETURNED corpus, in memory. `_CONV_COLS` (corpus.py:168) has no meta column, so
+    `rollout_paths` is NOT persisted and the cockpit — which reads the index file, never
+    this object — cannot see it. So this pins that the merge RECORDS its legs, and pins
+    nothing whatsoever about the reader being able to open them. `_merge_resumed_leg`
+    carries the full residual.
+
+    Keeping it deliberately: the recording is the half that is real, and an honestly
+    scoped assertion is worth more than deleting it or letting it imply a disk guarantee
+    it does not test.
     """
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
