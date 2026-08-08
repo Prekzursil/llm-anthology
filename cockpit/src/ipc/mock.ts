@@ -1080,8 +1080,15 @@ export function createMockIpc(
   const graph = new MockGraph(threads, edges);
   /** The last path `openCorpus` was given. Read back via the `openedIndex` getter. */
   let lastOpenedIndex: string | null = null;
-  /** The in-flight/last mock ingest, or null before any `corpusBuild`. */
-  let buildJob: { id: string; polls: number } | null = null;
+  /**
+   * The in-flight/last mock ingest, or null before any `corpusBuild`.
+   *
+   * `sessionsRoot` is REMEMBERED rather than re-derived because `build_status` reports the
+   * root the job was started with (`llm_anthology/sidecar.py:1000` reads it off the job
+   * snapshot). A status that invented its own path would let a panel read the ingest source
+   * off the poll and show somewhere the build never touched.
+   */
+  let buildJob: { id: string; polls: number; sessionsRoot: string } | null = null;
 
   // -- annotation / dedup / maintenance state -------------------------------------
   //
@@ -1208,44 +1215,89 @@ export function createMockIpc(
      * the engine — no clobber check, for the same reason `openCorpus` is not a gate here:
      * this adapter serves every non-Tauri environment, where there is no real index to
      * collide with.
+     *
+     * The PATH GUARD is reproduced, though, because it is not a filesystem question. The
+     * engine rejects a UNC or relative `index_path` before touching the disk
+     * (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:781`), and a mock that accepted
+     * `\\host\share\x.db` would let a UI offer a network destination that every dev run
+     * blesses and the engine then refuses. The clobber check (`CORPUS_EXISTS`) and the
+     * parent-directory check stay absent — those genuinely need a filesystem.
      */
     async createCorpus(indexPath: string): Promise<CreateCorpusResult> {
+      requireLocalPath(indexPath, "index_path");
       return { index_path: indexPath, created: true };
     },
 
+    /**
+     * Accept an ingest and hand back a handle. `state` is always `"running"`: the reply
+     * reports that the job was ACCEPTED, not that it finished (`sidecar.py:834-836`).
+     *
+     * The PARAMS CHECKS are the engine's, because they need no filesystem. Every source is
+     * opt-in by naming its root and at least one must be named (`sidecar.py:858-861`), and
+     * each named root is refused if UNC or relative (`sidecar.py:865-871`). What is NOT
+     * reproduced is the engine's `os.path.isdir` on each root — that one is a real disk
+     * question this adapter cannot answer.
+     */
     async corpusBuild(params: BuildParams): Promise<BuildHandle> {
-      buildJob = { id: "mock-build-1", polls: 0 };
+      const sessionsRoot = params.sessions_root ?? "";
+      const grokRoot = params.grok_root ?? "";
+      if (sessionsRoot === "" && grokRoot === "") {
+        throw rpcError(
+          RPC_INVALID_PARAMS,
+          "name at least one source: sessions_root (Codex) and/or grok_root (Grok Build)",
+        );
+      }
+      if (sessionsRoot !== "") requireLocalPath(sessionsRoot, "sessions_root");
+      if (grokRoot !== "") requireLocalPath(grokRoot, "grok_root");
+      // Echo whichever source was named. Every root is opt-in now, so a Grok-only build
+      // carries no `sessions_root` at all — falling through to the Grok root mirrors the
+      // engine, which reports `_clean(sessions_root)` rather than omitting the key.
+      buildJob = { id: "mock-build-1", polls: 0, sessionsRoot: sessionsRoot || grokRoot };
       return {
         job_id: buildJob.id,
         state: "running",
-        // Echo whichever source was named. Every root is opt-in now, so a Grok-only build
-        // carries no `sessions_root` at all — defaulting to "" mirrors the engine, which
-        // reports `_clean(sessions_root)` on an unnamed root rather than omitting the key.
-        sessions_root: params.sessions_root ?? params.grok_root ?? "",
+        sessions_root: buildJob.sessionsRoot,
         started_ms: T0,
       };
     },
 
     /**
-     * Poll the mock ingest. Reports `idle` before any build (exactly as the engine does
-     * rather than erroring — `llm_anthology/sidecar.py:995`), then `running` with a
-     * climbing `indexed_conversations` for {@link MOCK_BUILD_POLLS} polls, then `done`.
-     * Reaching a terminal state is the point: a mock that stayed `running` forever would
-     * make a poll loop that never stops look correct.
+     * Poll the mock ingest: `running` with a climbing `indexed_conversations` for
+     * {@link MOCK_BUILD_POLLS} polls, then `done`. Reaching a terminal state is the point —
+     * a mock that stayed `running` forever would make a poll loop that never stops look
+     * correct.
+     *
+     * An UNNAMED poll before any build reads back `idle` rather than erroring, so the UI can
+     * render unconditionally (`llm_anthology/sidecar.py:995`). A poll that NAMES a `job_id`
+     * is the opposite case and both engine branches are reproduced: naming a job when none
+     * has started (`sidecar.py:991-994`), or naming one that is not the job in flight
+     * (`sidecar.py:996-998`), is -32602. The whole point of the optional argument is to let a
+     * client prove it is reading the job it started, which a mock that ignored it would
+     * quietly defeat — a stale handle after a restart would read "idle" here and take a param
+     * error from the engine.
      */
     async corpusBuildStatus(jobId?: string): Promise<BuildStatus> {
       if (buildJob === null) {
+        if (jobId !== undefined) {
+          throw rpcError(
+            RPC_INVALID_PARAMS,
+            `unknown job_id '${jobId}': no build has been started`,
+          );
+        }
         return { state: "idle", indexed_conversations: 0, errors: [] };
       }
       if (jobId !== undefined && jobId !== buildJob.id) {
-        throw new Error(`unknown job_id '${jobId}'; the current job is '${buildJob.id}'`);
+        throw rpcError(
+          RPC_INVALID_PARAMS,
+          `unknown job_id '${jobId}'; the current job is '${buildJob.id}'`,
+        );
       }
       buildJob.polls += 1;
       const running = buildJob.polls < MOCK_BUILD_POLLS;
       return {
         job_id: buildJob.id,
         state: running ? "running" : "done",
-        sessions_root: "/mock/sessions",
+        sessions_root: buildJob.sessionsRoot,
         started_ms: T0,
         indexed_conversations: Math.min(buildJob.polls, MOCK_BUILD_POLLS) * 400,
         errors: [],

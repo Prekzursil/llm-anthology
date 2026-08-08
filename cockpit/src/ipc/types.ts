@@ -365,8 +365,10 @@ export interface DiscoveryResult {
 }
 
 /**
- * `corpus.build` parameters. BOTH are required and neither is defaulted by the engine
- * (`llm_anthology/sidecar.py:704-716`) — deliberately, because defaulting `codex_home`
+ * `corpus.build` parameters. ALL THREE are optional and none is defaulted by the engine —
+ * every one is read with `_opt_str` (`llm_anthology/sidecar.py:856-876`). Optional is not
+ * lax: the engine refuses when NEITHER root is named (`sidecar.py:858-861`), and omitting
+ * `codex_home` means "no state graph" rather than "go find one", because defaulting it
  * would make the app read the user's live private store without being asked.
  */
 export interface BuildParams {

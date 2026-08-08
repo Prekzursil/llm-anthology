@@ -1546,23 +1546,25 @@ describe("sources.discover", () => {
 });
 
 describe("corpus.create / corpus.build / corpus.build_status", () => {
-  it("corpus.create reports the requested path created — WITHOUT the engine's guards",
+  it("corpus.create reports the requested path created, and applies the engine's path guard",
     async () => {
       expect(await mockIpc.createCorpus("C:\\Users\\me\\anthology.db")).toEqual({
         index_path: "C:\\Users\\me\\anthology.db",
         created: true,
       });
-      // DIVERGENCE, asserted so it is visible rather than assumed away. The engine refuses a
-      // CLOBBER (`CORPUS_EXISTS`) and rejects a UNC or relative path at the edge
-      // (`llm_anthology/sidecar.py:781-788`). The clobber check needs a filesystem the mock
-      // does not have — that one is documented and fair. The UNC/relative check does NOT:
-      // `requireLocalPath` lives in this very module and is applied to `dedupScan`,
-      // `maintenancePlan` and `maintenanceRestore`, but not here. So a UI that lets the user
-      // name a network destination is accepted in every dev run and refused by the engine.
-      expect(await mockIpc.createCorpus("\\\\evil.example\\share\\x.db")).toEqual({
-        index_path: "\\\\evil.example\\share\\x.db",
-        created: true,
-      });
+      // The engine rejects a UNC or relative `index_path` before touching the disk
+      // (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:781`), and the mock now does the
+      // same. It has to carry a JSON-RPC code, because a UI that lets the user name a network
+      // destination must fail the SAME WAY in a dev run as against the engine — resolving
+      // `\\host\share` on Windows initiates an outbound SMB/NTLM authentication.
+      const unc = await mockIpc.createCorpus("\\\\evil.example\\share\\x.db")
+        .catch((e: unknown) => e);
+      expect(rpcErrorCode(unc)).toBe(RPC_INVALID_PARAMS);
+      expect(String((unc as Error).message)).toMatch(/index_path must not be a UNC path/);
+      const relative = await mockIpc.createCorpus("anthology.db").catch((e: unknown) => e);
+      expect(rpcErrorCode(relative)).toBe(RPC_INVALID_PARAMS);
+      // The CLOBBER check (`CORPUS_EXISTS`) and the parent-directory check stay absent — both
+      // genuinely need a filesystem this adapter does not have.
     });
 
   it("corpus.build accepts the job and echoes whichever source root was named", async () => {
@@ -1579,11 +1581,24 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     // falls through to the Grok one rather than reporting an empty source.
     expect((await createMockIpc().corpusBuild({ grok_root: "C:\\me\\grok" })).sessions_root)
       .toBe("C:\\me\\grok");
-    // DIVERGENCE: with NEITHER root the engine raises -32602 "name at least one source"
-    // (`sidecar.py:856-861`) — a pure params check needing no filesystem. The mock accepts it
-    // and reports "", so an empty build form succeeds in a dev run and fails against the
-    // engine. Pinned here as the mock's current answer, not as the contract.
-    expect((await createMockIpc().corpusBuild({})).sessions_root).toBe("");
+    // With NEITHER root named the engine raises -32602 "name at least one source"
+    // (`sidecar.py:858-861`) — a pure params check needing no filesystem — and the mock now
+    // does too. Otherwise an empty build form succeeds in every dev run and fails only
+    // against the engine.
+    const none = await createMockIpc().corpusBuild({}).catch((e: unknown) => e);
+    expect(rpcErrorCode(none)).toBe(RPC_INVALID_PARAMS);
+    expect(String((none as Error).message)).toMatch(/name at least one source/);
+    // A named root is refused if UNC or relative, per root (`sidecar.py:865-871`). The
+    // engine's `os.path.isdir` check is NOT reproduced — that one needs a real disk.
+    const unc = await createMockIpc()
+      .corpusBuild({ sessions_root: "\\\\evil.example\\share" }).catch((e: unknown) => e);
+    expect(rpcErrorCode(unc)).toBe(RPC_INVALID_PARAMS);
+    expect(String((unc as Error).message)).toMatch(/sessions_root must not be a UNC path/);
+    const grokRelative = await createMockIpc()
+      .corpusBuild({ grok_root: "relative/grok" }).catch((e: unknown) => e);
+    expect(rpcErrorCode(grokRelative)).toBe(RPC_INVALID_PARAMS);
+    expect(String((grokRelative as Error).message))
+      .toMatch(/grok_root must be an absolute local path/);
   });
 
   it("corpus.build_status reads back idle before any build", async () => {
@@ -1596,18 +1611,16 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     });
   });
 
-  it("DIVERGENCE: a job_id supplied before any build reads idle, where the engine refuses",
-    async () => {
-      // `sidecar.py:991-994` raises -32602 "unknown job_id ...: no build has been started"
-      // for exactly this call. The mock returns the no-job answer and ignores the argument,
-      // so a client that polls with a stale handle after a restart is told "idle" here and
-      // gets a param error from the engine.
-      expect(await createMockIpc().corpusBuildStatus("stale-job")).toEqual({
-        state: "idle",
-        indexed_conversations: 0,
-        errors: [],
-      });
-    });
+  it("refuses a job_id supplied before any build has started", async () => {
+    // `sidecar.py:991-994` raises -32602 "unknown job_id ...: no build has been started" for
+    // exactly this call. Ignoring the argument and answering "idle" would tell a client that
+    // polls with a stale handle after a restart that all is well, where the engine returns a
+    // param error — so the poll-safe `idle` answer is for an UNNAMED poll only.
+    const err = await createMockIpc().corpusBuildStatus("stale-job").catch((e: unknown) => e);
+    expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
+    expect(String((err as Error).message))
+      .toMatch(/unknown job_id 'stale-job': no build has been started/);
+  });
 
   it("climbs through running polls and REACHES a terminal done that then stays put",
     async () => {
@@ -1622,11 +1635,10 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
       expect(first.indexed_conversations).toBe(400);
       expect(first.finished_ms).toBeUndefined();
       expect(first.job_id).toBe("mock-build-1");
-      // DIVERGENCE: `sessions_root` here is a hardcoded POSIX "/mock/sessions", not the root
-      // the build named (which the handle above echoed correctly). The engine reports the
-      // real root (`sidecar.py:1000`), so a panel that reads the ingest source off the STATUS
-      // rather than the handle shows a path that exists nowhere.
-      expect(first.sessions_root).toBe("/mock/sessions");
+      // `sessions_root` is the root the build NAMED, matching the handle above. The engine
+      // reads it off the job snapshot (`sidecar.py:1000`); a hardcoded stand-in would show a
+      // panel that reads the ingest source off the STATUS a path that exists nowhere.
+      expect(first.sessions_root).toBe("C:\\me\\.codex\\sessions");
 
       const second = await ipc.corpusBuildStatus();
       expect(second.state).toBe("running");
@@ -1648,12 +1660,11 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     await ipc.corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
     const err = await ipc.corpusBuildStatus("other-job").catch((e: unknown) => e);
     expect(String((err as Error).message)).toMatch(/unknown job_id 'other-job'/);
-    // DIVERGENCE: the engine raises -32602 (`sidecar.py:996-998`). This is the ONE rejection
-    // in the whole mock thrown as a bare `Error` instead of through `rpcError`, so it carries
-    // no JSON-RPC envelope and `rpcErrorCode` reads null — which is the exact invisible
-    // dead-branch class `rpcError` was introduced (mock.ts:634-644) to prevent. A panel
-    // branching on RPC_INVALID_PARAMS here is dead in every dev run.
-    expect(rpcErrorCode(err)).toBeNull();
+    // Thrown through `rpcError`, so it carries a JSON-RPC envelope and `rpcErrorCode` finds
+    // the engine's code (`sidecar.py:996-998`). A bare `Error` here would read `null` and
+    // leave a panel's RPC_INVALID_PARAMS branch dead in every dev run — the exact
+    // invisible-dead-path class `rpcError` was introduced (mock.ts:645-649) to prevent.
+    expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
     // The refused poll must not consume a poll slot either.
     expect((await ipc.corpusBuildStatus()).indexed_conversations).toBe(400);
   });
