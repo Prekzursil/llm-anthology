@@ -131,6 +131,31 @@ function claudeCodeStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding
   });
 }
 
+/**
+ * A subdir-reporting store the engine has NO ingest path for.
+ *
+ * `claudeCodeStore` used to serve this role, and three tests below leaned on it that way.
+ * That stopped being valid the moment the engine gained `claude_root`: the fixture became
+ * importable, so tests asserting a refusal through it were asserting a fact about Claude
+ * Code rather than about the refusal branch, and they went red for the RIGHT reason.
+ *
+ * Deliberately an invented provider rather than the next real one. A refusal test wants a
+ * store the app genuinely cannot build from, and pinning that to a real provider means the
+ * test breaks again the day that provider is wired — which is how `claudeCodeStore` ended
+ * up here. `discover.py` can report a store this app has no ingest for, so the branch is
+ * real even while no shipped provider occupies it.
+ */
+function unimportableStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
+  return finding({
+    provider: "future-provider",
+    kind: "session_store",
+    path: "C:\\Users\\me\\.future\\sessions",
+    count: 7,
+    detail: { ingestable: 7, items_root: "C:\\Users\\me\\.future\\sessions" },
+    ...over,
+  });
+}
+
 function builtIndex(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
   return finding({
     provider: "anthology",
@@ -384,14 +409,33 @@ describe("deriveBuildParams", () => {
     expect(derived.build?.sessions_root).toBeUndefined();
   });
 
-  it("refuses when the finding names only the item tree", () => {
-    // report="subdir" (Claude Code): path === items_root, so no Codex home exists anywhere
-    // in the finding. Defaulting one would point the ingest at a tree where
-    // ingest_sessions globs rollout-*.jsonl and matches nothing — a build that reports
-    // success having imported zero conversations.
+  it("derives a CLAUDE-CODE-ONLY import: claude_root alone, no Codex paths", () => {
+    // This test used to assert the OPPOSITE — that the import was refused with "cannot
+    // import a claude-code store yet". That was correct when written: the adapter existed
+    // but `loaders.load_corpus` never called it, so offering the import would have been
+    // inventing a capability. The engine now takes `claude_root`, measured end to end
+    // against `corpus.build` — accepted ALONE with no other source named, and refusing
+    // UNC, relative, non-existent and non-string roots with the same wording `grok_root`
+    // uses. So the refusal became the stale half, and leaving it would mean the UI
+    // rejecting an import the engine is ready to serve.
+    //
+    // Structurally identical to the Grok line: `discover.py:644` sets `path = scan_root`
+    // for report="subdir", and that IS the projects root `claude_code.ingest_sessions`
+    // takes, so no derivation is needed beyond naming it.
     const derived = deriveBuildParams(claudeCodeStore());
-    expect(derived.build).toBeNull();
-    expect(derived.missing).toContain("cannot import a claude-code store yet");
+
+    expect(derived.build).toEqual({ claude_root: "C:\\Users\\me\\.claude\\projects" });
+    expect(derived.missing).toBe("");
+  });
+
+  it("does NOT invent a codex_home for a Claude Code store either", () => {
+    // Same reason as the Grok case: passing one merges a Codex state graph into an import
+    // that has none, and passing the LIVE default is the behaviour that once let an
+    // automated probe read real private sessions.
+    const derived = deriveBuildParams(claudeCodeStore());
+    expect(derived.build?.codex_home).toBeUndefined();
+    expect(derived.build?.sessions_root).toBeUndefined();
+    expect(derived.build?.grok_root).toBeUndefined();
   });
 
   it("refuses when the scan reported no item root at all", () => {
@@ -403,7 +447,7 @@ describe("deriveBuildParams", () => {
   it("treats a trailing separator and letter case as the same path", () => {
     // Windows paths are case-insensitive; a trailing slash must not fake a distinct home.
     const derived = deriveBuildParams(
-      claudeCodeStore({ detail: { items_root: "c:/users/me/.claude/projects/" } }),
+      unimportableStore({ detail: { items_root: "c:/users/me/.future/sessions/" } }),
     );
     expect(derived.build).toBeNull();
   });
@@ -455,7 +499,7 @@ describe("deriveAction", () => {
   });
 
   it("offers a store whose parameters are not derivable NO action, and says why", () => {
-    const action = deriveAction(claudeCodeStore(), OPEN_CTX);
+    const action = deriveAction(unimportableStore(), OPEN_CTX);
     expect(action.kind).toBe("none");
     expect(action.build).toBeNull();
     expect(action.reason).toMatch(/^Detected, but /);
@@ -1044,9 +1088,9 @@ describe("DiscoveryPanelController.activate", () => {
   it("does NOTHING but state the reason for a store whose parameters are missing", async () => {
     // The requirement in full: do not guess, do not pass a default, say what is missing.
     const h = harness();
-    await h.controller.activate(claudeCodeStore());
+    await h.controller.activate(unimportableStore());
     expect(h.ipc.builds).toEqual([]);
-    expect(h.controller.current.status).toContain("cannot import a claude-code store yet");
+    expect(h.controller.current.status).toContain("cannot import a future-provider store yet");
   });
 
   it("creates and attaches an index before importing when nothing is open", async () => {
@@ -1060,6 +1104,28 @@ describe("DiscoveryPanelController.activate", () => {
       { sessions_root: "C:\\Users\\me\\.codex\\sessions", codex_home: "C:\\Users\\me\\.codex" },
     ]);
   });
+
+  it("IMPORTS a Claude Code store end to end, sending claude_root and nothing else",
+    async () => {
+      // The journey this whole change exists for, asserted where a user actually stands
+      // rather than at `deriveBuildParams`. The engine gaining `claude_root` was never
+      // enough on its own: this controller was the last hop, and it hard-refused any
+      // subdir store that was not Grok, so a user would have been told "this app cannot
+      // import a claude-code store yet" by a UI sitting on top of an engine that could.
+      // That is the unreachable-data-plane shape the adapter itself was in for months —
+      // complete, tested, and reachable from nothing — moved one layer out.
+      //
+      // `claude_root` ALONE is the assertion that matters. `corpus.build` was measured
+      // accepting it with no other source named, and inventing a `codex_home` here would
+      // merge a state graph this import does not have; defaulting it to the live `~/.codex`
+      // is precisely the behaviour that once let an automated probe read real private
+      // sessions.
+      const h = harness();
+      await h.controller.activate(claudeCodeStore());
+
+      expect(h.ipc.builds).toEqual([{ claude_root: "C:\\Users\\me\\.claude\\projects" }]);
+      expect(h.controller.current.status).not.toContain("cannot import");
+    });
 
   it("treats a dismissed destination picker as a no-op, not an error", async () => {
     const h = harness({}, { chooseDestination: async (): Promise<string | null> => null });

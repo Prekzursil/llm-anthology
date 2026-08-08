@@ -307,15 +307,42 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * The derivation below reads a store's SHAPE rather than its name, because shape encoded the
  * capability: a base-reporting store (Codex) names a home and an item tree separately, a
  * subdir-reporting one names only the tree. That held while Codex was the sole importable
- * store. It does not any more — Grok and Claude Code are BOTH subdir-reporting, and only Grok
- * has an ingest path (`loaders.load_corpus` takes `grok_root`; nothing calls the Claude Code
- * adapter yet). Two identical shapes, different capabilities, so shape cannot decide it.
+ * store. It does not any more — Grok and Claude Code are BOTH subdir-reporting, so shape
+ * cannot decide it.
+ *
+ * The reason it cannot has CHANGED, which is worth recording rather than overwriting. This
+ * said "only Grok has an ingest path; nothing calls the Claude Code adapter yet", and that
+ * was true: the adapter existed and `loaders.load_corpus` never called it. The engine now
+ * takes `claude_root`, so BOTH are importable and shape still cannot decide it — two
+ * identical shapes that happen to agree today is not the same as shape carrying the answer,
+ * and a third subdir store would land here refused by default.
  *
  * This is a stopgap and should be replaced: the ENGINE knows which providers it can ingest and
  * the UI is guessing. The settling change is a capability field on the discovery finding —
  * then this constant and the name-check both disappear.
  */
 const GROK_PROVIDER = "grok";
+const CLAUDE_CODE_PROVIDER = "claude-code";
+
+/**
+ * The subdir-reporting stores the ENGINE can actually ingest, each mapped to the
+ * `corpus.build` parameter that names it. Both take the finding's `path` verbatim, because
+ * `discover.py:644` sets `path = scan_root` for `report="subdir"` and that IS the root the
+ * adapter's `ingest_sessions` takes — so neither needs derivation beyond being named.
+ *
+ * This is the stopgap the block above describes, and it is now visibly one: what was a
+ * single name-check is a two-entry table, and the comment's proposed settling change — a
+ * capability field on the discovery finding, sent by the engine that actually knows — stops
+ * being a nice-to-have at the third provider. Every entry here is a fact about the ENGINE
+ * duplicated in the UI, and duplicated facts drift. The Claude Code entry exists because
+ * that drift already happened once: the adapter shipped, `loaders.load_corpus` did not call
+ * it, and this file correctly refused the import for months — then the engine gained
+ * `claude_root` and the refusal became the stale half.
+ */
+const SUBDIR_IMPORTABLE: ReadonlyArray<readonly [string, keyof BuildParams]> = [
+  [GROK_PROVIDER, "grok_root"],
+  [CLAUDE_CODE_PROVIDER, "claude_root"],
+];
 
 export function deriveBuildParams(
   finding: DiscoveryFinding,
@@ -328,22 +355,26 @@ export function deriveBuildParams(
     };
   }
 
-  // A GROK store is importable on its own. `corpus.build` takes `grok_root` and needs
-  // nothing else: `codex_home` is optional and omitting it means "no Codex state graph to
-  // merge", which is exactly true here. The finding's `path` IS the sessions root
-  // `grok.ingest_sessions` takes (its spec reports `subdir` for that reason), so no
-  // derivation is needed beyond naming it.
-  if (finding.provider === GROK_PROVIDER) {
-    return { build: { grok_root: finding.path }, missing: "" };
+  // A GROK or CLAUDE CODE store is importable on its own. `corpus.build` takes its root and
+  // needs nothing else: `codex_home` is optional and omitting it means "no Codex state graph
+  // to merge", which is exactly true here. NO codex_home is invented — passing one merges a
+  // graph the import does not have, and passing the LIVE default is the behaviour that once
+  // let an automated probe read the owner's real private sessions.
+  const importable = SUBDIR_IMPORTABLE.find(([provider]) => finding.provider === provider);
+  if (importable) {
+    return { build: { [importable[1]]: finding.path }, missing: "" };
   }
 
   if (samePath(finding.path, itemsRoot)) {
-    // A subdir-reporting store that is NOT Grok. Claude Code is the live example: an
-    // adapter for it exists, but `loaders.load_corpus` does not call it yet, so there is
-    // genuinely no ingest to offer and saying otherwise would be inventing a capability.
+    // A subdir-reporting store the engine has no ingest path for. There is no live example
+    // today — Claude Code was the last one and gained `claude_root` — so this branch now
+    // guards a provider that does not exist yet rather than one that does. It stays because
+    // `discover.py` can report a store this app cannot build from, and claiming otherwise
+    // would offer an import that fails at the RPC instead of here, where the reason can be
+    // shown.
     return {
       build: null,
-      missing: `this app cannot import a ${finding.provider} store yet — it reads Codex and Grok session stores`,
+      missing: `this app cannot import a ${finding.provider} store yet — it reads Codex, Grok and Claude Code session stores`,
     };
   }
   return { build: { sessions_root: itemsRoot, codex_home: finding.path }, missing: "" };

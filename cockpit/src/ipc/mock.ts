@@ -1084,7 +1084,7 @@ export function createMockIpc(
    * The in-flight/last mock ingest, or null before any `corpusBuild`.
    *
    * `sessionsRoot` is REMEMBERED rather than re-derived because `build_status` reports the
-   * root the job was started with (`llm_anthology/sidecar.py:1000` reads it off the job
+   * root the job was started with (`llm_anthology/sidecar.py:1018` reads it off the job
    * snapshot). A status that invented its own path would let a panel read the ingest source
    * off the poll and show somewhere the build never touched.
    */
@@ -1246,26 +1246,39 @@ export function createMockIpc(
      * reports that the job was ACCEPTED, not that it finished (`sidecar.py:834-836`).
      *
      * The PARAMS CHECKS are the engine's, because they need no filesystem. Every source is
-     * opt-in by naming its root and at least one must be named (`sidecar.py:858-861`), and
-     * each named root is refused if UNC or relative (`sidecar.py:865-871`). What is NOT
+     * opt-in by naming its root and at least one must be named (`sidecar.py:869-872`), and
+     * each named root is refused if UNC or relative (`sidecar.py:878-885`). What is NOT
      * reproduced is the engine's `os.path.isdir` on each root — that one is a real disk
      * question this adapter cannot answer.
      */
     async corpusBuild(params: BuildParams): Promise<BuildHandle> {
       const sessionsRoot = params.sessions_root ?? "";
       const grokRoot = params.grok_root ?? "";
-      if (sessionsRoot === "" && grokRoot === "") {
+      const claudeRoot = params.claude_root ?? "";
+      if (sessionsRoot === "" && grokRoot === "" && claudeRoot === "") {
         throw rpcError(
           RPC_INVALID_PARAMS,
-          "name at least one source: sessions_root (Codex) and/or grok_root (Grok Build)",
+          "name at least one source: sessions_root (Codex), grok_root (Grok Build) " +
+            "and/or claude_root (Claude Code)",
         );
       }
       if (sessionsRoot !== "") requireLocalPath(sessionsRoot, "sessions_root");
       if (grokRoot !== "") requireLocalPath(grokRoot, "grok_root");
-      // Echo whichever source was named. Every root is opt-in now, so a Grok-only build
-      // carries no `sessions_root` at all — falling through to the Grok root mirrors the
-      // engine, which reports `_clean(sessions_root)` rather than omitting the key.
-      buildJob = { id: "mock-build-1", polls: 0, sessionsRoot: sessionsRoot || grokRoot };
+      if (claudeRoot !== "") requireLocalPath(claudeRoot, "claude_root");
+      // Echo whichever source was named. Every root is opt-in now, so a Grok- or
+      // Claude-Code-only build carries no `sessions_root` at all — falling through mirrors
+      // the engine, which reports `_clean(sessions_root)` rather than omitting the key.
+      //
+      // `claude_root` is carried because the engine gained it and a mock that accepts a
+      // narrower set than the engine makes the UI's new import path untestable here — the
+      // failure mode six other divergences in this file were just fixed for. The empty
+      // string means ABSENT rather than invalid, matching the engine exactly: it falls
+      // through to the refusal above instead of being validated.
+      buildJob = {
+        id: "mock-build-1",
+        polls: 0,
+        sessionsRoot: sessionsRoot || grokRoot || claudeRoot,
+      };
       return {
         job_id: buildJob.id,
         state: "running",
@@ -1281,10 +1294,10 @@ export function createMockIpc(
      * correct.
      *
      * An UNNAMED poll before any build reads back `idle` rather than erroring, so the UI can
-     * render unconditionally (`llm_anthology/sidecar.py:995`). A poll that NAMES a `job_id`
+     * render unconditionally (`llm_anthology/sidecar.py:1013`). A poll that NAMES a `job_id`
      * is the opposite case and both engine branches are reproduced: naming a job when none
-     * has started (`sidecar.py:991-994`), or naming one that is not the job in flight
-     * (`sidecar.py:996-998`), is -32602. The whole point of the optional argument is to let a
+     * has started (`sidecar.py:1009-1012`), or naming one that is not the job in flight
+     * (`sidecar.py:1014-1016`), is -32602. The whole point of the optional argument is to let a
      * client prove it is reading the job it started, which a mock that ignored it would
      * quietly defeat — a stale handle after a restart would read "idle" here and take a param
      * error from the engine.
@@ -1478,7 +1491,7 @@ export function createMockIpc(
 
     /**
      * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
-     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1335-1337`).
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1353-1355`).
      * Getting this wrong here would make a per-field editor look correct in preview while
      * blanking the other two fields against the real engine.
      */
@@ -1581,7 +1594,7 @@ export function createMockIpc(
      * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
      * argument being required is a safety property of this call — an automated probe once
      * read the owner's live Codex store through a defaulted home
-     * (`llm_anthology/sidecar.py:1429-1434`) — so a UI that forgot to collect it must fail
+     * (`llm_anthology/sidecar.py:1447-1452`) — so a UI that forgot to collect it must fail
      * here too, not only against the engine.
      *
      * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
@@ -1662,7 +1675,7 @@ export function createMockIpc(
           throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
         }
         // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
-        // kind (`llm_anthology/sidecar.py:1556`).
+        // kind (`llm_anthology/sidecar.py:1574`).
         const copy: MaintenanceCopy = {
           session_id: target.session_id ?? "",
           file_path: target.file_path,
@@ -1923,7 +1936,7 @@ export function createMockIpc(
       }
       if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
-      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1590-1591`), so a
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1608-1609`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: apply,
