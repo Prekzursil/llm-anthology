@@ -418,6 +418,469 @@ export interface BuildStatus {
   error?: string;
 }
 
+// ---------------------------------------------------------------------------
+// NOT BOUND: the research plane (`research.*`)
+// ---------------------------------------------------------------------------
+//
+// `research.synthesize` and `research.extract_entities` are registered by the engine
+// (`llm_anthology/sidecar.py:622-623`) and deliberately have NO binding here, no Tauri
+// command (`cockpit/src-tauri/src/lib.rs:322-333`) and no mock. They are deferred out of v1.
+//
+// THE REASON IS STRUCTURAL, NOT SCHEDULING. The research plane has no backend at all:
+// `main()` constructs `Sidecar(conn)` with no backend arguments, so `research_backend` and
+// `local_backend` both fall back to `research.MockBackend()` (`sidecar.py:587-590`), whose
+// `synthesize` returns its `response` — default `""` (`llm_anthology/research.py:88-97`). The
+// only two `synthesize` implementations in the package are that mock and the Protocol stub
+// (`research.py:76`). So BOTH methods return an empty result in the shipped app BY
+// CONSTRUCTION — including extraction, which routes through the same
+// `self.research_backend` (`sidecar.py:1286`).
+//
+// Typing them would hand a panel a contract for a feature that cannot produce output, and
+// wiring a real LLM backend touches a standing privacy rule about this corpus. Do NOT add
+// `ResearchTier` / `ResearchSynthesis` / `ResearchEntities` back without that decision.
+
+// ---------------------------------------------------------------------------
+// annotations (`metadata.*`)
+// ---------------------------------------------------------------------------
+
+/**
+ * One owner-authored annotation (`llm_anthology/sidecar.py:1319-1325`).
+ *
+ * LOCAL-ONLY BY DESIGN. Alias/tags/notes are deliberately absent from
+ * `redact.MetadataView`, so they can never ride the cloud research plane
+ * (`sidecar.py:1307-1313`) — they cross only the stdio wire to this UI.
+ *
+ * Every field is always present. An un-annotated conversation reads back as an EMPTY
+ * annotation with `is_empty: true` rather than an error (`sidecar.py:1328-1329`), so a
+ * panel can render it unconditionally without a null check.
+ */
+export interface Annotation {
+  conversation_id: string;
+  alias: string;
+  /** Deterministically ordered by the store (`tests/test_sidecar_metadata.py:84`). */
+  tags: string[];
+  notes: string;
+  /** True when alias, tags and notes are all empty. */
+  is_empty: boolean;
+}
+
+/**
+ * `metadata.set` parameters (`llm_anthology/sidecar.py:1334-1354`).
+ *
+ * PARTIAL UPDATE, and the tri-state is the whole point (`sidecar.py:1335-1337`):
+ *
+ *   * field OMITTED (`undefined`) -> left UNCHANGED;
+ *   * field present but EMPTY (`""` / `[]`) -> CLEARED.
+ *
+ * The cockpit edits one field at a time, so a per-field call that sent `{alias}` alone
+ * must not blank tags and notes — pinned by `tests/test_sidecar_metadata.py:89-97`. Never
+ * send `null`: the engine type-checks with `isinstance(str)` / `isinstance(list)` and a
+ * null fails as -32602 (`sidecar.py:1341-1346`).
+ */
+export interface MetadataSetParams {
+  conversation_id: string;
+  alias?: string;
+  tags?: string[];
+  notes?: string;
+}
+
+/**
+ * `metadata.search` parameters (`llm_anthology/sidecar.py:1365-1374`).
+ *
+ * The two filters are ANDed, not ORed, and with NEITHER supplied the result is EMPTY — a
+ * blank query deliberately does not dump the whole catalogue into the UI
+ * (`sidecar.py:1367-1368`, `llm_anthology/metadata.py:501-502`).
+ */
+export interface MetadataSearchParams {
+  /** Free text over the annotation, never over message bodies. */
+  text?: string;
+  tag?: string;
+}
+
+/**
+ * One `metadata.search` row: the matching annotation JOINED to its display columns
+ * (`llm_anthology/sidecar.py:1377-1391`).
+ *
+ * Nothing here is nullable. The join reads `conversations`, whose every column is
+ * `NOT NULL DEFAULT ''` / `DEFAULT 0` (`llm_anthology/corpus.py:179-191`), so an absent
+ * `account` / `thread_id` arrives as `""` and NOT as null — a renderer testing
+ * `row.account === null` would never fire.
+ *
+ * Note the shape difference from {@link SearchHit}: this is an ANNOTATION search, so there
+ * is no snippet and no score, and `created_at` / `updated_at` are ISO-ish STRINGS off the
+ * index rather than the `_ms` epoch numbers the graph surface uses.
+ */
+export interface MetadataSearchRow {
+  conversation_id: string;
+  provider: string;
+  account: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  turn_count: number;
+  thread_id: string;
+  annotation: Annotation;
+}
+
+/**
+ * One entry of the tag facet (`llm_anthology/sidecar.py:1397-1398`).
+ *
+ * Counts collapse CASE-INSENSITIVELY — 'Beta' and 'beta' are one entry with count 2 — and
+ * `tag` is the lexicographically-first display form among the variants, ordered by the
+ * casefolded tag (`llm_anthology/metadata.py:529-544`). So the facet never lists the same
+ * tag twice, and the label shown is not necessarily the form the owner last typed.
+ */
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+// ---------------------------------------------------------------------------
+// dedup (`dedup.*`) — a VIEW, never a delete
+// ---------------------------------------------------------------------------
+
+/**
+ * `dedup.scan` result (`llm_anthology/sidecar.py:1442-1449`).
+ *
+ * A scan is a READ: `dedup` contains no write/delete/move call, so nothing here can remove
+ * one of the owner's files (`sidecar.py:1400-1405`). It does persist the derived view into
+ * the attached index.
+ *
+ * `errors` is one string per store location that could not be read; a MISSING `codex_home`
+ * is an empty result, not a failure (`tests/test_sidecar_dedup.py:101-107`).
+ */
+export interface DedupScanResult {
+  /** Distinct LOGICAL sessions after collapsing copies. */
+  session_count: number;
+  /** Physical files seen on disk (>= `session_count`). */
+  copy_count: number;
+  /** `copy_count - session_count`: how many physical copies were collapsed away. */
+  duplicate_count: number;
+  /** Sessions whose canonical copy is SMALLER than one it demoted — see
+   *  {@link DedupSession.has_larger_copy}. */
+  flagged_truncated: number;
+  /** Sessions with no recoverable session id (path-keyed singletons, never merged). */
+  unidentified: number;
+  errors: string[];
+}
+
+/**
+ * One logical session and its physical copies (`llm_anthology/sidecar.py:1416-1426`).
+ *
+ * `store_kind` is a PLAIN STRING here — `dedup.PhysicalCopy.store_kind` is a `str`
+ * (`llm_anthology/dedup.py:117`), one of `live` | `backup` | `mirror` | `other` | `unknown`
+ * (`dedup.py:87-91`) — whereas the `maintenance.*` surface carries a real enum serialized
+ * via `.value` ({@link MaintenanceStoreKind}). Same field name, two different engine types,
+ * so do not share one narrowing helper between the surfaces.
+ *
+ * `canonical_path` and `duplicate_paths` are LOCAL filesystem paths that embed the owner's
+ * username. They travel only over this stdio wire and are absent from
+ * `redact.MetadataView` (`sidecar.py:1403-1405`) — display-sensitive.
+ */
+export interface DedupSession {
+  session_id: string;
+  /** The copy this view puts forward (the LIVE store outranks a mirror). */
+  canonical_path: string;
+  /** `live` | `backup` | `mirror` | `other` | `unknown` (`dedup.py:87-91`). */
+  store_kind: string;
+  size_bytes: number;
+  /** Epoch ms, or null — `PhysicalCopy.last_write_ms` is `Optional[int]` (`dedup.py:118`). */
+  last_write_ms: number | null;
+  copy_count: number;
+  /** The non-canonical copies, still fully retained as evidence (`dedup.py:138-141`). */
+  duplicate_paths: string[];
+  /** False when no session id could be recovered from the file OR its name. */
+  is_identified: boolean;
+  /**
+   * True when the canonical copy is SMALLER than one it demoted, i.e. the copy shown is a
+   * truncated prefix of a sibling (`dedup.py:149-164`).
+   *
+   * Store rank outranks size on purpose — a live store must never be demoted behind a
+   * stale mirror — but that means a crash-truncated live rollout can win over a complete
+   * backup. Nothing is lost on disk (`duplicate_paths` still lists the fuller copy), so
+   * the condition is REPORTED rather than silently resolved and a UI can offer the other
+   * copy. Ignoring this flag is how a UI shows the owner the shorter conversation.
+   */
+  has_larger_copy: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// maintenance (`maintenance.*`) — the ONLY destructive surface
+// ---------------------------------------------------------------------------
+
+/** `maintenance.plan` action (`llm_anthology/maintenance.py:141-147`). Closed: any other
+ *  value is -32602 (`llm_anthology/sidecar.py:1536-1541`). */
+export type MaintenanceActionName = "delete" | "archive" | "move" | "reconcile";
+
+/**
+ * A target's store classification (`llm_anthology/maintenance.py:158-165`), serialized from
+ * a real `enum` via `.value` (`llm_anthology/sidecar.py:1474`).
+ *
+ * Every target the RPC edge builds is forced to `UNKNOWN` (`sidecar.py:1556`) — the client
+ * cannot assert a store kind — so a plan's `allowed` entries read `"unknown"` unless the
+ * engine itself classified them. Do not render this as "we could not tell".
+ */
+export type MaintenanceStoreKind = "unknown" | "live" | "backup" | "mirror" | "other";
+
+/** One session file inside a plan (`llm_anthology/sidecar.py:1473-1475`,
+ *  `llm_anthology/maintenance.py:182-190`). */
+export interface MaintenanceCopy {
+  session_id: string;
+  file_path: string;
+  store_kind: MaintenanceStoreKind;
+  /** Epoch ms, or null (`maintenance.py:188`). */
+  last_write_ms: number | null;
+  size_bytes: number;
+  /** Being written right now — raises a REVIEW warning (`maintenance.py:509-512`). */
+  is_hot: boolean;
+}
+
+/** A target the safety model REFUSED, with the reason (`llm_anthology/sidecar.py:1485-1486`). */
+export interface MaintenanceBlocked {
+  target: MaintenanceCopy;
+  reason: string;
+  detail: string;
+}
+
+/**
+ * One preview warning (`llm_anthology/sidecar.py:1487-1488`).
+ *
+ * A CLEAN PLAN IS NOT A QUIET PLAN. The engine emits a DANGEROUS warning for EVERY allowed
+ * target plus a closing INFO summary (`llm_anthology/maintenance.py:506-527`), so a 2-file
+ * plan carries 3 warnings with nothing wrong. A UI that treats a non-empty `warnings` as
+ * "something is broken" flags every healthy plan; filter on `severity` instead.
+ */
+export interface MaintenanceWarning {
+  /** 0 INFO | 1 REVIEW | 2 DANGEROUS (`maintenance.py:150-155`). */
+  severity: number;
+  severity_name: "INFO" | "REVIEW" | "DANGEROUS";
+  message: string;
+}
+
+/** One planned source -> destination move (`llm_anthology/sidecar.py:1489-1490`). */
+export interface PlannedMove {
+  session_id: string;
+  source: string;
+  destination: string;
+}
+
+/** One target offered to `maintenance.plan` (`llm_anthology/sidecar.py:1546-1557`). */
+export interface MaintenanceTarget {
+  /** REQUIRED and non-empty, else -32602 (`sidecar.py:1550-1552`). */
+  file_path: string;
+  /** Defaults to `""` when omitted (`sidecar.py:1554`). */
+  session_id?: string;
+  /** Defaults to 0 when omitted (`sidecar.py:1557`). */
+  size_bytes?: number;
+}
+
+/**
+ * `maintenance.plan` parameters (`llm_anthology/sidecar.py:1520-1561`).
+ *
+ * `store_root` and `checkpoint_root` are REQUIRED non-empty strings; every root is rejected
+ * at the RPC edge if UNC or relative (`sidecar.py:1530-1534`), because merely resolving
+ * `\\host\share` on Windows initiates an outbound SMB/NTLM authentication. `targets` must
+ * be a NON-EMPTY array (`sidecar.py:1544-1545`).
+ */
+export interface MaintenancePlanParams {
+  store_root: string;
+  checkpoint_root: string;
+  action: MaintenanceActionName;
+  targets: MaintenanceTarget[];
+  /** Required in practice for `archive` / `move`; ignored for `delete`. */
+  destination_root?: string;
+}
+
+/**
+ * `maintenance.plan` result: a PURE preview under a single-use handle
+ * (`llm_anthology/sidecar.py:1477-1494`). No filesystem mutation happens
+ * (`tests/test_sidecar_maintenance.py:154-167`).
+ *
+ * THE CLIENT NEVER SENDS THIS BACK. `maintenance` validates paths against the roots carried
+ * INSIDE the preview, so a forged preview rebuilt from client JSON could name its own
+ * store/checkpoint/destination root and be honoured. The server therefore keeps its OWN
+ * preview object and `maintenance.execute` takes only the opaque `plan_id`
+ * (`sidecar.py:1457-1469`). Treat every field here as DISPLAY-ONLY.
+ */
+export interface MaintenancePreview {
+  /** The single-use handle to pass to `maintenance.execute`. Ids are `plan-1`, `plan-2`, … */
+  plan_id: string;
+  action: MaintenanceActionName;
+  store_root: string;
+  /**
+   * The EFFECTIVE destination, not the one requested (`maintenance.py:538`, `:404-411`):
+   * a `delete` quarantines under `<checkpoint_root>/deleted` and a `reconcile` under
+   * `<destination_root>/reconciled`. This is the path the files really go to.
+   */
+  destination_root: string;
+  checkpoint_root: string;
+  allowed: MaintenanceCopy[];
+  blocked: MaintenanceBlocked[];
+  warnings: MaintenanceWarning[];
+  plan: PlannedMove[];
+  /** Always true (`maintenance.py:535`). */
+  requires_checkpoint: boolean;
+  /** Always true (`maintenance.py:536`). */
+  requires_typed_confirmation: boolean;
+  /**
+   * The exact phrase the operator must type, e.g. `"DELETE 2 FILES"` / `"ARCHIVE 1 FILE"`
+   * (`maintenance.py:414-419`). Derived from the ALLOWED count, never from what the caller
+   * offered — so a plan that changed since the operator last looked changes the phrase too.
+   * Echo it verbatim; do not reconstruct it client-side.
+   */
+  required_typed_confirmation: string;
+}
+
+/**
+ * `maintenance.execute` parameters (`llm_anthology/sidecar.py:1569-1586`).
+ *
+ * `apply` DEFAULTS TO FALSE, so the destructive act is always an explicit second step
+ * (`tests/test_sidecar_maintenance.py:209-219`). The handle is consumed once the engine
+ * ACCEPTS the run, so a completed plan cannot be replayed — but a REFUSED confirmation
+ * leaves it usable, so a typo is correctable without re-planning (`sidecar.py:1587-1589`,
+ * `tests/test_sidecar_maintenance.py:194-206`).
+ */
+export interface MaintenanceExecuteParams {
+  plan_id: string;
+  /** Must equal {@link MaintenancePreview.required_typed_confirmation} to apply. */
+  confirmation?: string;
+  apply?: boolean;
+}
+
+/**
+ * `maintenance.restore` parameters (`llm_anthology/sidecar.py:1594-1605`).
+ *
+ * `apply` defaults to false here too, so a caller can see what a restore would do first.
+ * `manifest_path` is rejected at the edge if UNC or relative (`sidecar.py:1599`).
+ */
+export interface MaintenanceRestoreParams {
+  /** A `manifest_path` the engine itself issued from a prior `maintenance.execute`. */
+  manifest_path: string;
+  apply?: boolean;
+  /**
+   * Restore the accounted moves anyway and REPORT the rest in
+   * {@link MaintenanceResult.unaccounted}. Without it an unaccounted move refuses the whole
+   * batch rather than guessing (`maintenance.py:742-747`).
+   */
+  skip_unaccounted?: boolean;
+}
+
+/**
+ * `maintenance.execute` / `maintenance.restore` result (`llm_anthology/sidecar.py:1498-1504`).
+ *
+ * `manifest_path` is `""` — NOT null and NOT absent — on a dry run
+ * (`llm_anthology/maintenance.py:266`, `tests/test_sidecar_maintenance.py:216-217`), so
+ * truthiness is the correct test for "did this write a checkpoint".
+ */
+export interface MaintenanceResult {
+  /** False for a dry run: nothing on disk changed. */
+  executed: boolean;
+  /** The checkpoint manifest; `""` when nothing was written. Feed it to `maintenance.restore`. */
+  manifest_path: string;
+  moves: PlannedMove[];
+  /** Recorded originals a restore could not account for (`maintenance.py:260-262`). */
+  unaccounted: string[];
+}
+
+/**
+ * One row of the destructive-run audit ledger (`llm_anthology/maintenance.py:786-787`,
+ * schema at `:772-780`). Newest first; `manifest_path` breaks ties (`maintenance.py:817-820`).
+ *
+ * Only an APPLIED run lands here — a dry run does not
+ * (`tests/test_sidecar_maintenance.py:305-312`).
+ */
+export interface MaintenanceRun {
+  manifest_path: string;
+  action: string;
+  /** `pending` | `executed` | `restored` (`maintenance.py:698-703`, `:756`). */
+  status: string;
+  recorded_at_ms: number;
+  moved_count: number;
+  blocked_count: number;
+  store_root: string;
+}
+
+// ---------------------------------------------------------------------------
+// RPC error codes
+// ---------------------------------------------------------------------------
+//
+// THE CODE ARRIVES AS TEXT, NOT AS A FIELD. The sidecar answers a failure with a JSON-RPC
+// envelope `{code, message}` (`llm_anthology/sidecar.py:299-303`), but the Rust bridge
+// flattens the whole envelope into a STRING —
+// `Err(format!("rpc error (id {id}): {err}"))` (`cockpit/src-tauri/src/sidecar.rs:161`) —
+// and Tauri's `invoke` rejects with that string. So there is no typed error object to
+// narrow: a caller that needs the code has to parse it back out. {@link rpcErrorCode} is
+// that parser, and it is the ONLY sanctioned way to read a code — do not hand-roll a
+// second regex.
+
+/** A well-formed request whose params were wrong (`llm_anthology/sidecar.py:684`). */
+export const RPC_INVALID_PARAMS = -32602;
+/** An unhandled engine fault (`llm_anthology/sidecar.py:677`), carrying `{detail}`. */
+export const RPC_INTERNAL_ERROR = -32603;
+/** No corpus attached — call `openCorpus` first (`llm_anthology/sidecar.py:252`). */
+export const RPC_CORPUS_NOT_INDEXED = -32000;
+/** `llm_anthology/sidecar.py:253`. */
+export const RPC_THREAD_NOT_FOUND = -32001;
+/** SQLite lock/busy; the envelope carries `retry_ms` (`llm_anthology/sidecar.py:254`). */
+export const RPC_DB_BUSY = -32002;
+/**
+ * A maintenance request the safety model REFUSED (`llm_anthology/sidecar.py:255-257`).
+ *
+ * DISTINCT FROM {@link RPC_INVALID_PARAMS} and the distinction is the whole point: the
+ * params were well-formed and the operation was DECLINED — unconfirmed, outside the store
+ * root, or a single-use plan that has already been spent. A Maintenance panel must branch
+ * on this to say "that plan expired, re-plan" instead of a generic failure toast, because
+ * the two need completely different next actions from the operator.
+ */
+export const RPC_MAINTENANCE_REFUSED = -32003;
+/**
+ * A second `corpus.build` while one is still running (`llm_anthology/sidecar.py:259-261`).
+ *
+ * THE CORRECT UI IS NOT A RETRY. The engine's own comment is explicit: only one ingest may
+ * own the index at a time, so "the client should poll corpus.build_status, not retry". A
+ * generic failure toast with a Retry button here trains the operator to do exactly the wrong
+ * thing, and each retry earns the same refusal while the real build is progressing fine.
+ */
+export const RPC_BUILD_IN_PROGRESS = -32004;
+/**
+ * `corpus.build` cannot run against THIS engine (`llm_anthology/sidecar.py:262-264`): the
+ * attached index has no on-disk file (an in-memory database), so the build worker has
+ * nothing to reopen.
+ *
+ * Explicitly NOT RETRYABLE — retrying is guaranteed to fail until a different corpus is
+ * attached, so this must not be offered a retry affordance either.
+ */
+export const RPC_BUILD_UNAVAILABLE = -32005;
+/**
+ * `corpus.create` was pointed at a path where a file already exists
+ * (`llm_anthology/sidecar.py:265-267`).
+ *
+ * Distinct from {@link RPC_INVALID_PARAMS} deliberately: the path is perfectly VALID, it is
+ * simply taken. That distinction is the whole reason the code exists — it lets a UI offer
+ * "open that one instead?" or "pick another name", where "bad path" would be a lie.
+ */
+export const RPC_CORPUS_EXISTS = -32006;
+
+/**
+ * Recover the JSON-RPC code from a rejection, or null when the text carries none.
+ *
+ * Null is NOT "no error" — it means the failure did not come from the engine's error
+ * envelope at all (a transport fault, a mutex poisoning, `no corpus attached` raised by the
+ * Rust bridge itself at `lib.rs:45`, or a mock/JS `Error`). Treat null as "unclassified
+ * failure", never as success.
+ *
+ * A missing checkpoint manifest is worth knowing about specifically: `read_checkpoint`
+ * opens the file directly (`llm_anthology/maintenance.py:577`), so a bad path raises
+ * `FileNotFoundError`, which is NOT a `MaintenanceRefused` and escapes the refusal mapping
+ * — it arrives as {@link RPC_INTERNAL_ERROR}, not {@link RPC_MAINTENANCE_REFUSED}.
+ */
+export function rpcErrorCode(error: unknown): number | null {
+  const text =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const match = /"code"\s*:\s*(-?\d+)/.exec(text);
+  return match === null ? null : Number(match[1]);
+}
+
 export interface IpcClient {
   /**
    * Attach the engine to the corpus index at `indexPath`, replacing any corpus already
@@ -472,6 +935,65 @@ export interface IpcClient {
   exportPlan?(dest?: string): Promise<ExportPlan>;
   /** `export.run`: write the export and return the gate verdict. */
   exportRun?(destPath: string): Promise<ExportResult>;
+
+  // -- annotations / dedup / maintenance ------------------------------------------
+  //
+  // ELEVEN methods. REQUIRED, unlike the OPTIONAL Phase-3 block above. That block is
+  // optional for one stated reason — `real.ts` did not implement it yet at the time — and
+  // that reason does not apply here: both adapters land all eleven in the same change, so
+  // requiring them costs nothing and buys the thing optionality throws away. A UI panel
+  // calls `ipc.dedupScan(...)` with no optional-chaining dance, and an adapter that FORGOT
+  // one fails at `tsc` instead of at first paint. The mock is typed {@link FullIpcClient},
+  // so the compiler now forces the mock to keep pace with this interface.
+  //
+  // The engine registers 13 methods in these four groups; the two `research.*` ones are
+  // deliberately absent — see the NOT BOUND note above.
+  //
+  // NAMING: RPC `a.b` -> Tauri command `a_b` -> this camelCase method. `dedup.scan` ->
+  // `dedup_scan` -> `dedupScan`; `maintenance.restore` -> `maintenance_restore` ->
+  // `maintenanceRestore`. A deviation is invisible to tsc AND to vitest (the mock never
+  // names a command) and surfaces only when a real button is pressed.
+
+  /** `metadata.get`: one conversation's annotation. Un-annotated answers `is_empty: true`. */
+  metadataGet(conversationId: string): Promise<Annotation>;
+  /** `metadata.set`: PARTIAL update — omitted leaves unchanged, `""`/`[]` clears. */
+  metadataSet(params: MetadataSetParams): Promise<Annotation>;
+  /** `metadata.clear`: drop the whole annotation. An absent row is a silent no-op. */
+  metadataClear(conversationId: string): Promise<Annotation>;
+  /** `metadata.search`: search ANNOTATIONS (never bodies). Filters ANDed; neither -> `[]`. */
+  metadataSearch(params?: MetadataSearchParams): Promise<MetadataSearchRow[]>;
+  /** `metadata.tags`: the tag facet, case-collapsed and deterministically ordered. */
+  metadataTags(): Promise<TagCount[]>;
+
+  /**
+   * `dedup.scan`: scan the Codex stores under `codexHome`, consolidate, persist the view.
+   *
+   * `codexHome` is REQUIRED and must never be defaulted or guessed by the UI. That is a
+   * safety choice, not ceremony: an automated probe really did read the owner's live Codex
+   * sessions through a similar fallback (`llm_anthology/sidecar.py:1429-1434`). A scan of
+   * private data has to be something the operator named.
+   */
+  dedupScan(codexHome: string): Promise<DedupScanResult>;
+  /** `dedup.sessions`: the persisted dedup view. `[]` before any scan. */
+  dedupSessions(): Promise<DedupSession[]>;
+
+  /**
+   * `maintenance.plan`: build a preview under a single-use handle. PURE — no filesystem
+   * mutation. This is the ONLY way to obtain a `plan_id`.
+   */
+  maintenancePlan(params: MaintenancePlanParams): Promise<MaintenancePreview>;
+  /**
+   * `maintenance.execute`: run a handle the SERVER issued.
+   *
+   * THE ONLY DESTRUCTIVE CALL ON THIS INTERFACE. `apply` defaults to false, so the default
+   * invocation is a dry run; applying additionally requires `confirmation` to equal the
+   * preview's `required_typed_confirmation` verbatim.
+   */
+  maintenanceExecute(params: MaintenanceExecuteParams): Promise<MaintenanceResult>;
+  /** `maintenance.restore`: roll a checkpoint back. `apply` defaults to false here too. */
+  maintenanceRestore(params: MaintenanceRestoreParams): Promise<MaintenanceResult>;
+  /** `maintenance.runs`: the applied-run audit ledger, newest first (engine default 50). */
+  maintenanceRuns(limit?: number): Promise<MaintenanceRun[]>;
 }
 
 /**

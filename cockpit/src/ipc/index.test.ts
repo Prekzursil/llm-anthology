@@ -13,7 +13,15 @@
  * Both directions are pinned below, plus the laziness property that makes the first
  * failure impossible even if Tauri injects its global after this module is evaluated.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// `real.ts` reaches a backend only through this one function, so stubbing it lets the REAL
+// adapter be driven under node and its Tauri command names asserted. Hoisted by vitest above
+// the imports below. Nothing in `./index` touches this module — adapter selection probes the
+// `__TAURI_INTERNALS__` global, not the package — so the stub cannot skew the tests above.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
+
+import { invoke } from "@tauri-apps/api/core";
 
 import { mockIpc } from "./mock";
 import { realIpc } from "./real";
@@ -102,5 +110,149 @@ describe("the exported `ipc` proxy is LAZY", () => {
     removeTauriGlobal();
     expect("healthPing" in ipc).toBe(true);
     expect("definitelyNotAMethod" in ipc).toBe(false);
+  });
+});
+
+/** Every function-valued own property of an adapter, sorted. */
+function methodsOf(adapter: object): string[] {
+  return Object.entries(adapter)
+    .filter(([, value]) => typeof value === "function")
+    .map(([name]) => name)
+    .sort();
+}
+
+describe("adapter surface parity", () => {
+  it("exposes the SAME method set on the mock and the real adapter", () => {
+    // The asymmetric failure `./index.ts` documents has a quieter cousin: a method
+    // implemented on ONE adapter only. tsc cannot catch it while the interface marks any
+    // method optional, and the app then works in every dev run and throws in the shipped
+    // build (or the reverse). This is the mechanical check for that drift.
+    expect(methodsOf(mockIpc)).toEqual(methodsOf(realIpc));
+  });
+
+  it("carries the 11 metadata/dedup/maintenance methods on both", () => {
+    const expected = [
+      "dedupScan",
+      "dedupSessions",
+      "maintenanceExecute",
+      "maintenancePlan",
+      "maintenanceRestore",
+      "maintenanceRuns",
+      "metadataClear",
+      "metadataGet",
+      "metadataSearch",
+      "metadataSet",
+      "metadataTags",
+    ];
+    expect(expected).toHaveLength(11);
+    for (const adapter of [mockIpc, realIpc]) {
+      const names = methodsOf(adapter);
+      for (const method of expected) expect(names).toContain(method);
+    }
+  });
+
+  it("binds NEITHER research method on either adapter", () => {
+    // The engine registers `research.synthesize` / `research.extract_entities`, but there is
+    // no Tauri command for them (`cockpit/src-tauri/src/lib.rs:322-333`), so a binding here
+    // would type-check, pass every mock test, and throw only when a user pressed the button.
+    // Pinned on BOTH adapters because the parity test above would stay green if someone
+    // helpfully added them to both.
+    for (const adapter of [mockIpc, realIpc]) {
+      const names = methodsOf(adapter);
+      expect(names).not.toContain("researchSynthesize");
+      expect(names).not.toContain("researchExtractEntities");
+    }
+  });
+});
+
+/**
+ * The RPC -> Tauri command mapping, asserted against the REAL adapter.
+ *
+ * This is the one failure mode on this surface that NOTHING else can see: a command-name
+ * typo type-checks (it is a string literal), passes every mock test (the mock never names a
+ * command) and fails only when a user presses a button in the shipped app. Each expected
+ * command name below is DERIVED from the RPC method name by the pinned rule rather than
+ * transcribed, so a rename cannot quietly re-baseline the test to whatever the code does.
+ */
+describe("real adapter Tauri command names", () => {
+  const invokeMock = vi.mocked(invoke);
+
+  /** The pinned rule: RPC `a.b` -> command `a_b`. */
+  function command(rpc: string): string {
+    return rpc.replace(/\./g, "_");
+  }
+
+  const cases: Array<[rpc: string, call: () => Promise<unknown>, params: unknown]> = [
+    ["metadata.get", () => realIpc.metadataGet("c-a"), { conversation_id: "c-a" }],
+    [
+      "metadata.set",
+      () => realIpc.metadataSet({ conversation_id: "c-a", alias: "A" }),
+      { conversation_id: "c-a", alias: "A" },
+    ],
+    ["metadata.clear", () => realIpc.metadataClear("c-a"), { conversation_id: "c-a" }],
+    ["metadata.search", () => realIpc.metadataSearch({ tag: "rust" }), { tag: "rust" }],
+    ["metadata.search", () => realIpc.metadataSearch(), {}],
+    ["metadata.tags", () => realIpc.metadataTags(), {}],
+    ["dedup.scan", () => realIpc.dedupScan("C:\\codex"), { codex_home: "C:\\codex" }],
+    ["dedup.sessions", () => realIpc.dedupSessions(), {}],
+    [
+      "maintenance.plan",
+      () =>
+        realIpc.maintenancePlan({
+          store_root: "C:\\store",
+          checkpoint_root: "C:\\cp",
+          action: "delete",
+          targets: [{ file_path: "C:\\store\\a.jsonl" }],
+        }),
+      {
+        store_root: "C:\\store",
+        checkpoint_root: "C:\\cp",
+        action: "delete",
+        targets: [{ file_path: "C:\\store\\a.jsonl" }],
+      },
+    ],
+    [
+      "maintenance.execute",
+      () => realIpc.maintenanceExecute({ plan_id: "plan-1", confirmation: "DELETE 1 FILE" }),
+      { plan_id: "plan-1", confirmation: "DELETE 1 FILE" },
+    ],
+    [
+      "maintenance.restore",
+      () => realIpc.maintenanceRestore({ manifest_path: "C:\\cp\\m.json", apply: true }),
+      { manifest_path: "C:\\cp\\m.json", apply: true },
+    ],
+    ["maintenance.runs", () => realIpc.maintenanceRuns(10), { limit: 10 }],
+    ["maintenance.runs", () => realIpc.maintenanceRuns(), {}],
+  ];
+
+  it.each(cases)("%s forwards to its snake_case command", async (rpc, call, params) => {
+    invokeMock.mockClear();
+    await call();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    // Every data command takes the single `{ params }` wrapper its Rust signature declares.
+    expect(invokeMock).toHaveBeenCalledWith(command(rpc), { params });
+  });
+
+  it("OMITS an absent optional rather than sending null", async () => {
+    // `_opt_int` rejects a non-int with -32602, so an explicit null is NOT "use the default"
+    // — the same trap `corpusBuildStatus` documents for `job_id`. The engine then applies its
+    // own default of 50 (`llm_anthology/sidecar.py:1614`).
+    invokeMock.mockClear();
+    await realIpc.maintenanceRuns();
+    expect(invokeMock).toHaveBeenCalledWith("maintenance_runs", { params: {} });
+    invokeMock.mockClear();
+    await realIpc.metadataSearch();
+    expect(invokeMock).toHaveBeenCalledWith("metadata_search", { params: {} });
+  });
+
+  it("forwards metadata.set VERBATIM, preserving the partial-update tri-state", async () => {
+    // Normalising the undefined fields to null/"" here would silently CLEAR tags and notes
+    // on every per-field edit (`llm_anthology/sidecar.py:1335-1337`).
+    invokeMock.mockClear();
+    await realIpc.metadataSet({ conversation_id: "c-a", alias: "only the alias" });
+    const [, args] = invokeMock.mock.calls[0] as [string, { params: Record<string, unknown> }];
+    expect(Object.keys(args.params).sort()).toEqual(["alias", "conversation_id"]);
+    expect("tags" in args.params).toBe(false);
+    expect("notes" in args.params).toBe(false);
   });
 });

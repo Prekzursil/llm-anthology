@@ -18,7 +18,13 @@
  * All timestamps are literals — nothing here reads the clock, so tests are stable.
  */
 
+import {
+  RPC_INTERNAL_ERROR,
+  RPC_INVALID_PARAMS,
+  RPC_MAINTENANCE_REFUSED,
+} from "./types";
 import type {
+  Annotation,
   BuildHandle,
   BuildParams,
   BuildStatus,
@@ -26,6 +32,8 @@ import type {
   CorpusDiffDto,
   CorpusStats,
   CreateCorpusResult,
+  DedupScanResult,
+  DedupSession,
   DiscoveryFinding,
   DiscoveryResult,
   ExportPlan,
@@ -33,7 +41,20 @@ import type {
   FullIpcClient,
   GraphSnapshot,
   HealthInfo,
+  MaintenanceBlocked,
+  MaintenanceCopy,
+  MaintenanceExecuteParams,
+  MaintenancePlanParams,
+  MaintenancePreview,
+  MaintenanceRestoreParams,
+  MaintenanceResult,
+  MaintenanceRun,
+  MaintenanceWarning,
+  MetadataSearchParams,
+  MetadataSearchRow,
+  MetadataSetParams,
   OpenCorpusResult,
+  PlannedMove,
   RollupTable,
   RootsParams,
   SearchHit,
@@ -41,6 +62,7 @@ import type {
   SearchResult,
   SpawnEdge,
   Subtree,
+  TagCount,
   ThreadMeta,
   ThreadNode,
   Timeline,
@@ -437,6 +459,231 @@ const DISCOVERY: DiscoveryResult = {
  */
 const MOCK_BUILD_POLLS = 3;
 
+// ---------------------------------------------------------------------------
+// annotation / dedup / maintenance / research fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * Seed annotations, keyed by conversation id (which is the thread id in this fixture, the
+ * same identity `runSearch` and `conversationGet` assume).
+ *
+ * Chosen to EXERCISE the store's awkward rules rather than to look tidy:
+ *
+ *   * `orch` carries `Rust` and `ipc` carries `rust` — DIFFERENT casings on DIFFERENT
+ *     conversations. `metadata.tags` collapses those case-insensitively into ONE facet
+ *     entry with count 2, labelled with the lexicographically-first form
+ *     (`llm_anthology/metadata.py:529-544`). A panel that grouped by the raw tag string
+ *     would show two entries of count 1 here and look correct against any fixture that
+ *     conveniently used one casing.
+ *   * `ipc` has an EMPTY alias but non-empty tags, so `is_empty` is false for a row with
+ *     nothing to show in an alias column.
+ *   * `repro` has empty notes, so a notes column has a blank to render.
+ *   * `search` is deliberately UNANNOTATED — `metadata.get` on it must read back an empty
+ *     annotation rather than throw.
+ */
+const SEED_ANNOTATIONS: Array<[string, { alias: string; tags: string[]; notes: string }]> = [
+  ["orch", { alias: "Cockpit orchestration", tags: ["Rust", "shipped"], notes: "the run that produced the IPC layer" }],
+  ["ipc", { alias: "", tags: ["rust"], notes: "needle: revisit the mock fixture" }],
+  ["repro", { alias: "Build failure repro", tags: ["triage"], notes: "" }],
+];
+
+/**
+ * The dedup view a scan of a Codex home yields. WINDOWS paths, deliberately — like the
+ * discovery fixture, these are local-filesystem paths on the only platform this ships on,
+ * and a POSIX fixture would leave every separator split unexercised in preview.
+ *
+ * The four rows are the four cases a dedup panel has to survive:
+ *
+ *   1. a plain 2-copy collapse where the LIVE store is canonical;
+ *   2. `has_larger_copy: true` — the canonical LIVE copy is SMALLER than the backup it
+ *      demoted (a crash-truncated live rollout). The flag exists because the view would
+ *      otherwise silently show the shorter conversation
+ *      (`llm_anthology/dedup.py:149-164`); a panel that ignores it hides data the owner has;
+ *   3. `is_identified: false` with `session_id: ""` — an unidentifiable file, kept as a
+ *      path-keyed singleton and never merged;
+ *   4. `last_write_ms: null` — `PhysicalCopy.last_write_ms` is `Optional[int]`
+ *      (`dedup.py:118`), so a renderer that formats it unconditionally throws here.
+ */
+const MOCK_DEDUP_SESSIONS: DedupSession[] = [
+  {
+    session_id: "018f3a2c-0000-7c1e-9a01-aaaaaaaaaaaa",
+    canonical_path: `${HOME}\\.codex\\sessions\\2026\\08\\01\\rollout-018f3a2c.jsonl`,
+    store_kind: "live",
+    size_bytes: 412_880,
+    last_write_ms: T0 + 300_000,
+    copy_count: 2,
+    duplicate_paths: [
+      `${HOME}\\.codex\\sessions_backup\\2026\\08\\01\\rollout-018f3a2c.jsonl`,
+    ],
+    is_identified: true,
+    has_larger_copy: false,
+  },
+  {
+    session_id: "018f3a2c-0000-7c1e-9a02-bbbbbbbbbbbb",
+    canonical_path: `${HOME}\\.codex\\sessions\\2026\\08\\02\\rollout-018f3a2d.jsonl`,
+    // The LIVE copy is the canonical one AND the smaller one: store rank outranks size, so
+    // a truncated live rollout legitimately beats a complete backup. Reported, not resolved.
+    store_kind: "live",
+    size_bytes: 1_204,
+    last_write_ms: T0 + 320_000,
+    copy_count: 2,
+    duplicate_paths: [
+      `${HOME}\\.codex\\sessions_backup\\2026\\08\\02\\rollout-018f3a2d.jsonl`,
+    ],
+    is_identified: true,
+    has_larger_copy: true,
+  },
+  {
+    session_id: "",
+    canonical_path: `${HOME}\\.codex\\sessions\\2026\\07\\30\\rollout-unnamed.jsonl`,
+    store_kind: "mirror",
+    size_bytes: 88_140,
+    last_write_ms: T0 - 86_400_000,
+    copy_count: 1,
+    duplicate_paths: [],
+    is_identified: false,
+    has_larger_copy: false,
+  },
+  {
+    session_id: "018f3a2c-0000-7c1e-9a04-dddddddddddd",
+    canonical_path: `${HOME}\\.codex\\archive\\rollout-018f3a2f.jsonl`,
+    store_kind: "unknown",
+    size_bytes: 0,
+    // Nothing datable was recorded for this copy.
+    last_write_ms: null,
+    copy_count: 1,
+    duplicate_paths: [],
+    is_identified: true,
+    has_larger_copy: false,
+  },
+];
+
+/** The scan tally implied by {@link MOCK_DEDUP_SESSIONS}, derived so the two cannot drift. */
+function dedupTally(sessions: DedupSession[], errors: string[]): DedupScanResult {
+  let copies = 0;
+  let truncated = 0;
+  let unidentified = 0;
+  for (const s of sessions) {
+    copies += s.copy_count;
+    if (s.has_larger_copy) truncated += 1;
+    if (!s.is_identified) unidentified += 1;
+  }
+  return {
+    session_count: sessions.length,
+    copy_count: copies,
+    duplicate_count: copies - sessions.length,
+    flagged_truncated: truncated,
+    unidentified,
+    errors,
+  };
+}
+
+/**
+ * The engine's tag canonicalisation (`llm_anthology/metadata.py:214-240`): collapse every
+ * whitespace RUN to a single space (which trims, drops blanks and neutralises an embedded
+ * newline — the wire separator — in one step), dedup CASE-INSENSITIVELY keeping the
+ * FIRST-SEEN casing, then order by (casefold, exact string) so two callers who add the same
+ * tags in a different order store identical bytes.
+ */
+function cleanTags(tags: string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const raw of tags) {
+    const tag = raw.split(/\s+/).filter((p) => p !== "").join(" ");
+    if (tag === "") continue;
+    const key = tag.toLowerCase();
+    if (!seen.has(key)) seen.set(key, tag);
+  }
+  return [...seen.entries()]
+    .sort(([ka, va], [kb, vb]) =>
+      ka < kb ? -1 : ka > kb ? 1 : va < vb ? -1 : va > vb ? 1 : 0)
+    .map(([, v]) => v);
+}
+
+/** Collapse whitespace runs in a free-text field, as `metadata.clean_text` does. */
+function cleanText(value: string): string {
+  return value.split(/\s+/).filter((p) => p !== "").join(" ");
+}
+
+/**
+ * An error shaped like the one a REAL failure arrives as, so `rpcErrorCode` finds a code
+ * here too.
+ *
+ * The mock has no JSON-RPC channel, so without this its rejections carry no code and a
+ * panel's `rpcErrorCode(err) === RPC_MAINTENANCE_REFUSED` branch would be DEAD in every dev
+ * run, preview and design review — the exact invisible-dead-path class `ipc/index.ts`
+ * documents. The wire text is reproduced literally: the Rust bridge flattens the envelope
+ * with `format!("rpc error (id {id}): {err}")` (`cockpit/src-tauri/src/sidecar.rs:161`) over
+ * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:299-303`). The id is a
+ * placeholder — nothing reads it.
+ */
+function rpcError(code: number, message: string): Error {
+  return new Error(
+    `rpc error (id 0): {"code":${code},"message":${JSON.stringify(message)}}`,
+  );
+}
+
+/**
+ * The mock's stand-in for the engine's `_reject_nonlocal_path`: refuse a UNC path and
+ * anything that is not drive-absolute.
+ *
+ * Worth reproducing rather than skipping, because the reason is not cosmetic — merely
+ * RESOLVING `\\host\share` on Windows initiates an outbound SMB/NTLM authentication, which
+ * this offline-only tool forbids. A mock that accepted a UNC root would let a path-handling
+ * bug reach the engine untested. Note that `C:/store/../evil` passes here exactly as it
+ * passes the real edge: parent-traversal is the ENGINE's refusal, not the edge's
+ * (`tests/test_sidecar_maintenance.py:103-119`).
+ */
+function requireLocalPath(value: string, label: string): void {
+  if (value.startsWith("\\\\") || value.startsWith("//")) {
+    throw rpcError(RPC_INVALID_PARAMS, `${label} must not be a UNC path: ${value}`);
+  }
+  if (!/^[A-Za-z]:[\\/]/.test(value)) {
+    throw rpcError(RPC_INVALID_PARAMS, `${label} must be an absolute local path: ${value}`);
+  }
+}
+
+/** Last path segment, either separator — the mock's `os.path.basename`. */
+function winBasename(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+
+/** Join with a backslash, not doubling an existing trailing separator. */
+function winJoin(...parts: string[]): string {
+  return parts
+    .filter((p) => p !== "")
+    .map((p, i) => (i === 0 ? p.replace(/[\\/]+$/, "") : p.replace(/^[\\/]+|[\\/]+$/g, "")))
+    .join("\\");
+}
+
+/** Case-insensitive path containment, the mock's `os.path.normcase` comparison. */
+function normPath(path: string): string {
+  return path.replace(/\//g, "\\").toLowerCase();
+}
+
+/**
+ * The effective destination root (`llm_anthology/maintenance.py:404-411`): a `delete`
+ * quarantines under `<checkpoint_root>/deleted` (which is what makes a delete recoverable)
+ * and a `reconcile` under `<destination_root>/reconciled`; `archive` and `move` go to the
+ * requested destination as-is.
+ */
+function effectiveRoot(
+  action: string,
+  checkpointRoot: string,
+  destinationRoot: string,
+): string {
+  if (action === "delete") return winJoin(checkpointRoot, "deleted");
+  if (action === "reconcile") return winJoin(destinationRoot, "reconciled");
+  return destinationRoot;
+}
+
+/** The phrase the operator must type (`llm_anthology/maintenance.py:414-419`), e.g.
+ *  `"DELETE 2 FILES"` / `"ARCHIVE 1 FILE"`. A function of the ALLOWED count, never of what
+ *  the caller offered, so a plan that changed changes the phrase too. */
+function confirmationPhrase(action: string, allowedCount: number): string {
+  return `${action.toUpperCase()} ${allowedCount} ${allowedCount === 1 ? "FILE" : "FILES"}`;
+}
+
 /**
  * A faithful port of `llm_anthology/corpus.py`'s graph helpers. Answers purely from the edge
  * list; any id an edge names is a node even if it has no thread row.
@@ -775,6 +1022,56 @@ export function createMockIpc(
   /** The in-flight/last mock ingest, or null before any `corpusBuild`. */
   let buildJob: { id: string; polls: number } | null = null;
 
+  // -- annotation / dedup / maintenance state -------------------------------------
+  //
+  // Per-CLIENT, like `lastOpenedIndex` above, so `createMockIpc()` in a test starts from a
+  // clean store and one test's writes cannot leak into the next.
+
+  /** conversation_id -> the stored annotation fields (already canonicalised). */
+  const annotations = new Map<string, { alias: string; tags: string[]; notes: string }>(
+    SEED_ANNOTATIONS.map(([cid, a]) => [
+      cid,
+      { alias: cleanText(a.alias), tags: cleanTags(a.tags), notes: cleanText(a.notes) },
+    ]),
+  );
+  /** Whether `dedup.scan` has run — `dedup.sessions` is empty until it has. */
+  let dedupScanned = false;
+  /** Live single-use `maintenance.plan` handles. */
+  const plans = new Map<string, MaintenancePreview>();
+  let nextPlanId = 1;
+  /** manifest_path -> the moves it recorded, for `maintenance.restore`. */
+  const manifests = new Map<string, PlannedMove[]>();
+  let nextManifest = 1;
+  /** The applied-run audit ledger, newest LAST here and reversed on read. */
+  const runs: MaintenanceRun[] = [];
+
+  /** The wire annotation for `cid`; an unknown id is an EMPTY annotation, never an error. */
+  function annotationOf(cid: string): Annotation {
+    const stored = annotations.get(cid);
+    const alias = stored?.alias ?? "";
+    const tags = stored?.tags ?? [];
+    const notes = stored?.notes ?? "";
+    return {
+      conversation_id: cid,
+      alias,
+      tags: [...tags],
+      notes,
+      is_empty: alias === "" && tags.length === 0 && notes === "",
+    };
+  }
+
+  /**
+   * The engine's `_req_str` + `metadata._check_id` guard: an empty or whitespace-only id is
+   * a param error (`tests/test_sidecar_metadata.py:124-128`), not a silent no-op on a key
+   * that could never be stored.
+   */
+  function requireConversationId(cid: string): string {
+    if (typeof cid !== "string" || cid.trim() === "") {
+      throw rpcError(RPC_INVALID_PARAMS, "conversation_id must be a non-empty string");
+    }
+    return cid;
+  }
+
   function runSearch(params: SearchParams): SearchResult {
     const q = params.q.trim().toLowerCase();
     const limit = params.limit ?? 50;
@@ -1040,6 +1337,393 @@ export function createMockIpc(
       if (ok) result.written_path = destPath;
       return result;
     },
+
+    // NO `research.*` HERE, DELIBERATELY. A canned non-empty summary would be the worst
+    // possible mock: the shipped app returns `""` from `MockBackend` by construction
+    // (`llm_anthology/sidecar.py:587-590`, `research.py:88-97`), so a mock that invented prose
+    // would make a research panel look FINISHED in every dev run and screenshot while being
+    // permanently blank for the user. See the NOT BOUND note in `./types.ts`.
+
+    // -- annotations ---------------------------------------------------------------
+
+    async metadataGet(conversationId: string): Promise<Annotation> {
+      return annotationOf(requireConversationId(conversationId));
+    },
+
+    /**
+     * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1335-1337`).
+     * Getting this wrong here would make a per-field editor look correct in preview while
+     * blanking the other two fields against the real engine.
+     */
+    async metadataSet(params: MetadataSetParams): Promise<Annotation> {
+      const cid = requireConversationId(params.conversation_id);
+      const current = annotations.get(cid) ?? { alias: "", tags: [], notes: "" };
+      annotations.set(cid, {
+        alias: params.alias === undefined ? current.alias : cleanText(params.alias),
+        tags: params.tags === undefined ? current.tags : cleanTags(params.tags),
+        notes: params.notes === undefined ? current.notes : cleanText(params.notes),
+      });
+      return annotationOf(cid);
+    },
+
+    /** Drop the whole annotation. An absent row is a silent no-op that still reads back as
+     *  an empty annotation, mirroring the engine. */
+    async metadataClear(conversationId: string): Promise<Annotation> {
+      const cid = requireConversationId(conversationId);
+      annotations.delete(cid);
+      return annotationOf(cid);
+    },
+
+    /**
+     * Search ANNOTATIONS, never message bodies. Three engine rules are reproduced because
+     * each is separately easy to get wrong in a panel:
+     *
+     *   * with NEITHER filter the result is EMPTY — a blank query must not dump the
+     *     catalogue (`llm_anthology/metadata.py:501-502`);
+     *   * `tag` is a WHOLE-TAG exact match (the engine probes a sentinel-delimited
+     *     `\ntag\n` needle, never a LIKE — `metadata.py:243-269`, `:456-463`), so `"rus"`
+     *     does NOT find `"rust"`;
+     *   * `text` IS a substring match, over the alias + tags + notes key (`metadata.py:470-480`).
+     *
+     * It is an INNER JOIN, so an annotation whose conversation is not in the index does not
+     * appear; ordered by conversation_id.
+     */
+    async metadataSearch(params: MetadataSearchParams = {}): Promise<MetadataSearchRow[]> {
+      const tagNeedle = cleanTags([params.tag ?? ""])[0]?.toLowerCase() ?? "";
+      const textNeedle = cleanText(params.text ?? "").toLowerCase();
+      if (tagNeedle === "" && textNeedle === "") return [];
+
+      const rows: MetadataSearchRow[] = [];
+      for (const cid of [...annotations.keys()].sort()) {
+        const annotation = annotationOf(cid);
+        if (tagNeedle !== "" && !annotation.tags.some((t) => t.toLowerCase() === tagNeedle)) {
+          continue;
+        }
+        const searchKey = [annotation.alias, ...annotation.tags, annotation.notes]
+          .join("\n")
+          .toLowerCase();
+        if (textNeedle !== "" && !searchKey.includes(textNeedle)) continue;
+        const raw = graph.rawThread(cid);
+        if (raw === undefined) continue; // INNER JOIN: no indexed conversation, no row
+        const iso = new Date(raw.created_at_ms).toISOString();
+        rows.push({
+          conversation_id: cid,
+          provider: raw.provider,
+          // `conversations.account` is NOT NULL DEFAULT '' (`llm_anthology/corpus.py:183`),
+          // so an unknown account is the EMPTY STRING on this surface — note that
+          // `conversationGet` above reports the same fact as `null`, because that DTO's
+          // field really is nullable. Two shapes, one underlying blank.
+          account: "",
+          title: raw.title,
+          created_at: iso,
+          updated_at: raw.updated_at_ms === undefined
+            ? iso
+            : new Date(raw.updated_at_ms).toISOString(),
+          turn_count: raw.turn_count ?? 0,
+          // The fixture's conversation id doubles as its thread id, as elsewhere in this mock.
+          thread_id: raw.id,
+          annotation,
+        });
+      }
+      return rows;
+    },
+
+    /** The tag facet, case-collapsed with the lexicographically-first display form and
+     *  ordered by the casefolded tag (`llm_anthology/metadata.py:529-544`). */
+    async metadataTags(): Promise<TagCount[]> {
+      const counts = new Map<string, number>();
+      const display = new Map<string, string>();
+      for (const cid of [...annotations.keys()].sort()) {
+        for (const tag of annotations.get(cid)?.tags ?? []) {
+          const key = tag.toLowerCase();
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+          const shown = display.get(key);
+          if (shown === undefined || tag < shown) display.set(key, tag);
+        }
+      }
+      return [...counts.keys()]
+        .sort()
+        .map((key) => ({ tag: display.get(key) as string, count: counts.get(key) as number }));
+    },
+
+    // -- dedup ---------------------------------------------------------------------
+
+    /**
+     * Serve the fixture view and mark it scanned. NO filesystem access.
+     *
+     * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
+     * argument being required is a safety property of this call — an automated probe once
+     * read the owner's live Codex store through a defaulted home
+     * (`llm_anthology/sidecar.py:1429-1434`) — so a UI that forgot to collect it must fail
+     * here too, not only against the engine.
+     *
+     * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
+     * behaviour (`tests/test_sidecar_dedup.py:101-107`). The mock has no filesystem to
+     * miss, so any accepted path yields the fixture.
+     */
+    async dedupScan(codexHome: string): Promise<DedupScanResult> {
+      if (typeof codexHome !== "string" || codexHome === "") {
+        throw rpcError(RPC_INVALID_PARAMS, "codex_home must be a non-empty string");
+      }
+      requireLocalPath(codexHome, "codex_home");
+      dedupScanned = true;
+      return dedupTally(MOCK_DEDUP_SESSIONS, []);
+    },
+
+    /**
+     * The persisted view — EMPTY until a scan has run, exactly as the engine answers before
+     * any `dedup.scan` (`tests/test_sidecar_dedup.py:170-171`).
+     *
+     * This one IS gated, unlike `openCorpus` above, and the difference is not an
+     * inconsistency: `openCorpus` cannot be gated because attaching needs the native file
+     * picker that only exists inside Tauri, so a gate there would strand every preview in
+     * the empty state. `dedupScan` takes a plain string, so any environment can leave this
+     * empty state in one call — which makes the honest pre-scan state affordable, and a
+     * dedup panel needs that empty state anyway.
+     */
+    async dedupSessions(): Promise<DedupSession[]> {
+      if (!dedupScanned) return [];
+      // Fresh copies: the fixture is module-scoped and a panel that sorts in place would
+      // otherwise reorder it for every later caller.
+      return MOCK_DEDUP_SESSIONS.map((s) => ({ ...s, duplicate_paths: [...s.duplicate_paths] }));
+    },
+
+    // -- maintenance ---------------------------------------------------------------
+    //
+    // DESTRUCTIVE FOR REAL, INERT HERE. The engine's `maintenance.*` moves and deletes the
+    // owner's session files; this mock performs NO filesystem operation of any kind — no
+    // read, no write, no mkdir, no delete. Every plan, manifest and ledger row below lives
+    // in the per-client maps above and disappears with the process. That is what makes it
+    // safe to drive a Maintenance panel in a dev run, a screenshot pass or a design review.
+    //
+    // What it DOES reproduce faithfully is the gating, because the gates are the part a UI
+    // gets wrong: the single-use handle, the typed-confirmation phrase, apply-defaults-to-
+    // false, and the fact that a REFUSED confirmation leaves the handle usable while an
+    // ACCEPTED run consumes it.
+
+    async maintenancePlan(params: MaintenancePlanParams): Promise<MaintenancePreview> {
+      const storeRoot = params.store_root;
+      const checkpointRoot = params.checkpoint_root;
+      for (const [label, value] of [
+        ["store_root", storeRoot],
+        ["checkpoint_root", checkpointRoot],
+      ] as const) {
+        if (typeof value !== "string" || value === "") {
+          throw rpcError(RPC_INVALID_PARAMS, `${label} must be a non-empty string`);
+        }
+        requireLocalPath(value, label);
+      }
+      const destinationRoot = params.destination_root ?? "";
+      if (destinationRoot !== "") requireLocalPath(destinationRoot, "destination_root");
+      if (!["delete", "archive", "move", "reconcile"].includes(params.action)) {
+        throw rpcError(RPC_INVALID_PARAMS, "action must be one of delete, archive, move, reconcile");
+      }
+      if (!Array.isArray(params.targets) || params.targets.length === 0) {
+        throw rpcError(RPC_INVALID_PARAMS, "targets must be a non-empty list");
+      }
+
+      const root = effectiveRoot(params.action, checkpointRoot, destinationRoot);
+      const allowed: MaintenanceCopy[] = [];
+      const blocked: MaintenanceBlocked[] = [];
+      const warnings: MaintenanceWarning[] = [];
+      const plan: PlannedMove[] = [];
+      const plannedSources = new Set<string>();
+      const claimed = new Set<string>();
+
+      for (const target of params.targets) {
+        if (typeof target?.file_path !== "string" || target.file_path === "") {
+          throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
+        }
+        // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
+        // kind (`llm_anthology/sidecar.py:1556`).
+        const copy: MaintenanceCopy = {
+          session_id: target.session_id ?? "",
+          file_path: target.file_path,
+          store_kind: "unknown",
+          last_write_ms: null,
+          size_bytes: target.size_bytes ?? 0,
+          is_hot: false,
+        };
+        const key = normPath(target.file_path);
+
+        // `outside-store-root`: the LEXICAL half of the engine's `_classify`
+        // (`llm_anthology/maintenance.py:345-347`). The realpath/symlink half needs a
+        // filesystem and is deliberately absent here.
+        if (!key.startsWith(normPath(storeRoot).replace(/\\+$/, "") + "\\")) {
+          blocked.push({
+            target: copy,
+            reason: "outside-store-root",
+            detail: `target '${target.file_path}' is not within the store root '${storeRoot}'`,
+          });
+          warnings.push({
+            severity: 2,
+            severity_name: "DANGEROUS",
+            message: `Protected path blocked: ${target.file_path} (outside-store-root)`,
+          });
+          continue;
+        }
+        // `duplicate-target`: two entries naming ONE physical file. The likeliest real UI
+        // bug on this surface — feeding `dedup.sessions`' canonical AND duplicate paths
+        // straight into a plan does exactly this — and the engine blocks the second rather
+        // than planning one file twice (`maintenance.py:480-491`).
+        if (plannedSources.has(key)) {
+          blocked.push({
+            target: copy,
+            reason: "duplicate-target",
+            detail:
+              `target '${target.file_path}' is already planned by an earlier entry; ` +
+              "one physical file is moved once",
+          });
+          warnings.push({
+            severity: 1,
+            severity_name: "REVIEW",
+            message: `Duplicate target ignored: ${target.file_path}`,
+          });
+          continue;
+        }
+
+        plannedSources.add(key);
+        allowed.push(copy);
+        // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:506-508`), so a
+        // perfectly healthy plan is never warning-free.
+        warnings.push({
+          severity: 2,
+          severity_name: "DANGEROUS",
+          message: `Dangerous maintenance target: ${target.file_path}`,
+        });
+        // A deterministic `-N` suffix, not a GUID, so the destination can be SHOWN in the
+        // preview and verified later (`maintenance.py:422-430`).
+        const base = winBasename(target.file_path);
+        const dot = base.lastIndexOf(".");
+        const stem = dot > 0 ? base.slice(0, dot) : base;
+        const ext = dot > 0 ? base.slice(dot) : "";
+        let candidate = base;
+        for (let n = 2; claimed.has(normPath(candidate)); n += 1) {
+          candidate = `${stem}-${n}${ext}`;
+        }
+        claimed.add(normPath(candidate));
+        plan.push({
+          session_id: copy.session_id,
+          source: target.file_path,
+          destination: winJoin(root, candidate),
+        });
+      }
+
+      warnings.push({
+        severity: 0,
+        severity_name: "INFO",
+        message:
+          `${params.action} preview: ${allowed.length} allowed, ${blocked.length} blocked; ` +
+          "a checkpoint and a typed confirmation are required",
+      });
+
+      const planId = `plan-${nextPlanId}`;
+      nextPlanId += 1;
+      const preview: MaintenancePreview = {
+        plan_id: planId,
+        action: params.action,
+        store_root: storeRoot,
+        // The EFFECTIVE root, not the requested one — a delete reports
+        // `<checkpoint_root>\deleted` (`maintenance.py:538`).
+        destination_root: root,
+        checkpoint_root: checkpointRoot,
+        allowed,
+        blocked,
+        warnings,
+        plan,
+        requires_checkpoint: true,
+        requires_typed_confirmation: true,
+        required_typed_confirmation: confirmationPhrase(params.action, allowed.length),
+      };
+      plans.set(planId, preview);
+      return preview;
+    },
+
+    async maintenanceExecute(params: MaintenanceExecuteParams): Promise<MaintenanceResult> {
+      const planId = params.plan_id;
+      if (typeof planId !== "string" || planId === "") {
+        throw rpcError(RPC_INVALID_PARAMS, "plan_id must be a non-empty string");
+      }
+      const preview = plans.get(planId);
+      if (preview === undefined) {
+        throw rpcError(RPC_MAINTENANCE_REFUSED, `unknown or already-used plan_id '${planId}'; re-plan`);
+      }
+      const confirmation = params.confirmation ?? "";
+      const apply = params.apply ?? false;
+      // The confirmation is checked BEFORE the apply branch, so a DRY RUN needs the phrase
+      // too (`llm_anthology/maintenance.py:606` runs ahead of `:617`). A panel that offers a
+      // preview button without collecting the phrase is refused, not answered.
+      if (confirmation.trim() === "") throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation is required.");
+      if (confirmation !== preview.required_typed_confirmation) {
+        // Deliberately NOT consuming the handle: a typo must be correctable without forcing
+        // a re-plan (`tests/test_sidecar_maintenance.py:194-206`).
+        throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation does not match the preview.");
+      }
+      plans.delete(planId); // accepted -> consumed, so a run can never be replayed
+      if (!apply) {
+        // A dry run returns the PLANNED MOVES, not an empty list
+        // (`llm_anthology/maintenance.py:618`) — that is how a UI shows the destinations —
+        // with an empty `manifest_path` because nothing was written.
+        return { executed: false, manifest_path: "", moves: [...preview.plan], unaccounted: [] };
+      }
+      const manifestPath = winJoin(
+        preview.checkpoint_root,
+        `manifest-${nextManifest}.json`,
+      );
+      nextManifest += 1;
+      manifests.set(manifestPath, [...preview.plan]);
+      // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:305-312`).
+      // `recorded_at_ms` steps by a fixed minute per run rather than reading the clock, so
+      // the newest-first order is deterministic and testable.
+      runs.push({
+        manifest_path: manifestPath,
+        action: preview.action,
+        status: "executed",
+        recorded_at_ms: T0 + runs.length * 60_000,
+        moved_count: preview.plan.length,
+        blocked_count: preview.blocked.length,
+        store_root: preview.store_root,
+      });
+      return {
+        executed: true,
+        manifest_path: manifestPath,
+        moves: [...preview.plan],
+        unaccounted: [],
+      };
+    },
+
+    async maintenanceRestore(params: MaintenanceRestoreParams): Promise<MaintenanceResult> {
+      const manifestPath = params.manifest_path;
+      if (typeof manifestPath !== "string" || manifestPath === "") {
+        throw rpcError(RPC_INVALID_PARAMS, "manifest_path must be a non-empty string");
+      }
+      requireLocalPath(manifestPath, "manifest_path");
+      const moves = manifests.get(manifestPath);
+      if (moves === undefined) {
+        throw rpcError(
+          RPC_INTERNAL_ERROR,
+          `no checkpoint manifest at '${manifestPath}'`,
+        );
+      }
+      // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1590-1591`), so a
+      // restored run keeps `status: "executed"` in `maintenance.runs`.
+      return {
+        executed: params.apply ?? false,
+        manifest_path: manifestPath,
+        moves: [...moves],
+        unaccounted: [],
+      };
+    },
+
+    /** The audit ledger, NEWEST FIRST, capped at `limit` (engine default 50). */
+    async maintenanceRuns(limit = 50): Promise<MaintenanceRun[]> {
+      if (!Number.isInteger(limit) || limit < 0) {
+        throw rpcError(RPC_INVALID_PARAMS, "limit must be a non-negative integer");
+      }
+      return [...runs].reverse().slice(0, limit);
+    },
   };
 }
 
@@ -1049,3 +1733,4 @@ export const mockIpc: MockIpcClient = createMockIpc();
 /** Exposed so tests can assert against the same data the default client serves. */
 export const MOCK_THREADS = RAW_THREADS;
 export const MOCK_EDGES = RAW_EDGES;
+export { MOCK_DEDUP_SESSIONS };

@@ -20,6 +20,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  Annotation,
   BuildHandle,
   BuildParams,
   BuildStatus,
@@ -27,18 +28,30 @@ import type {
   CorpusDiffDto,
   CorpusStats,
   CreateCorpusResult,
+  DedupScanResult,
+  DedupSession,
   DiscoveryResult,
   ExportPlan,
   ExportResult,
   GraphSnapshot,
   HealthInfo,
   IpcClient,
+  MaintenanceExecuteParams,
+  MaintenancePlanParams,
+  MaintenancePreview,
+  MaintenanceRestoreParams,
+  MaintenanceResult,
+  MaintenanceRun,
+  MetadataSearchParams,
+  MetadataSearchRow,
+  MetadataSetParams,
   OpenCorpusResult,
   RollupTable,
   RootsParams,
   SearchParams,
   SearchResult,
   Subtree,
+  TagCount,
   ThreadMeta,
   ThreadNode,
   Timeline,
@@ -145,5 +158,71 @@ export const realIpc: IpcClient = {
   },
   exportRun(destPath: string): Promise<ExportResult> {
     return cmd<ExportResult>("export_run", { dest_path: destPath });
+  },
+
+  // -- annotations / dedup / maintenance ------------------------------------------
+  //
+  // ELEVEN methods. Each proxies ONE JSON-RPC method through the Tauri command named by the
+  // pinned rule (RPC `a.b` -> command `a_b`), forwarding the sidecar's snake_case param names
+  // verbatim. The command names below are the contract with `src-tauri/src/lib.rs`; a typo
+  // here type-checks, passes vitest (the mock never sees a command name) and fails only at
+  // the moment a user presses the button, so they are spelled out literally rather than
+  // derived. `index.test.ts` asserts each one against the rule.
+  //
+  // The engine also registers `research.synthesize` / `research.extract_entities`. They are
+  // deliberately NOT bound here and have no Tauri command
+  // (`cockpit/src-tauri/src/lib.rs:322-333`) — see the NOT BOUND note in `./types.ts`. A
+  // binding without a command type-checks and dies only on the button press, so adding one
+  // back is worse than the missing feature.
+  //
+  // An OPTIONAL param is OMITTED rather than sent as null wherever the engine type-checks
+  // it with `isinstance`, because an explicit null fails that check as -32602 — the same
+  // reason `corpusBuildStatus` above omits `job_id`.
+
+  metadataGet(conversationId: string): Promise<Annotation> {
+    return cmd<Annotation>("metadata_get", { conversation_id: conversationId });
+  },
+  /**
+   * The params object is forwarded AS-IS, which is what preserves the partial-update
+   * tri-state: a field absent from `MetadataSetParams` is absent on the wire and the engine
+   * leaves it unchanged, while an explicit `""` / `[]` clears it
+   * (`llm_anthology/sidecar.py:1335-1337`). Normalising the undefined fields to null or ""
+   * here would silently blank the other two on every per-field edit.
+   */
+  metadataSet(params: MetadataSetParams): Promise<Annotation> {
+    return cmd<Annotation>("metadata_set", params);
+  },
+  metadataClear(conversationId: string): Promise<Annotation> {
+    return cmd<Annotation>("metadata_clear", { conversation_id: conversationId });
+  },
+  metadataSearch(params: MetadataSearchParams = {}): Promise<MetadataSearchRow[]> {
+    return cmd<MetadataSearchRow[]>("metadata_search", params);
+  },
+  metadataTags(): Promise<TagCount[]> {
+    return cmd<TagCount[]>("metadata_tags");
+  },
+
+  dedupScan(codexHome: string): Promise<DedupScanResult> {
+    return cmd<DedupScanResult>("dedup_scan", { codex_home: codexHome });
+  },
+  dedupSessions(): Promise<DedupSession[]> {
+    return cmd<DedupSession[]>("dedup_sessions");
+  },
+
+  maintenancePlan(params: MaintenancePlanParams): Promise<MaintenancePreview> {
+    return cmd<MaintenancePreview>("maintenance_plan", params);
+  },
+  maintenanceExecute(params: MaintenanceExecuteParams): Promise<MaintenanceResult> {
+    return cmd<MaintenanceResult>("maintenance_execute", params);
+  },
+  maintenanceRestore(params: MaintenanceRestoreParams): Promise<MaintenanceResult> {
+    return cmd<MaintenanceResult>("maintenance_restore", params);
+  },
+  maintenanceRuns(limit?: number): Promise<MaintenanceRun[]> {
+    // `_opt_int` rejects a non-int (and a bool) with -32602, so an absent limit is omitted
+    // and the engine applies its own default of 50 (`llm_anthology/sidecar.py:1614`).
+    const params: Record<string, unknown> = {};
+    if (limit !== undefined) params.limit = limit;
+    return cmd<MaintenanceRun[]>("maintenance_runs", params);
   },
 };
