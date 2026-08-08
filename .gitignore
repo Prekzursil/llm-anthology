@@ -41,6 +41,13 @@ js/test/fixtures/adapter-parity.json
 # regenerable build artifacts, not source — `make_fixture.py` rebuilds them deterministically.
 # Ignoring the tree also keeps a stray real index from ever being committed by accident.
 .scratch/
+# The DIRECTORY pattern above does not cover a sibling FILE. Agents write one-off harnesses
+# to the repo root as `.scratch_<name>.py` (measured: `.scratch_reanchor.py`,
+# `.scratch_sweep.py` both landed untracked and un-ignored, so `git add -A` would have
+# committed them). Same intent as `.scratch/`, so the same rule — a leading-dot name is
+# invisible in a casual `ls` and easy to miss in review, which is exactly how scratch
+# reaches a public repo.
+.scratch_*
 
 # Staged engine interpreter (a ~35MB build artifact produced by cockpit/scripts/stage-engine.ps1)
 cockpit/src-tauri/resources/
