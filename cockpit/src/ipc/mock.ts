@@ -360,7 +360,7 @@ function chatgptExports(): DiscoveryFinding[] {
  * A whole scan, shaped like the measured one: a built index, both STORE shapes, and the
  * long export tail. The two store shapes differ in the way the ingest derivation depends
  * on — `StoreSpec.report`, `"base"` | `"subdir"` — and that difference is the whole reason
- * both are here (`llm_anthology/discover.py:239`, applied at `:644`):
+ * both are here (`llm_anthology/discover.py:248`, applied at `:653`):
  *
  *   * codex reports its BASE (`report="base"`), so `path` is the Codex home and
  *     `detail.items_root` is the distinct sessions tree -> both `corpus.build` parameters
@@ -428,7 +428,7 @@ const DISCOVERY: DiscoveryResult = {
       kind: "export_file",
       path: `${HOME}\\Downloads\\Takeout\\Gemini Apps\\_converted\\transcript.json`,
       count: 1,
-      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:645`),
+      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:654`),
       // so a renderer that treated this as a timestamp would print 1970.
       newest_mtime: 0,
       confidence: "low",

@@ -157,6 +157,15 @@ def print_report(report):
         # a case that otherwise renders blank pages and reports success
         print("EMPTY_CONVERSATIONS", report["empty_conversations"],
               "(no turns parsed - wrong provider, or the export format changed)")
+    if report.get("grouping_mode"):
+        # Gemini only, and printed on EVERY gemini run rather than only on the downgrade.
+        # A field that appears only when something went wrong is a field nobody learns to
+        # read, and its absence would be ambiguous between "grouping was fine" and "this
+        # build predates the line". Conversation boundaries decide what a "conversation"
+        # even IS for this provider, so provisional-vs-true is not a detail: it used to
+        # live only inside `_fidelity-report.json`, which nobody opens after a run that
+        # looked like it worked.
+        print("GROUPING_MODE", report["grouping_mode"])
     print("FIDELITY_GATE_PASSED", report["fidelity_passed"], "of", report["rendered"])
     print("HIDDEN_CHAR_CONVERSATIONS", report["hidden_char_conversations"])
     print("ERRORS", len(report["errors"]))

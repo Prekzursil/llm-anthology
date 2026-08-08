@@ -196,6 +196,51 @@ def test_gemini_harvest_grouping_is_labelled_true(tmp_path):
     assert "TRUE" in rep["grouping_mode"] and rep["harvest_matched_records"] == 1
 
 
+def test_a_typod_harvest_path_is_REPORTED_not_silently_downgraded(tmp_path, capsys):
+    """Asking for TRUE grouping and not getting it must be audible.
+
+    `--harvest` is guarded by `harvest_path and os.path.isfile(harvest_path)`, so a path
+    that does not exist falls straight through to the gap heuristic. That is a real
+    downgrade — from conversation boundaries the web app actually reported, to boundaries
+    inferred from timestamp gaps — and it happened with no error, stderr empty, exit 0,
+    and terminal output byte-identical to a good run, because `print_report` never printed
+    `grouping_mode`. The only trace was a field inside `_fidelity-report.json`, which
+    nobody reads on a run that looks like it worked.
+
+    A typo in a flag is the likeliest cause and the easiest to miss: the flag is accepted,
+    the run succeeds, and the corpus is quietly grouped worse than the user asked for.
+    """
+    src = str(tmp_path / "t.json")
+    _write(src, _gemini_records())
+    out = str(tmp_path / "site")
+
+    rc = cli.main(["gemini", src, out, "--harvest", str(tmp_path / "typo.json")])
+
+    printed = capsys.readouterr().out
+    assert "GROUPING_MODE" in printed, "the grouping mode must be visible on every run"
+    assert "PROVISIONAL" in printed, "and it must say the grouping was downgraded"
+    assert "ERRORS 1" in printed, "a harvest that was named but not found is an error"
+    assert rc == 0, "the corpus still rendered, so this reports rather than fails"
+
+
+def test_the_grouping_mode_is_printed_on_a_GOOD_harvest_run_too(tmp_path, capsys):
+    """The control. A field printed only on failure is a field nobody learns to read, and
+    it would leave 'no GROUPING_MODE line' ambiguous between success and an older build.
+    """
+    src = str(tmp_path / "t.json")
+    _write(src, _gemini_records())
+    harvest = str(tmp_path / "h.json")
+    _write(harvest, [{"id": "g1", "title": "Real Title",
+                      "turns": [{"role": "user", "text": "hello"}]}])
+    out = str(tmp_path / "site")
+
+    assert cli.main(["gemini", src, out, "--harvest", harvest]) == 0
+
+    printed = capsys.readouterr().out
+    assert "GROUPING_MODE" in printed and "TRUE" in printed
+    assert "ERRORS 0" in printed
+
+
 def test_missing_input_is_a_clean_error_not_a_traceback(tmp_path):
     out = str(tmp_path / "site")
     assert cli.main(["claude", str(tmp_path / "nope.json"), out]) == 1

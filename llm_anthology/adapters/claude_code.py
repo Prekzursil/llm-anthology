@@ -1,9 +1,9 @@
 """Claude Code transcripts (~/.claude/projects/<slug>/...jsonl) -> IR + spawn graph.
 
 The owner's LARGEST store by a wide margin: 27,770 files, of which 162 are SESSIONS
-and 12,613 are SUBAGENT transcripts. `discover.py:309` already finds it — its StoreSpec
+and 12,613 are SUBAGENT transcripts. `discover.py:318` already finds it — its StoreSpec
 carried a note reading "no adapter in this repository reads that shape yet", and this is
-that adapter, so the note has been corrected in place (`discover.py:306-308`).
+that adapter, so the note has been corrected in place (`discover.py:315-312`).
 
 A session is ONE append-only JSONL file, unlike Grok (a directory) and like a Codex
 rollout. Every line is a self-describing record `{type, timestamp, sessionId, uuid,
@@ -152,7 +152,7 @@ from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
 #: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1652` surfaces it to
-#: the UI as `provider`. It matches `discover.py:309`'s StoreSpec label so the panel and
+#: the UI as `provider`. It matches `discover.py:318`'s StoreSpec label so the panel and
 #: the ingest name one store the same way, and it is deliberately NOT "claude" —
 #: `adapters/claude.py` owns that for the claude.ai account export, which is a different
 #: product and a different shape.

@@ -155,9 +155,18 @@ class Finding:
     ``count`` is the number of on-disk items the finding covers: sessions for a store,
     conversations for a built index, and 1 for a single export file (counting the
     conversations inside one would mean parsing it, which this module must not do).
-    ``newest_mtime`` is epoch seconds of the newest item, or None when nothing datable
-    was seen. ``detail`` carries small structured non-content facts and is
+    ``newest_mtime`` is epoch seconds of the newest item, or ``0.0`` when nothing datable
+    was seen — never ``None``. This said None, while the scan has always fallen back to
+    zero, so a caller written against the docstring would have guarded with ``is not
+    None`` and let that zero through as a real timestamp — dating every empty store to
+    1970 and sorting it oldest. The cockpit gets this right for the wrong reason:
+    ``types.ts`` documents 0.0-and-never-null because someone read the code instead of
+    this sentence. ``detail`` carries small structured non-content facts and is
     provider-specific.
+
+    (The fallback expression is described rather than quoted on purpose: the citation gate
+    pins it as a unique token, and repeating it verbatim here made it match two lines and
+    silently disabled that pin.)
     """
     provider: str
     kind: str

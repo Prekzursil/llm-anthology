@@ -736,8 +736,8 @@ class Sidecar:
     # WHY THE WORKER NEVER TOUCHES self.conn. corpus.open_index builds its connection with
     # sqlite3's DEFAULT check_same_thread=True (corpus.py:303), so any use of self.conn off
     # the request thread raises ProgrammingError — measured, not assumed. The worker is
-    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:436) and
-    # closes (loaders.py:447) its OWN connection inside the worker thread, so the two
+    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:452) and
+    # closes (loaders.py:463) its OWN connection inside the worker thread, so the two
     # connections are thread-confined by construction. They do share the file, which is
     # exactly what WAL (corpus.py:292) is for: the request thread keeps reading committed
     # rows while the worker writes, and a transient collision is already typed as -32002.
@@ -745,8 +745,8 @@ class Sidecar:
     # NO CANCEL. The only cooperative abort point is index.build_index's per-chunk
     # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
-    # IS DEAD: load_corpus takes `progress` (loaders.py:320) and forwards it
-    # (loaders.py:445). True now, and narrower: the worker (sidecar.py:945) passes none, a
+    # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
+    # (loaders.py:461). True now, and narrower: the worker (sidecar.py:945) passes none, a
     # call-site gap, not an architectural one. What still holds: the phase BEFORE it,
     # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
     # longest phase would be a lie, and killing the thread is unsafe in CPython. What
@@ -939,7 +939,7 @@ class Sidecar:
         returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
-        conversation ingest (loaders.py:438-445), so a FAILED build can still have changed
+        conversation ingest (loaders.py:454-445), so a FAILED build can still have changed
         the index and the live view must follow it."""
         try:
             _built, errors = loaders.load_corpus(
@@ -964,8 +964,8 @@ class Sidecar:
 
         WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
         Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
-        loaders.py:378), while ``_persist_graph`` UPSERTS that run into the tables a previous
-        build already populated (loaders.py:772-686, INSERT OR REPLACE). The in-app flow is "open an existing
+        loaders.py:394), while ``_persist_graph`` UPSERTS that run into the tables a previous
+        build already populated (loaders.py:788-686, INSERT OR REPLACE). The in-app flow is "open an existing
         corpus, then ingest more sessions into it", so taking the returned object would drop
         every previously-ingested thread from the live view while the index on disk still
         held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].

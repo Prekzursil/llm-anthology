@@ -303,20 +303,20 @@ export interface CreateCorpusResult {
 
 /**
  * One thing auto-discovery found on this machine, mirroring `discover.Finding.as_dict`
- * (`llm_anthology/discover.py:170-176`).
+ * (`llm_anthology/discover.py:152-185`).
  *
  * Two fields are easy to get wrong and both are load-bearing:
  *
  *   * `newest_mtime` is UNIX **SECONDS** (a float), not milliseconds — everything else in
  *     this app is `_ms`. It is `0.0`, never null, when nothing datable was seen
- *     (`discover.py:645`: `max(mtimes) if mtimes else 0.0`), so 0 means "unknown date"
+ *     (`discover.py:654`: `max(mtimes) if mtimes else 0.0`), so 0 means "unknown date"
  *     rather than 1970.
  *   * `detail` is an OPEN dict whose keys vary by provider: a built index carries
- *     `{tables, conversations}` (`discover.py:761-763`), a Codex store
+ *     `{tables, conversations}` (`discover.py:770-772`), a Codex store
  *     `{rollouts_jsonl, rollouts_zst, state_db, ingestable, items_root}`
- *     (`discover.py:300-304`), a Claude Code store `{"*.jsonl", ingestable, items_root,
+ *     (`discover.py:309-313`), a Claude Code store `{"*.jsonl", ingestable, items_root,
  *     project_dirs}`, and an export file `{size_bytes, ambiguous_with?}`
- *     (`discover.py:711-713`). It must be rendered generically; assuming a fixed key set
+ *     (`discover.py:720-722`). It must be rendered generically; assuming a fixed key set
  *     would silently drop whatever a newly-added provider reports.
  *
  * `kind` and `confidence` are typed as plain `string` rather than unions for the same
@@ -341,10 +341,10 @@ export interface DiscoveryFinding {
 
 /**
  * What one scan cost and whether it saw everything (`discover.ScanStats`,
- * `llm_anthology/discover.py:180-193`).
+ * `llm_anthology/discover.py:189-202`).
  *
  * `truncated_groups` holds `"<provider>/<kind>"` keys whose findings the ENGINE capped at
- * `DEFAULT_MAX_PER_GROUP` (`discover.py:108`, `:888`) — a truncation that happened before
+ * `DEFAULT_MAX_PER_GROUP` (`discover.py:108`, `:897`) — a truncation that happened before
  * the UI ever saw the data, and therefore a different fact from any collapsing the UI does
  * for display. `errors` is one string per location that could not be read.
  */

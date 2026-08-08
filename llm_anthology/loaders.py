@@ -259,6 +259,7 @@ def load_gemini(transcript_path, harvest_path=None):
         return [], [{"file": os.path.basename(transcript_path), "stage": "parse",
                      "error": repr(e)}], {}
     mode, matched = "gap-heuristic (PROVISIONAL)", 0
+    load_errors = []
     if harvest_path and os.path.isfile(harvest_path):
         try:
             groups, matched = gemini_groups_from_harvest(records, _load_json(harvest_path))
@@ -267,8 +268,23 @@ def load_gemini(transcript_path, harvest_path=None):
             return [], [{"file": os.path.basename(harvest_path), "stage": "parse",
                          "error": repr(e)}], {}
     else:
+        if harvest_path:
+            # NAMED but absent. This used to fall through to the gap heuristic in silence,
+            # which is a real downgrade — from the boundaries the web app actually
+            # reported to boundaries inferred from timestamp gaps — delivered with no
+            # error, empty stderr, exit 0, and (before `grouping_mode` was printed)
+            # terminal output byte-identical to a good run. A flag typo is the likeliest
+            # cause and the hardest to notice, because the flag IS accepted.
+            #
+            # Reported rather than raised: the transcript parsed and the corpus renders
+            # fine, so failing the run would be a worse answer than a grouping the user
+            # can see was provisional. The gap heuristic still runs below.
+            load_errors.append({"file": os.path.basename(harvest_path), "stage": "harvest",
+                                "error": "harvest file not found: %s — grouping fell back "
+                                         "to the PROVISIONAL time-gap heuristic"
+                                         % harvest_path})
         groups = gemini_groups_from_gaps(records)
-    return gemini.parse_all(records, groups), [], {
+    return gemini.parse_all(records, groups), load_errors, {
         "grouping_mode": mode,
         "harvest_matched_records": matched,
         "source_records": len(records),

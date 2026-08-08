@@ -11,7 +11,7 @@ citing exact lines. Those anchors DRIFT, and nothing else catches it. Two measur
     `test_sidecar_maintenance.py` 8/8 correct, `dedup.py` 10/10 correct.
 
 The claims were almost all true; the anchors had rotted. That is not cosmetic. A reader who
-follows `discover.py:668` to check what a built-index `detail` carries lands on a blank line
+follows `discover.py:673` to check what a built-index `detail` carries lands on a blank line
 and concludes the comment is nonsense, so the next person re-derives by hand what the
 citation was supposed to save them. This test makes that drift a red build instead of a slow
 decay.
@@ -191,20 +191,20 @@ PINS = [
     # Every one of these was re-anchored in the 2026-08-08 sweep; ten of the fourteen
     # originals landed on unrelated code or a blank line.
     ("mock.ts", "discover.py", 108, "DEFAULT_MAX_PER_GROUP", "the per-group cap the census equals"),
-    ("mock.ts", "discover.py", 239, 'report: str = "base"', "the field the two store shapes differ in"),
-    ("mock.ts", "discover.py", 644, 'spec.report == "subdir"', "where report decides the named path"),
-    ("mock.ts", "discover.py", 645, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
-    ("types.ts", "discover.py", 170, "def as_dict", "the Finding DTO this mirrors"),  # weak
-    ("types.ts", "discover.py", 645, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
-    ("types.ts", "discover.py", 761, '"tables": tuple(sorted', "a built index's detail keys"),
-    ("types.ts", "discover.py", 300, 'StoreSpec(provider="codex"', "a Codex store's detail keys"),
-    ("types.ts", "discover.py", 711, '"size_bytes": _size', "an export file's detail keys"),
+    ("mock.ts", "discover.py", 248, 'report: str = "base"', "the field the two store shapes differ in"),
+    ("mock.ts", "discover.py", 653, 'spec.report == "subdir"', "where report decides the named path"),
+    ("mock.ts", "discover.py", 654, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
+    ("types.ts", "discover.py", 152, "class Finding:", "the Finding DTO this mirrors"),  # weak
+    ("types.ts", "discover.py", 654, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
+    ("types.ts", "discover.py", 770, '"tables": tuple(sorted', "a built index's detail keys"),
+    ("types.ts", "discover.py", 309, 'StoreSpec(provider="codex"', "a Codex store's detail keys"),
+    ("types.ts", "discover.py", 720, '"size_bytes": _size', "an export file's detail keys"),
     ("types.ts", "discover.py", 50, "Adding a provider is a TABLE EDIT", "why kind/confidence stay plain strings"),
     ("types.ts", "discover.py", 68, "KIND_BUILT_INDEX", "the kind vocabulary"),
     ("types.ts", "discover.py", 72, "CONF_HIGH", "the confidence vocabulary"),
-    ("types.ts", "discover.py", 180, "class ScanStats", "what one scan cost"),
+    ("types.ts", "discover.py", 189, "class ScanStats", "what one scan cost"),
     ("types.ts", "discover.py", 108, "DEFAULT_MAX_PER_GROUP", "the cap that names a truncated group"),
-    ("types.ts", "discover.py", 888, "truncated_groups.append", "where a group is recorded as truncated"),
+    ("types.ts", "discover.py", 897, "truncated_groups.append", "where a group is recorded as truncated"),
 
     # ----------------------------------------------------------------------- dedup.py (10)
     ("mock.ts", "dedup.py", 149, "@property", "has_larger_copy, the truncated-canonical flag"),  # weak
@@ -402,20 +402,20 @@ PY_PINS = [
     ("sidecar.py", "codex_rollout.py", 435, '"file": path, "stage": "read"', "the third producer of `file`"),
     ("sidecar.py", "corpus.py", 303, "sqlite3.connect(path)", "the DEFAULT check_same_thread=True"),
     ("sidecar.py", "corpus.py", 292, "PRAGMA journal_mode=WAL", "WAL is what lets both connections share the file"),
-    ("sidecar.py", "loaders.py", 436, "corpus.open_index(index_path)", "the worker opens its OWN connection"),
-    ("sidecar.py", "loaders.py", 447, "conn.close()", "...and closes it, inside the worker thread"),
+    ("sidecar.py", "loaders.py", 452, "corpus.open_index(index_path)", "the worker opens its OWN connection"),
+    ("sidecar.py", "loaders.py", 463, "conn.close()", "...and closes it, inside the worker thread"),
     ("sidecar.py", "index.py", 171, "if progress is not None", "the only cooperative abort point in the stack"),
-    ("sidecar.py", "loaders.py", 320, "def load_corpus", "load_corpus DOES accept a progress callback"),
-    ("sidecar.py", "loaders.py", 445, "progress=progress", "...and DOES forward it — the old premise is dead"),
+    ("sidecar.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
+    ("sidecar.py", "loaders.py", 461, "progress=progress", "...and DOES forward it — the old premise is dead"),
     ("sidecar.py", "sidecar.py", 945, "loaders.load_corpus(", "the worker call that passes none"),
     ("sidecar.py", "sidecar.py", 890, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
     ("sidecar.py", "index.py", 168, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
     ("sidecar.py", "codex_state.py", 127, "def _db_path", "the LIVE Codex store fallback"),
     ("sidecar.py", "codex_rollout.py", 425, "glob.glob(pattern", "ingest_sessions globs, so a typo'd root is silent"),
     ("sidecar.py", "codex_state.py", 96, "is retried then", "a missing/busy state DB is skipped by design"),
-    ("sidecar.py", "loaders.py", 438, "_persist_graph(conn, result)", "the graph commits BEFORE the long ingest"),
-    ("sidecar.py", "loaders.py", 378, "result = corpus.Corpus()", "load_corpus starts from a FRESH Corpus"),
-    ("sidecar.py", "loaders.py", 772, "upsert_thread(conn", "the run is UPSERTed into a previous build's tables"),
+    ("sidecar.py", "loaders.py", 454, "_persist_graph(conn, result)", "the graph commits BEFORE the long ingest"),
+    ("sidecar.py", "loaders.py", 394, "result = corpus.Corpus()", "load_corpus starts from a FRESH Corpus"),
+    ("sidecar.py", "loaders.py", 788, "upsert_thread(conn", "the run is UPSERTed into a previous build's tables"),
 
     # ------------------------------------------------------------------ discover.py (19)
     ("discover.py", "loaders.py", 64, "never ingest our own output", "loaders already refuses its own output tree"),
@@ -440,14 +440,14 @@ PY_PINS = [
     ("discover.py", "codex_state.py", 11, "READ-ONLY + IMMUTABLE", "why the probe opens mode=ro&immutable=1"),
 
     # ------------------------------------------------------------------------ cli.py (4)
-    ("cli.py", "loaders.py", 320, "def load_corpus", "load_corpus DOES accept a progress callback"),
-    ("cli.py", "loaders.py", 445, "progress=progress", "...and forwards it after every committed chunk"),
+    ("cli.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
+    ("cli.py", "loaders.py", 461, "progress=progress", "...and forwards it after every committed chunk"),
     ("cli.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "where the disclosed path resolves from, even when it is NOT read"),
     ("cli.py", "build.py", 107, "carries NO turns is a silent", "the silent false-success this was bitten by"),
 
     # ----------------------------------------------------------------- claude_code.py (11)
-    ("claude_code.py", "discover.py", 309, 'StoreSpec(provider="claude-code"', "the StoreSpec that finds this store"),
-    ("claude_code.py", "discover.py", 306, "Claude Code writes one .jsonl transcript", "the corrected openable note"),
+    ("claude_code.py", "discover.py", 318, 'StoreSpec(provider="claude-code"', "the StoreSpec that finds this store"),
+    ("claude_code.py", "discover.py", 315, "Claude Code writes one .jsonl transcript", "the corrected openable note"),
     ("claude_code.py", "grok.py", 626, "def _read_subagents", "grok has the PARENT read `subagents/`"),
     ("claude_code.py", "claude.py", 175, "def _active_path", "the DAG walk this deliberately does NOT do"),
     ("claude_code.py", "grok.py", 632, "glob.escape", "the percent/bracket-bearing slug hazard"),
@@ -500,7 +500,7 @@ FALSE_PREMISES_FIXED = (
     "comment at loaders.py:381-386 names sidecar.py as the passage its change invalidated, "
     "so the staleness was known and left. What is actually true is narrower and is now "
     "what the comments say: the two CALL SITES pass none.",
-    "discover.py:306-313 told a caller 'no adapter in this repository reads that shape "
+    "discover.py:311-313 told a caller 'no adapter in this repository reads that shape "
     "yet', of the Claude Code store. adapters/claude_code.py reads exactly that shape and "
     "sidecar.py:246 wires it into _REPARSERS, so the finding IS openable; the adapter's own "
     "docstring quoted the note and announced it obsolete without editing it.",
