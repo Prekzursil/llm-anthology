@@ -112,11 +112,37 @@ from urllib.parse import unquote
 
 from llm_anthology import corpus, ir
 
-#: The provider label on both the Conversation and the spawn-graph node. `ThreadMeta`
-#: has no model field, so the model id travels in `Conversation.meta['model_id']`;
-#: `model_provider` is what `sidecar.py:1390` surfaces to the UI as the thread's
-#: provider, and it groups threads, so it is the provider name and not a model id.
+#: The ADAPTER label — which tool produced the transcript. It goes on
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1634` surfaces it to
+#: the UI as `provider`. `ThreadMeta` has no model field, so the model id travels in
+#: `Conversation.meta['model_id']`.
+#:
+#: NOT for `ThreadMeta.model_provider` — that field is the MODEL VENDOR and takes
+#: :data:`GROK_MODEL_VENDOR`. (The comment here previously defended putting this label in
+#: that field on the grounds that `sidecar.py:1390` surfaced it as the thread's provider.
+#: That is no longer true — `sidecar.py:1634` surfaces `provider = meta.adapter` and
+#: passes `model_provider` separately — so the defence cited behaviour that no longer
+#: exists and is removed rather than left to re-justify the same mistake.)
 GROK_PROVIDER = "grok"
+
+#: The MODEL VENDOR for `ThreadMeta.model_provider` — a DIFFERENT vocabulary from the
+#: adapter label above, and `corpus.py` documents the field as the vendor: measured over
+#: 250 real Codex rollouts `session_meta.model_provider` reads 'openai', never 'codex'.
+#: Writing "grok" here put an adapter name in a vendor field, and it reached exports.
+#:
+#: INFERRED from the adapter, not read, because there is nothing to read: the measured
+#: `summary.json` schema above records `current_model_id` and NO vendor field (6 live
+#: session directories, structure-only probe). The `_x.ai/session/update` method namespace
+#: in `updates.jsonl` names the PROTOCOL dialect, not the model's vendor, so it is not a
+#: substitute. The model id that IS recorded still travels in
+#: `Conversation.meta['model_id']`, so the read fact sits beside the inferred one rather
+#: than being replaced by it.
+#:
+#: Chosen over "" deliberately — see :data:`CLAUDE_CODE_MODEL_VENDOR` in the sibling
+#: adapter for the full argument; briefly, an empty vendor on every Grok node reproduces
+#: the unknown-grey symptom the conflation caused, and `ThreadMeta.adapter` already carries
+#: the which-tool distinction that "" would be protecting.
+GROK_MODEL_VENDOR = "xai"
 
 #: How the fragments of one streamed message are re-joined.
 #:
@@ -506,7 +532,7 @@ def _assemble(summary, turns, counts, tool_calls, subagents, first_ts, last_ts,
                or last_ts)
 
     thread = corpus.ThreadMeta(
-        id=sid, title=title, model_provider=GROK_PROVIDER,
+        id=sid, title=title, model_provider=GROK_MODEL_VENDOR,
         # NO token count exists anywhere in the measured schema — num_messages and
         # num_chat_messages are MESSAGE counts. Deriving a token number from them
         # would be fabrication, so this stays 0 and the real counts travel in meta.

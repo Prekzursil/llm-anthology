@@ -670,10 +670,33 @@ def test_the_edge_is_exactly_what_corpus_upsert_edge_persists():
         assert conn.execute("SELECT parent_thread_id, child_thread_id, status "
                             "FROM thread_spawn_edges").fetchall() == [
             (_SID, "%s/%s" % (_SID, _AGENT), "subagent")]
+        # The VENDOR reaches the column, not the adapter name. This assertion used to
+        # read "claude-code", which recorded the conflation rather than pinning intent.
         assert conn.execute("SELECT model_provider FROM threads").fetchone()[0] == \
-            "claude-code"
+            "anthropic"
     finally:
         conn.close()
+
+
+def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
+    """`model_provider` is the MODEL VENDOR ("anthropic"), NEVER the adapter name.
+
+    `corpus.py`'s `adapter` note documents this field as the vendor and records what
+    conflating the two cost: every Codex node rendered as the palette's unknown grey. The
+    adapter label still travels on `Conversation.provider`, which `sidecar.py:1634`
+    surfaces as `provider` beside `model_provider` — both facts, each under its own name.
+
+    "anthropic" is INFERRED from the adapter rather than read: a Claude Code transcript
+    records `message.model` (a model ID, carried in `conversation.meta["model_id"]`) and
+    no vendor field. The inference is safe in the one direction that matters — Claude Code
+    serves Anthropic models, including through Bedrock/Vertex, whose ids are Anthropic
+    model ids too — and the recorded model id is preserved beside it rather than replaced.
+    """
+    doc = _doc([_user(_text("a")), _asst(_text("b"))])
+    assert doc.thread.model_provider == "anthropic"
+    assert doc.conversation.provider == "claude-code"
+    # The regression guard: the two must not collapse back into one vocabulary.
+    assert doc.thread.model_provider != doc.conversation.provider
 
 
 def test_every_block_this_adapter_emits_actually_renders():

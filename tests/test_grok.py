@@ -526,9 +526,30 @@ def test_the_preview_is_the_first_user_text_not_an_assistant_or_tool_block():
     assert _doc([_thought("t"), _user("")]).thread.preview == ""
 
 
-def test_the_thread_carries_the_grok_provider_and_the_model_id_in_meta():
+def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
+    """`model_provider` is the MODEL VENDOR ("xai"), NEVER the adapter name ("grok").
+
+    Two different vocabularies, and `corpus.py`'s `adapter` note documents this field as
+    the vendor — measured over 250 real Codex rollouts it reads 'openai', never 'codex'.
+    Conflating them is exactly what made every Codex node render as the palette's unknown
+    grey, so a `model_provider` holding an adapter name is the same defect wearing a
+    different label.
+
+    The adapter label is not lost: it stays on `Conversation.provider`, and
+    `sidecar.py:1634` surfaces that as `provider` alongside `model_provider`, so both
+    facts reach the UI under their own names.
+
+    "xai" is INFERRED from the adapter, not read: the measured `summary.json` schema
+    (`adapters/grok.py`, from 6 live session directories) records `current_model_id` and
+    no vendor field at all. The model id it does record still travels in
+    `conversation.meta["model_id"]`, so the recorded fact is preserved beside the
+    inferred one.
+    """
     doc = _doc([], summary=_summary())
-    assert doc.thread.model_provider == "grok"
+    assert doc.thread.model_provider == "xai"
+    assert doc.conversation.provider == "grok"
+    # The regression guard: the two must not collapse back into one vocabulary.
+    assert doc.thread.model_provider != doc.conversation.provider
     assert doc.thread.agent_nickname == "grok-build"
     assert doc.thread.agent_role == "primary"
     assert doc.conversation.meta["model_id"] == "grok-code-fast-1"
@@ -614,7 +635,8 @@ def test_spawn_edges_survive_the_corpus_index_round_trip(tmp_path):
     assert loaded.children_of(_SID) == [_CHILD]
     assert loaded.fan_out(_SID) == 1 and loaded.depth(_CHILD) == 1
     assert loaded.threads[_SID].title == "Synthetic fixture session"
-    assert loaded.threads[_SID].model_provider == "grok"
+    # Survives the round trip as the VENDOR, not the adapter name.
+    assert loaded.threads[_SID].model_provider == "xai"
 
 
 # ------------------------------------------------------------ line-level parsing

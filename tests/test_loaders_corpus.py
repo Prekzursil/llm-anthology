@@ -476,9 +476,14 @@ def test_load_corpus_ingests_a_grok_store_alongside_codex_into_ONE_corpus(tmp_pa
     assert {conv.id for conv in c.conversations} == {"C1", "C2", _G1, _G2}
     # threads: the Codex rollout nodes, the state-only node, and both Grok nodes
     assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}
-    # each node keeps its OWN provider — the merge must not homogenise them
-    assert c.threads[_G1].model_provider == grok.GROK_PROVIDER == "grok"
+    # each node keeps its OWN model vendor — the merge must not homogenise them, and both
+    # sides must speak ONE vocabulary. This previously read
+    # `== grok.GROK_PROVIDER == "grok"`, which wrote the adapter/vendor conflation down as
+    # an invariant — while the Codex line directly below already asserted a real vendor,
+    # so the file was describing two vocabularies in one field two lines apart.
+    assert c.threads[_G1].model_provider == grok.GROK_MODEL_VENDOR == "xai"
     assert c.threads["C1"].model_provider == "openai"
+    assert c.threads[_G1].model_provider != grok.GROK_PROVIDER
     # Grok's own metadata survives the merge intact
     assert c.threads[_G1].title == "Grok parent"
     assert c.threads[_G1].rollout_path == os.path.join(groot, _ENC_CWD, _G1)
@@ -527,8 +532,8 @@ def test_grok_spawn_edges_reach_DISK_not_just_the_returned_object(tmp_path):
     assert persisted.depth(_G2) == 1
     assert [e.status for e in persisted.edges
             if e.parent_thread_id == _G1] == ["completed"]
-    # and the Grok node's provider survived persistence, not just assembly
-    assert persisted.threads[_G1].model_provider == "grok"
+    # and the Grok node's model VENDOR survived persistence, not just assembly
+    assert persisted.threads[_G1].model_provider == "xai"
 
 
 def test_a_grok_store_is_NEVER_read_unless_grok_root_names_it(tmp_path):

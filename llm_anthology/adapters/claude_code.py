@@ -149,12 +149,37 @@ from datetime import datetime
 
 from llm_anthology import corpus, ir
 
-#: The provider label on the Conversation, on the spawn-graph node and (via
-#: `sidecar.py:1390`) on the UI's thread grouping. It matches
-#: `discover.py:307`'s StoreSpec label so the panel and the ingest name one store the
-#: same way, and it is deliberately NOT "claude" — `adapters/claude.py` owns that for
-#: the claude.ai account export, which is a different product and a different shape.
+#: The ADAPTER label — which tool produced the transcript. It goes on
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1634` surfaces it to
+#: the UI as `provider`. It matches `discover.py:307`'s StoreSpec label so the panel and
+#: the ingest name one store the same way, and it is deliberately NOT "claude" —
+#: `adapters/claude.py` owns that for the claude.ai account export, which is a different
+#: product and a different shape.
+#:
+#: NOT for `ThreadMeta.model_provider` — that field is the MODEL VENDOR and takes
+#: :data:`CLAUDE_CODE_MODEL_VENDOR`. See it for why the two must not be conflated.
 CLAUDE_CODE_PROVIDER = "claude-code"
+
+#: The MODEL VENDOR for `ThreadMeta.model_provider` — a DIFFERENT vocabulary from the
+#: adapter label above, and `corpus.py` documents the field as the vendor: measured over
+#: 250 real Codex rollouts `session_meta.model_provider` reads 'openai', never 'codex'.
+#: Writing "claude-code" here put an adapter name in a vendor field, so the same value
+#: arrived under two names that a consumer is entitled to treat as different vocabularies,
+#: and it reached exports. Conflating them is what made every Codex node render as the
+#: palette's unknown grey.
+#:
+#: INFERRED from the adapter, not read from the transcript, because there is nothing to
+#: read: a Claude Code JSONL records `message.model` — a model ID, which this adapter does
+#: read and carries in `Conversation.meta['model_id']` — and no vendor field. The
+#: inference holds in the one direction that matters: Claude Code serves Anthropic models,
+#: and that stays true through Bedrock/Vertex, whose ids (`us.anthropic.claude-…`) are
+#: Anthropic model ids too.
+#:
+#: Chosen over "" deliberately. "" is not more honest here, it is merely emptier: the
+#: vendor is a reliable fact about the producing tool, `ThreadMeta.adapter` already
+#: carries the which-tool distinction, and an empty vendor on every Claude Code node would
+#: reproduce the exact unknown-grey symptom the conflation caused.
+CLAUDE_CODE_MODEL_VENDOR = "anthropic"
 
 #: Drop `isSidechain: true` records from a SESSION transcript (never from a subagent
 #: transcript, where those same records ARE the conversation).
@@ -637,7 +662,7 @@ class _Reader:
         is_child = layout.kind == _SUBAGENT
 
         thread = corpus.ThreadMeta(
-            id=tid, title=title, model_provider=CLAUDE_CODE_PROVIDER,
+            id=tid, title=title, model_provider=CLAUDE_CODE_MODEL_VENDOR,
             tokens_used=self.tokens,
             created_at_ms=_iso_to_ms(self.first_ts),
             updated_at_ms=_iso_to_ms(self.last_ts),
