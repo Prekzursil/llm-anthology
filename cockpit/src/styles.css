@@ -1015,3 +1015,620 @@ body,
   border-color: var(--accent);
   color: var(--text);
 }
+
+/* -- the workspace ----------------------------------------------------------
+   Three finished panels — duplicates, annotations, maintenance — that shipped
+   with no container and no import, so no user could reach any of them. They do
+   not fit the 300px columns (a dedup row carries two full Windows paths; a
+   maintenance plan carries a source-to-destination line per file), so they get a
+   region of their own over the grid's second row. See src/ui/workspace.ts for
+   why this is a disclosure rather than a tablist, and why it deliberately does
+   NOT cover the top bar the way #reader does. */
+
+#workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+#workspace-nav button {
+  min-height: var(--control-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#workspace-nav button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* The showing panel's button, marked by the SAME attribute the assistive layer
+   reads. One source of truth for "this one is open": there is no separate
+   .is-active class that could disagree with aria-expanded. */
+#workspace-nav button[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* Pinned over the whole second row rather than given a grid-template area, so
+   the three panes underneath keep their own areas and reappear untouched when
+   this closes. Explicit placement also frees the source order to follow TAB
+   order (this sits right after the top bar) without moving the layout. */
+#workspace {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  /* Above #discovery's z-index: 1 and the canvas, below #reader's 20. */
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+#workspace[hidden] {
+  display: none;
+}
+
+#workspace-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+#workspace-header .panel-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#workspace-close {
+  flex: 0 0 auto;
+  min-height: var(--control-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#workspace-close:hover {
+  border-color: var(--accent);
+}
+
+.workspace-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.workspace-pane[hidden] {
+  display: none;
+}
+
+/* -- shared panel controls --------------------------------------------------
+   The three panels were authored independently and each builds its own DOM, so
+   the shapes they have in common are styled once here rather than three times.
+   Every one of these classes is created by a panel module; none is invented by
+   the shell. */
+
+.dedup-scan,
+.dedup-pick,
+.dedup-more,
+.metadata-save,
+.metadata-clear,
+.metadata-tag,
+.maintenance-plan,
+.maintenance-reset,
+.maintenance-execute,
+.maintenance-restore-dry,
+.maintenance-restore-apply,
+.maintenance-runs-load,
+.maintenance-run-use {
+  min-height: var(--control-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dedup-scan:hover:not(:disabled),
+.dedup-pick:hover:not(:disabled),
+.dedup-more:hover:not(:disabled),
+.metadata-save:hover:not(:disabled),
+.metadata-clear:hover:not(:disabled),
+.metadata-tag:hover,
+.maintenance-plan:hover:not(:disabled),
+.maintenance-reset:hover:not(:disabled),
+.maintenance-execute:hover:not(:disabled),
+.maintenance-restore-dry:hover:not(:disabled),
+.maintenance-restore-apply:hover:not(:disabled),
+.maintenance-runs-load:hover:not(:disabled),
+.maintenance-run-use:hover {
+  border-color: var(--accent);
+}
+
+/* Disabled is load-bearing on these panels, not decoration: Save is disabled
+   until something is unsaved, Execute until the typed phrase matches exactly.
+   cursor: default plus the fade says "not yet", not "broken". */
+.dedup-scan:disabled,
+.dedup-pick:disabled,
+.dedup-more:disabled,
+.metadata-save:disabled,
+.metadata-clear:disabled,
+.maintenance-plan:disabled,
+.maintenance-reset:disabled,
+.maintenance-execute:disabled,
+.maintenance-restore-dry:disabled,
+.maintenance-restore-apply:disabled,
+.maintenance-runs-load:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.metadata-alias,
+.metadata-tags,
+.metadata-notes,
+.metadata-q,
+.maintenance-store-root,
+.maintenance-checkpoint-root,
+.maintenance-destination,
+.maintenance-manifest,
+.maintenance-confirmation,
+.maintenance-targets,
+.maintenance-action {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.maintenance-targets,
+.metadata-notes {
+  /* Paths and prose both, so a proportional face would make a mistyped path hard
+     to spot; and resize:vertical keeps a long target list workable. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+/* -- duplicates panel ------------------------------------------------------ */
+
+.dedup-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+}
+
+.dedup-charter {
+  margin: 0 0 var(--space-3);
+  max-width: 90ch;
+}
+
+.dedup-notes {
+  margin: 0 0 var(--space-3);
+  max-width: 90ch;
+}
+
+/* Both are standing text that is empty most of the time; an empty paragraph
+   would still take its margin. Neither is a live region — the status line below
+   IS one and is therefore never display:none, for the same reason
+   .corpus-error is not (a hidden role=status is not announced). */
+.dedup-notes:empty {
+  display: none;
+  margin: 0;
+}
+
+.dedup-status {
+  margin: 0 0 var(--space-3);
+}
+
+.dedup-candidates {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.dedup-candidate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+
+.dedup-candidate-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dedup-candidate-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.dedup-empty {
+  margin: 0 0 var(--space-3);
+  max-width: 80ch;
+}
+
+.dedup-row {
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+
+/* A file with no readable session id is a DIFFERENT claim from a duplicate — it
+   is "we could not tell" — so it must not be able to look identical. */
+.dedup-row-unidentified {
+  border-style: dashed;
+}
+
+.dedup-headline {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dedup-basis {
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+/* The larger-copy warning. Rendered in --text on --panel-2 (13.9:1) with the
+   border carrying the distinction, for the same reason .corpus-error is: the
+   palette has no danger token and a saturated red would either fail AA on this
+   near-black chrome or shout louder than "the backup is bigger" deserves. */
+.dedup-warning {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.dedup-copy {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  min-width: 0;
+}
+
+.dedup-copy-role {
+  flex: 0 0 auto;
+  min-width: 8ch;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.dedup-copy-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.dedup-copy-detail {
+  flex: 0 0 auto;
+}
+
+.dedup-subtitle,
+.maintenance-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.dedup-singles {
+  margin: 0 0 var(--space-3);
+}
+
+/* -- annotations panel ----------------------------------------------------- */
+
+.metadata-panel {
+  max-width: 90ch;
+}
+
+.metadata-editor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.metadata-alias-label,
+.metadata-tags-label,
+.metadata-notes-label,
+.metadata-q-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.metadata-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.metadata-error {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.metadata-error[hidden] {
+  display: none;
+}
+
+.metadata-search {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* Always visible, never a tooltip: the one thing a user can wrongly conclude
+   here is that this searches their transcripts. */
+.metadata-scope {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 70ch;
+}
+
+.metadata-facet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.metadata-tag[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.metadata-status {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A search that FAILED must not read like "nothing matched" — that conflation is
+   this repo's recurring defect. data-kind is set from the tested SearchOutcome
+   union, so the distinction is the panel's, not a second rule invented here. */
+.metadata-status[data-kind="failed"] {
+  color: var(--text);
+}
+
+.metadata-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.metadata-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-height: var(--control-min);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.metadata-row:hover {
+  background: var(--row-hover);
+  border-color: var(--border);
+}
+
+.metadata-row-sub {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* -- maintenance panel ----------------------------------------------------- */
+
+.maintenance-panel {
+  max-width: 110ch;
+}
+
+.maintenance-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.maintenance-field {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.maintenance-field[hidden] {
+  display: none;
+}
+
+.maintenance-field-wide {
+  grid-column: 1 / -1;
+}
+
+.maintenance-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* The running narrative, and a role=status live region. pre-wrap because the
+   lines come from renderMaintenanceView and carry full paths that must not be
+   silently clipped on a plane where the operator is deciding what to move. */
+.maintenance-output {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A plan that deserves a second look — a REFUSED target or a REVIEW warning.
+   Driven by MaintenancePlanView.needsAttention, NOT by warnings.length: the
+   engine emits a DANGEROUS warning per allowed target, so keying on
+   non-emptiness would mark every plan and train the operator to ignore it. */
+.maintenance-output[data-attention="true"],
+.maintenance-output[data-kind="error"] {
+  border-color: var(--accent);
+}
+
+.maintenance-remedy {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.maintenance-remedy[hidden] {
+  display: none;
+}
+
+.maintenance-confirm {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.maintenance-confirm[hidden] {
+  display: none;
+}
+
+.maintenance-confirm .maintenance-field {
+  flex: 1 1 auto;
+}
+
+/* A phrase that does not match yet. The border says so before the operator
+   reaches for a disabled button. data-confirm comes from the exported
+   confirmationState, which mirrors the engine's exact, un-trimmed comparison. */
+.maintenance-confirm[data-confirm="mismatch"] {
+  border-style: dashed;
+}
+
+.maintenance-restore {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.maintenance-restore .maintenance-subtitle {
+  flex: 1 0 100%;
+  margin-top: 0;
+}
+
+.maintenance-restore .maintenance-field {
+  flex: 1 1 40ch;
+}
+
+.maintenance-runs {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.maintenance-runs-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.maintenance-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.maintenance-run-path {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.maintenance-runs-empty {
+  margin: var(--space-3) 0 0;
+}

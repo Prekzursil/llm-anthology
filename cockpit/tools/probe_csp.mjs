@@ -227,7 +227,15 @@ async function inspect(url, workerAsset) {
   return { pageErrors, bootViolations, cdpViolations, ...probes };
 }
 
-/** Drive the one journey a user cannot avoid: search -> Read -> Escape. */
+/**
+ * Drive every journey a user actually has: search -> Read -> Escape, then each of the three
+ * workspace panels including one interactive paint per panel.
+ *
+ * The panels' skeletons are already covered by `bootViolations` — all three build their DOM
+ * in their constructors — but their RESULTS are not. A scan result and a plan are where
+ * filesystem paths and engine text reach the document, so those paints are the ones a CSP
+ * refusal would silently swallow, and they only happen on a click.
+ */
 async function journey(url) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
@@ -255,9 +263,33 @@ async function journey(url) {
     await page.waitForTimeout(300);
     readerClosed = await page.locator("#reader").isHidden();
   }
+
+  const panesOpened = [];
+  await page.click("#btn-dedup");
+  await page.waitForTimeout(400);
+  panesOpened.push(await page.locator("#dedup-panel").isVisible());
+  await page.locator(".dedup-scan").first().click();
+  await page.waitForTimeout(700);
+  const dedupRows = await page.locator(".dedup-row").count();
+
+  await page.click("#btn-metadata");
+  await page.waitForTimeout(400);
+  panesOpened.push(await page.locator("#metadata-panel").isVisible());
+  await page.fill(".metadata-q", "needle");
+  await page.waitForTimeout(600);
+  const annotationRows = await page.locator(".metadata-row").count();
+
+  await page.click("#btn-maintenance");
+  await page.waitForTimeout(400);
+  panesOpened.push(await page.locator("#maintenance-panel").isVisible());
+  const planIdle = ((await page.locator(".maintenance-output").textContent()) ?? "").trim();
+
   violations.push(...(await page.evaluate(() => window.__cspViolations.slice())));
   await browser.close();
-  return { hits, readerOpened, readerClosed, violations };
+  return {
+    hits, readerOpened, readerClosed, violations,
+    panesOpened, dedupRows, annotationRows, planIdle,
+  };
 }
 
 function workerAssetPath() {
@@ -309,7 +341,14 @@ async function verifyShippedPolicy() {
   check("search returns rows under the policy", j.hits > 0, `${j.hits} rows`);
   check("Read opens the reader under the policy", j.readerOpened);
   check("Escape closes the reader under the policy", j.readerClosed);
-  check("the search -> Read -> Escape journey causes ZERO csp violations",
+  check("all three workspace panels open under the policy",
+    j.panesOpened.length === 3 && j.panesOpened.every(Boolean), j.panesOpened.join(","));
+  // Content, not containers: a panel whose stylesheet or paint were refused would leave an
+  // open-but-empty pane, and the check above alone could not tell the difference.
+  check("their engine-fed content renders under the policy",
+    j.dedupRows > 0 && j.annotationRows > 0 && j.planIdle !== "",
+    `${j.dedupRows} dedup rows, ${j.annotationRows} annotation rows`);
+  check("the whole journey — search, Read, Escape, all three panels — causes ZERO csp violations",
     j.violations.length === 0, j.violations.join(" | "));
 
   await new Promise((res) => server.close(res));

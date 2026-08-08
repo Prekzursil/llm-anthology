@@ -30,8 +30,37 @@
         </div>
         <span id="stats" class="muted"></span>
         <span class="spacer"></span>
+        <!-- The three panels that do not fit a 300px column. Plain buttons, NOT a
+             role="tablist": a tablist's contract takes the inactive controls out of the Tab
+             order and moves between them with the arrow keys, and this repo has already
+             shipped a change that broke Tab traversal (hence tools/probe_keyboard_reach.mjs).
+             A disclosure — aria-expanded + aria-controls on an ordinary button — keeps all
+             three reachable with the one key every user has. See src/ui/workspace.ts. -->
+        <div id="workspace-nav" role="group" aria-label="Workspace panels">
+          <button id="btn-dedup" type="button">Duplicates</button>
+          <button id="btn-metadata" type="button">Annotations</button>
+          <button id="btn-maintenance" type="button">Maintenance</button>
+        </div>
         <span id="health" class="muted"></span>
       </header>
+
+      <!-- Placed immediately after the top bar so Tab order follows reading order: the last
+           nav button leads straight into the panel it just revealed, not through the sidebar.
+           Layout is unaffected by that position — the CSS pins it explicitly over the grid's
+           second row, which leaves the top bar live so panels can be switched without closing
+           one first. Hidden at boot; `Workspace` owns its visibility and its heading. -->
+      <section id="workspace" hidden>
+        <header id="workspace-header">
+          <h2 id="workspace-title" class="panel-title"></h2>
+          <button id="workspace-close" type="button">Close</button>
+        </header>
+        <!-- One container per panel, because all three build their own DOM in their
+             constructor and so cannot share one. Each starts hidden; only the showing pane
+             is in the a11y tree and the Tab order. -->
+        <div id="dedup-panel" class="workspace-pane" hidden></div>
+        <div id="metadata-panel" class="workspace-pane" hidden></div>
+        <div id="maintenance-panel" class="workspace-pane" hidden></div>
+      </section>
 
       <aside id="sidebar" aria-label="Threads, search and export">
         <h2 class="panel-title" id="threads-title">Threads</h2>

@@ -30,13 +30,17 @@ import {
 } from "./graph/layout";
 import { knownProviders, providerTint } from "./graph/palette";
 import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui/corpusBar";
+import { DedupPanel } from "./ui/dedupPanel";
 import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
+import { MaintenanceShell } from "./ui/maintenanceShell";
+import { MetadataPanel } from "./ui/metadataPanel";
 import { ReaderOverlay } from "./ui/reader";
 import { SearchPanel } from "./ui/search";
 import { TimeScrubber } from "./ui/scrubber";
 import { VirtualList } from "./ui/virtualList";
+import { Workspace } from "./ui/workspace";
 
 const ROOT_ROW_HEIGHT = 52;
 
@@ -117,6 +121,23 @@ export class CockpitApp {
   private currentComplete = true;
   private currentSelect: string | null = null;
   private readonly reader: ReaderOverlay;
+  /** The annotations editor. Its subject is set from whichever search hit is selected. */
+  private readonly metadata: MetadataPanel;
+  /** Reveals the three panels that do not fit a 300px column. */
+  private readonly workspace: Workspace;
+  /**
+   * The conversation the annotations editor should be showing.
+   *
+   * A CONVERSATION id, and only ever taken from a `SearchHit`, which carries one exactly.
+   * Deliberately NOT taken from a graph selection: a canvas node id is a THREAD id, and
+   * `thread.get` returns no conversation id at all (`ipc/types.ts:97-115`), so treating the
+   * two as interchangeable would send a thread id to `metadata.get` and annotate either
+   * nothing or the wrong row. They happen to coincide in the mock forest, which is exactly
+   * what would make the bug invisible in every preview.
+   */
+  private metadataSubject: string | null = null;
+  /** What the editor last actually loaded, so a re-reveal is not two pointless round trips. */
+  private metadataLoaded: string | null = null;
   /** Fold linear chains into super-nodes when true (the aggregated↔expanded toggle). */
   private aggregated = false;
   /** How many nodes the last render hid behind "+N more", for the status line. */
@@ -178,6 +199,61 @@ export class CockpitApp {
     // Auto-discovery: the other half of the same problem the corpus bar solves. The bar
     // gave the app a control; this removes the need to know a path at all.
     this.discovery = this.mountDiscovery();
+
+    // The three panels that had no import and no container until now. Constructed HERE
+    // rather than in a `mount…` helper because the fields are readonly and TypeScript only
+    // permits assigning those from the constructor itself.
+    const dedup = new DedupPanel(ipc, requireEl("dedup-panel"));
+    this.metadata = new MetadataPanel(ipc, requireEl("metadata-panel"));
+    // The other direction of the same seam: picking an annotation result opens that
+    // conversation's transcript. The reader is a fixed overlay at a higher z-index, so it
+    // opens OVER the workspace and closing it returns the user to their results.
+    this.metadata.setOnPick((conversationId) => void this.reader.open(conversationId));
+    // Mounts itself into the container; nothing else holds a reference to it, and a local
+    // that only existed to be discarded would trip `noUnusedLocals`.
+    new MaintenanceShell(ipc, requireEl("maintenance-panel"));
+
+    this.workspace = new Workspace(
+      requireEl("workspace"),
+      requireEl("workspace-title"),
+      requireEl<HTMLButtonElement>("workspace-close"),
+      [
+        {
+          key: "dedup",
+          button: requireEl<HTMLButtonElement>("btn-dedup"),
+          container: requireEl("dedup-panel"),
+          title: "Duplicate session copies",
+          // First reveal only. `load()` calls `discover.sources`, which walks the
+          // filesystem; it also deliberately does NOT scan — a scan reads the owner's live
+          // Codex sessions and is always their own click (`ui/dedupPanel.ts:641-644`).
+          onShow: (firstShow) => {
+            if (firstShow) void dedup.load();
+          },
+        },
+        {
+          key: "metadata",
+          button: requireEl<HTMLButtonElement>("btn-metadata"),
+          container: requireEl("metadata-panel"),
+          // The panel shows the alias, tags and notes but never says WHOSE they are, so the
+          // region's name carries the subject. Nothing here re-derives what the panel
+          // computes — the panel computes no such label.
+          title: () =>
+            this.metadataSubject === null
+              ? "Annotations"
+              : `Annotations — ${this.metadataSubject}`,
+          onShow: () => void this.syncMetadata(),
+        },
+        {
+          key: "maintenance",
+          button: requireEl<HTMLButtonElement>("btn-maintenance"),
+          container: requireEl("maintenance-panel"),
+          title: "Maintenance",
+        },
+      ],
+      // The reader listens for Escape on `document` too, and it is the one on top. Without
+      // this, one press would close the reader AND the panel it was opened from.
+      () => this.reader.isOpen,
+    );
 
     requireEl("btn-forest").addEventListener("click", () => void this.showForest());
     requireEl("btn-fit").addEventListener("click", () => this.canvas.fitToView());
@@ -427,7 +503,32 @@ export class CockpitApp {
   }
 
   private async onHitSelected(hit: SearchHit): Promise<void> {
+    // A hit is the one place in this app that carries BOTH ids, so it is the only honest
+    // source for the annotations editor's subject. `thread_id` drives the graph; the
+    // conversation id — never the node id — drives `metadata.*`.
+    this.metadataSubject = hit.conversation_id;
     await this.focusThread(hit.thread_id ?? hit.conversation_id);
+    // Only when the pane is already on screen. Loading an annotation for a panel nobody has
+    // opened would spend two round trips per click on something invisible; the pane's own
+    // `onShow` picks the subject up when it is next revealed.
+    if (this.workspace.openPane === "metadata") await this.syncMetadata();
+  }
+
+  /**
+   * Point the annotations editor at {@link metadataSubject}, if that is not already what it
+   * is showing.
+   *
+   * `open()` is two engine calls (the annotation, then the tag facet), so the
+   * already-loaded guard is what makes it safe to call on every reveal. With no hit selected
+   * yet this does nothing and the panel stays in its own idle state — still usable, because
+   * its annotation search needs no subject.
+   */
+  private async syncMetadata(): Promise<void> {
+    const subject = this.metadataSubject;
+    if (subject === null || subject === this.metadataLoaded) return;
+    this.metadataLoaded = subject;
+    await this.metadata.open(subject);
+    this.workspace.refreshTitle();
   }
 
   // -- aggregated↔expanded toggle ----------------------------------------------
