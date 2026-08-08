@@ -1,0 +1,47 @@
+// INSTRUMENTATION-ONLY config patch for probe_csp_installed.mjs. Merge it with:
+//   npx tauri build --no-bundle --config tools/csp_installed_debug.conf.json5
+//
+// JSON5, not JSON, on purpose: the Tauri CLI validates the MERGED config against its schema
+// with additionalProperties disabled, so a `$comment` key in a .json patch fails the build
+// outright ("Additional properties are not allowed"). JSON5 carries real comments instead.
+//
+// WHY THIS FILE EXISTS: the shipped CSP is applied only to Tauri's custom protocol, so the
+// only way to observe it is inside a real release build. WebView2 exposes no debug port by
+// default, and WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS does NOT work here -- wry calls
+// set_additional_browser_arguments unconditionally (wry-0.55.1 src/webview2/mod.rs:327) and
+// WebView2 honours that env var only when the option is left unset. The supported route is
+// this per-window config key, patched in at build time so tauri.conf.json stays untouched.
+{
+  build: {
+    // Neutralised so `tauri build` consumes the EXISTING dist/ instead of regenerating it.
+    // tauri.conf.json's beforeBuildCommand is `npm run build` = `tsc && vite build`, so ANY
+    // type error anywhere in src/ -- including in a file this probe has nothing to do with --
+    // blocks the Rust build and makes the CSP unobservable. Build the frontend yourself first
+    // (`npx vite build`) and note in the report which frontend snapshot was measured.
+    beforeBuildCommand: "",
+  },
+  app: {
+    // app.security is deliberately ABSENT: the CSP under test must arrive from
+    // tauri.conf.json unmodified. probe_csp_installed.mjs greps the built exe to confirm it
+    // did, rather than assuming the merge left it alone.
+    windows: [
+      {
+        // Repeated because a --config merge overwrites a conflicting key and app.windows is
+        // an ARRAY -- omitting these would drop the real window's title and size.
+        title: "LLM Anthology",
+        width: 1000,
+        height: 700,
+
+        // The --disable-features list is NOT decoration. The config schema warns that setting
+        // additionalBrowserArgs REPLACES wry's own default of exactly that list, so it is
+        // repeated verbatim to hold this build at parity with the shipped one. The ONLY
+        // intended delta is the added --remote-debugging-port.
+        //
+        // Do NOT ship a build made with this patch: an open debug port lets any local process
+        // drive the webview.
+        additionalBrowserArgs:
+          "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port=9222",
+      },
+    ],
+  },
+}
