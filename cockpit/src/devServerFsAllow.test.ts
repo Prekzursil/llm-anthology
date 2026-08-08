@@ -41,11 +41,28 @@ function fsUrl(absolutePath: string): string {
   return `/@fs/${absolutePath}`;
 }
 
-async function resolveDevConfig() {
-  return await resolveConfig(
+/**
+ * Resolved ONCE and shared by every case below.
+ *
+ * `resolveConfig` loads and esbuild-transpiles `vite.config.ts`, and this file asked for
+ * it ten times — four tests plus six `it.each` rows — for one immutable answer. Alone
+ * that is affordable (10/10 pass in 4.17s); inside the full 27-file parallel run one of
+ * the ten exceeded vitest's default 5000ms and the file went red at 5017ms. So this
+ * security-boundary test failed for a reason with nothing to do with the boundary, and
+ * a flaky security test is worse than a slow one: the reflex is to stop believing it.
+ *
+ * Memoised rather than given a longer timeout, because the ten redundant transpiles were
+ * the cause and a bigger timeout only tolerates them. Sharing is safe — every case reads
+ * the config and none mutates it.
+ */
+let devConfig: ReturnType<typeof resolveConfig> | null = null;
+
+function resolveDevConfig() {
+  devConfig ??= resolveConfig(
     { configFile: `${COCKPIT_DIR}/vite.config.ts`, root: COCKPIT_DIR },
     "serve",
   );
+  return devConfig;
 }
 
 describe("dev server file-serving boundary", () => {
