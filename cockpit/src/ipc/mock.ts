@@ -614,7 +614,7 @@ function cleanText(value: string): string {
  * documents. The wire text is reproduced literally: the Rust bridge flattens the envelope
  * with `format!("rpc error (id {id}): {err}")` (`cockpit/src-tauri/src/sidecar.rs:161`) over
  * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:299-303`). The id is a
- * placeholder — nothing reads it.
+ * fixed constant; no caller parses it (rpcErrorCode matches on the code, not the id).
  */
 function rpcError(code: number, message: string): Error {
   return new Error(
