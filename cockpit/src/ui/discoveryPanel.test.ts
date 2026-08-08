@@ -48,6 +48,7 @@ import {
   scanNotes,
   UNKNOWN_KIND_REASON,
   type DiscoveryDeps,
+  type DiscoveryGroup,
   type DiscoveryIpc,
   type DiscoveryView,
 } from "./discoveryPanel";
@@ -297,11 +298,27 @@ describe("formatDetailValue", () => {
     expect(formatDetailValue("C:\\Users\\me\\.codex\\state_5.sqlite")).toBe("state_5.sqlite");
   });
 
+  it("leaves a string that is NOT a path completely alone", () => {
+    // The other arm of the same rule, and the one a path-shortener gets wrong: a plain value
+    // has no final segment to take, so shortening it would have to invent one. Reachable from
+    // any provider key that carries a name rather than a location.
+    expect(formatDetailValue("gpt-5-codex")).toBe("gpt-5-codex");
+    expect(formatDetailValue("high")).toBe("high");
+  });
+
   it("groups numbers and joins lists", () => {
     expect(formatDetailValue(2043)).toBe("2,043");
     expect(formatDetailValue(["conversations", "conversations_fts"])).toBe(
       "conversations, conversations_fts",
     );
+  });
+
+  it("renders a list of NON-strings without falling back to [object Object]", () => {
+    // `detail` is `Record<string, unknown>` off the wire and rendered key-agnostically, so a
+    // provider may report an array of anything. Each element gets `String(v)` rather than the
+    // whole array getting a default `toString`, which is what keeps a numeric list readable.
+    expect(formatDetailValue([1024, 2048])).toBe("1024, 2048");
+    expect(formatDetailValue(["zst", 2043, true])).toBe("zst, 2043, true");
   });
 
   it("omits a value it cannot honestly render on one line", () => {
@@ -530,6 +547,78 @@ describe("groupFindings ordering", () => {
     ]);
   });
 
+  it("reaches the SAME row order from the opposite wire order", () => {
+    // The claim above is "byte-identical", which is a claim about the comparator being a total
+    // order — not merely about one input. The engine sorts by (kind, provider, PATH)
+    // (discover.py:819-820), so wire order is arbitrary from this UI's point of view, and the
+    // previous test only exercises the comparator in one direction.
+    const groups = groupFindings(
+      scan([
+        finding({ path: "/a/conversations.json", newest_mtime: NOW_SEC }),
+        finding({ path: "/z/conversations.json", newest_mtime: NOW_SEC }),
+      ]),
+      { ...OPEN_CTX, nowMs: NOW },
+    );
+    expect(groups[0].rows.map((r) => r.finding.path)).toEqual([
+      "/a/conversations.json",
+      "/z/conversations.json",
+    ]);
+  });
+
+  it("keeps BOTH of two findings that are identical, rather than collapsing them", () => {
+    // Two roots can overlap, so the scan can report one file twice. The comparator has to
+    // answer 0 for that pair — anything else makes `Array.prototype.sort`'s behaviour
+    // unspecified — and neither copy may be silently dropped, because this UI does no
+    // deduplication and a vanishing row would misreport what is on disk.
+    const dup = finding({ path: "/dup/conversations.json", newest_mtime: NOW_SEC });
+    const groups = groupFindings(scan([dup, { ...dup }]), { ...OPEN_CTX, nowMs: NOW });
+    expect(groups[0].totalCount).toBe(2);
+    expect(groups[0].rows.map((r) => r.finding.path)).toEqual([
+      "/dup/conversations.json",
+      "/dup/conversations.json",
+    ]);
+  });
+
+  it("breaks an equal-rank, equal-recency GROUP tie by key, from either wire order", () => {
+    // Between groups the same total-order requirement applies one level up. Two providers'
+    // export groups with the same newest mtime must land in a fixed order whichever way the
+    // scan listed them, or the panel reshuffles itself between two identical scans.
+    //
+    // The comparator's THIRD arm (`: 0`, equal keys) is unreachable and stays deliberately
+    // untested rather than faked: `groupFindings` buckets findings into a `Map` keyed by
+    // `"<provider>/<kind>"` and pushes exactly one group per entry, so every `group.key` in
+    // the sorted array is distinct by construction. Two findings that would share a key share
+    // a BUCKET instead, and become one group. The settling change, if that arm ever needs
+    // covering, is a `groupFindings` that can emit two groups for one key — which would be a
+    // defect in itself.
+    const gemini = finding({ provider: "gemini", newest_mtime: NOW_SEC });
+    const chatgpt = finding({ provider: "chatgpt", newest_mtime: NOW_SEC });
+    const forward = groupFindings(scan([gemini, chatgpt]), { ...OPEN_CTX, nowMs: NOW });
+    const reverse = groupFindings(scan([chatgpt, gemini]), { ...OPEN_CTX, nowMs: NOW });
+
+    expect(forward.map((g) => g.key)).toEqual(["chatgpt/export_file", "gemini/export_file"]);
+    expect(reverse.map((g) => g.key)).toEqual(forward.map((g) => g.key));
+  });
+
+  it("holds rows back rather than losing them when the cap is zero", () => {
+    // `maxRows` is an injected seam (`DiscoveryDeps.maxRows`) and `?? MAX_ROWS_PER_GROUP`
+    // keeps a literal 0, so a zero cap is reachable through the public API. Nothing may be
+    // lost by it: the counts and the expand control still name everything held back, and the
+    // group ordering must survive having no row to read a date from.
+    const groups = groupFindings(
+      scan([
+        finding({ provider: "gemini", path: "/g/conversations.json", newest_mtime: NOW_SEC }),
+        finding({ provider: "chatgpt", path: "/c/conversations.json", newest_mtime: NOW_SEC }),
+      ]),
+      { ...OPEN_CTX, nowMs: NOW, maxRows: 0 },
+    );
+    expect(groups.map((g) => g.key)).toEqual(["chatgpt/export_file", "gemini/export_file"]);
+    expect(groups[0].rows).toEqual([]);
+    expect(groups[0].totalCount).toBe(1);
+    expect(groups[0].hiddenCount).toBe(1);
+    expect(groups[0].expandLabel).toBe("+1 more");
+  });
+
   it("carries an undated finding without crashing or faking a date", () => {
     const groups = groupFindings(scan([finding({ newest_mtime: 0 })]), {
       ...OPEN_CTX,
@@ -730,9 +819,25 @@ describe("buildOutcomeMessage", () => {
     );
   });
 
+  it("singularises exactly one skipped file", () => {
+    // Three agreements in one sentence — "1 file … was skipped" — and the plural form reads as
+    // a bug report against the app rather than against the file.
+    expect(buildOutcomeMessage(status({ errors: ["only.jsonl: bad"] }))).toBe(
+      "Import finished — 1,200 conversations in the corpus. 1 file could not be read and was skipped.",
+    );
+  });
+
   it("carries a failure through engineErrorText", () => {
     const text = buildOutcomeMessage(status({ state: "failed", error: "disk is full" }));
     expect(text).toBe("Import failed: disk is full");
+  });
+
+  it("still says something when a failed build names no reason", () => {
+    // `BuildStatus.error` is optional, so a failure with the field absent is a shape the
+    // engine can actually send. "Import failed" alone with a dangling colon, or the literal
+    // "undefined", would both be worse than naming the gap.
+    const text = buildOutcomeMessage(status({ state: "failed", indexed_conversations: 0 }));
+    expect(text).toBe("Import failed: the engine reported no reason");
   });
 
   it("never leaks the engine's internal not-attached instruction", () => {
@@ -883,6 +988,27 @@ describe("DiscoveryPanelController.scan", () => {
     const h = harness({ discoverSources: seen });
     await Promise.all([h.controller.scan(), h.controller.scan()]);
     expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandons a scan whose result arrives after the panel was destroyed", async () => {
+    // The disposal window the build poll already guards twice, on the path that opens it
+    // first: a cold scan is ~7.5s on the measured machine, so a corpus attached from the top
+    // bar can tear the panel down while `sources.discover` is still in flight. Painting the
+    // result then would rebuild a skeleton into a container the app has already emptied.
+    let panel: DiscoveryPanelController | null = null;
+    const h = harness({
+      async discoverSources(): Promise<DiscoveryResult> {
+        panel?.destroy();
+        return scan([builtIndex()]);
+      },
+    });
+    panel = h.controller;
+    await h.controller.scan();
+
+    // Only the pending phase, which is emitted BEFORE the await and so is legitimate.
+    expect(h.views.map((v) => v.phase)).toEqual(["scanning"]);
+    expect(h.controller.current.groups).toEqual([]);
+    expect(h.controller.current.notes).toEqual([]);
   });
 });
 
@@ -1143,6 +1269,28 @@ describe("DiscoveryPanelController build polling", () => {
     expect(polls).toBe(1);
   });
 
+  it("does not announce a reload for a corpus that was detached mid-import", async () => {
+    // `setCorpusAttached(null)` is on the public surface (`DiscoveryPanel` forwards it), and
+    // an import is minutes of work, so the corpus can genuinely be gone by the time the build
+    // reaches a terminal state. `onCorpusReady` means "this index changed, reload it" — firing
+    // it with a path nothing is attached to would drive the app to reload a corpus it dropped.
+    let panel: DiscoveryPanelController | null = null;
+    const h = harness({
+      async corpusBuildStatus(): Promise<BuildStatus> {
+        panel?.setCorpusAttached(null);
+        return { state: "done", indexed_conversations: 7, errors: [] };
+      },
+    });
+    panel = h.controller;
+    await h.controller.scan();
+    await h.controller.activate(codexStore());
+
+    expect(h.controller.current.phase).toBe("done");
+    expect(h.controller.current.status).toContain("Import finished");
+    // Only the create-time announcement. The terminal one is correctly withheld.
+    expect(h.ready).toEqual(["C:\\new.db"]);
+  });
+
   it("stops between the poll and the emit when destroyed mid-request", async () => {
     // The other disposal window: destroyed while `build_status` is in flight. Emitting after
     // that would repaint a panel the app has already torn down.
@@ -1244,6 +1392,99 @@ describe("a terminal import outcome the user must actually read", () => {
     await h.controller.activate(builtIndex());
     expect(h.controller.current.phase).toBe("done");
     expect(h.controller.current.needsAttention).toBe(false);
+  });
+
+  /**
+   * The other half of that rule, and the half a per-transition reset gets WRONG.
+   *
+   * `emit`'s blanket `needsAttention: false` is correct for a TRANSITION — a new phase with a
+   * new status supersedes the old outcome. It is wrong for a RE-DERIVATION: `setCorpusAttached`
+   * and `toggleGroup` patch only `groups`, leaving `phase` and `status` exactly as they were,
+   * so clearing the marker there does not supersede the report — it deletes it. And because
+   * the phase is still `done`, the next paint takes the collapse branch
+   * (`discoveryPanel.ts:1099`) and the panel disappears, taking with it the ONLY place in the
+   * cockpit that formats `BuildStatus.errors`.
+   *
+   * That contradicts this file's own stated delivery guarantee (`discoveryPanel.ts:961-966`:
+   * "an import that skipped files cannot vanish before someone dismissed the report of it").
+   */
+  describe("an unread report survives a re-derivation that supersedes nothing", () => {
+    /** A scan whose export group is over the row cap, so "+N more" is a real control. */
+    function scanWithCappedGroup(): DiscoveryResult {
+      return scan([
+        codexStore(),
+        ...Array.from({ length: 12 }, (_, i) =>
+          finding({ path: `/d${i}/conversations.json`, newest_mtime: NOW_SEC - i }),
+        ),
+      ]);
+    }
+
+    /** By key, not by index: the store outranks the exports, so `groups[0]` is not it. */
+    function exports(h: Harness): DiscoveryGroup | undefined {
+      return h.controller.current.groups.find((g) => g.key === "chatgpt/export_file");
+    }
+
+    it("survives expanding a group, which changes no outcome at all", async () => {
+      const h = harness(skipping(40), {}, scanWithCappedGroup());
+      await h.controller.scan();
+      await h.controller.activate(codexStore());
+      expect(h.controller.current.needsAttention).toBe(true);
+      expect(exports(h)?.expandLabel).toBe("+7 more");
+
+      // Exactly what a user does next: the panel is open, the report is on screen, and
+      // "+7 more" is sitting right underneath it, enabled.
+      h.controller.toggleGroup("chatgpt/export_file");
+
+      expect(exports(h)?.rows).toHaveLength(12);
+      expect(h.controller.current.status).toContain("40 files could not be read");
+      expect(h.controller.current.needsAttention).toBe(true);
+    });
+
+    it("survives collapsing it again", async () => {
+      const h = harness(skipping(40), {}, scanWithCappedGroup());
+      await h.controller.scan();
+      await h.controller.activate(codexStore());
+      h.controller.toggleGroup("chatgpt/export_file");
+      h.controller.toggleGroup("chatgpt/export_file");
+      expect(h.controller.current.needsAttention).toBe(true);
+    });
+
+    it("survives the corpus bar re-labelling the rows", async () => {
+      // `app.ts:190-196` calls `setCorpusAttached` whenever the TOP BAR attaches a corpus, so
+      // opening one by hand while the report is up runs this path. The re-label changes what
+      // an import would mean; it does not tell the user which files were skipped, so it is
+      // not entitled to throw that away.
+      const h = harness(skipping(40));
+      await h.controller.scan();
+      await h.controller.activate(codexStore());
+      expect(h.controller.current.needsAttention).toBe(true);
+
+      h.controller.setCorpusAttached("C:\\somewhere-else.db");
+
+      expect(h.controller.current.status).toContain("40 files could not be read");
+      expect(h.controller.current.needsAttention).toBe(true);
+    });
+
+    it("is still the ACKNOWLEDGEMENT that clears it, not the re-derivation", async () => {
+      // The fix must not make the marker permanent: dismissing is what releases the panel.
+      const h = harness(skipping(40), {}, scanWithCappedGroup());
+      await h.controller.scan();
+      await h.controller.activate(codexStore());
+      h.controller.toggleGroup("chatgpt/export_file");
+      h.controller.acknowledge();
+      expect(h.controller.current.needsAttention).toBe(false);
+      expect(h.controller.current.status).toContain("40 files could not be read");
+    });
+
+    it("does not resurrect a mark on a group toggle after a CLEAN import", async () => {
+      // The inverse guard: preserving must copy the CURRENT value, not force it true.
+      const h = harness({}, {}, scanWithCappedGroup());
+      await h.controller.scan();
+      await h.controller.activate(codexStore());
+      expect(h.controller.current.needsAttention).toBe(false);
+      h.controller.toggleGroup("chatgpt/export_file");
+      expect(h.controller.current.needsAttention).toBe(false);
+    });
   });
 });
 

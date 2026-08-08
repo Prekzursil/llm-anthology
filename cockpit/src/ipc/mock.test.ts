@@ -1312,6 +1312,79 @@ describe("maintenance.* (the only destructive surface)", () => {
     expect(partial.unaccounted).toEqual(preview.plan.map((m) => m.source));
   });
 
+  it("refuses an empty store_root / checkpoint_root as a PARAM error", async () => {
+    // The engine requires both as non-empty strings at the RPC edge (`sidecar.py:1524-1534`).
+    // The code matters as much as the refusal: -32602 says "your form is incomplete" while
+    // -32003 says "the engine declined a valid request", and a panel routes them differently.
+    const ipc = createMockIpc();
+    for (const over of [{ store_root: "" }, { checkpoint_root: "" }] as const) {
+      const key = Object.keys(over)[0];
+      const err = await ipc
+        .maintenancePlan(planParams([`${STORE}\\a.jsonl`], over))
+        .catch((e: unknown) => e);
+      expect(String((err as Error).message)).toContain(`${key} must be a non-empty string`);
+      expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
+    }
+  });
+
+  it("never quarantines two different files onto one destination path", async () => {
+    // A store is date-nested, so the SAME basename recurs in every day directory. Flattening
+    // them into one checkpoint root without disambiguating would have the second move
+    // overwrite the first — a silent data loss inside the feature whose whole promise is that
+    // a delete is recoverable. The suffix is a deterministic `-N`, not a GUID, so the
+    // destination can be SHOWN in the preview and checked later (`maintenance.py:472-486`).
+    const ipc = createMockIpc();
+    const preview = await ipc.maintenancePlan({
+      store_root: STORE,
+      checkpoint_root: CHECKPOINT,
+      action: "delete",
+      targets: [
+        { session_id: "s1", file_path: `${STORE}\\jan\\rollout.jsonl` },
+        { session_id: "s2", file_path: `${STORE}\\feb\\rollout.jsonl` },
+        { session_id: "s3", file_path: `${STORE}\\mar\\rollout.jsonl` },
+        // No extension AND no session_id — the stem/ext split has nothing to cut on, and the
+        // omitted id must default to "" rather than land `undefined` in the manifest.
+        { file_path: `${STORE}\\extensionless` },
+      ],
+    });
+    expect(preview.plan.map((m) => m.destination)).toEqual([
+      `${CHECKPOINT}\\deleted\\rollout.jsonl`,
+      `${CHECKPOINT}\\deleted\\rollout-2.jsonl`,
+      `${CHECKPOINT}\\deleted\\rollout-3.jsonl`,
+      `${CHECKPOINT}\\deleted\\extensionless`,
+    ]);
+    expect(new Set(preview.plan.map((m) => m.destination)).size).toBe(4);
+    expect(preview.plan[3].session_id).toBe("");
+    expect(preview.allowed[3].session_id).toBe("");
+    expect(preview.required_typed_confirmation).toBe("DELETE 4 FILES");
+  });
+
+  it("refuses an empty plan_id as a PARAM error, not a maintenance refusal", async () => {
+    // Distinct from an unknown-but-present id, which is -32003 (tested above). A panel that
+    // conflated them would tell the user to re-plan when the real fault is a blank field.
+    const ipc = createMockIpc();
+    const err = await ipc.maintenanceExecute({ plan_id: "" }).catch((e: unknown) => e);
+    expect(String((err as Error).message)).toMatch(/plan_id must be a non-empty string/);
+    expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
+    const unknown = await ipc
+      .maintenanceExecute({ plan_id: "plan-999", confirmation: "DELETE 1 FILE" })
+      .catch((e: unknown) => e);
+    expect(rpcErrorCode(unknown)).toBe(RPC_MAINTENANCE_REFUSED);
+  });
+
+  it("refuses an empty manifest_path before looking for a checkpoint", async () => {
+    // -32602, where a well-formed path with no checkpoint behind it is -32603 (an engine-side
+    // failure). Same split as plan_id above: a blank field is the caller's, not the engine's.
+    const ipc = createMockIpc();
+    const err = await ipc.maintenanceRestore({ manifest_path: "" }).catch((e: unknown) => e);
+    expect(String((err as Error).message)).toMatch(/manifest_path must be a non-empty string/);
+    expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
+    const missing = await ipc
+      .maintenanceRestore({ manifest_path: `${CHECKPOINT}\\manifest-404.json` })
+      .catch((e: unknown) => e);
+    expect(rpcErrorCode(missing)).toBe(RPC_INTERNAL_ERROR);
+  });
+
   it("still restores a single-move manifest cleanly", async () => {
     // The common case has to stay reachable: only a MULTI-move manifest models an
     // out-of-band deletion, so a one-file restore needs no `skip_unaccounted`.
@@ -1426,5 +1499,422 @@ describe("maintenance.* (the only destructive surface)", () => {
     });
     expect(await first.maintenanceRuns()).toHaveLength(1);
     expect(await createMockIpc().maintenanceRuns()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The FIRST-RUN plane: discover -> create -> build -> poll.
+//
+// None of these four had a single call against the mock. They are the ONLY path a user with
+// no corpus can take, and outside Tauri the mock IS the engine — so an untested first-run
+// surface is untested in exactly the environment (vite dev, `vite preview`, the screenshot
+// harness, a design review) where it is the only implementation running.
+// ---------------------------------------------------------------------------
+
+describe("sources.discover", () => {
+  it("serves the measured scan shape: 30 findings, an engine-truncated group, scan errors",
+    async () => {
+      const scan = await mockIpc.discoverSources();
+      expect(scan.findings).toHaveLength(30);
+      // The shapes the panel has to survive, all present at once.
+      expect(new Set(scan.findings.map((f) => f.kind))).toEqual(
+        new Set(["built_index", "session_store", "export_file"]),
+      );
+      // `truncated_groups` is the ENGINE's own cap (`discover.py:108`), a different fact from
+      // any collapsing the UI does, and the only signal that older items exist on disk that
+      // the scan never listed.
+      expect(scan.stats.truncated_groups).toEqual(["chatgpt/export_file"]);
+      expect(scan.stats.errors).toHaveLength(2);
+      expect(scan.stats.budget_exhausted).toBe(false);
+      // 0 means "nothing datable was seen", NOT 1970 (`discover.py:645`).
+      expect(scan.findings.find((f) => f.provider === "gemini")?.newest_mtime).toBe(0);
+    });
+
+  it("returns a fresh findings array and fresh detail objects on every scan", async () => {
+    // The panel sorts the findings in place. A shared fixture is how a "why did the order
+    // change on rescan?" bug is born, and a shared `detail` is how one render's annotation
+    // leaks into the next.
+    const first = await mockIpc.discoverSources();
+    const beforePaths = first.findings.map((f) => f.path);
+    first.findings.reverse();
+    first.findings[0].detail.injected = true;
+
+    const second = await mockIpc.discoverSources();
+    expect(second.findings.map((f) => f.path)).toEqual(beforePaths);
+    expect(second.findings.some((f) => "injected" in f.detail)).toBe(false);
+  });
+});
+
+describe("corpus.create / corpus.build / corpus.build_status", () => {
+  it("corpus.create reports the requested path created — WITHOUT the engine's guards",
+    async () => {
+      expect(await mockIpc.createCorpus("C:\\Users\\me\\anthology.db")).toEqual({
+        index_path: "C:\\Users\\me\\anthology.db",
+        created: true,
+      });
+      // DIVERGENCE, asserted so it is visible rather than assumed away. The engine refuses a
+      // CLOBBER (`CORPUS_EXISTS`) and rejects a UNC or relative path at the edge
+      // (`llm_anthology/sidecar.py:781-788`). The clobber check needs a filesystem the mock
+      // does not have — that one is documented and fair. The UNC/relative check does NOT:
+      // `requireLocalPath` lives in this very module and is applied to `dedupScan`,
+      // `maintenancePlan` and `maintenanceRestore`, but not here. So a UI that lets the user
+      // name a network destination is accepted in every dev run and refused by the engine.
+      expect(await mockIpc.createCorpus("\\\\evil.example\\share\\x.db")).toEqual({
+        index_path: "\\\\evil.example\\share\\x.db",
+        created: true,
+      });
+    });
+
+  it("corpus.build accepts the job and echoes whichever source root was named", async () => {
+    const codex = await createMockIpc().corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
+    // "running" reports ACCEPTED, not finished — build_status is the source of truth
+    // (`sidecar.py:834-836`).
+    expect(codex).toEqual({
+      job_id: "mock-build-1",
+      state: "running",
+      sessions_root: "C:\\me\\.codex\\sessions",
+      started_ms: 1_700_000_000_000,
+    });
+    // Every root is opt-in, so a GROK-ONLY build names no Codex root at all and the echo
+    // falls through to the Grok one rather than reporting an empty source.
+    expect((await createMockIpc().corpusBuild({ grok_root: "C:\\me\\grok" })).sessions_root)
+      .toBe("C:\\me\\grok");
+    // DIVERGENCE: with NEITHER root the engine raises -32602 "name at least one source"
+    // (`sidecar.py:856-861`) — a pure params check needing no filesystem. The mock accepts it
+    // and reports "", so an empty build form succeeds in a dev run and fails against the
+    // engine. Pinned here as the mock's current answer, not as the contract.
+    expect((await createMockIpc().corpusBuild({})).sessions_root).toBe("");
+  });
+
+  it("corpus.build_status reads back idle before any build", async () => {
+    // Poll-safe at any time — the engine answers idle rather than erroring so the UI can
+    // render unconditionally (`sidecar.py:973-975`, `:995`).
+    expect(await createMockIpc().corpusBuildStatus()).toEqual({
+      state: "idle",
+      indexed_conversations: 0,
+      errors: [],
+    });
+  });
+
+  it("DIVERGENCE: a job_id supplied before any build reads idle, where the engine refuses",
+    async () => {
+      // `sidecar.py:991-994` raises -32602 "unknown job_id ...: no build has been started"
+      // for exactly this call. The mock returns the no-job answer and ignores the argument,
+      // so a client that polls with a stale handle after a restart is told "idle" here and
+      // gets a param error from the engine.
+      expect(await createMockIpc().corpusBuildStatus("stale-job")).toEqual({
+        state: "idle",
+        indexed_conversations: 0,
+        errors: [],
+      });
+    });
+
+  it("climbs through running polls and REACHES a terminal done that then stays put",
+    async () => {
+      // The point of a fixed poll count: a mock that stayed `running` forever would make a
+      // poll loop that never terminates look correct in every dev run.
+      const ipc = createMockIpc();
+      const handle = await ipc.corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
+
+      // Polling WITH the handle proves the client is reading the job it started.
+      const first = await ipc.corpusBuildStatus(handle.job_id);
+      expect(first.state).toBe("running");
+      expect(first.indexed_conversations).toBe(400);
+      expect(first.finished_ms).toBeUndefined();
+      expect(first.job_id).toBe("mock-build-1");
+      // DIVERGENCE: `sessions_root` here is a hardcoded POSIX "/mock/sessions", not the root
+      // the build named (which the handle above echoed correctly). The engine reports the
+      // real root (`sidecar.py:1000`), so a panel that reads the ingest source off the STATUS
+      // rather than the handle shows a path that exists nowhere.
+      expect(first.sessions_root).toBe("/mock/sessions");
+
+      const second = await ipc.corpusBuildStatus();
+      expect(second.state).toBe("running");
+      expect(second.indexed_conversations).toBe(800);
+
+      const third = await ipc.corpusBuildStatus();
+      expect(third.state).toBe("done");
+      expect(third.indexed_conversations).toBe(1200);
+      expect(third.finished_ms).toBe(1_700_000_030_000);
+
+      // Terminal means terminal: a fourth poll neither reverts to running nor keeps climbing.
+      const fourth = await ipc.corpusBuildStatus();
+      expect(fourth.state).toBe("done");
+      expect(fourth.indexed_conversations).toBe(1200);
+    });
+
+  it("refuses a poll naming a DIFFERENT job than the one in flight", async () => {
+    const ipc = createMockIpc();
+    await ipc.corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
+    const err = await ipc.corpusBuildStatus("other-job").catch((e: unknown) => e);
+    expect(String((err as Error).message)).toMatch(/unknown job_id 'other-job'/);
+    // DIVERGENCE: the engine raises -32602 (`sidecar.py:996-998`). This is the ONE rejection
+    // in the whole mock thrown as a bare `Error` instead of through `rpcError`, so it carries
+    // no JSON-RPC envelope and `rpcErrorCode` reads null — which is the exact invisible
+    // dead-branch class `rpcError` was introduced (mock.ts:634-644) to prevent. A panel
+    // branching on RPC_INVALID_PARAMS here is dead in every dev run.
+    expect(rpcErrorCode(err)).toBeNull();
+    // The refused poll must not consume a poll slot either.
+    expect((await ipc.corpusBuildStatus()).indexed_conversations).toBe(400);
+  });
+});
+
+describe("MockGraph walks not otherwise exercised", () => {
+  it("allEdges hands back the constructor's array BY REFERENCE", () => {
+    // Characterizing a hazard, not blessing it: unlike `discoverSources` and `dedupSessions`,
+    // which both copy defensively, this returns the live array — a caller that sorts it in
+    // place reorders the module-level fixture for every later reader. Measured: nothing in
+    // `cockpit/src` calls it, so the hazard is latent rather than live.
+    const g = new MockGraph(MOCK_THREADS, MOCK_EDGES);
+    expect(g.allEdges()).toEqual(MOCK_EDGES);
+    expect(g.allEdges()).toBe(MOCK_EDGES);
+  });
+
+  it("graph.subtree honours a depth cap on the WALK", async () => {
+    // Mirrors `_collect_subtree` (`sidecar.py:1677-1687`): the cap bounds how far the frontier
+    // expands, and depth 0 is a real value meaning "this node only" — not "no cap".
+    expect((await mockIpc.graphSubtree("orch", 0)).nodes.map((n) => n.id)).toEqual(["orch"]);
+    const d1 = await mockIpc.graphSubtree("orch", 1);
+    expect(d1.nodes.map((n) => n.id).sort()).toEqual(["ipc", "orch", "plan", "tests"]);
+    expect(d1.nodes.map((n) => n.id)).not.toContain("deepfix"); // depth 3, out of reach
+    // Edges are every edge WITHIN the collected set, so a diamond closed inside the cap is
+    // kept even though the walk reached its child by another route.
+    expect(d1.edges).toContainEqual({ parent: "plan", child: "tests", status: "completed" });
+    for (const e of d1.edges) {
+      expect(d1.nodes.map((n) => n.id)).toContain(e.parent);
+      expect(d1.nodes.map((n) => n.id)).toContain(e.child);
+    }
+    // Uncapped still reaches the depth-3 leaf, so the cap is what bounded it above.
+    expect((await mockIpc.graphSubtree("orch")).nodes.map((n) => n.id)).toContain("deepfix");
+  });
+
+  it("graph.ancestors reports a shared ancestor ONCE, nearest first", async () => {
+    // `review` is reached from three parents and `repro` sits above two of them, so an
+    // un-deduped BFS would list it twice and a panel would draw the same thread as two
+    // ancestors (`_collect_ancestors`, `sidecar.py:1689-1698`).
+    const anc = (await mockIpc.graphAncestors("review")).map((n) => n.id);
+    expect(anc).toEqual([
+      "crosscheck", "bisect", "orphan", // the direct parents, in edge order
+      "repro", "real", "pruned-parent", // their parents
+      "ipc", "orch",
+    ]);
+    expect(new Set(anc).size).toBe(anc.length);
+    expect(anc).not.toContain("review"); // never itself
+  });
+});
+
+describe("graph.roots ordering", () => {
+  it("orders by RECENCY, falling back created -> 0 for a node with neither", async () => {
+    // `_order_nodes` "recent" (`sidecar.py:1670-1672`) keys on updated_at_ms OR created_at_ms
+    // OR 0. All three arms are live in the built-in forest: `orch` has an update, `repro` and
+    // `research` have only a birth date, and the dangling `pruned-parent` has neither — so it
+    // sinks to the bottom instead of being dropped or thrown at.
+    const recent = await mockIpc.graphRoots({ order: "recent" });
+    expect(recent.map((n) => n.id)).toEqual(["orch", "repro", "research", "pruned-parent"]);
+  });
+
+  it("orders by creation with undated LAST and a total id tiebreak", async () => {
+    const created = await mockIpc.graphRoots();
+    expect(created.map((n) => n.id)).toEqual(["orch", "research", "repro", "pruned-parent"]);
+
+    // Two undated roots plus a dated one: both undated collapse to the same sort key, so the
+    // id tiebreak is the only thing making the order TOTAL — and a total order is what lets
+    // limit/offset paging partition the set instead of depending on sort stability.
+    const ipc = createMockIpc(
+      [{ id: "dated", title: "Dated", provider: "claude", created_at_ms: 900 }],
+      [
+        { parent: "dated", child: "kid" },
+        { parent: "zz-undated", child: "kid" },
+        { parent: "aa-undated", child: "kid" },
+      ],
+    );
+    expect((await ipc.graphRoots()).map((n) => n.id))
+      .toEqual(["dated", "aa-undated", "zz-undated"]);
+  });
+
+  it("breaks a same-millisecond tie on id, whatever order the rows arrive in", async () => {
+    // Roots sharing one timestamp: the id comparison is the only thing left deciding.
+    //
+    // THREE input arrangements, not one. A comparator is asked one question per pair it is
+    // handed, and which DIRECTION it is asked depends on the incoming order — measured here:
+    // the shuffled arrangement alone exercised only the "after" answer, so a mutation to the
+    // "before" arm survived it. The contract is that all three arrangements agree.
+    const roots = (ids: string[]) =>
+      createMockIpc(
+        ids.map((id) => ({ id, title: id, provider: "claude", created_at_ms: 500 })),
+        [],
+      ).graphRoots();
+    const expected = ["alpha", "beta", "delta", "gamma"];
+    expect((await roots(["beta", "alpha", "delta", "gamma"])).map((n) => n.id))
+      .toEqual(expected);
+    expect((await roots([...expected])).map((n) => n.id)).toEqual(expected);
+    expect((await roots([...expected].reverse())).map((n) => n.id)).toEqual(expected);
+  });
+});
+
+describe("search.query edges", () => {
+  it("treats an EMPTY query as match-all, still newest-first and still provider-filtered",
+    async () => {
+      const all = await mockIpc.searchQuery({ q: "" });
+      expect(all.total).toBe(15);
+      expect(all.hits).toHaveLength(15);
+      expect(all.hits[0].thread_id).toBe("orphan"); // the newest row
+      const filtered = await mockIpc.searchQuery({ q: "", provider: "codex" });
+      expect(filtered.total).toBe(7);
+      expect(filtered.hits.every((h) => h.provider === "codex")).toBe(true);
+      // Whitespace is trimmed to the same empty query, not searched for literally.
+      expect((await mockIpc.searchQuery({ q: "   " })).total).toBe(15);
+    });
+
+  it("breaks a same-timestamp tie on id so paging PARTITIONS the result set", async () => {
+    // The engine's stated order is `created_at DESC, conversation_id`. Without the tiebreak
+    // two rows born in the same millisecond have no defined order, and a LIMIT/OFFSET page
+    // boundary can then show one row twice and skip another.
+    const ipc = createMockIpc(
+      ["zeta", "alpha", "mu"].map((id) => ({
+        id, title: "Same clock", provider: "claude", created_at_ms: 1000,
+      })),
+      [],
+    );
+    const whole = await ipc.searchQuery({ q: "clock" });
+    expect(whole.hits.map((h) => h.thread_id)).toEqual(["alpha", "mu", "zeta"]);
+    const pageOne = await ipc.searchQuery({ q: "clock", limit: 2 });
+    const pageTwo = await ipc.searchQuery({ q: "clock", limit: 2, offset: 2 });
+    expect([...pageOne.hits, ...pageTwo.hits].map((h) => h.thread_id))
+      .toEqual(whole.hits.map((h) => h.thread_id));
+  });
+});
+
+describe("projections over a sparse thread row", () => {
+  /** One thread carrying ONLY the required fields — no tokens, sizes, dates or preview. */
+  const SPARSE = [{ id: "bare", title: "Bare row", provider: "claude", created_at_ms: 5 }];
+
+  it("reports an UNKNOWN adapter's model vendor as '', never the adapter name", async () => {
+    // The pair `provider` (adapter) / `model_provider` (model vendor) is derived, and the
+    // realistic mapping is the whole point: a Codex rollout records "openai". An adapter the
+    // table does not know must degrade to "" like the engine, rather than echoing itself —
+    // otherwise anything tinting by vendor invents a colour for a provider it cannot know.
+    const ipc = createMockIpc(
+      [
+        { id: "g", title: "Grok", provider: "grok", created_at_ms: 1 },
+        { id: "w", title: "Unheard of", provider: "wat", created_at_ms: 2 },
+      ],
+      [],
+    );
+    expect((await ipc.threadGet("g")).model_provider).toBe("xai");
+    expect((await ipc.threadGet("w")).model_provider).toBe("");
+    expect((await ipc.threadGet("w")).provider).toBe("wat");
+  });
+
+  it("counts a row with no turn_count / char_count as zero, not NaN", async () => {
+    // `records` and `bytes` are summed, so a single undefined would poison the whole tally
+    // into NaN and render as "NaN conversations indexed".
+    expect(await createMockIpc(SPARSE, []).corpusStats()).toEqual({
+      conversations: 1,
+      records: 0,
+      threads: 1,
+      edges: 0,
+      bytes: 0,
+      providers: { claude: 1 },
+    });
+    expect((await createMockIpc(SPARSE, []).exportPlan()).est_bytes).toBe(0);
+  });
+
+  it("conversation.get falls back to the birth date and the title as body text", async () => {
+    // `plan` carries neither `updated_at_ms` nor `preview`, which is the common shape.
+    const conv = await mockIpc.conversationGet("plan");
+    expect(conv.available).toBe(true);
+    if (!conv.available) throw new Error("unreachable: plan is a real row");
+    // An absent update is reported as the creation time, NOT as null/absent — a reader that
+    // formats `updated_at` unconditionally would otherwise print "Invalid Date".
+    expect(conv.updated_at).toBe(conv.created_at);
+    expect(conv.created_at).toBe(new Date(1_700_000_060_000).toISOString());
+    expect(conv.turns[0].blocks).toEqual([{ type: "text", text: "Plan the spawn-tree UI" }]);
+    // …and a row that HAS both uses them, so the fallback is not simply always taken.
+    const withBoth = await mockIpc.conversationGet("orch");
+    if (!withBoth.available) throw new Error("unreachable: orch is a real row");
+    expect(withBoth.updated_at).not.toBe(withBoth.created_at);
+    expect(withBoth.turns[0].blocks).toEqual([
+      { type: "text", text: "Ship the cockpit spawn-tree UI end to end." },
+    ]);
+  });
+});
+
+describe("metadata projections that need a row the fixture does not have", () => {
+  it("metadata.search drops an annotation whose conversation is not indexed (INNER JOIN)",
+    async () => {
+      // The annotation store is keyed by conversation id and does not police it, so an
+      // annotation can outlive its conversation. `metadata.get` still reads it back; the
+      // SEARCH view must not, or the panel lists a row nothing can open
+      // (`llm_anthology/metadata.py`'s join, mirrored at mock.ts:1468-1469).
+      const ipc = createMockIpc();
+      await ipc.metadataSet({ conversation_id: "ghost-conversation", tags: ["triage"] });
+      expect((await ipc.metadataGet("ghost-conversation")).tags).toEqual(["triage"]);
+
+      const rows = await ipc.metadataSearch({ tag: "triage" });
+      expect(rows.map((r) => r.conversation_id)).toEqual(["repro"]);
+      // `repro` has no `updated_at_ms`, so the row reports its birth date rather than null.
+      expect(rows[0].updated_at).toBe(rows[0].created_at);
+      expect(rows[0].turn_count).toBe(27);
+    });
+
+  it("metadata.search reports 0 turns and a blank account for a sparse row", async () => {
+    // `conversations.account` is NOT NULL DEFAULT '' (`corpus.py:183`), so unknown is "" on
+    // THIS surface while `conversation.get` reports the same fact as null. Two shapes, one
+    // blank — a panel that expects null here renders "null".
+    const ipc = createMockIpc(
+      [{ id: "bare", title: "Bare row", provider: "claude", created_at_ms: 5 }],
+      [],
+    );
+    await ipc.metadataSet({ conversation_id: "bare", tags: ["needle"] });
+    const rows = await ipc.metadataSearch({ tag: "needle" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].turn_count).toBe(0);
+    expect(rows[0].account).toBe("");
+    expect(rows[0].thread_id).toBe("bare");
+  });
+
+  it("metadata.tags keeps the lexicographically-first spelling as the facet label",
+    async () => {
+      // Seeded: `orch` -> "Rust", `ipc` -> "rust". Adding a THIRD conversation spelled "rust"
+      // makes the scan meet a spelling that is NOT better than the one already chosen, which
+      // is the only way to prove the label is a MINIMUM rather than a last-write-wins.
+      const ipc = createMockIpc();
+      await ipc.metadataSet({ conversation_id: "plan", tags: ["rust"] });
+      expect(await ipc.metadataTags()).toEqual([
+        { tag: "Rust", count: 3 },
+        { tag: "shipped", count: 1 },
+        { tag: "triage", count: 1 },
+      ]);
+    });
+});
+
+describe("graph.at over a duplicated edge", () => {
+  it("keeps both rows of a repeated (parent, child) pair in input order", async () => {
+    // The built-in forest has no repeated pair, but `createMockIpc` takes any edge list and
+    // the engine's edge table does not enforce uniqueness either. The stable-sort tie is what
+    // decides here, and the two rows differ only in `status` — collapsing them would silently
+    // drop a spawn outcome, and reordering them would flip which status a renderer shows.
+    const ipc = createMockIpc(
+      [
+        { id: "p", title: "P", provider: "claude", created_at_ms: 1 },
+        { id: "c", title: "C", provider: "codex", created_at_ms: 2 },
+      ],
+      [
+        { parent: "p", child: "c", status: "completed" },
+        { parent: "p", child: "c", status: "failed" },
+      ],
+    );
+    const snap = await ipc.graphAt(10);
+    expect(snap.nodes.map((n) => n.id)).toEqual(["c", "p"]);
+    expect(snap.edges).toEqual([
+      { parent: "p", child: "c", status: "completed" },
+      { parent: "p", child: "c", status: "failed" },
+    ]);
+    // graph.diff keys an edge by its (parent, child) pair alone, so the SAME input collapses
+    // to one there. Both are right for their own contract; a caller must not assume the two
+    // surfaces agree on edge cardinality.
+    const diff = await ipc.graphDiff(0, 10);
+    expect(diff.added_edges).toEqual([{ parent: "p", child: "c" }]);
   });
 });

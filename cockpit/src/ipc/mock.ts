@@ -339,7 +339,7 @@ const HOME = "C:\\Users\\preview";
  *
  * A REAL census on the author's machine returned 25 of them (against 7 Claude, 2 Codex and
  * 1 Gemini export), which is also the engine's per-group cap — `DEFAULT_MAX_PER_GROUP`
- * (`llm_anthology/discover.py:106`). So this group is simultaneously the worst case for
+ * (`llm_anthology/discover.py:108`). So this group is simultaneously the worst case for
  * the UI's own collapsing AND a group the ENGINE truncated, and it exists here so a
  * preview shows both at once rather than either in isolation.
  */
@@ -359,8 +359,8 @@ function chatgptExports(): DiscoveryFinding[] {
 /**
  * A whole scan, shaped like the measured one: a built index, both STORE shapes, and the
  * long export tail. The two store shapes differ in the way the ingest derivation depends
- * on (`llm_anthology/discover.py:550-551`) and that difference is the whole reason both
- * are here:
+ * on — `StoreSpec.report`, `"base"` | `"subdir"` — and that difference is the whole reason
+ * both are here (`llm_anthology/discover.py:239`, applied at `:644`):
  *
  *   * codex reports its BASE (`report="base"`), so `path` is the Codex home and
  *     `detail.items_root` is the distinct sessions tree -> both `corpus.build` parameters
@@ -428,7 +428,7 @@ const DISCOVERY: DiscoveryResult = {
       kind: "export_file",
       path: `${HOME}\\Downloads\\Takeout\\Gemini Apps\\_converted\\transcript.json`,
       count: 1,
-      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:552`),
+      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:645`),
       // so a renderer that treated this as a timestamp would print 1970.
       newest_mtime: 0,
       confidence: "low",
@@ -577,7 +577,7 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
  * the engine still covers it against a clean store.
  *
  * NOTE this is a partial-parse error, NOT a missing store: a missing root is explicitly "an
- * empty result, not an error" (`dedup.py:249`), so a UI must not present this as "store not
+ * empty result, not an error" (`dedup.py:249-250`), so a UI must not present this as "store not
  * found".
  */
 const MOCK_DEDUP_ERRORS = [
@@ -1228,7 +1228,7 @@ export function createMockIpc(
 
     /**
      * Poll the mock ingest. Reports `idle` before any build (exactly as the engine does
-     * rather than erroring — `llm_anthology/sidecar.py:824`), then `running` with a
+     * rather than erroring — `llm_anthology/sidecar.py:995`), then `running` with a
      * climbing `indexed_conversations` for {@link MOCK_BUILD_POLLS} polls, then `done`.
      * Reaching a terminal state is the point: a mock that stayed `running` forever would
      * make a poll loop that never stops look correct.

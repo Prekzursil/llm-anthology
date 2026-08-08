@@ -779,20 +779,38 @@ export class DiscoveryPanelController {
   }
 
   /**
+   * Emit a re-derivation: new `groups`, everything else — including an unread outcome —
+   * left exactly as it was.
+   *
+   * {@link emit}'s blanket `needsAttention: false` is right for a TRANSITION, where a new
+   * phase and status supersede the previous outcome. It is wrong here, and the difference is
+   * not cosmetic: a re-derivation patches only `groups`, so `phase` stays `done` and clearing
+   * the marker sends the very next paint down the collapse branch. Expanding a group would
+   * delete the skipped-file report and the panel with it, which is the opposite of the
+   * delivery guarantee {@link DiscoveryPanelController.acknowledge} exists to provide.
+   *
+   * The current value is COPIED rather than forced true, so a clean import stays unmarked and
+   * still collapses.
+   */
+  private emitRegroup(): void {
+    this.emit({ groups: this.regroup(), needsAttention: this.view.needsAttention });
+  }
+
+  /**
    * Tell the panel a corpus is (or is no longer) attached. The app calls this when the
    * corpus bar attaches one, because that changes what an import means — it would land in
    * the open corpus rather than a new one — and the row labels have to follow.
    */
   setCorpusAttached(indexPath: string | null): void {
     this.attached = indexPath;
-    if (this.result !== null) this.emit({ groups: this.regroup() });
+    if (this.result !== null) this.emitRegroup();
   }
 
   /** Show every row of `key`, or collapse it back to the cap. */
   toggleGroup(key: string): void {
     if (this.expanded.has(key)) this.expanded.delete(key);
     else this.expanded.add(key);
-    this.emit({ groups: this.regroup() });
+    this.emitRegroup();
   }
 
   /**

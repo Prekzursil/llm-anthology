@@ -119,9 +119,22 @@ describe("normalizeTags", () => {
     // The property the sort depends on. `normalizeTags` omits the engine's exact-string
     // tiebreak because a fold-keyed dedup makes it unreachable; if dedup were ever weakened
     // this fails HERE, rather than the ordering quietly becoming non-deterministic.
+    //
+    // THIS PROPERTY IS ALSO WHY `metadataPanel.ts` CANNOT REACH 100% BRANCH COVERAGE, and the
+    // gap is a proof rather than a missing test. The comparator ends `la > lb ? 1 : 0`, and
+    // that final `0` is dead: `seen` is a Map keyed by `tag.toLowerCase()` holding one value
+    // per key, so every value's own lowercase IS its key; distinct keys therefore give
+    // distinct `la`/`lb`, and `sort` never passes one element as both arguments. So `la === lb`
+    // cannot arise and the `0` arm never executes. It is kept anyway because a comparator that
+    // answered `1` for equal inputs would be non-symmetric, which makes `sort`'s result
+    // implementation-defined the moment the dedup invariant above ever slips.
     const out = normalizeTags(["Beta", "BETA", "beta", "a", "A", "  a  "]);
     const folded = out.map((t) => t.toLowerCase());
     expect(new Set(folded).size).toBe(out.length);
+    // Stated directly, so the unreachability argument rests on an assertion and not on prose.
+    for (let i = 1; i < out.length; i += 1) {
+      expect(folded[i - 1] < folded[i]).toBe(true);
+    }
   });
 
   it("stays CONSERVATIVE where casefold would collapse further", () => {
@@ -293,6 +306,27 @@ describe("facetOrder", () => {
   it("does not mutate the engine's array", () => {
     facetOrder(counts);
     expect(counts.map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  it("sorts a DESCENDING input in both modes, not only an already-ordered one", () => {
+    // Both comparators here are `x < y ? -1 : 1`, and every earlier case in this describe
+    // hands them input that is ALREADY in the wanted order. V8 then resolves a short
+    // already-sorted run without ever needing a positive-then-negative pair, so the `-1` arm
+    // of each comparator was never executed and a comparator inverted to `? 1 : -1` would
+    // have passed every test above. Reversed input is what actually exercises it.
+    const descending: TagCount[] = [{ tag: "gamma", count: 2 }, { tag: "alpha", count: 9 }];
+    expect(facetOrder(descending, "tag").map((c) => c.tag)).toEqual(["alpha", "gamma"]);
+    expect(facetOrder(descending).map((c) => c.tag)).toEqual(["alpha", "gamma"]);
+  });
+
+  it("breaks a COUNT tie on the tag, whichever order the engine listed them in", () => {
+    // The tie-break is the half of `(b.count - a.count) || (a.tag < b.tag ? -1 : 1)` that
+    // makes two renders of one corpus identical, so it has to hold for either input order.
+    const tied: TagCount[] = [
+      { tag: "gamma", count: 4 }, { tag: "alpha", count: 4 }, { tag: "beta", count: 4 },
+    ];
+    expect(facetOrder(tied).map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
+    expect(facetOrder([...tied].reverse()).map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
   });
 });
 
@@ -487,6 +521,21 @@ describe("MetadataController", () => {
     ctl.editDraft({ alias: "x" });
     expect(onChange.mock.calls.length).toBeGreaterThan(afterLoad);
     expect(ctl.state.dirty).toEqual(["alias"]);
+  });
+
+  it("accepts an edit before anything is loaded without inventing an unsaved field", async () => {
+    // Reachable: the editor exists before a conversation is chosen, so a keystroke can land
+    // with `annotation === null`. There is nothing to diff against, so NOTHING may be marked
+    // unsaved — and that matters beyond tidiness, because `save()` keys on `annotation` and
+    // would return early anyway: a "Save alias" button over a write that cannot happen is the
+    // stale-claim defect this panel exists to avoid.
+    const ipc = fakeIpc();
+    const ctl = new MetadataController(ipc, () => {});
+    ctl.editDraft({ alias: "typed too early", tagText: "a, b" });
+    expect(ctl.state.draft.alias).toBe("typed too early");
+    expect(ctl.state.dirty).toEqual([]);
+    await ctl.save();
+    expect(ipc.calls).toEqual([]);
   });
 
   it("ignores save and clear before anything is loaded", async () => {

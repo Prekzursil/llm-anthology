@@ -16,7 +16,9 @@ import { describe, expect, it } from "vitest";
 import {
   capFanOut,
   DEFAULT_MAX_CHILDREN,
+  isMoreId,
   MORE_ID_PREFIX,
+  moreParentId,
   type FanOutGraph,
 } from "./capFanOut";
 import type { SpawnEdge, ThreadNode } from "../ipc/types";
@@ -322,6 +324,138 @@ describe("capFanOut", () => {
     // without re-measuring is how the app becomes unrenderable again.
     expect(DEFAULT_MAX_CHILDREN).toBe(100);
     expect(placeholders(capFanOut(fanOut(101)))).toHaveLength(1);
+  });
+
+  it("names the parent every placeholder stands for, recoverably from the id alone", () => {
+    // `app.ts:713-720` renders the detail pane for a selected placeholder by doing exactly
+    // this: `moreParentId(id)` and then looking that id up in the graph it laid out. So the
+    // contract is a ROUND TRIP — the recovered id must be a real node in the SAME output —
+    // not merely "strips a prefix". A placeholder whose parent could not be found renders as
+    // the raw `more:<id>` string in the pane, with no hidden count and no parent title.
+    const out = capFanOut(twoWideParents(), 10);
+    const ids = new Set(out.nodes.map((n) => n.id));
+    const found = placeholders(out);
+    expect(found).toHaveLength(2);
+    for (const more of found) {
+      expect(isMoreId(more.id)).toBe(true);
+      const parent = moreParentId(more.id);
+      expect(ids.has(parent)).toBe(true);
+      // …and it is the node the placeholder actually hangs off, not just any node.
+      expect(out.edges).toContainEqual({ parent, child: more.id });
+      expect(isMoreId(parent)).toBe(false);
+    }
+    expect(found.map((m) => moreParentId(m.id)).sort()).toEqual(["alpha", "beta"]);
+  });
+
+  it("emits no placeholder for a capped parent that the cap itself hid", () => {
+    // A parent is capped LOCALLY, before reachability is known, so a wide parent that is
+    // itself dropped behind another cap still has a hidden-count entry. Emitting its
+    // placeholder anyway would attach an edge to a parent that is not in the node list —
+    // ELK rejects an edge whose endpoint it was never given, so this is a layout error, not
+    // a cosmetic one.
+    const nodes = [node("r", 0)];
+    const edges: SpawnEdge[] = [];
+    // THREE wide children of r, so a budget of 2 caps r itself and keeps only the newest.
+    for (const [p, born] of [["old", 10], ["mid", 20], ["new", 30]] as const) {
+      nodes.push(node(p, born));
+      edges.push({ parent: "r", child: p });
+      for (let i = 0; i < 8; i++) {
+        nodes.push(node(`${p}-c${i}`, 100 + i));
+        edges.push({ parent: p, child: `${p}-c${i}` });
+      }
+    }
+    const out = capFanOut({ nodes, edges }, 2);
+    const ids = new Set(out.nodes.map((n) => n.id));
+    expect(ids.has("new")).toBe(true);
+    expect(ids.has("old")).toBe(false);
+    expect(ids.has("mid")).toBe(false);
+    // `old` and `mid` were capped too, but they are off screen, so neither gets a placeholder
+    // and no edge points at a node ELK was never handed.
+    expect(placeholders(out).map((n) => n.id)).toEqual([`${MORE_ID_PREFIX}new`,
+                                                        `${MORE_ID_PREFIX}r`]);
+    for (const e of out.edges) {
+      expect(ids.has(e.parent)).toBe(true);
+      expect(ids.has(e.child)).toBe(true);
+    }
+  });
+
+  it("inherits an undated parent's null date rather than substituting a number", () => {
+    // The placeholder is ranked by date like any other child if a later pass re-caps it, so
+    // its date must be the parent's. A parent with no `created_at_ms` must yield null, NOT 0
+    // — sorting an undated node as epoch is precisely the silent-always-dropped bug the
+    // recency comparator exists to avoid.
+    const nodes = [node("undated", null)];
+    const edges: SpawnEdge[] = [];
+    for (let i = 0; i < 6; i++) {
+      nodes.push(node(`k${i}`, 500 + i));
+      edges.push({ parent: "undated", child: `k${i}` });
+    }
+    const [more] = placeholders(capFanOut({ nodes, edges }, 3));
+    expect(more.created_at_ms).toBeNull();
+    // The dated case, for contrast — same code path, different input.
+    const [dated] = placeholders(capFanOut(fanOut(6), 3));
+    expect(dated.created_at_ms).toBe(0); // `fanOut` gives the parent created_at_ms 0
+  });
+
+  it("ignores an incoming placeholder that claims to hide nothing", () => {
+    // A `more:` edge is treated as this function's own output and folded into the new tally
+    // rather than counted as a child. One that reports 0 hidden children carries no tally to
+    // fold, so it must not manufacture a "+0 more" node on a parent that is not over budget.
+    const out = capFanOut(
+      {
+        nodes: [node("p", 0), node("real", 5)],
+        edges: [{ parent: "p", child: "real" }, { parent: "p", child: `${MORE_ID_PREFIX}p` }],
+      },
+      10,
+    );
+    expect(placeholders(out)).toEqual([]);
+    expect(out.nodes.map((n) => n.id)).toEqual(["p", "real"]);
+    expect(out.edges).toEqual([{ parent: "p", child: "real" }]);
+  });
+
+  it("emits no duplicate node id and no duplicate edge, on any shape", () => {
+    // This is the PRECONDITION that makes three comparator arms in this module dead code —
+    // the `: 0` equal-case in the child rank (`capFanOut.ts:97`), in the node sort (`:219`)
+    // and in the edge sort (`:226`). Each can only fire on two entries that compare equal,
+    // and none can, because children are collected into a `Set` per parent, nodes come from
+    // `Map` keys, and there is at most one placeholder per parent. Rather than assert those
+    // arms are unreachable in prose, assert the property that makes them so — if a future
+    // change ever lets a duplicate through, this fails and the arms become live at once.
+    const shapes: Array<[string, FanOutGraph, number]> = [
+      ["wide single parent", fanOut(50), 10],
+      ["two wide parents", twoWideParents(), 10],
+      ["re-capped output", capFanOut(fanOut(50), 10), 5],
+      ["diamond", {
+        nodes: [node("p", 0), node("q", 0), node("a", 10), node("b", 20), node("c", 30)],
+        edges: [
+          { parent: "p", child: "a" }, { parent: "p", child: "b" },
+          { parent: "p", child: "c" }, { parent: "q", child: "a" },
+        ],
+      }, 2],
+      ["cycle with no root", {
+        nodes: [node("x", 1), node("y", 2)],
+        edges: [{ parent: "x", child: "y" }, { parent: "y", child: "x" }],
+      }, 100],
+      ["self-loop and dangling endpoint", {
+        nodes: [node("p", 0)],
+        edges: [{ parent: "p", child: "p" }, { parent: "p", child: "ghost" }],
+      }, 1],
+    ];
+    for (const [name, graph, budget] of shapes) {
+      const out = capFanOut(graph, budget);
+      const ids = out.nodes.map((n) => n.id);
+      expect(new Set(ids).size, `${name}: duplicate node id`).toBe(ids.length);
+      const keys = out.edges.map((e) => `${e.parent} ${e.child}`);
+      expect(new Set(keys).size, `${name}: duplicate edge`).toBe(keys.length);
+      // The rank comparator's own input: distinct children per parent, by construction.
+      const perParent = new Map<string, string[]>();
+      for (const e of out.edges) perParent.set(e.parent, [...(perParent.get(e.parent) ?? []),
+                                                          e.child]);
+      for (const [parent, kids] of perParent) {
+        expect(new Set(kids).size, `${name}: ${parent} has a repeated child`)
+          .toBe(kids.length);
+      }
+    }
   });
 
   it("holds the whole graph under the measured layer-width limit", () => {

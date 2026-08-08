@@ -55,3 +55,7 @@ coverage/
 .dolt/
 *.db
 .beads-credential-key
+
+# Agent scratch: throwaway probe harnesses written to compare environments/tools.
+# Not source, and NOT to be committed — this is how scratch leaks into a public repo.
+cockpit/.dom-probe/

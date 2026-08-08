@@ -157,6 +157,18 @@ describe("relativeAge", () => {
     expect(relativeAge(NOW - 3 * 86_400_000, NOW)).toBe("3 days ago");
   });
 
+  it("says ONE of each unit, not '1 minutes ago'", () => {
+    // Every other case in this describe is plural, so the singular arm of the pluraliser had
+    // never run: a `plural` that always appended "s" passed all of them. These are the exact
+    // unit boundaries, which is where a report about someone's irreplaceable files most has to
+    // read like it was written on purpose.
+    expect(relativeAge(NOW - 60_000, NOW)).toBe("1 minute ago");
+    expect(relativeAge(NOW - 3_600_000, NOW)).toBe("1 hour ago");
+    expect(relativeAge(NOW - 86_400_000, NOW)).toBe("1 day ago");
+    expect(relativeAge(NOW - 30 * 86_400_000, NOW)).toBe("1 month ago");
+    expect(relativeAge(NOW - 365 * 86_400_000, NOW)).toBe("1 year ago");
+  });
+
   it("scales past a month, which a long-lived store will contain", () => {
     // A real Codex home holds years of rollouts, so these two branches are the common case
     // for the oldest rows rather than an edge.

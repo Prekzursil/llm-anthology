@@ -172,6 +172,16 @@ describe("restoreFailureMessage", () => {
     const msg = restoreFailureMessage("/x/y.db", new Error(""));
     expect(msg).toBe("Could not reopen y.db. Choose a corpus to continue.");
   });
+
+  it("shows the whole remembered path when it has no basename to show", () => {
+    // `basenameOf` answers "" for a path that is nothing but separators, and a remembered
+    // value comes back out of Web Storage unvalidated, so it can be anything that was ever
+    // written there. Reporting "Could not reopen ." would name nothing at all.
+    const msg = restoreFailureMessage("///", new Error("unable to open database file"));
+    expect(msg).toBe(
+      "Could not reopen ///: unable to open database file. Choose a corpus to continue.",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,6 +243,31 @@ describe("localCorpusStore", () => {
     const store = localCorpusStore();
     expect(store.read()).toBeNull();
     expect(() => store.write("/x/y.db")).not.toThrow();
+  });
+
+  it("survives a webview where merely TOUCHING localStorage throws", () => {
+    // A DIFFERENT failure from `throwingStorage` above, and the reason the probe itself is
+    // wrapped rather than only the calls: with site data disabled some webviews throw on the
+    // property READ, so there is never an object to call `getItem` on. The observable proof
+    // that the guard caught it is that the factory still returns a working no-op store —
+    // `read()` answers null AFTER a write, which only the storage-is-null store does.
+    const before = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get(): never {
+        throw new Error("SecurityError: access to storage is denied");
+      },
+    });
+    try {
+      const store = localCorpusStore();
+      store.write("/x/y.db");
+      expect(store.read()).toBeNull();
+      store.clear();
+      expect(store.read()).toBeNull();
+    } finally {
+      if (before === undefined) Reflect.deleteProperty(globalThis, "localStorage");
+      else Object.defineProperty(globalThis, "localStorage", before);
+    }
   });
 });
 

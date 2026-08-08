@@ -292,7 +292,7 @@ export interface OpenCorpusResult {
  * `corpus.create` result: an EMPTY index was initialised at `index_path`.
  *
  * A different shape from {@link OpenCorpusResult} on purpose — the engine returns
- * `{index_path, created}` here (`llm_anthology/sidecar.py:644`) and `{ok, index}` there —
+ * `{index_path, created}` here (`llm_anthology/sidecar.py:790`) and `{ok, index}` there —
  * so the two are not interchangeable. Creating does NOT attach; `openCorpus` still has to
  * follow (`cockpit/src-tauri/src/lib.rs:91-107`).
  */
@@ -303,48 +303,48 @@ export interface CreateCorpusResult {
 
 /**
  * One thing auto-discovery found on this machine, mirroring `discover.Finding.as_dict`
- * (`llm_anthology/discover.py:167-173`).
+ * (`llm_anthology/discover.py:170-176`).
  *
  * Two fields are easy to get wrong and both are load-bearing:
  *
  *   * `newest_mtime` is UNIX **SECONDS** (a float), not milliseconds — everything else in
  *     this app is `_ms`. It is `0.0`, never null, when nothing datable was seen
- *     (`discover.py:552`: `max(mtimes) if mtimes else 0.0`), so 0 means "unknown date"
+ *     (`discover.py:645`: `max(mtimes) if mtimes else 0.0`), so 0 means "unknown date"
  *     rather than 1970.
  *   * `detail` is an OPEN dict whose keys vary by provider: a built index carries
- *     `{tables, conversations}` (`discover.py:668-670`), a Codex store
+ *     `{tables, conversations}` (`discover.py:761-763`), a Codex store
  *     `{rollouts_jsonl, rollouts_zst, state_db, ingestable, items_root}`
- *     (`discover.py:529-547`), a Claude Code store `{"*.jsonl", ingestable, items_root,
+ *     (`discover.py:300-304`), a Claude Code store `{"*.jsonl", ingestable, items_root,
  *     project_dirs}`, and an export file `{size_bytes, ambiguous_with?}`
- *     (`discover.py:617-620`). It must be rendered generically; assuming a fixed key set
+ *     (`discover.py:711-713`). It must be rendered generically; assuming a fixed key set
  *     would silently drop whatever a newly-added provider reports.
  *
  * `kind` and `confidence` are typed as plain `string` rather than unions for the same
- * reason: adding a provider is a table edit in the engine (`discover.py:48-51`), and a
+ * reason: adding a provider is a table edit in the engine (`discover.py:50-53`), and a
  * UI that narrowed them would have to be recompiled to keep displaying a new one.
  */
 export interface DiscoveryFinding {
   provider: string;
-  /** `built_index` | `session_store` | `export_file` (`discover.py:66-68`). */
+  /** `built_index` | `session_store` | `export_file` (`discover.py:68-70`). */
   kind: string;
   /** ABSOLUTE local path. Not redacted on the wire — the sidecar only strips hidden
-   *  unicode (`_sanitize_tree` -> `_clean`, `sidecar.py:279-292`) — so it is usable as an
+   *  unicode (`_sanitize_tree` -> `_clean`, `sidecar.py:306-318`) — so it is usable as an
    *  engine argument, and it embeds the local layout, so it is display-sensitive. */
   path: string;
   count: number;
   /** UNIX SECONDS (float). 0 means no datable item was seen. */
   newest_mtime: number;
-  /** `high` | `medium` | `low` (`discover.py:70-72`). */
+  /** `high` | `medium` | `low` (`discover.py:72-74`). */
   confidence: string;
   detail: Record<string, unknown>;
 }
 
 /**
  * What one scan cost and whether it saw everything (`discover.ScanStats`,
- * `llm_anthology/discover.py:176-199`).
+ * `llm_anthology/discover.py:180-193`).
  *
  * `truncated_groups` holds `"<provider>/<kind>"` keys whose findings the ENGINE capped at
- * `DEFAULT_MAX_PER_GROUP` (`discover.py:106`, `:785`) — a truncation that happened before
+ * `DEFAULT_MAX_PER_GROUP` (`discover.py:108`, `:888`) — a truncation that happened before
  * the UI ever saw the data, and therefore a different fact from any collapsing the UI does
  * for display. `errors` is one string per location that could not be read.
  */
@@ -389,7 +389,7 @@ export interface BuildParams {
   codex_home?: string;
 }
 
-/** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:737-739`). */
+/** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:834-836`). */
 export interface BuildHandle {
   job_id: string;
   state: string;
@@ -398,7 +398,7 @@ export interface BuildHandle {
 }
 
 /**
- * `corpus.build_status` result (`llm_anthology/sidecar.py:824-836`).
+ * `corpus.build_status` result (`llm_anthology/sidecar.py:972-975`).
  *
  * Poll-safe at any time, INCLUDING before any build has ever started — that answers
  * `{state: "idle", indexed_conversations, errors: []}` rather than erroring, which is why
