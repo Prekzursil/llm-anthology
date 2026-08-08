@@ -559,7 +559,7 @@ def _is_link(entry, state):
     try:
         if not entry.is_symlink():
             return False
-    except OSError as exc:                       # pragma: no cover - needs a race
+    except OSError as exc:                       # a race, or a vanished entry
         state.note_error(entry.path, exc)
         return True
     state.note_error(entry.path, "skipped: a symbolic link is never read through")

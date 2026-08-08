@@ -302,6 +302,75 @@ def test_a_symlink_is_never_read_through_and_the_skip_is_recorded(tmp_path, empt
     assert any("conversations.json" in e for e in result.stats.errors)
 
 
+class _StubEntry:
+    """The minimal `os.DirEntry` surface `_is_link` uses, with `is_symlink` scripted.
+
+    Exists so the link-skip decision is testable on EVERY host. The end-to-end proof above
+    needs a real symlink and therefore skips without Developer Mode — measured, with both
+    real-symlink tests deselected `discover.py` fell to 99% (lines 510, 565-566), so
+    without these two the 100% gate would depend on a host capability rather than on the
+    code. It also separates two genuinely different questions: "does the OS call this a
+    link" and "does the walk skip a thing it was told is a link".
+    """
+
+    def __init__(self, path, verdict):
+        self.path = path
+        self.name = os.path.basename(path)
+        self._verdict = verdict
+
+    def is_symlink(self):
+        if isinstance(self._verdict, Exception):
+            raise self._verdict
+        return self._verdict
+
+
+def test_is_link_records_the_skip_so_it_is_never_silent():
+    state = discover._Scan(100)
+    assert discover._is_link(_StubEntry(r"C:\s\c.json", True), state) is True
+    assert len(state.errors) == 1
+    assert "c.json" in state.errors[0] and "symbolic link" in state.errors[0]
+
+
+def test_is_link_passes_an_ordinary_file_through_without_noting_anything():
+    state = discover._Scan(100)
+    assert discover._is_link(_StubEntry(r"C:\s\real.json", False), state) is False
+    assert state.errors == []
+
+
+def test_an_entry_that_cannot_be_stat_ed_is_treated_as_a_link():
+    """Fail CLOSED, the opposite of `_is_dir`'s tolerance.
+
+    `_is_dir` fails open because mis-reading a directory only costs traversal; here the
+    thing being avoided is opening a path whose real target is unknown, so an entry that
+    cannot be classified is skipped rather than read.
+    """
+    state = discover._Scan(100)
+    entry = _StubEntry(r"C:\s\vanished.json", OSError("gone mid-walk"))
+    assert discover._is_link(entry, state) is True
+    assert "gone mid-walk" in state.errors[0]
+
+
+def test_the_walk_skips_whatever_is_link_flags_without_examining_it(tmp_path,
+                                                                   empty_roots,
+                                                                   monkeypatch):
+    """The walk's half of the contract, independent of how the OS reports links.
+
+    A flagged entry must be neither yielded nor counted in `files_examined` — counting it
+    would spend the scan budget on a file that was never looked at.
+    """
+    _touch(str(tmp_path / "user" / "codex.json"), b"[]")
+    _touch(str(tmp_path / "user" / "flagged.json"), b"[]")
+    real_is_link = discover._is_link
+    monkeypatch.setattr(
+        discover, "_is_link",
+        lambda entry, state: (entry.name == "flagged.json"
+                              or real_is_link(entry, state)))
+    result = discover.discover(empty_roots)
+    assert [f.path for f in result.findings if "flagged" in f.path] == []
+    assert len(_by(result, provider="codex")) == 1        # the real file still lands
+    assert result.stats.files_examined == 1               # the flagged one is not counted
+
+
 def test_unrelated_sqlite_file_is_not_a_built_index(tmp_path, empty_roots):
     other = str(tmp_path / "idx" / "browser.sqlite")
     os.makedirs(os.path.dirname(other), exist_ok=True)
