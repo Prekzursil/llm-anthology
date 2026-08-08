@@ -14,12 +14,48 @@
 //!   monotonic request-id counter; its [`SidecarClient::call`] delegates to the
 //!   framing function over the real pipes. A single mutex-guarded client (held in
 //!   Tauri state) makes every request/response strictly sequential, so id
-//!   correlation is trivially satisfied.
+//!   correlation is trivially satisfied. That sequencing is ENFORCED, not conventional:
+//!   `call` takes `&mut self`, so the borrow checker rejects two overlapping calls on
+//!   one client at compile time, and the `Arc<Mutex<..>>` in `lib.rs` serialises the
+//!   commands that share one.
+//!
+//! THE CHILD MUST NOT BE ABLE TO WEDGE OR EXHAUST THE PARENT. Two properties carry that,
+//! and both are load-bearing rather than defensive:
+//!
+//! * stderr is DRAINED, never merely held ([`drain_stderr`]). An undrained pipe blocks
+//!   the child once the small OS buffer fills, and since the parent is meanwhile blocked
+//!   reading stdout — holding the engine mutex, with no timeout on the path — one flood
+//!   wedges the app permanently.
+//! * a response line is BOUNDED ([`MAX_RESPONSE_LINE_BYTES`]). `read_line` grows without
+//!   limit, and response size is governed by session-file content the engine does not cap.
+//!
+//! What is NOT here, deliberately: there is no read TIMEOUT. A child that accepts a
+//! request and simply never answers blocks its caller forever. Adding one means a reader
+//! thread or an async runtime — a redesign of this module, not an edit to it.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 use serde_json::{json, Value};
+
+/// Ceiling on ONE response line, in bytes.
+///
+/// `BufRead::read_line` is UNBOUNDED — it grows its buffer until it meets a `\n`, so a
+/// child that emits a colossal line, or never terminates one at all, makes the parent
+/// allocate without limit. That is not only a hostile-input concern: `conversation.get`
+/// returns a whole transcript re-parsed on demand from a session file the user's OTHER
+/// tools wrote, and the engine applies no size limit of its own (there is no truncation
+/// anywhere in `llm_anthology/sidecar.py`'s response path), so response size is governed
+/// by untrusted file content by construction. An allocation failure ABORTS the process —
+/// Rust cannot unwind from OOM — which loses the whole app rather than the one call. A
+/// ceiling turns that into an ordinary `Err` the UI can render.
+///
+/// 256 MiB is chosen to be far above any transcript a human could read (the renderer
+/// would be unusable long before it) while still bounding the allocation. It is a
+/// JUDGEMENT, not a measured maximum: no legitimate upper bound exists to measure,
+/// because the engine imposes none. Tune it here if a real corpus ever trips it — the
+/// error names the ceiling explicitly so such a report is unambiguous.
+const MAX_RESPONSE_LINE_BYTES: u64 = 256 * 1024 * 1024;
 
 // Windows-only: the raw `CreateProcessW` hardening (KILL_ON_JOB_CLOSE Job Object
 // reap + AppContainer network membrane + CREATE_NO_WINDOW) that backs
@@ -40,6 +76,22 @@ fn jsonrpc_roundtrip(
     method: &str,
     params: &Value,
 ) -> Result<Value, String> {
+    jsonrpc_roundtrip_bounded(writer, reader, id, method, params, MAX_RESPONSE_LINE_BYTES)
+}
+
+/// [`jsonrpc_roundtrip`] with the response-line ceiling supplied explicitly.
+///
+/// Split out ONLY so the ceiling is testable: proving it against the production
+/// [`MAX_RESPONSE_LINE_BYTES`] would mean allocating 256 MiB in CI, so the test drives
+/// this form with a tiny cap instead. Production always goes through the wrapper.
+fn jsonrpc_roundtrip_bounded(
+    writer: &mut dyn Write,
+    reader: &mut dyn BufRead,
+    id: u64,
+    method: &str,
+    params: &Value,
+    max_line_bytes: u64,
+) -> Result<Value, String> {
     // --- frame + write the request: one compact line, \n-terminated, flushed ---
     let request = json!({
         "jsonrpc": "2.0",
@@ -55,24 +107,49 @@ fn jsonrpc_roundtrip(
         .map_err(|e| format!("write request: {e}"))?;
     writer.flush().map_err(|e| format!("flush request: {e}"))?;
 
-    // --- read exactly one response line ---
-    let mut buf = String::new();
-    let n = reader
-        .read_line(&mut buf)
+    // --- read exactly one response line, BOUNDED (see MAX_RESPONSE_LINE_BYTES) ---
+    // `read_until` over a `take`-limited reader rather than `read_line`, so the buffer
+    // cannot grow past the ceiling. Reading one byte OVER the ceiling is what proves the
+    // line did not fit: at exactly the ceiling the line may still have ended in `\n`.
+    let mut raw: Vec<u8> = Vec::new();
+    let n = (&mut *reader)
+        .take(max_line_bytes.saturating_add(1))
+        .read_until(b'\n', &mut raw)
         .map_err(|e| format!("read response: {e}"))?;
     if n == 0 {
         return Err("sidecar closed stdout (EOF) before responding".to_string());
     }
+    if n as u64 > max_line_bytes {
+        // The rest of the line is still queued, so the stream is now mid-frame and
+        // nothing after this can be correlated. Say so, rather than let the caller
+        // retry into a permanently skewed stream.
+        return Err(format!(
+            "response line exceeds the {max_line_bytes}-byte ceiling; the transport is \
+             now out of sync and this engine must be restarted"
+        ));
+    }
+    // `read_line` would have done this validation implicitly, but on failure it leaves
+    // the buffer unspecified AND the bytes consumed; doing it here names the fault.
+    let buf =
+        String::from_utf8(raw).map_err(|e| format!("response is not valid UTF-8: {e}"))?;
     let trimmed = buf.trim_end();
     let response: Value =
         serde_json::from_str(trimmed).map_err(|e| format!("parse response {trimmed:?}: {e}"))?;
 
     // --- correlate by id: the transport is strictly sequential (one request, one
-    // response line), so the reply id must equal the request id. A JSON-RPC parse
-    // error carries a null id, which we tolerate here and surface via `error` below.
+    // response line), so the reply id must equal the request id.
+    //
+    // A NULL id is tolerated ONLY alongside an `error`. That allowance exists because a
+    // parse error cannot echo an id it never managed to read
+    // (`_error_response(None, ..)`, llm_anthology/sidecar.py:656,662) — and that is its
+    // whole extent. A null id beside a RESULT has no legitimate producer, since every
+    // result echoes the numeric request id (`:673`); accepting one hands the caller a
+    // payload belonging to some other request as though it answered this one. Silent
+    // wrong data is strictly worse than a loud refusal, so it is refused.
     let reply_id = response.get("id");
+    let carries_error = response.get("error").is_some();
     let id_ok = matches!(reply_id, Some(v) if v.as_u64() == Some(id))
-        || reply_id == Some(&Value::Null);
+        || (carries_error && reply_id == Some(&Value::Null));
     if !id_ok {
         return Err(format!(
             "response id mismatch: expected {id}, got {reply_id:?}"
@@ -87,6 +164,34 @@ fn jsonrpc_roundtrip(
         .get("result")
         .cloned()
         .ok_or_else(|| format!("malformed response (neither result nor error): {trimmed}"))
+}
+
+/// Continuously drain a child's stderr to EOF on a background thread.
+///
+/// AN UNDRAINED STDERR PIPE IS A DEADLOCK, NOT AN INEFFICIENCY. The OS pipe buffer is
+/// small — measured on this Windows host, a child writing 1 KiB of stderr still answers,
+/// but at 8 KiB it never does — and once the buffer fills the child BLOCKS inside its
+/// stderr write and never reaches the stdout response. The parent is meanwhile blocked in
+/// the response read, holding the engine mutex across it (`lib.rs:39-46`), with no
+/// timeout anywhere on the path. So ONE flood wedges that call and every command after it
+/// for the life of the app.
+///
+/// The prior contract — "the sidecar keeps stderr near-empty, so a plain pipe is safe" —
+/// holds only while nothing writes there, and the engine cannot promise that: `corpus.build`
+/// runs its ingest on a BACKGROUND THREAD (`llm_anthology/sidecar.py:20-21`) over session
+/// files the user's other tools wrote, and an unhandled exception on a Python thread prints
+/// a full traceback to stderr through `threading.excepthook`. A couple of tracebacks clear
+/// 8 KiB. Nothing in the engine's own code has to be wrong for this to fire.
+///
+/// Bytes are discarded, which is exactly what happened to them before (the handle was held
+/// and never read); the only new property is that the child can always make progress.
+fn drain_stderr<R: Read + Send + 'static>(mut stderr: R) {
+    std::thread::spawn(move || {
+        let mut sink = [0u8; 8192];
+        // Stop on EOF (child gone) or on any read error — either way the pipe can no
+        // longer block the child, which is the whole purpose.
+        while matches!(stderr.read(&mut sink), Ok(n) if n > 0) {}
+    });
 }
 
 /// A spawned engine sidecar and its stdio JSON-RPC transport.
@@ -105,10 +210,6 @@ pub struct SidecarClient {
     /// engine (the Job Object close is the hard guarantee).
     #[cfg(windows)]
     _reaper: hardened_spawn::Reaper,
-    /// Windows: the child's stderr pipe (parent end), held un-drained so it never
-    /// fills — the sidecar keeps stderr near-empty (mirrors the prior transport).
-    #[cfg(windows)]
-    _stderr: std::fs::File,
     /// Non-Windows: the std child, reaped by [`SidecarClient`]'s `Drop`.
     #[cfg(not(windows))]
     _child: std::process::Child,
@@ -196,11 +297,14 @@ impl SidecarClient {
         let python = engine_python();
         let HardenedSpawn { stdin, stdout, stderr, reaper } =
             spawn_hardened(&python, &args, &SpawnOpts::job_only())?;
+        // The drainer thread now OWNS the parent end of stderr: it keeps the handle
+        // alive exactly as the old `_stderr` field did, and additionally keeps the pipe
+        // from ever filling. See `drain_stderr` for why holding it un-read deadlocks.
+        drain_stderr(stderr);
         Ok(Self {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
             _reaper: reaper,
-            _stderr: stderr,
             next_id: 1,
         })
     }
@@ -216,9 +320,8 @@ impl SidecarClient {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // stderr is piped per the transport contract. It is NOT drained here; the
-            // sidecar reports operational failures as JSON-RPC error responses on
-            // stdout and keeps stderr near-empty, so a plain pipe is safe here.
+            // stderr is piped per the transport contract, and DRAINED below — an
+            // undrained pipe blocks the child once it fills. See `drain_stderr`.
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("failed to spawn sidecar (python -m llm_anthology.sidecar): {e}"))?;
@@ -230,6 +333,11 @@ impl SidecarClient {
             .stdout
             .take()
             .ok_or_else(|| "sidecar stdout was not piped".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "sidecar stderr was not piped".to_string())?;
+        drain_stderr(stderr);
         Ok(Self {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
@@ -259,9 +367,186 @@ impl Drop for SidecarClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{engine_python_in, jsonrpc_roundtrip};
+    use super::{drain_stderr, engine_python_in, jsonrpc_roundtrip, jsonrpc_roundtrip_bounded};
     use serde_json::{json, Value};
     use std::io::Cursor;
+
+    // === transport robustness: the child cannot wedge or exhaust the parent ==========
+
+    /// STDERR FLOOD, BOTH STATES — an undrained stderr pipe DEADLOCKS the round trip.
+    ///
+    /// The child writes 256 KiB to stderr BEFORE reading its request, so it sits blocked
+    /// inside that write and never reaches its stdout reply. Both states are asserted
+    /// because one alone proves nothing: WITHOUT the drainer the round trip never returns
+    /// — and in the app that means the engine mutex is held across it (`lib.rs:39-46`)
+    /// with no timeout anywhere, so every later command is wedged too — WITH the
+    /// production `drain_stderr` the same child answers at once.
+    ///
+    /// Measured on this host by an independent `subprocess` probe: 1 KiB of undrained
+    /// stderr still answers, 8 KiB never does. The ceiling is the OS pipe buffer (~4 KiB
+    /// for a Windows `CreatePipe(.., 0)`), which two Python tracebacks clear.
+    ///
+    /// SCOPE OF THE PROOF: this drives the real `jsonrpc_roundtrip` over a child spawned
+    /// with the same piped topology production uses, and calls the same `drain_stderr`.
+    /// That `spawn_platform` calls it is a compiler-checked code citation, not something
+    /// measured here.
+    #[test]
+    fn stderr_flood_deadlocks_the_round_trip_unless_the_pipe_is_drained() {
+        assert!(
+            !stderr_flood_answers(false, 3),
+            "an UNDRAINED stderr pipe must leave the child blocked mid-write; if this \
+             arm passes, the host buffered all 256 KiB and the test proves nothing"
+        );
+        assert!(
+            stderr_flood_answers(true, 30),
+            "WITH drain_stderr the SAME child must answer — that difference is what \
+             makes the drainer load-bearing rather than decorative"
+        );
+    }
+
+    /// Spawn a child that floods stderr and then replies on stdout; report whether ONE
+    /// round trip completes within `secs`. `drain` selects the production drainer versus
+    /// the previous behaviour (hold the handle open, never read it).
+    fn stderr_flood_answers(drain: bool, secs: u64) -> bool {
+        use std::io::BufReader;
+        use std::process::{ChildStderr, Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        const FLOOD: &str = concat!(
+            "import sys\n",
+            "sys.stderr.write('x' * 262144)\n",
+            "sys.stderr.flush()\n",
+            "sys.stdin.readline()\n",
+            "sys.stdout.write('{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\\n')\n",
+            "sys.stdout.flush()\n",
+        );
+
+        let mut child = Command::new("python")
+            .arg("-c")
+            .arg(FLOOD)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the stderr-flooding child (python on PATH?)");
+        let mut stdin = child.stdin.take().expect("stdin piped");
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // The undrained arm must HOLD the handle open. Dropping it closes the parent's
+        // read end, the child's write then fails instead of blocking, and the deadlock
+        // silently fails to reproduce — the test would look green and prove nothing.
+        let _held: Option<ChildStderr> = if drain {
+            drain_stderr(stderr);
+            None
+        } else {
+            Some(stderr)
+        };
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let got = jsonrpc_roundtrip(&mut stdin, &mut reader, 1, "health.ping", &json!({}));
+            let _ = tx.send(got.is_ok());
+        });
+        let answered = rx.recv_timeout(Duration::from_secs(secs)).unwrap_or(false);
+
+        // Kill either way: in the blocked arm this is what releases both the worker
+        // thread and the child, so a PROVEN deadlock does not leak out of the test.
+        let _ = child.kill();
+        let _ = child.wait();
+        answered
+    }
+
+    /// RESPONSE CEILING, BOTH STATES — a line within the cap parses; one past it is
+    /// refused rather than allocated.
+    ///
+    /// `read_line` grows without limit and the engine caps nothing: `conversation.get`
+    /// returns a whole transcript re-parsed from a session file the user's OTHER tools
+    /// wrote. Unbounded, an over-large line ends in an allocation failure, which ABORTS
+    /// the process — Rust cannot unwind from OOM — losing the app rather than the call.
+    ///
+    /// Driven through `jsonrpc_roundtrip_bounded` with a tiny cap on purpose: asserting
+    /// the production 256 MiB constant would mean allocating 256 MiB in CI. The wrapper
+    /// differs only in which number it passes.
+    #[test]
+    fn a_response_line_over_the_ceiling_is_refused_not_allocated() {
+        const CAP: u64 = 200;
+
+        // UNDER the ceiling: parses exactly as before.
+        let small = br#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#.to_vec();
+        assert!(small.len() as u64 <= CAP, "fixture must sit under the cap");
+        let mut line = small.clone();
+        line.push(b'\n');
+        let mut written: Vec<u8> = Vec::new();
+        let mut reader = Cursor::new(line);
+        let out =
+            jsonrpc_roundtrip_bounded(&mut written, &mut reader, 1, "h", &json!({}), CAP)
+                .expect("a line within the ceiling must parse");
+        assert_eq!(out, json!({ "ok": true }));
+
+        // OVER the ceiling: the same shape, padded past it.
+        let pad = "z".repeat(CAP as usize * 2);
+        let big = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"p\":\"{pad}\"}}}}\n");
+        assert!(big.len() as u64 > CAP, "fixture must exceed the cap");
+        let mut written: Vec<u8> = Vec::new();
+        let mut reader = Cursor::new(big.into_bytes());
+        let err = jsonrpc_roundtrip_bounded(&mut written, &mut reader, 1, "h", &json!({}), CAP)
+            .expect_err("a line past the ceiling must be refused, not allocated");
+        assert!(err.contains("exceeds the 200-byte ceiling"), "got: {err}");
+        assert!(
+            err.contains("out of sync"),
+            "the refusal must say the stream is unusable, so the caller does not retry \
+             into a mid-frame stream: {err}"
+        );
+    }
+
+    /// A NULL-id reply may carry an ERROR (a parse error cannot echo an id it failed to
+    /// read), but never a RESULT — that would be uncorrelated data returned as this
+    /// call's answer.
+    ///
+    /// Measured before the fix: `id:null` + `result` returned `Ok("other")` for request
+    /// 42. No legitimate producer exists — the engine's only null-id replies are
+    /// `_error_response(None, ..)` on a parse / invalid-request line
+    /// (`llm_anthology/sidecar.py:656,662`), while every `result` echoes the numeric
+    /// request id (`:673`) — so the tolerance is narrowed to exactly its stated purpose.
+    #[test]
+    fn a_null_id_reply_is_tolerated_only_when_it_carries_an_error() {
+        // ERROR + null id: still tolerated, and surfaced as the error it is.
+        let mut written: Vec<u8> = Vec::new();
+        let mut reader = Cursor::new(
+            b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n"
+                .to_vec(),
+        );
+        let err = jsonrpc_roundtrip(&mut written, &mut reader, 42, "h", &json!({}))
+            .expect_err("a null-id error envelope must map to Err");
+        assert!(err.contains("Parse error"), "got: {err}");
+        assert!(!err.contains("mismatch"), "it must surface AS the error, not as: {err}");
+
+        // RESULT + null id: refused. Accepting it hands the caller another request's
+        // payload as though it were the answer to this one.
+        let mut written: Vec<u8> = Vec::new();
+        let mut reader =
+            Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":\"other\"}\n".to_vec());
+        let err = jsonrpc_roundtrip(&mut written, &mut reader, 42, "h", &json!({}))
+            .expect_err("an uncorrelated null-id RESULT must not be returned as ours");
+        assert!(err.contains("mismatch"), "got: {err}");
+    }
+
+    /// Invalid UTF-8 is named as such rather than surfacing as a generic read failure.
+    ///
+    /// `read_line` returned `InvalidData` here and left its buffer unspecified with the
+    /// bytes already consumed; reading raw and validating explicitly says what went wrong
+    /// and keeps it distinguishable from a JSON parse error.
+    #[test]
+    fn a_response_line_that_is_not_utf8_is_named_as_such() {
+        let mut written: Vec<u8> = Vec::new();
+        let mut reader = Cursor::new(b"{\"id\":1,\"result\":\"\xff\xfe\"}\n".to_vec());
+        let err = jsonrpc_roundtrip(&mut written, &mut reader, 1, "health.ping", &json!({}))
+            .expect_err("invalid UTF-8 must map to Err");
+        assert!(err.contains("not valid UTF-8"), "got: {err}");
+    }
 
     /// A dev build (no bundled interpreter beside the exe) must fall back to PATH.
     #[test]

@@ -224,6 +224,118 @@ fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
     forward(state.inner(), "export.run", params.unwrap_or_else(|| json!({})))
 }
 
+// -- dedup / maintenance / metadata / research ---------------------------------------
+//
+// 11 of the 13 RPCs that had no command at all. They were orphaned: the methods existed
+// and were tested on the Python side, but with no `#[tauri::command]` here the panels that
+// use them had no route to the engine. A command that compiles but is missing from
+// `invoke_handler` is equally invisible, so every one below is registered there too.
+//
+// The other 2 (`research.*`) stay unwired ON PURPOSE — see the note where they would go.
+//
+// NAMING IS A CONTRACT, not a convention: RPC `a.b` -> command `a_b`. The TypeScript
+// `invoke` call sites are written against it, and a mismatch is invisible to both tsc and
+// vitest — it throws only when a user presses the button.
+//
+// All 13 forward through `forward`, so all 13 require an attached corpus (verified: each
+// handler calls `_require_corpus`, llm_anthology/sidecar.py:1262-1611). That is why they
+// take `state`, unlike `create_corpus` / `discover_sources`, which run on a throwaway
+// index-less engine precisely because no corpus exists yet.
+
+#[tauri::command]
+fn dedup_scan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "dedup.scan", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn dedup_sessions(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "dedup.sessions", params.unwrap_or_else(|| json!({})))
+}
+
+// THE DESTRUCTIVE PLANE. These four archive, quarantine and restore the owner's real
+// session files, so params are forwarded VERBATIM — no defaulted root, no filled-in
+// action, no convenience fallback. Every safety decision belongs to the engine's planner,
+// which refuses a protected target, a protected destination, an unsafe root and a
+// colliding restore, and an omitted field must surface as the engine's own refusal rather
+// than be silently supplied here. `params.unwrap_or_else(|| json!({}))` is the same
+// null-normalisation every command above does and widens nothing: an empty object leaves
+// each required field missing, which `_req_str` rejects, and `apply` absent means DRY RUN.
+#[tauri::command]
+fn maintenance_plan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "maintenance.plan", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn maintenance_execute(
+    state: State<'_, EngineState>,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    forward(
+        state.inner(),
+        "maintenance.execute",
+        params.unwrap_or_else(|| json!({})),
+    )
+}
+
+#[tauri::command]
+fn maintenance_restore(
+    state: State<'_, EngineState>,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    forward(
+        state.inner(),
+        "maintenance.restore",
+        params.unwrap_or_else(|| json!({})),
+    )
+}
+
+#[tauri::command]
+fn maintenance_runs(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "maintenance.runs", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn metadata_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "metadata.get", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn metadata_set(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "metadata.set", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn metadata_clear(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "metadata.clear", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn metadata_search(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "metadata.search", params.unwrap_or_else(|| json!({})))
+}
+
+#[tauri::command]
+fn metadata_tags(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "metadata.tags", params.unwrap_or_else(|| json!({})))
+}
+
+// `research.synthesize` and `research.extract_entities` are DELIBERATELY not wired, and
+// the omission is enforced by `every_engine_rpc_has_a_registered_tauri_command` rather than
+// left to memory. Both return empty output in the shipped app BY CONSTRUCTION: `main` builds
+// `Sidecar(conn)` with no backend arguments (llm_anthology/sidecar.py:1933, the module's only
+// construction site), so `research_backend` and `local_backend` both fall back to
+// `research.MockBackend()` (`:587-590`), whose `synthesize` returns its `response` — default
+// `""` (llm_anthology/research.py:88-97). The only two `synthesize` implementations in the
+// package are that mock and the Protocol stub (`research.py:76`).
+//
+// Note this holds for BOTH methods, including extraction: `_research_extract_entities` is not
+// a local deterministic pass that would work without a model — it routes through the same
+// `self.research_backend` (`sidecar.py:1286`).
+//
+// A command here would therefore make a guaranteed-empty feature reachable. The owner
+// deferred the feature rather than wire a backend, because it touches a standing privacy
+// rule about this corpus — so wiring it is a decision about that rule, not a gap to fill.
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -256,6 +368,17 @@ pub fn run() {
             graph_diff,
             export_plan,
             export_run,
+            dedup_scan,
+            dedup_sessions,
+            maintenance_plan,
+            maintenance_execute,
+            maintenance_restore,
+            maintenance_runs,
+            metadata_get,
+            metadata_set,
+            metadata_clear,
+            metadata_search,
+            metadata_tags,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -296,6 +419,123 @@ mod tests {
             validate_index_path("").is_err(),
             "an empty path must be rejected, not treated as the cwd"
         );
+    }
+
+    /// Every engine RPC must be EITHER a registered Tauri command spelled by the contract,
+    /// OR explicitly declared deferred with a reason. Silence is not an option.
+    ///
+    /// This is the gate for the failure that produced the 11 commands above: those methods
+    /// were implemented and tested on the Python side and simply had no command here, so
+    /// finished panels had no route to the engine at all. Nothing caught it — a missing
+    /// command is not a compile error, and a command that exists but is absent from
+    /// `invoke_handler` is equally invisible. Only the registration list is searched here,
+    /// for that reason: a name appearing in a comment proves nothing.
+    ///
+    /// It also pins the NAMING CONTRACT (`a.b` -> `a_b`). The TypeScript `invoke` call
+    /// sites are written against that mapping, and a deviation type-checks, passes vitest,
+    /// and throws only when a user presses the button — so a compile-time-invisible typo is
+    /// exactly the class of bug this has to catch.
+    #[test]
+    fn every_engine_rpc_has_a_registered_tauri_command() {
+        // The two commands that deliberately do NOT follow `a.b` -> `a_b`. Both run on a
+        // throwaway index-less engine rather than the managed one, because they are the
+        // first-run verbs — a user with no corpus has no engine to forward to — and both
+        // are named verb-first to say so. Listed explicitly so a THIRD exception has to be
+        // justified here rather than quietly added.
+        const NAMED_EXCEPTIONS: [(&str, &str); 2] = [
+            ("corpus.create", "create_corpus"),
+            ("sources.discover", "discover_sources"),
+        ];
+
+        // RPCs deliberately left unreachable, with the reason. Both research methods return
+        // empty output by construction — the shipped engine's backends are `MockBackend`,
+        // whose `synthesize` returns "" — so a command would only make an empty feature
+        // reachable. Checked in BOTH directions below: a name here that IS registered means
+        // this list went stale, which matters because the entry doubles as the record of a
+        // deferred product decision. Deleting an entry is how you un-defer it.
+        const DEFERRED: [(&str, &str); 2] = [
+            ("research.synthesize", "no LLM backend; MockBackend returns \"\""),
+            ("research.extract_entities", "no LLM backend; MockBackend returns \"\""),
+        ];
+
+        let engine = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("llm_anthology")
+                .join("sidecar.py"),
+        )
+        .expect("read the engine's dispatch table");
+
+        // Dispatch-table entries look like `"a.b": self._handler,`.
+        let methods: Vec<&str> = engine
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                if !tail.trim_start().starts_with(": self._") || !name.contains('.') {
+                    return None;
+                }
+                Some(name)
+            })
+            .collect();
+        // Guard the DETECTOR before trusting its verdict: if the scrape silently stopped
+        // matching, an empty method list would make this test vacuously green — the same
+        // no-op-gate shape it exists to prevent.
+        assert!(
+            methods.len() >= 32,
+            "the dispatch-table scrape found only {} methods, so this gate is not actually \
+             checking anything: {methods:?}",
+            methods.len()
+        );
+
+        let me = include_str!("lib.rs");
+        let start = me
+            .find("tauri::generate_handler![")
+            .expect("the invoke_handler list must be findable");
+        let end = me[start..].find("])").expect("the handler list must terminate");
+        let registered: Vec<&str> = me[start..start + end]
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .collect();
+
+        let command_for = |method: &str| -> String {
+            NAMED_EXCEPTIONS
+                .iter()
+                .find(|(rpc, _)| *rpc == method)
+                .map(|(_, cmd)| (*cmd).to_string())
+                .unwrap_or_else(|| method.replace('.', "_"))
+        };
+
+        // (1) Every non-deferred RPC must be reachable.
+        let missing: Vec<String> = methods
+            .iter()
+            .filter(|m| !DEFERRED.iter().any(|(rpc, _)| rpc == *m))
+            .filter(|m| !registered.contains(&command_for(m).as_str()))
+            .map(|m| format!("{m} -> expected command `{}`", command_for(m)))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "engine RPCs with no registered Tauri command and no DEFERRED entry — the UI \
+             cannot reach these, and nothing records that as intentional: {missing:#?}"
+        );
+
+        // (2) Every deferred RPC must ACTUALLY be unreachable, and must still exist in the
+        //     engine. A deferred name that is registered, or that the engine no longer
+        //     serves, means this list is lying about the shipped surface.
+        let stale: Vec<String> = DEFERRED
+            .iter()
+            .filter_map(|(rpc, why)| {
+                if registered.contains(&command_for(rpc).as_str()) {
+                    Some(format!("{rpc} is DEFERRED ({why}) but IS registered"))
+                } else if !methods.contains(rpc) {
+                    Some(format!("{rpc} is DEFERRED but the engine no longer serves it"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(stale.is_empty(), "the DEFERRED list is out of date: {stale:#?}");
     }
 
     #[test]
