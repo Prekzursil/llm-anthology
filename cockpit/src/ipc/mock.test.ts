@@ -1543,6 +1543,29 @@ describe("sources.discover", () => {
     expect(second.findings.map((f) => f.path)).toEqual(beforePaths);
     expect(second.findings.some((f) => "injected" in f.detail)).toBe(false);
   });
+
+  it("returns fresh stats ARRAYS too, not just a fresh stats object", async () => {
+    // The sibling above covered `findings` and left `stats` half-copied: the spread
+    // `{ ...DISCOVERY.stats }` is shallow, so `errors` and `truncated_groups` — both
+    // arrays, both rendered by the panel — stayed shared by reference across every scan.
+    // The method's own docstring promised "a fresh deep-ish copy so a caller that sorts or
+    // mutates the array in place cannot corrupt the fixture", which was true of findings
+    // and false of exactly the two fields most likely to be sorted for display.
+    //
+    // The damage is cross-test contamination, which is the worst shape for a fixture: one
+    // spec mutating the error list silently changes what a later spec observes, so the
+    // failure surfaces somewhere unrelated and depends on execution order.
+    const first = await mockIpc.discoverSources();
+    const beforeErrors = [...first.stats.errors];
+    const beforeTruncated = [...first.stats.truncated_groups];
+    first.stats.errors.push("injected by a previous caller");
+    first.stats.errors.reverse();
+    first.stats.truncated_groups.push("codex/injected");
+
+    const second = await mockIpc.discoverSources();
+    expect(second.stats.errors).toEqual(beforeErrors);
+    expect(second.stats.truncated_groups).toEqual(beforeTruncated);
+  });
 });
 
 describe("corpus.create / corpus.build / corpus.build_status", () => {

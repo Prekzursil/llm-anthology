@@ -1199,14 +1199,27 @@ export function createMockIpc(
 
     /**
      * The fixture scan. Returns a fresh deep-ish copy so a caller that sorts or mutates
-     * the array in place cannot corrupt the fixture for the next scan — the panel does
+     * anything in place cannot corrupt the fixture for the next scan — the panel does
      * sort, and a shared mutable fixture is how a "why did the order change on rescan?"
      * bug gets born.
+     *
+     * "Deep-ish" has to include the arrays INSIDE `stats`. This was
+     * `stats: { ...DISCOVERY.stats }`, a shallow spread, so `errors` and
+     * `truncated_groups` — both arrays, both rendered by the panel — stayed shared by
+     * reference while the docstring above claimed otherwise. The promise held for
+     * `findings` and failed for exactly the two fields most likely to be sorted for
+     * display. Cross-test contamination is the worst shape for a fixture: one spec
+     * mutating the error list changes what a later spec sees, so the failure surfaces
+     * somewhere unrelated and depends on execution order.
      */
     async discoverSources(): Promise<DiscoveryResult> {
       return {
         findings: DISCOVERY.findings.map((f) => ({ ...f, detail: { ...f.detail } })),
-        stats: { ...DISCOVERY.stats },
+        stats: {
+          ...DISCOVERY.stats,
+          truncated_groups: [...DISCOVERY.stats.truncated_groups],
+          errors: [...DISCOVERY.stats.errors],
+        },
       };
     },
 
