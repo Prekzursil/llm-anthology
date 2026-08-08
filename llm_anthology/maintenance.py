@@ -92,7 +92,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PureWindowsPath
 from typing import Optional, Tuple
 
@@ -181,7 +181,25 @@ class MaintenanceWarning:
 @dataclass(frozen=True)
 class SessionCopy:
     """Ported from Core/Sessions/SessionPhysicalCopy.cs (its SessionPhysicalCopyState
-    fields are flattened here, as the C# record itself does)."""
+    fields are flattened here, as the C# record itself does).
+
+    WHICH FIELDS ARE TRUSTED, ON A COPY THAT CAME FROM A REQUEST:
+
+    * `file_path` is the caller's, and is the ONLY field any safety decision reads — it goes
+      through both confinement layers and the protected-marker test before anything happens.
+    * `size_bytes` is MEASURED, not accepted: `plan_maintenance` overwrites it from disk for
+      every ALLOWED target (see `_measured_size`). Do NOT reintroduce a caller-supplied value
+      here — a UI puts this number on the confirm screen, and it was the one figure there a
+      client could dictate.
+    * `session_id` / `store_kind` are the caller's own labelling, carried through for display
+      and audit. `store_kind` can only ever make a target MORE restricted (a `LIVE` copy is
+      refused outright), never less, so accepting it is safe in the one direction it acts.
+    * `last_write_ms` / `is_hot` are, over the RPC edge, ALWAYS `None` / `False` — that layer
+      never reads them from the request and nothing computes them, so they are dataclass
+      defaults rather than derived facts. An in-process caller may set them; a UI must not
+      present them as measured. `is_hot` in particular gates a REVIEW warning that therefore
+      cannot fire on a request that arrived over the wire.
+    """
     session_id: str
     file_path: str
     store_kind: SessionStoreKind = SessionStoreKind.UNKNOWN
@@ -398,6 +416,37 @@ def _is_protected(copy):
     return _spells_protected(copy.file_path)
 
 
+def _measured_size(file_path):
+    """The size of `file_path` ON DISK, or 0 when it cannot be measured.
+
+    The caller's `size_bytes` is not trusted. It was the ONE number on the preview a client
+    could dictate — the RPC edge forwards it verbatim while never even reading
+    `last_write_ms` or `is_hot` from the request, so those two arrive as their dataclass
+    defaults — and it is not decorative: the cockpit's maintenance panel sums it and prints
+    the total on the confirm screen beside the file count. An inflated claim therefore became
+    the largest and most reassuring figure on the dialog that authorises a delete, while
+    every other number beside it was derived here from what the planner actually found.
+
+    The cost is one `stat` on a path this planner has ALREADY resolved with realpath, so
+    "re-statting is wasted IO" does not hold: the file has been touched either way.
+
+    ONLY EVER CALLED FOR AN ALLOWED TARGET. A refused target is left unmeasured on purpose —
+    it was declined because it is protected or escapes the store, and stat-ing a path the
+    confinement layer just rejected would be a small instance of the access that guard
+    exists to prevent. Nothing reads a blocked target's size.
+
+    0 MEANS UNMEASURABLE, NOT EMPTY: a name that passed both confinement layers but is not a
+    readable regular file (never created, a directory, or gone since planning). Reporting 0
+    is safe because such a target cannot execute anyway — the executor refuses a source that
+    is not a regular file — so an honest 0 is followed by a hard refusal rather than by a
+    silent move.
+    """
+    try:
+        return os.path.getsize(file_path)
+    except OSError:
+        return 0
+
+
 # ------------------------------------------------------------------- the planner
 
 def _effective_destination_root(action, destination_root, checkpoint_root):
@@ -502,7 +551,10 @@ def plan_maintenance(request):
                     "Protected path blocked: %s (%s)" % (target.file_path, verdict[0])))
             continue
         planned_sources.add(os.path.normcase(target.file_path))
-        allowed.append(target)
+        # The size is MEASURED here, not taken from the request — see `_measured_size` for
+        # why that one field mattered. Everything else on the copy is the caller's own
+        # identifying data and is carried through untouched.
+        allowed.append(replace(target, size_bytes=_measured_size(target.file_path)))
         warnings.append(MaintenanceWarning(
             MaintenanceWarningSeverity.DANGEROUS,
             "Dangerous maintenance target: %s" % target.file_path))

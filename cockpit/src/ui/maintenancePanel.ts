@@ -140,9 +140,28 @@ export interface MaintenancePlanView {
   blocked: BlockedRow[];
   allowedCount: number;
   blockedCount: number;
+  /**
+   * Σ `size_bytes` over the ALLOWED targets — and that field is MEASURED by the engine, not
+   * echoed from the request (`llm_anthology/maintenance.py`, `_measured_size`).
+   *
+   * That property is why this number may sit on the confirm screen at all. It used to be
+   * whatever the client put in the plan request, which made the largest and most reassuring
+   * figure on a delete dialog the only one not derived from disk. If a future refactor
+   * reintroduces a caller-supplied size, this total stops being a fact and must either be
+   * dropped or labelled reported-not-measured.
+   */
   totalBytes: number;
   totalBytesLabel: string;
-  /** Allowed targets currently being written (`is_hot`) — each also raises a REVIEW warning. */
+  /**
+   * Allowed targets currently being written (`is_hot`) — each also raises a REVIEW warning.
+   *
+   * ALWAYS 0 over the wire today, and that is not this module's doing: the RPC edge never
+   * reads `is_hot` from the request and nothing computes it, so it arrives as its dataclass
+   * default `false` (`llm_anthology/maintenance.py`, the `SessionCopy` trust note). The
+   * derivation and its render are correct for the day the engine populates it; until then
+   * the hot-file warning cannot fire from a request that came over the wire, so do not read
+   * a 0 here as "nothing is being written".
+   */
   hotCount: number;
   reviewWarnings: string[];
   dangerousWarnings: string[];

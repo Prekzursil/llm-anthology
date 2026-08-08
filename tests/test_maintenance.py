@@ -303,6 +303,76 @@ def test_plan_refuses_to_write_into_a_protected_store_path(tmp_path, action, fie
     assert os.path.isfile(paths[0])
 
 
+def test_plan_measures_the_size_on_disk_and_ignores_the_callers_claim(tmp_path):
+    """`size_bytes` on an ALLOWED target describes the file, not the request.
+
+    It is the one number on the preview a caller could previously dictate: the RPC edge
+    forwards `size_bytes` verbatim (`llm_anthology/sidecar.py:1557`) while never even
+    reading `last_write_ms` or `is_hot` from the request. And it is not decorative — the
+    cockpit's maintenance panel SUMS it and prints the total on the confirm screen beside
+    the file count, so an inflated claim became the largest, most reassuring figure on the
+    dialog that authorises a delete. Every other number there is derived by this planner
+    from what it actually found; this one now is too.
+    """
+    root, paths = _store(tmp_path, "a.jsonl")
+    on_disk = os.path.getsize(paths[0])
+    assert on_disk > 0                                   # the fixture wrote real bytes
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [mt.SessionCopy(session_id="a", file_path=paths[0],
+                                 store_kind=mt.SessionStoreKind.BACKUP,
+                                 size_bytes=999_999_999)],
+                 root, tmp_path))
+    assert [t.size_bytes for t in preview.allowed] == [on_disk]
+
+
+def test_plan_reports_an_unmeasurable_size_as_zero_rather_than_the_claim(tmp_path):
+    """A path that passes confinement but is not a readable file measures 0, not the claim.
+
+    Confinement says nothing about EXISTENCE — a name inside the store that was never
+    created satisfies both layers — so the stat can fail. 0 means UNMEASURABLE here, and it
+    is safe to report because such a target cannot execute anyway: the executor refuses a
+    source that is not a regular file. An honest 0 followed by a hard refusal beats
+    carrying the caller's number into the confirm dialog.
+    """
+    root, _ = _store(tmp_path)
+    ghost = str(tmp_path / "store" / "never-existed.jsonl")
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [mt.SessionCopy(session_id="g", file_path=ghost,
+                                 store_kind=mt.SessionStoreKind.BACKUP,
+                                 size_bytes=4242)],
+                 root, tmp_path))
+    assert [t.size_bytes for t in preview.allowed] == [0]
+    with pytest.raises(mt.MaintenanceRefused, match="not a regular file"):
+        mt.execute_maintenance(preview, "DELETE 1 FILE", apply=True)
+
+
+def test_plan_does_not_measure_a_target_it_refused(tmp_path, monkeypatch):
+    """A REFUSED target is deliberately left unmeasured.
+
+    It was declined precisely because it is protected or escapes the store, so stat-ing it
+    would be a small instance of the very access the confinement layer exists to prevent —
+    and it buys nothing, because nothing will be moved. Asserted on WHICH paths were
+    stat-ed rather than on the resulting number, since a blocked target's `size_bytes` is
+    never read by anything.
+    """
+    root, paths = _store(tmp_path, "keep.jsonl", ".codex/sessions/live.jsonl")
+    measured = []
+    real_getsize = os.path.getsize
+
+    def _recording(path):
+        measured.append(path)
+        return real_getsize(path)
+
+    monkeypatch.setattr(mt.os.path, "getsize", _recording)
+    preview = mt.plan_maintenance(
+        _request(mt.MaintenanceAction.DELETE,
+                 [_copy(paths[0], "keep"), _copy(paths[1], "protected")], root, tmp_path))
+    assert [b.reason for b in preview.blocked] == ["protected"]
+    assert [os.path.normcase(p) for p in measured] == [os.path.normcase(paths[0])]
+
+
 def test_plan_warns_review_on_a_hot_target(tmp_path):
     root, paths = _store(tmp_path, "a.jsonl")
     preview = mt.plan_maintenance(
