@@ -558,6 +558,32 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
   },
 ];
 
+/**
+ * The scan errors the fixture store reports.
+ *
+ * ONE entry, ALWAYS — the fixture models a store holding one rollout whose last line is torn,
+ * which is exactly what a real scan reports: `scan_store` passes
+ * `codex_rollout.ingest_sessions`' errors through verbatim and skips-and-logs a torn last line
+ * (`llm_anthology/dedup.py:244-252`). The copy is lost from the tally, not the whole scan.
+ *
+ * WHY ALWAYS, and the trade-off. The mock has no filesystem, so it cannot DETECT an unreadable
+ * file — the choice is between never populating `errors` and always populating it. Never was
+ * the status quo and it left the panel's error list dead in every dev run, screenshot and
+ * review while the engine could produce one. Always is the same call already made for
+ * `has_larger_copy: true` and `last_write_ms: null` in the fixture above: prefer the value
+ * that EXPOSES a rendering mistake over the one that flatters the code. The cost is real and
+ * worth stating — the mock no longer exercises the zero-errors path. That is the degenerate
+ * case (a panel that renders one error renders none correctly; the reverse does not hold), and
+ * the engine still covers it against a clean store.
+ *
+ * NOTE this is a partial-parse error, NOT a missing store: a missing root is explicitly "an
+ * empty result, not an error" (`dedup.py:249`), so a UI must not present this as "store not
+ * found".
+ */
+const MOCK_DEDUP_ERRORS = [
+  `${HOME}\\.codex\\sessions\\2026\\07\\29\\rollout-torn.jsonl: skipped 1 torn line at EOF`,
+];
+
 /** The scan tally implied by {@link MOCK_DEDUP_SESSIONS}, derived so the two cannot drift. */
 function dedupTally(sessions: DedupSession[], errors: string[]): DedupScanResult {
   let copies = 0;
@@ -659,6 +685,41 @@ function winJoin(...parts: string[]): string {
 /** Case-insensitive path containment, the mock's `os.path.normcase` comparison. */
 function normPath(path: string): string {
   return path.replace(/\//g, "\\").toLowerCase();
+}
+
+/** The engine's protected-store markers, verbatim (`llm_anthology/maintenance.py:277-281`). */
+const PROTECTED_PATH_MARKERS = [
+  "\\.codex\\sessions\\",
+  "\\.codex\\state_5.sqlite",
+  "\\.codex\\codex-sqlite\\",
+];
+
+/**
+ * Does this path name the LIVE Codex store? A port of the engine's `_spells_protected`
+ * (`llm_anthology/maintenance.py:378-387`): separators unified, lowercased, trailing
+ * separators stripped and ONE appended, so a marker matches the directory it names and not
+ * merely a prefix of a longer name (`...\sessionsfoo` must not match `\sessions\`).
+ *
+ * WHY THE MOCK NEEDS THIS AT ALL. `protected` is the live-store guard — the most important
+ * reason a maintenance target is ever refused — and a mock that never produces it left the
+ * panel's `protected` rendering path unexercised while showing an UNDELETABLE file as
+ * deletable. Measured against the engine before this existed: engine blocked
+ * `[duplicate-target, protected]` where the mock blocked only `[duplicate-target]`, and the
+ * two sides demanded different confirmation phrases ("DELETE 1 FILE" vs "DELETE 2 FILES").
+ *
+ * DELIBERATE, DOCUMENTED GAP: the engine tests the literal string AND
+ * `os.path.realpath(path)`, because the marker test is a substring match and
+ * `\.codex\.\sessions\`, a doubled separator, an 8.3 short name or a directory junction each
+ * name the protected file while matching no marker. Only the LITERAL half is portable here —
+ * the mock has no filesystem to resolve — so a mock plan can ALLOW an obfuscated spelling
+ * that the engine refuses. That direction is the safe one (the engine still refuses at
+ * runtime), but it means this is not a validator: never treat a mock `allowed` as proof a
+ * path is safe.
+ */
+function spellsProtected(filePath: string): boolean {
+  const normalized =
+    filePath.replace(/\//g, "\\").toLowerCase().replace(/\\+$/, "") + "\\";
+  return PROTECTED_PATH_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 /**
@@ -1468,7 +1529,7 @@ export function createMockIpc(
       }
       requireLocalPath(codexHome, "codex_home");
       dedupScanned = true;
-      return dedupTally(MOCK_DEDUP_SESSIONS, []);
+      return dedupTally(MOCK_DEDUP_SESSIONS, [...MOCK_DEDUP_ERRORS]);
     },
 
     /**
@@ -1563,6 +1624,26 @@ export function createMockIpc(
           });
           continue;
         }
+        // `protected`: the LIVE-STORE guard. Checked BEFORE the duplicate rule and in this
+        // order deliberately — the engine checks duplicate LAST so that a target which is
+        // both a duplicate AND protected is reported as `protected`, "the more dangerous
+        // reason ... worth recording" (`llm_anthology/maintenance.py:487-489`). Reversing
+        // these two would mislabel exactly the worst case.
+        if (spellsProtected(target.file_path)) {
+          blocked.push({
+            target: copy,
+            reason: "protected",
+            detail: `protected store path: '${target.file_path}'`,
+          });
+          // Not the `duplicate-target` REVIEW branch: every other block reason raises
+          // DANGEROUS with this same wording (`maintenance.py:498-502`).
+          warnings.push({
+            severity: 2,
+            severity_name: "DANGEROUS",
+            message: `Protected path blocked: ${target.file_path} (protected)`,
+          });
+          continue;
+        }
         // `duplicate-target`: two entries naming ONE physical file. The likeliest real UI
         // bug on this surface — feeding `dedup.sessions`' canonical AND duplicate paths
         // straight into a plan does exactly this — and the engine blocks the second rather
@@ -1584,7 +1665,18 @@ export function createMockIpc(
         }
 
         plannedSources.add(key);
-        allowed.push(copy);
+        // `size_bytes` on an ALLOWED target is MEASURED FROM DISK by the engine, never taken
+        // from the caller (`llm_anthology/maintenance.py:419-449`, `_measured_size`) — the
+        // maintenance panel sums it onto the confirm screen, so a client-dictated figure was
+        // the one number on the dialog authorising a delete that a caller could inflate. The
+        // mock has no filesystem to measure, so it reports the engine's OWN fallback for an
+        // unmeasurable path: 0. Echoing the caller's value here would let the mock reproduce
+        // exactly the trust the engine just removed, and a panel built against it would look
+        // correct while displaying an attacker-chosen total.
+        //
+        // A BLOCKED target keeps the caller's value, because the engine deliberately leaves a
+        // refused target unmeasured rather than stat-ing a path it declined.
+        allowed.push({ ...copy, size_bytes: 0 });
         // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:506-508`), so a
         // perfectly healthy plan is never warning-free.
         warnings.push({
@@ -1706,14 +1798,43 @@ export function createMockIpc(
           `no checkpoint manifest at '${manifestPath}'`,
         );
       }
+      const skip = params.skip_unaccounted ?? false;
+      if (typeof skip !== "boolean") {
+        throw rpcError(RPC_INVALID_PARAMS, "skip_unaccounted must be a boolean");
+      }
+
+      // UNACCOUNTED: a recorded move where NEITHER the original nor the checkpoint copy still
+      // exists, so the manifest no longer describes the disk
+      // (`llm_anthology/maintenance.py:731-735`). The mock cannot DETECT that — it has no
+      // filesystem — so it MODELS it, gated on the caller ASKING for the degraded path.
+      //
+      // WHY GATED ON `skip_unaccounted` RATHER THAN ON THE MOVE COUNT. A count rule was tried
+      // first and was worse than the defect it fixed: it made the mock REFUSE a restore the
+      // engine performs cleanly. Right after an applied delete the checkpoint copies all
+      // exist, so the engine reports 0 unaccounted — and the mock, being always in exactly
+      // that state, was raising -32003 on the normal path. That is a FALSE POSITIVE on the
+      // common case, which is strictly worse than an unexercised branch. Measured by the
+      // parity probe as `MOCKERR maintenance.restore` where the engine returned a clean result.
+      //
+      // `skip_unaccounted` is the honest trigger because a caller only ever passes it when it
+      // EXPECTS unaccountable entries — it is the API's own signal for this state.
+      //
+      // DISCLOSED COST: the engine's fail-closed REFUSAL (unaccounted and no skip) is
+      // therefore not reachable from the mock. It cannot be, without inventing unaccountable
+      // entries the engine would not report. The refusal still fires in the shipped app, so a
+      // panel must handle a -32003 from restore even though a dev run will not produce one.
+      const unaccounted = skip && moves.length > 1 ? [moves[0].source] : [];
+      const pending = moves.filter((m) => !unaccounted.includes(m.source));
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
       // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1590-1591`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: params.apply ?? false,
         manifest_path: manifestPath,
-        moves: [...moves],
-        unaccounted: [],
+        // Only the ACCOUNTED moves are pending; an unaccounted entry is reported, never
+        // presented as a completed move.
+        moves: [...pending],
+        unaccounted: [...unaccounted],
       };
     },
 

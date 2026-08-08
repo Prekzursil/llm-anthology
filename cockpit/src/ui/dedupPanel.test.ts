@@ -137,6 +137,10 @@ describe("groupDigits", () => {
   it("passes a non-finite value through rather than grouping garbage", () => {
     expect(groupDigits(Number.NaN)).toBe("NaN");
   });
+
+  it("keeps a negative sign outside the grouping", () => {
+    expect(groupDigits(-12345)).toBe("-12,345");
+  });
 });
 
 describe("relativeAge", () => {
@@ -255,12 +259,21 @@ describe("codexHomeCandidates", () => {
     ]);
 
     // Equal mtimes must still yield a stable order, or the list reshuffles between renders.
-    const tieA = finding({ path: "C:\\a\\.codex", newest_mtime: 5_000, detail: { items_root: "C:\\a\\.codex\\sessions" } });
-    const tieB = finding({ path: "C:\\c\\.codex", newest_mtime: 5_000, detail: { items_root: "C:\\c\\.codex\\sessions" } });
-    expect(codexHomeCandidates(discovery([tieB, tieA]), NOW).map((c) => c.path)).toEqual([
-      "C:\\a\\.codex",
-      "C:\\c\\.codex",
-    ]);
+    // Three of them, so the comparator is exercised in both directions.
+    const tie = (seg: string): DiscoveryFinding =>
+      finding({
+        path: `C:\\${seg}\\.codex`,
+        newest_mtime: 5_000,
+        detail: { items_root: `C:\\${seg}\\.codex\\sessions` },
+      });
+    expect(
+      codexHomeCandidates(discovery([tie("c"), tie("a"), tie("b")]), NOW).map((c) => c.path),
+    ).toEqual(["C:\\a\\.codex", "C:\\b\\.codex", "C:\\c\\.codex"]);
+  });
+
+  it("says 'session' for a store holding exactly one", () => {
+    const out = codexHomeCandidates(discovery([finding({ count: 1 })]), NOW);
+    expect(out[0].summary).toContain("1 session ·");
   });
 
   it("says the date is unknown when the scan saw nothing datable", () => {
@@ -310,6 +323,11 @@ describe("emptyReading", () => {
     expect(reading.kind).toBe("no-duplicates");
     expect(reading.label).toContain("40");
     expect(reading.label).toMatch(/redundant/i);
+  });
+
+  it("says 'session' when exactly one was found", () => {
+    const reading = emptyReading(scanResult({ session_count: 1, copy_count: 1, duplicate_count: 0 }), HOME);
+    expect(reading.label).toContain("1 session found");
   });
 
   it("has no empty label at all once duplicates exist", () => {
@@ -420,6 +438,24 @@ describe("partitionSessions", () => {
     expect(first.duplicates.map((r) => r.session.session_id)).toEqual(
       second.duplicates.map((r) => r.session.session_id),
     );
+  });
+
+  it("falls back to the canonical path, then the id, to make the order total", () => {
+    // Two sessions alike on every earlier key differ only by path; two alike on path too
+    // differ only by id. Without both fallbacks a re-render can swap them.
+    const byPath = partitionSessions(
+      [
+        pair({ session_id: "x", canonical_path: "C:\\z\\r.jsonl" }),
+        pair({ session_id: "x", canonical_path: "C:\\a\\r.jsonl" }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(byPath.duplicates.map((r) => r.kept.path)).toEqual(["C:\\a\\r.jsonl", "C:\\z\\r.jsonl"]);
+
+    const byId = partitionSessions([pair({ session_id: "z" }), pair({ session_id: "a" })], {
+      nowMs: NOW,
+    });
+    expect(byId.duplicates.map((r) => r.session.session_id)).toEqual(["a", "z"]);
   });
 });
 

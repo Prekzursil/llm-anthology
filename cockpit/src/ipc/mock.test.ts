@@ -846,7 +846,24 @@ describe("dedup.scan / dedup.sessions", () => {
     expect(scan.session_count).toBe(rows.length);
     expect(scan.copy_count).toBe(rows.reduce((n, r) => n + r.copy_count, 0));
     expect(scan.duplicate_count).toBe(scan.copy_count - scan.session_count);
-    expect(scan.errors).toEqual([]);
+  });
+
+  it("REPORTS a partial-parse error rather than a silently clean scan", async () => {
+    // The engine can produce one (`scan_store` passes `ingest_sessions`' errors through and
+    // skips a torn last line — `llm_anthology/dedup.py:244-252`), so a mock that always
+    // returned `[]` left the panel's error list dead in every dev run while the shipped app
+    // could populate it. Measured against the engine before this: engine n=1, mock n=0.
+    const scan = await createMockIpc().dedupScan("C:\\Users\\preview\\.codex");
+    expect(scan.errors).toHaveLength(1);
+    expect(typeof scan.errors[0]).toBe("string");
+    // A torn line costs the COPY, not the scan: sessions still come back.
+    expect(scan.session_count).toBeGreaterThan(0);
+  });
+
+  it("hands out a fresh errors array so a caller cannot drain the fixture", async () => {
+    const ipc = createMockIpc();
+    (await ipc.dedupScan("C:\\x")).errors.length = 0;
+    expect((await ipc.dedupScan("C:\\x")).errors).toHaveLength(1);
   });
 
   it("serves every row shape a dedup panel has to survive", async () => {
@@ -1033,6 +1050,51 @@ describe("maintenance.* (the only destructive surface)", () => {
     expect(preview.warnings.some((w) => w.severity_name === "REVIEW")).toBe(true);
   });
 
+  it("BLOCKS a target spelling a protected marker, and keeps it out of allowed", async () => {
+    // `protected` is the LIVE-STORE guard — the most important reason a target is ever
+    // refused. Measured against the engine before the mock implemented it: engine blocked
+    // [duplicate-target, protected] where the mock blocked only [duplicate-target], so the
+    // mock showed an UNDELETABLE file as deletable and demanded a different confirmation
+    // phrase. All three markers are ported from `llm_anthology/maintenance.py:277-281`.
+    const ipc = createMockIpc();
+    for (const spelling of [
+      `${STORE}\\.codex\\sessions\\live.jsonl`,
+      `${STORE}\\.codex\\state_5.sqlite`,
+      `${STORE}\\.codex\\codex-sqlite\\db.sqlite`,
+      // Separator- and case-insensitive, like the engine's normalisation.
+      `${STORE}/.CODEX/SESSIONS/live.jsonl`,
+    ]) {
+      const preview = await ipc.maintenancePlan(planParams([spelling]));
+      expect(preview.allowed).toEqual([]);
+      expect(preview.blocked).toHaveLength(1);
+      expect(preview.blocked[0].reason).toBe("protected");
+      expect(preview.blocked[0].target.file_path).toBe(spelling);
+      // The phrase follows the ALLOWED count, so a fully-blocked plan asks for 0 files.
+      expect(preview.required_typed_confirmation).toBe("DELETE 0 FILES");
+      expect(preview.warnings.some((w) => w.severity_name === "DANGEROUS")).toBe(true);
+    }
+  });
+
+  it("does NOT block a path that merely resembles a marker", async () => {
+    // The engine appends one separator before matching, so `\sessionsfoo` must not match
+    // `\sessions\` (`maintenance.py:380-382`). Over-blocking would be its own bug.
+    const ipc = createMockIpc();
+    for (const safe of [`${STORE}\\.codexsessions\\a.jsonl`, `${STORE}\\sessions\\a.jsonl`]) {
+      const preview = await ipc.maintenancePlan(planParams([safe]));
+      expect(preview.blocked).toEqual([]);
+      expect(preview.allowed).toHaveLength(1);
+    }
+  });
+
+  it("reports a duplicate that is ALSO protected as protected", async () => {
+    // Ordering, not cosmetics: the engine checks duplicate LAST so the more dangerous reason
+    // wins (`maintenance.py:487-489`). Reversing the two mislabels the worst case.
+    const ipc = createMockIpc();
+    const live = `${STORE}\\.codex\\sessions\\live.jsonl`;
+    const preview = await ipc.maintenancePlan(planParams([live, live]));
+    expect(preview.blocked.map((b) => b.reason)).toEqual(["protected", "protected"]);
+  });
+
   it("blocks a target outside the store root", async () => {
     const ipc = createMockIpc();
     const preview = await ipc.maintenancePlan(
@@ -1194,6 +1256,77 @@ describe("maintenance.* (the only destructive surface)", () => {
       "moves",
       "unaccounted",
     ]);
+  });
+
+  it("classifies an unaccountable entry as UNACCOUNTED, not a completed move", async () => {
+    // Measured against the engine before this: given input the engine called "0 moves, 2
+    // unaccounted", the mock said "2 moves, 0 unaccounted" — the OPPOSITE verdict, so a panel
+    // would report a restore that did not happen. A multi-move manifest now models one entry
+    // removed out of band (`llm_anthology/maintenance.py:731-735`).
+    const ipc = createMockIpc();
+    const preview = await ipc.maintenancePlan(
+      planParams([`${STORE}\\a.jsonl`, `${STORE}\\b.jsonl`]),
+    );
+    const done = await ipc.maintenanceExecute({
+      plan_id: preview.plan_id,
+      confirmation: preview.required_typed_confirmation,
+      apply: true,
+    });
+
+    // WITHOUT the opt-in the restore is CLEAN, matching the engine: right after an applied
+    // delete every checkpoint copy exists, so the engine reports 0 unaccounted. An earlier
+    // move-count rule refused here instead and was a false positive on the normal path — the
+    // parity probe caught it as `MOCKERR` against a clean engine result.
+    const clean = await ipc.maintenanceRestore({ manifest_path: done.manifest_path });
+    expect(clean.unaccounted).toEqual([]);
+    expect(clean.moves).toHaveLength(preview.plan.length);
+
+    // With the opt-in, the accounted moves come back and the rest are REPORTED.
+    const partial = await ipc.maintenanceRestore({
+      manifest_path: done.manifest_path,
+      skip_unaccounted: true,
+    });
+    expect(partial.unaccounted).toHaveLength(1);
+    expect(partial.moves).toHaveLength(1);
+    // The unaccounted entry must NOT also appear as a move — that is the whole defect.
+    expect(partial.moves.map((m) => m.source)).not.toContain(partial.unaccounted[0]);
+    expect(partial.moves.length + partial.unaccounted.length).toBe(preview.plan.length);
+  });
+
+  it("still restores a single-move manifest cleanly", async () => {
+    // The common case has to stay reachable: only a MULTI-move manifest models an
+    // out-of-band deletion, so a one-file restore needs no `skip_unaccounted`.
+    const ipc = createMockIpc();
+    const preview = await ipc.maintenancePlan(planParams([`${STORE}\\a.jsonl`]));
+    const done = await ipc.maintenanceExecute({
+      plan_id: preview.plan_id,
+      confirmation: preview.required_typed_confirmation,
+      apply: true,
+    });
+    const back = await ipc.maintenanceRestore({
+      manifest_path: done.manifest_path,
+      apply: true,
+    });
+    expect(back.unaccounted).toEqual([]);
+    expect(back.moves).toHaveLength(1);
+    expect(back.executed).toBe(true);
+  });
+
+  it("refuses a non-boolean skip_unaccounted", async () => {
+    const ipc = createMockIpc();
+    const preview = await ipc.maintenancePlan(planParams([`${STORE}\\a.jsonl`]));
+    const done = await ipc.maintenanceExecute({
+      plan_id: preview.plan_id,
+      confirmation: preview.required_typed_confirmation,
+      apply: true,
+    });
+    const bad = await ipc
+      .maintenanceRestore({
+        manifest_path: done.manifest_path,
+        skip_unaccounted: 1 as unknown as boolean,
+      })
+      .catch((e: unknown) => e);
+    expect(rpcErrorCode(bad)).toBe(RPC_INVALID_PARAMS);
   });
 
   it("refuses a UNC, relative or unknown manifest_path", async () => {
