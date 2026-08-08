@@ -93,12 +93,68 @@ The engine is a **stdio** JSON-RPC server — deliberately not a localhost HTTP 
 
 ## Install
 
-Requires **Python ≥ 3.9**. The only third-party runtime dependency is [markdown-it-py](https://github.com/executablebooks/markdown-it-py) (MIT).
+There are three ways in, and they are three separate artifacts of the same release. Pick
+the one that matches what you want.
 
-> **Not on PyPI yet.** The `llm-anthology` name is unregistered, so install from
-> source until a release is published.
+> **The first release is not published yet.** `llm-anthology` is unregistered on both
+> [PyPI](https://pypi.org/project/llm-anthology/) and
+> [npm](https://www.npmjs.com/package/llm-anthology), and this repository has no version
+> tag, so the two package-manager commands below do not resolve *yet* and there is no
+> installer to download. Until then, use **[From source](#from-source)**. The release
+> runbook is
+> [RELEASING.md](https://github.com/Prekzursil/ai-sessions-render/blob/main/RELEASING.md);
+> delete this note when 0.1.0 ships.
 
-Installing gives you the `llm-anthology` command (short alias: `anth`):
+### The desktop app — Windows
+
+This is the product. Download `LLM Anthology_<version>_x64-setup.exe` from the
+[latest release](https://github.com/Prekzursil/ai-sessions-render/releases/latest) and run
+it.
+
+It is **self-contained**: the installer carries a relocatable CPython
+(python-build-standalone, staged by `cockpit/scripts/stage-engine.ps1`) with the engine
+installed into it, so it needs **neither Python nor any of the packages below** on the
+machine. Roughly a 14 MB download, ~60 MB installed. Each release also carries a
+`.sha256` file if you want to check the download.
+
+Two things to know before you click:
+
+- **Windows only for now.** `bundle.targets` is `["nsis"]` and the bundled interpreter is
+  a Windows build. The engine and CLI below are cross-platform; the desktop app is not
+  yet.
+  [RELEASING.md](https://github.com/Prekzursil/ai-sessions-render/blob/main/RELEASING.md)
+  records what adding macOS/Linux would take.
+- **It is not code-signed.** SmartScreen will warn on download and first run until the
+  binary earns reputation. Verify the `.sha256` if that matters to you.
+
+### The engine and CLI — Python, any OS
+
+Requires **Python ≥ 3.9**. Two third-party runtime dependencies:
+[markdown-it-py](https://github.com/executablebooks/markdown-it-py) (MIT) and
+[zstandard](https://github.com/indygreg/python-zstandard) (BSD) — the latter is not
+optional, because a live Codex store compresses its rollouts and without it that history
+reads as zero conversations.
+
+```bash
+pip install llm-anthology
+```
+
+That gives you the `llm-anthology` command (short alias: `anth`) and the importable
+`llm_anthology` package, which is also what the desktop app talks to over stdio.
+
+### The renderer — npm, any OS
+
+A standalone TypeScript port of the render path (no Python), for scripting an export or
+embedding the renderer:
+
+```bash
+npm install -g llm-anthology     # the CLI
+npm install llm-anthology        # as a library
+```
+
+Requires **Node ≥ 20**.
+
+### From source
 
 ```bash
 git clone https://github.com/Prekzursil/ai-sessions-render
@@ -107,7 +163,7 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-### Desktop cockpit
+And for the desktop app:
 
 ```bash
 cd cockpit
@@ -116,9 +172,12 @@ npm run tauri dev     # develop
 npm run tauri build   # -> src-tauri/target/release/bundle/nsis/*.exe
 ```
 
-The cockpit UI can also be opened in a plain browser (`npm run dev`) — outside Tauri it automatically serves an in-memory mock corpus, so the interface can be previewed, screenshotted and design-reviewed without a Rust build.
+A dev build with nothing staged into `src-tauri/resources/engine` falls back to `python`
+on `PATH`, so you do not need to stage an interpreter to work on the app — run
+`./scripts/stage-engine.ps1` only when you want to test the self-contained installer. See
+[`cockpit/src-tauri/binaries/README.md`](cockpit/src-tauri/binaries/README.md).
 
-The installer is **self-contained**: `cockpit/scripts/stage-engine.ps1` bundles a relocatable CPython (python-build-standalone via `uv`) with the engine installed into it, so an installed app needs neither Python nor this package on the machine. A dev build with nothing staged falls back to `python` on `PATH`. Roughly a 14 MB installer, ~60 MB installed. See [`cockpit/src-tauri/binaries/README.md`](cockpit/src-tauri/binaries/README.md).
+The cockpit UI can also be opened in a plain browser (`npm run dev`) — outside Tauri it automatically serves an in-memory mock corpus, so the interface can be previewed, screenshotted and design-reviewed without a Rust build.
 
 ---
 

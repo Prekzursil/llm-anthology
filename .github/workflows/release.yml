@@ -1,11 +1,31 @@
-name: Release to PyPI
+name: Release
 
-# Publishes on a published GitHub Release, using PyPI Trusted Publishing (OIDC).
-# No API token is ever stored in this repository — GitHub mints a short-lived
-# identity token and PyPI verifies it. One-time setup on PyPI:
-#   PyPI -> your project -> Publishing -> Add a new (pending) publisher
-#     Owner: Prekzursil   Repository: llm-anthology
-#     Workflow: release.yml   Environment: pypi
+# A release of this product is THREE artifacts built from ONE commit:
+#
+#   PyPI   llm-anthology              the engine + CLI           Trusted Publishing (OIDC)
+#   npm    llm-anthology              the TypeScript port        OIDC, or NPM_TOKEN the first time
+#   asset  LLM Anthology_<v>_*.exe    the Windows desktop app    attached to the GitHub Release
+#
+# All three follow the SAME three-job shape, and that shape IS the security design.
+# Do not collapse it:
+#
+#   build    produce the artifact, upload it, then never touch it again.
+#   smoke    `permissions: {}` — no token at all. Downloads the ALREADY-UPLOADED
+#            artifact and drives it. Installing an artifact executes its unbounded
+#            runtime deps (markdown-it-py>=2.2, the npm dep tree, an NSIS installer),
+#            so this job is treated as hostile: it can FAIL the release, but it holds
+#            nothing it could use to alter what ships.
+#   publish  download the SAME artifact `smoke` validated — never a rebuild — and ship it.
+#
+# TRIGGERS ARE NOT SYMMETRIC, and `workflow_dispatch` is NOT a dry run:
+#   release: published  -> PyPI + npm + the installer attached to that release.
+#   workflow_dispatch   -> PyPI + npm publish for real; the installer is built and
+#                          smoke-tested but not uploaded, because there is no release
+#                          to attach it to. Useful as a retry path after a partial
+#                          failure. See RELEASING.md before using it.
+#
+# One-time owner setup this workflow cannot do for itself — PyPI pending publisher,
+# npm auth, and why npm's first publish is special — is in RELEASING.md.
 on:
   release:
     types: [published]
@@ -15,7 +35,9 @@ permissions:
   contents: read
 
 jobs:
+  # ==================================================================== PyPI ===
   build:
+    name: build the python distribution
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +62,7 @@ jobs:
   # upload. Here it downloads an already-uploaded artifact and holds no token:
   # a poisoned dep can fail this job, but cannot alter what pypi publishes.
   smoke:
+    name: packaged wheel smoke test
     needs: build
     runs-on: ubuntu-latest
     permissions: {}          # no token at all; nothing to steal, nothing to push
@@ -59,6 +82,7 @@ jobs:
           test -s /tmp/demo.html
 
   pypi:
+    name: publish to PyPI
     needs: [build, smoke]    # publish only if the artifact smoke-tested clean
     runs-on: ubuntu-latest
     environment: pypi
@@ -71,3 +95,345 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ===================================================================== npm ===
+  js-build:
+    name: build the npm tarball
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run typecheck
+      # enforces 100% statements/lines/functions + the branch floor
+      - run: npm test
+      - run: npm run build
+
+      # `npm pack` writes exactly the bytes `npm publish` would have uploaded, so
+      # packing here and publishing THIS file later is what lets the smoke job run
+      # tokenless without also letting it rebuild what ships.
+      - name: pack, and put the tarball where upload-artifact can see it
+        run: |
+          TGZ=$(npm pack --silent)
+          mkdir -p ../npm-dist
+          mv "$TGZ" ../npm-dist/
+          ls -l ../npm-dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-dist
+          path: npm-dist/
+
+  js-smoke:
+    name: packaged npm artifact smoke test
+    needs: js-build
+    runs-on: ubuntu-latest
+    permissions: {}          # same reasoning as the `smoke` job above
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-dist
+          path: npm-dist/
+      # Mirrors ci.yml's `js-package` job, but against the tarball that will actually
+      # be published rather than one repacked in this job.
+      - name: install the tarball into a throwaway project and drive the CLI
+        run: |
+          mkdir -p /tmp/smoke && cd /tmp/smoke && npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/npm-dist/*.tgz
+          npx llm-anthology demo /tmp/demo.html
+      - name: postcondition - the demo page exists and is real HTML
+        run: |
+          test -s /tmp/demo.html
+          head -c 15 /tmp/demo.html | grep -qi '<!doctype html'
+
+  npm:
+    name: publish to npm
+    needs: [js-build, js-smoke]
+    runs-on: ubuntu-latest
+    # Deliberately NO `environment:` here, unlike the pypi job. npm's trusted-publisher
+    # form has its own optional Environment field, and if the two do not match exactly
+    # the OIDC claim is rejected. Leaving it off removes a first-release failure mode
+    # for no lost capability. To add an approval gate later, set Environment on
+    # npmjs.com AND add the identical `environment:` line here — both or neither.
+    permissions:
+      id-token: write        # OIDC trusted publishing AND `--provenance`
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-dist
+          path: npm-dist/
+
+      # Trusted publishing needs npm >= 11.5.1 and node >= 22.14.0; the npm bundled
+      # with setup-node's "22" is not guaranteed to clear that floor, so raise it and
+      # PRINT both, because "OIDC silently fell back to anonymous" is the failure this
+      # catches.
+      - name: raise npm above the trusted-publishing floor
+        run: |
+          npm install -g npm@latest
+          node --version
+          npm --version
+
+      # Two auth paths, and which one is live is not a detail the log should have to be
+      # guessed at. npm cannot CREATE a package over OIDC -- a trusted publisher is
+      # configured on an existing package's settings page -- so the FIRST publish of a
+      # name needs a token. Once 0.1.0 exists, delete the secret and this falls through
+      # to OIDC with no workflow edit.
+      - name: select the auth path without printing the token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "auth: NPM_TOKEN (required for the first publish of a new package name)"
+            # The single quotes are the point, so SC2016 is inverted here: ${NPM_TOKEN}
+            # must reach .npmrc UNEXPANDED. npm resolves it from the environment at
+            # read time, so the token itself is never written to disk or echoed.
+            # shellcheck disable=SC2016
+            printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$HOME/.npmrc"
+          else
+            echo "auth: OIDC trusted publishing (no NPM_TOKEN secret is set)"
+            echo "NOTE: this path requires the package to ALREADY exist on npm."
+          fi
+
+      # The SAME tarball `js-smoke` validated. --ignore-scripts because a tarball
+      # publish must not execute repo lifecycle scripts (js/package.json's
+      # prepublishOnly rebuilds and re-tests) -- that would put a build back inside
+      # the token-holding job, which is the exact property this shape exists to avoid.
+      - name: publish the validated tarball
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TGZ=$(ls npm-dist/*.tgz)
+          echo "publishing $TGZ"
+          npm publish "$TGZ" --provenance --access public --ignore-scripts
+
+  # ====================================================== Windows installer ===
+  # The cockpit IS the product; a PyPI-only release ships the engine and not the app.
+  #
+  # WINDOWS ONLY, deliberately, and it is not a workflow limitation:
+  #   * tauri.conf.json:28 sets bundle.targets to ["nsis"], which exists only on Windows.
+  #   * The bundled engine is a Windows CPython -- cockpit/scripts/stage-engine.ps1:46
+  #     matches `cpython-<v>-windows-x86_64*` -- staged by a PowerShell-only script.
+  # Adding macOS/Linux is therefore NOT a matrix line. It needs a POSIX port of
+  # stage-engine (a different python-build-standalone triple), dmg/deb/appimage added
+  # to bundle.targets, and for macOS an Apple Developer ID plus notarization secrets,
+  # since an unsigned .dmg is Gatekeeper-blocked on arrival. That is a feature, not a
+  # release chore, and shipping an untested bundle for a platform whose engine cannot
+  # be staged would produce an installer with no engine in it. See RELEASING.md.
+  installer-build:
+    name: build the windows installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: cockpit
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cockpit/package-lock.json
+
+      # Pinned to match ci.yml's cockpit job: a floating @stable would change the
+      # compiler under a release build.
+      - uses: dtolnay/rust-toolchain@1.91.0
+
+      # NOTE: deliberately no Swatinem/rust-cache here, unlike ci.yml. CI caches to
+      # keep fix iterations cheap; a release build is rare and should not be able to
+      # link a stale cached artifact into a shipped binary. Cold build, every time.
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # stage-engine.ps1 drives `uv python install` to fetch a relocatable CPython.
+      # Installing uv from PyPI rather than via a third-party action keeps this to
+      # one pinned-by-lockstep dependency. The runner's own Python is irrelevant --
+      # the script stages the uv-managed 3.12 standalone build, not this one.
+      - name: install uv (stage-engine.ps1 needs it)
+        run: python -m pip install --disable-pip-version-check uv
+
+      # THIS IS THE STEP THAT MAKES THE INSTALLER SHIPPABLE, and it is the one
+      # difference from ci.yml's cockpit job. ci.yml only `mkdir -p`s an EMPTY
+      # src-tauri/resources/engine, because tauri-build resolves bundle.resources at
+      # COMPILE time and a missing directory is a hard ResourcePathNotFound -- an
+      # empty one is enough to prove the code compiles, and ci.yml says so at :234
+      # and refuses to upload what it built. A release needs the real thing: without
+      # it the installer ships with no interpreter and the installed app falls back to
+      # `python` on the user's PATH, which is exactly the requirement the bundled
+      # engine exists to remove. The directory is gitignored (.gitignore:46), so a
+      # clean checkout has nothing there and this cannot be skipped.
+      #
+      # The script self-verifies before returning: it installs the engine into the
+      # staged interpreter and then, from a cwd with no repo on it, asserts the
+      # interpreter can `import llm_anthology` and run `-m llm_anthology.sidecar
+      # --help` (stage-engine.ps1:97-105). It ends on `SUCCESS:stage-engine`.
+      - name: stage the real engine into src-tauri/resources/engine
+        shell: pwsh
+        run: ./scripts/stage-engine.ps1
+
+      - run: npm ci
+      # `npx tauri build` also runs beforeBuildCommand (`npm run build` = tsc && vite
+      # build) per tauri.conf.json:10, so a type error fails the release here.
+      - name: tauri build (nsis)
+        run: npx tauri build
+
+      # Fail loudly rather than uploading an empty artifact. productName is
+      # "LLM Anthology", so the filename contains a space -- quote every path.
+      - name: locate the installer and record its digest
+        shell: pwsh
+        run: |
+          $nsis = Join-Path (Get-Location) 'src-tauri/target/release/bundle/nsis'
+          # Exact .Extension rather than -Filter (the legacy wildcard matcher), and @()
+          # around the result: Get-ChildItem returns a bare FileInfo for a single match,
+          # so an unwrapped .Count is only reliable by accident.
+          $exe = Get-ChildItem -LiteralPath $nsis -File -ErrorAction Stop |
+                 Where-Object { $_.Extension -eq '.exe' }
+          if (@($exe).Count -ne 1) { throw "expected exactly 1 installer in $nsis, found $(@($exe).Count)" }
+          New-Item -ItemType Directory -Force -Path ../installer-dist | Out-Null
+          Copy-Item -LiteralPath $exe.FullName -Destination ../installer-dist/
+          $hash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Set-Content -LiteralPath "../installer-dist/$($exe.Name).sha256"
+          Write-Host ("installer: {0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB))
+          Write-Host "sha256: $hash"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer-dist
+          path: installer-dist/
+
+  installer-smoke:
+    name: installed desktop app smoke test
+    needs: installer-build
+    runs-on: windows-latest
+    permissions: {}          # same reasoning as the `smoke` job above
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: installer-dist
+          path: installer-dist/
+
+      # Tier 1 -- cannot flake, and catches the specific regression that matters.
+      # A correctly staged installer is ~14 MB (README.md:115, measured); one built
+      # over an EMPTY resources/engine is only the Rust binary plus the web assets, a
+      # few MB. So a floor well above that but well below 14 separates "the engine got
+      # staged" from "it silently did not". This is the check that would have caught a
+      # release built the way ci.yml builds.
+      - name: the installer is large enough to contain an engine
+        shell: pwsh
+        run: |
+          # This directory holds BOTH the installer and its .exe.sha256 sidecar, so the
+          # match has to be exact. (Measured: -Filter '*.exe' does NOT also return the
+          # sidecar -- .sha256 shortens to .SHA, not .EXE -- but comparing .Extension
+          # says so directly instead of depending on that.)
+          $exe = Get-ChildItem -LiteralPath 'installer-dist' -File -ErrorAction Stop |
+                 Where-Object { $_.Extension -eq '.exe' }
+          if (@($exe).Count -ne 1) { throw "expected exactly 1 installer, found $(@($exe).Count)" }
+          $mb = $exe.Length / 1MB
+          Write-Host ("{0}: {1:N1} MB" -f $exe.Name, $mb)
+          if ($mb -lt 8) {
+            throw "installer is only $([math]::Round($mb,1)) MB; an engine-bearing build is ~14 MB. The staged interpreter is almost certainly missing."
+          }
+          "$($exe.FullName)" | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-path.txt"
+
+      - name: the recorded sha256 matches the bytes that arrived
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -LiteralPath 'installer-dist' -File |
+                 Where-Object { $_.Extension -eq '.exe' }
+          $expected = ((Get-Content -LiteralPath "installer-dist/$($exe.Name).sha256") -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "digest mismatch: recorded $expected, got $actual" }
+          Write-Host "sha256 ok: $actual"
+
+      # Tier 2 -- the real end-to-end packaging proof. Silently install, then drive
+      # the ENGINE THE INSTALLER CARRIED, not one on PATH. NSIS: /S is silent and /D
+      # sets $INSTDIR, must be last, and must NOT be quoted. sidecar.rs resolves
+      # <exe_dir>/engine/python.exe first (stage-engine.ps1:17), so that path existing
+      # and running is the postcondition that proves the app is self-contained.
+      - name: install silently and drive the engine the installer shipped
+        shell: pwsh
+        run: |
+          $exe = (Get-Content -LiteralPath "$env:RUNNER_TEMP/installer-path.txt").Trim()
+          $dest = 'C:\aisr-smoke'
+          Write-Host "installing $exe -> $dest"
+          $p = Start-Process -FilePath $exe -ArgumentList '/S', "/D=$dest" -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "silent install failed with exit code $($p.ExitCode)" }
+
+          # Tauri's NSIS can launch the app after install; a running GUI would hold
+          # files open for the assertions below.
+          Get-Process -Name 'LLM Anthology' -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+          $app = Join-Path $dest 'LLM Anthology.exe'
+          $py = Join-Path $dest 'engine\python.exe'
+          foreach ($needed in @($app, $py)) {
+            if (-not (Test-Path -LiteralPath $needed)) {
+              Write-Host "--- installed tree ---"
+              Get-ChildItem -LiteralPath $dest | Select-Object Name, Length | Out-String | Write-Host
+              throw "the installed app is missing $needed"
+            }
+          }
+
+          # Run from a directory with no repo on it, so nothing resolves by accident.
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & $py -c "import llm_anthology, os; print('engine at', os.path.dirname(llm_anthology.__file__))"
+            if ($LASTEXITCODE -ne 0) { throw "the shipped engine cannot import llm_anthology" }
+            & $py -m llm_anthology.sidecar --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "the shipped engine cannot run the sidecar module" }
+          } finally { Pop-Location }
+          Write-Host "SUCCESS:installer-smoke the installed app carries a working engine"
+
+  installer-attach:
+    name: attach the installer to the release
+    needs: [installer-build, installer-smoke]
+    # There is nothing to attach on workflow_dispatch -- no release exists. The build
+    # and both smoke tiers still run, so a dispatch is a genuine rehearsal of the
+    # installer path even though it cannot upload. (It is NOT a rehearsal of the PyPI
+    # or npm paths: those publish for real. See the trigger note at the top.)
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # the only job in this file that can write to the repo
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: installer-dist
+          path: installer-dist/
+
+      # A tag that disagrees with the built version means the release points at the
+      # wrong commit, or a version bump was missed. tests/test_release_version_sync.py
+      # keeps the five declared versions equal to each other; this keeps the TAG equal
+      # to them.
+      - name: the tag and the built installer agree on the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          exe=$(ls installer-dist/*.exe)
+          echo "tag=$TAG version=$version artifact=$exe"
+          case "$(basename "$exe")" in
+            *"$version"*) echo "ok: the installer filename carries $version" ;;
+            *) echo "FAILED: release is tagged $TAG but the installer is not $version"; exit 1 ;;
+          esac
+
+      # --clobber so re-running after a transient failure replaces the asset instead
+      # of erroring on a name collision.
+      - name: upload the validated installer as a release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" installer-dist/*.exe installer-dist/*.sha256 --clobber
