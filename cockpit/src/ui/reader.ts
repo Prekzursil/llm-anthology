@@ -18,9 +18,15 @@
  * is treated as data at every point.
  */
 
-import type { IpcClient, Conversation, ConversationAvailable } from "../ipc";
+import type {
+  IpcClient,
+  Conversation,
+  ConversationAvailable,
+  ConversationTurn,
+} from "../ipc";
 import { engineErrorText } from "./errors";
 import {
+  blockClass,
   blockDisplay,
   readerSubtitle,
   readerTitle,
@@ -28,6 +34,7 @@ import {
   stubExplanation,
   turnWhen,
 } from "./readerPresent";
+import { moreButtonLabel, turnWindow, windowStatus } from "./readerWindow";
 
 export class ReaderOverlay {
   private readonly root: HTMLElement;
@@ -40,6 +47,13 @@ export class ReaderOverlay {
   /** Guards against a slow open being overwritten by, or overwriting, a newer one. */
   private latest = 0;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
+  /** The turns of the open conversation; only the first {@link shownTurns} are in the DOM. */
+  private turns: ConversationTurn[] = [];
+  private shownTurns = 0;
+  /** The reveal footer, kept as a permanent LAST child so appends never move it. */
+  private moreEl: HTMLElement | null = null;
+  private moreStatusEl: HTMLElement | null = null;
+  private moreBtn: HTMLButtonElement | null = null;
 
   constructor(private readonly ipc: IpcClient, container: HTMLElement) {
     this.root = container;
@@ -104,7 +118,7 @@ export class ReaderOverlay {
     this.root.hidden = false;
     this.titleEl.textContent = "Loading…";
     this.subtitleEl.textContent = "";
-    this.bodyEl.replaceChildren();
+    this.resetBody();
     this.closeBtn.focus();
 
     let conv: Conversation;
@@ -125,7 +139,7 @@ export class ReaderOverlay {
     // then reappear when the user next opens one.
     this.latest++;
     this.root.hidden = true;
-    this.bodyEl.replaceChildren();
+    this.resetBody();
     this.returnFocusTo?.focus();
     this.returnFocusTo = null;
   }
@@ -141,7 +155,8 @@ export class ReaderOverlay {
       const note = document.createElement("p");
       note.className = "reader-stub";
       note.textContent = stubExplanation(conv);
-      this.bodyEl.replaceChildren(note);
+      this.resetBody();
+      this.bodyEl.append(note);
       return;
     }
     const available = conv as ConversationAvailable;
@@ -157,49 +172,127 @@ export class ReaderOverlay {
       // so beats an empty pane that is indistinguishable from a failed render.
       note.textContent = "This session parsed successfully but contains no messages — it "
         + "holds only bookkeeping records.";
-      this.bodyEl.replaceChildren(note);
+      this.resetBody();
+      this.bodyEl.append(note);
       return;
     }
-    this.bodyEl.replaceChildren(...available.turns.map((turn) => {
-      const el = document.createElement("article");
-      el.className = `reader-turn reader-turn-${turn.role || "unknown"}`;
-
-      const meta = document.createElement("div");
-      meta.className = "reader-turn-meta";
-      const who = document.createElement("span");
-      who.className = "reader-role";
-      who.textContent = roleLabel(turn.role);
-      const when = document.createElement("time");
-      when.className = "reader-when";
-      when.textContent = turnWhen(turn.timestamp ?? "");
-      if (turn.timestamp) when.dateTime = turn.timestamp;
-      meta.append(who, when);
-
-      el.append(meta, ...turn.blocks.map((raw) => {
-        const shown = blockDisplay(raw);
-        const wrap = document.createElement("div");
-        wrap.className = `reader-block reader-block-${cssClass(shown.kind)}`;
-        if (shown.label !== "") {
-          const badge = document.createElement("span");
-          badge.className = "reader-badge";
-          badge.textContent = shown.label;
-          wrap.append(badge);
-        }
-        const body = document.createElement("pre");
-        body.className = "reader-text";
-        // `pre` + textContent: transcripts are whitespace-significant (code, diffs, tool
-        // output) and are never interpreted as markup.
-        body.textContent = shown.body;
-        wrap.append(body);
-        return wrap;
-      }));
-      return el;
-    }));
+    // Windowed, not all at once. Measured over this machine's 13,099 real Claude Code
+    // sessions: the worst case is 2,562 turns / 22,319 blocks / 25.0M characters, which this
+    // method used to build in a single `replaceChildren` — roughly 66,000 elements. See
+    // `readerWindow.ts` for the distribution and for why `VirtualList` is not the tool.
+    this.resetBody();
+    this.turns = available.turns;
+    this.mountMoreFooter();
+    this.revealMore();
+    // First paint only. `revealMore` must NOT touch scrollTop — the user is mid-transcript
+    // when they ask for more, and yanking them back to the top is the same class of defect
+    // as losing their focus.
     this.bodyEl.scrollTop = 0;
   }
-}
 
-/** Reduce a block type to a safe CSS class suffix. */
-function cssClass(kind: string): string {
-  return kind.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "unknown";
+  /**
+   * Empty the transcript AND forget the footer.
+   *
+   * The two must happen together. Clearing `bodyEl` alone leaves `moreEl` pointing at a node
+   * that is no longer a child, and `insertBefore` against a detached anchor throws
+   * `NotFoundError` — so a stub conversation opened after a long one would break the next
+   * long one rather than the one that caused it.
+   */
+  private resetBody(): void {
+    this.bodyEl.replaceChildren();
+    this.turns = [];
+    this.shownTurns = 0;
+    this.moreEl = null;
+    this.moreStatusEl = null;
+    this.moreBtn = null;
+  }
+
+  /** The reveal control, mounted once and never rebuilt, so appending cannot move it. */
+  private mountMoreFooter(): void {
+    const foot = document.createElement("div");
+    foot.className = "reader-more";
+    const status = document.createElement("p");
+    status.className = "reader-more-status";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "reader-more-btn";
+    btn.addEventListener("click", () => this.revealMore());
+    foot.append(status, btn);
+    this.bodyEl.append(foot);
+    this.moreEl = foot;
+    this.moreStatusEl = status;
+    this.moreBtn = btn;
+  }
+
+  /**
+   * Add the next window of turns.
+   *
+   * APPEND-ONLY, and that is the whole safety argument. `VirtualList.paint()` rebuilds its
+   * window with `sizer.replaceChildren()`, which detaches whatever held focus and drops the
+   * user at `<body>` — measured at 38 of 1,000 rows reachable by Tab, and the reason
+   * `tools/probe_keyboard_reach.mjs` exists. Nothing here rebuilds an existing node: new
+   * turns are inserted BEFORE a footer that is mounted once, so focus and scroll position
+   * are untouched by construction rather than restored afterwards.
+   */
+  private revealMore(): void {
+    const win = turnWindow(this.turns.length, this.shownTurns);
+    const fragment = document.createDocumentFragment();
+    for (let i = win.from; i < win.end; i++) fragment.append(this.renderTurn(this.turns[i]));
+    this.bodyEl.insertBefore(fragment, this.moreEl);
+    this.shownTurns = win.end;
+
+    const label = moreButtonLabel(win.remaining);
+    if (this.moreStatusEl !== null) {
+      this.moreStatusEl.textContent = windowStatus(this.shownTurns, this.turns.length);
+    }
+    if (label === null) {
+      // Everything is shown. Removing the button would orphan focus at `<body>` if it is
+      // what the user just clicked, so hand focus to the transcript itself — which is
+      // `tabIndex = 0` precisely so it can be scrolled by keyboard.
+      const hadFocus = this.moreBtn !== null && document.activeElement === this.moreBtn;
+      this.moreEl?.remove();
+      this.moreEl = null;
+      this.moreStatusEl = null;
+      this.moreBtn = null;
+      if (hadFocus) this.bodyEl.focus({ preventScroll: true });
+      return;
+    }
+    if (this.moreBtn !== null) this.moreBtn.textContent = label;
+  }
+
+  private renderTurn(turn: ConversationTurn): HTMLElement {
+    const el = document.createElement("article");
+    el.className = `reader-turn reader-turn-${blockClass(turn.role)}`;
+
+    const meta = document.createElement("div");
+    meta.className = "reader-turn-meta";
+    const who = document.createElement("span");
+    who.className = "reader-role";
+    who.textContent = roleLabel(turn.role);
+    const when = document.createElement("time");
+    when.className = "reader-when";
+    when.textContent = turnWhen(turn.timestamp ?? "");
+    if (turn.timestamp) when.dateTime = turn.timestamp;
+    meta.append(who, when);
+
+    el.append(meta, ...turn.blocks.map((raw) => {
+      const shown = blockDisplay(raw);
+      const wrap = document.createElement("div");
+      wrap.className = `reader-block reader-block-${blockClass(shown.kind)}`;
+      if (shown.label !== "") {
+        const badge = document.createElement("span");
+        badge.className = "reader-badge";
+        badge.textContent = shown.label;
+        wrap.append(badge);
+      }
+      const body = document.createElement("pre");
+      body.className = "reader-text";
+      // `pre` + textContent: transcripts are whitespace-significant (code, diffs, tool
+      // output) and are never interpreted as markup.
+      body.textContent = shown.body;
+      wrap.append(body);
+      return wrap;
+    }));
+    return el;
+  }
 }

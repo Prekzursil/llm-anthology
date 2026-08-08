@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BLOCK_KINDS,
+  blockClass,
   blockDisplay,
   readerSubtitle,
   readerTitle,
@@ -167,5 +168,57 @@ describe("stubExplanation", () => {
 
   it("never returns an empty explanation, even with no reason given", () => {
     expect(stubExplanation(stub("")).trim()).not.toBe("");
+  });
+});
+
+describe("the defensive fallbacks, which the wire can actually hit", () => {
+  // These `??` arms were the only uncovered branches on the reader path. They are not
+  // dead code: `_serialize_turn` builds each block dict field by field, so a payload that
+  // omits one arrives as `undefined` at runtime even though the DTO types it as present.
+  // A cast is the honest way to state "this is a shape the engine can send and the type
+  // cannot describe" — the alternative is an untested branch guarding exactly that case.
+  it("survives a block with no `text` and no `data` at all", () => {
+    expect(blockDisplay({ type: "text" } as ConversationBlock))
+      .toEqual({ kind: "text", label: "", body: "(empty)" });
+  });
+
+  it("titles a conversation that carries no title field", () => {
+    expect(readerTitle({ id: "c1" })).toBe("untitled · c1");
+  });
+
+  it("explains a stub that carries no reason field", () => {
+    const bare = { id: "c1", turns: [], available: false } as unknown as ConversationStub;
+    expect(stubExplanation(bare)).toBe("This conversation has no readable transcript.");
+  });
+});
+
+describe("blockClass", () => {
+  // Lived in `reader.ts` as a private helper, where no test could reach it — so the one
+  // function on this path that sanitizes an ENGINE-SUPPLIED string had no coverage at all.
+  it("passes a plain type through", () => {
+    expect(blockClass("text")).toBe("text");
+  });
+
+  it("folds separators to a dash and lowercases, so one type is one class", () => {
+    expect(blockClass("tool_use")).toBe("tool-use");
+    expect(blockClass("TOOL_USE")).toBe("tool-use");
+  });
+
+  it("falls back to `unknown` rather than emitting a bare `reader-block-`", () => {
+    expect(blockClass("")).toBe("unknown");
+  });
+
+  it("reduces ANY engine-supplied type to characters legal in a class name", () => {
+    // `block.type` comes from the adapters, i.e. from files on disk. It is interpolated
+    // straight into a className, so whatever arrives must come out as [a-z0-9-] and nothing
+    // else — no spaces to split the attribute into extra classes, no quotes, no angle
+    // brackets. BLOCK_KINDS is walked too, so a type added engine-side cannot quietly
+    // produce a malformed class.
+    for (const hostile of ['x" onload="y', "a b\tc", "<script>", "../../etc", "ünïcøde"]) {
+      expect(blockClass(hostile)).toMatch(/^[a-z0-9-]+$/);
+    }
+    for (const kind of BLOCK_KINDS) {
+      expect(blockClass(kind)).toMatch(/^[a-z0-9-]+$/);
+    }
   });
 });

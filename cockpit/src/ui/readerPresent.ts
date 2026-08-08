@@ -77,6 +77,19 @@ export function blockDisplay(block: ConversationBlock): BlockDisplay {
   };
 }
 
+/**
+ * Reduce a block type to a safe CSS class suffix.
+ *
+ * `block.type` originates in a file on disk, by way of the adapters, and is interpolated
+ * into a `className`. Everything outside `[a-z0-9]` collapses to a dash, so a type carrying
+ * a space (which would split the attribute into two classes) or a quote cannot reach the
+ * DOM as anything but a class name. An empty result becomes `unknown` rather than leaving a
+ * dangling `reader-block-`.
+ */
+export function blockClass(kind: string): string {
+  return kind.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "unknown";
+}
+
 /** Who is speaking. An unexpected role is shown as itself rather than guessed at. */
 export function roleLabel(role: string): string {
   if (role === "human") return "You";
