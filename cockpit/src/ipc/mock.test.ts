@@ -1244,7 +1244,17 @@ describe("maintenance.* (the only destructive surface)", () => {
     });
     const dry = await ipc.maintenanceRestore({ manifest_path: done.manifest_path });
     expect(dry.executed).toBe(false);
-    expect(dry.moves).toEqual(preview.plan);
+    // A restore move points the OTHER WAY than the plan that created it: the checkpoint copy
+    // is the source and the original path is the destination
+    // (`llm_anthology/maintenance.py:792-793`). The mock used to echo the plan verbatim, which
+    // renders as an arrow pointing backwards in any panel that shows "moving X -> Y".
+    expect(dry.moves).toEqual(
+      preview.plan.map((m) => ({
+        session_id: m.session_id,
+        source: m.destination,
+        destination: m.source,
+      })),
+    );
     const back = await ipc.maintenanceRestore({
       manifest_path: done.manifest_path,
       apply: true,
@@ -1256,6 +1266,13 @@ describe("maintenance.* (the only destructive surface)", () => {
       "moves",
       "unaccounted",
     ]);
+    // An APPLIED restore cannot be replayed — the engine's first check
+    // (`maintenance.py:750-752`) refuses a checkpoint already restored.
+    const replay = await ipc
+      .maintenanceRestore({ manifest_path: done.manifest_path, apply: true })
+      .catch((e: unknown) => e);
+    expect(rpcErrorCode(replay)).toBe(RPC_MAINTENANCE_REFUSED);
+    expect(String((replay as Error).message)).toMatch(/already restored/);
   });
 
   it("classifies an unaccountable entry as UNACCOUNTED, not a completed move", async () => {
@@ -1281,16 +1298,18 @@ describe("maintenance.* (the only destructive surface)", () => {
     expect(clean.unaccounted).toEqual([]);
     expect(clean.moves).toHaveLength(preview.plan.length);
 
-    // With the opt-in, the accounted moves come back and the rest are REPORTED.
+    // With the opt-in, the checkpoint copies are gone AND the originals were already moved
+    // away by the execute, so the engine's per-entry rule (`maintenance.py:784-788`) makes
+    // EVERY entry unaccounted and leaves NOTHING pending. Measured against the engine on this
+    // exact input: 0 moves, 2 unaccounted. An earlier "exactly one" rule reported 1 and 1.
     const partial = await ipc.maintenanceRestore({
       manifest_path: done.manifest_path,
       skip_unaccounted: true,
     });
-    expect(partial.unaccounted).toHaveLength(1);
-    expect(partial.moves).toHaveLength(1);
-    // The unaccounted entry must NOT also appear as a move — that is the whole defect.
-    expect(partial.moves.map((m) => m.source)).not.toContain(partial.unaccounted[0]);
-    expect(partial.moves.length + partial.unaccounted.length).toBe(preview.plan.length);
+    expect(partial.unaccounted).toHaveLength(preview.plan.length);
+    expect(partial.moves).toEqual([]);
+    // An unaccounted entry names the ORIGINAL path, and must never also appear as a move.
+    expect(partial.unaccounted).toEqual(preview.plan.map((m) => m.source));
   });
 
   it("still restores a single-move manifest cleanly", async () => {

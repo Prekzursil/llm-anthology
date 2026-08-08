@@ -102,12 +102,16 @@ const main = async () => {
 
   // -- Duplicates -------------------------------------------------------------
   // Opened from the KEYBOARD, so the first panel gesture in this probe is the one a
-  // pointer-free user has to make.
-  await page.focus("#btn-dedup");
-  await page.keyboard.press("Enter");
+  // pointer-free user has to make. `locator.press` focuses and presses atomically; the
+  // focused id is reported either way, because "the button did nothing" and "the key never
+  // reached the button" are different faults and the detail line has to tell them apart.
+  const dedupNav = page.locator("#btn-dedup");
+  await dedupNav.focus();
+  const focusedBefore = await page.evaluate(() => document.activeElement?.id ?? "(none)");
+  await dedupNav.press("Enter");
   await page.waitForTimeout(500);
   check("pressing Enter on Duplicates OPENS the workspace",
-    await page.locator("#workspace").isVisible());
+    await page.locator("#workspace").isVisible(), `focus was #${focusedBefore}`);
   check("the Duplicates pane is the one showing",
     (await page.locator("#dedup-panel").isVisible())
     && (await page.locator("#btn-dedup").getAttribute("aria-expanded")) === "true");

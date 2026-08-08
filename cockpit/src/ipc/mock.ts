@@ -687,7 +687,7 @@ function normPath(path: string): string {
   return path.replace(/\//g, "\\").toLowerCase();
 }
 
-/** The engine's protected-store markers, verbatim (`llm_anthology/maintenance.py:277-281`). */
+/** The engine's protected-store markers, verbatim (`llm_anthology/maintenance.py:295-299`). */
 const PROTECTED_PATH_MARKERS = [
   "\\.codex\\sessions\\",
   "\\.codex\\state_5.sqlite",
@@ -696,7 +696,7 @@ const PROTECTED_PATH_MARKERS = [
 
 /**
  * Does this path name the LIVE Codex store? A port of the engine's `_spells_protected`
- * (`llm_anthology/maintenance.py:378-387`): separators unified, lowercased, trailing
+ * (`llm_anthology/maintenance.py:384-406`): separators unified, lowercased, trailing
  * separators stripped and ONE appended, so a marker matches the directory it names and not
  * merely a prefix of a longer name (`...\sessionsfoo` must not match `\sessions\`).
  *
@@ -723,7 +723,7 @@ function spellsProtected(filePath: string): boolean {
 }
 
 /**
- * The effective destination root (`llm_anthology/maintenance.py:404-411`): a `delete`
+ * The effective destination root (`llm_anthology/maintenance.py:452-461`): a `delete`
  * quarantines under `<checkpoint_root>/deleted` (which is what makes a delete recoverable)
  * and a `reconcile` under `<destination_root>/reconciled`; `archive` and `move` go to the
  * requested destination as-is.
@@ -738,7 +738,7 @@ function effectiveRoot(
   return destinationRoot;
 }
 
-/** The phrase the operator must type (`llm_anthology/maintenance.py:414-419`), e.g.
+/** The phrase the operator must type (`llm_anthology/maintenance.py:463-470`), e.g.
  *  `"DELETE 2 FILES"` / `"ARCHIVE 1 FILE"`. A function of the ALLOWED count, never of what
  *  the caller offered, so a plan that changed changes the phrase too. */
 function confirmationPhrase(action: string, allowedCount: number): string {
@@ -1101,7 +1101,7 @@ export function createMockIpc(
   const plans = new Map<string, MaintenancePreview>();
   let nextPlanId = 1;
   /** manifest_path -> the moves it recorded, for `maintenance.restore`. */
-  const manifests = new Map<string, PlannedMove[]>();
+  const manifests = new Map<string, { moves: PlannedMove[]; restored: boolean }>();
   let nextManifest = 1;
   /** The applied-run audit ledger, newest LAST here and reversed on read. */
   const runs: MaintenanceRun[] = [];
@@ -1627,7 +1627,7 @@ export function createMockIpc(
         // `protected`: the LIVE-STORE guard. Checked BEFORE the duplicate rule and in this
         // order deliberately — the engine checks duplicate LAST so that a target which is
         // both a duplicate AND protected is reported as `protected`, "the more dangerous
-        // reason ... worth recording" (`llm_anthology/maintenance.py:487-489`). Reversing
+        // reason ... worth recording" (`llm_anthology/maintenance.py:536-537`). Reversing
         // these two would mislabel exactly the worst case.
         if (spellsProtected(target.file_path)) {
           blocked.push({
@@ -1636,7 +1636,7 @@ export function createMockIpc(
             detail: `protected store path: '${target.file_path}'`,
           });
           // Not the `duplicate-target` REVIEW branch: every other block reason raises
-          // DANGEROUS with this same wording (`maintenance.py:498-502`).
+          // DANGEROUS with this same wording (`maintenance.py:549-551`).
           warnings.push({
             severity: 2,
             severity_name: "DANGEROUS",
@@ -1647,7 +1647,7 @@ export function createMockIpc(
         // `duplicate-target`: two entries naming ONE physical file. The likeliest real UI
         // bug on this surface — feeding `dedup.sessions`' canonical AND duplicate paths
         // straight into a plan does exactly this — and the engine blocks the second rather
-        // than planning one file twice (`maintenance.py:480-491`).
+        // than planning one file twice (`maintenance.py:529-540`).
         if (plannedSources.has(key)) {
           blocked.push({
             target: copy,
@@ -1677,7 +1677,7 @@ export function createMockIpc(
         // A BLOCKED target keeps the caller's value, because the engine deliberately leaves a
         // refused target unmeasured rather than stat-ing a path it declined.
         allowed.push({ ...copy, size_bytes: 0 });
-        // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:506-508`), so a
+        // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:558-560`), so a
         // perfectly healthy plan is never warning-free.
         warnings.push({
           severity: 2,
@@ -1685,7 +1685,7 @@ export function createMockIpc(
           message: `Dangerous maintenance target: ${target.file_path}`,
         });
         // A deterministic `-N` suffix, not a GUID, so the destination can be SHOWN in the
-        // preview and verified later (`maintenance.py:422-430`).
+        // preview and verified later (`maintenance.py:472-486`).
         const base = winBasename(target.file_path);
         const dot = base.lastIndexOf(".");
         const stem = dot > 0 ? base.slice(0, dot) : base;
@@ -1717,7 +1717,7 @@ export function createMockIpc(
         action: params.action,
         store_root: storeRoot,
         // The EFFECTIVE root, not the requested one — a delete reports
-        // `<checkpoint_root>\deleted` (`maintenance.py:538`).
+        // `<checkpoint_root>\deleted` (`maintenance.py:457`).
         destination_root: root,
         checkpoint_root: checkpointRoot,
         allowed,
@@ -1744,7 +1744,7 @@ export function createMockIpc(
       const confirmation = params.confirmation ?? "";
       const apply = params.apply ?? false;
       // The confirmation is checked BEFORE the apply branch, so a DRY RUN needs the phrase
-      // too (`llm_anthology/maintenance.py:606` runs ahead of `:617`). A panel that offers a
+      // too (`llm_anthology/maintenance.py:645-648` runs ahead of `:669`). A panel that offers a
       // preview button without collecting the phrase is refused, not answered.
       if (confirmation.trim() === "") throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation is required.");
       if (confirmation !== preview.required_typed_confirmation) {
@@ -1755,7 +1755,7 @@ export function createMockIpc(
       plans.delete(planId); // accepted -> consumed, so a run can never be replayed
       if (!apply) {
         // A dry run returns the PLANNED MOVES, not an empty list
-        // (`llm_anthology/maintenance.py:618`) — that is how a UI shows the destinations —
+        // (`llm_anthology/maintenance.py:670`) — that is how a UI shows the destinations —
         // with an empty `manifest_path` because nothing was written.
         return { executed: false, manifest_path: "", moves: [...preview.plan], unaccounted: [] };
       }
@@ -1764,7 +1764,7 @@ export function createMockIpc(
         `manifest-${nextManifest}.json`,
       );
       nextManifest += 1;
-      manifests.set(manifestPath, [...preview.plan]);
+      manifests.set(manifestPath, { moves: [...preview.plan], restored: false });
       // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:305-312`).
       // `recorded_at_ms` steps by a fixed minute per run rather than reading the clock, so
       // the newest-first order is deterministic and testable.
@@ -1791,8 +1791,8 @@ export function createMockIpc(
         throw rpcError(RPC_INVALID_PARAMS, "manifest_path must be a non-empty string");
       }
       requireLocalPath(manifestPath, "manifest_path");
-      const moves = manifests.get(manifestPath);
-      if (moves === undefined) {
+      const record = manifests.get(manifestPath);
+      if (record === undefined) {
         throw rpcError(
           RPC_INTERNAL_ERROR,
           `no checkpoint manifest at '${manifestPath}'`,
@@ -1802,39 +1802,69 @@ export function createMockIpc(
       if (typeof skip !== "boolean") {
         throw rpcError(RPC_INVALID_PARAMS, "skip_unaccounted must be a boolean");
       }
+      const apply = params.apply ?? false;
+      // The engine's FIRST check (`llm_anthology/maintenance.py:750-752`): a checkpoint that
+      // was already restored cannot be restored again.
+      if (record.restored) {
+        throw rpcError(
+          RPC_MAINTENANCE_REFUSED,
+          `checkpoint '${manifestPath}' was already restored`,
+        );
+      }
 
-      // UNACCOUNTED: a recorded move where NEITHER the original nor the checkpoint copy still
-      // exists, so the manifest no longer describes the disk
-      // (`llm_anthology/maintenance.py:731-735`). The mock cannot DETECT that — it has no
-      // filesystem — so it MODELS it, gated on the caller ASKING for the degraded path.
+      // THE ENGINE'S PER-ENTRY RULE, ported (`llm_anthology/maintenance.py:784-793`), applied
+      // to a MODELLED filesystem state instead of a real one:
       //
-      // WHY GATED ON `skip_unaccounted` RATHER THAN ON THE MOVE COUNT. A count rule was tried
-      // first and was worse than the defect it fixed: it made the mock REFUSE a restore the
-      // engine performs cleanly. Right after an applied delete the checkpoint copies all
-      // exist, so the engine reports 0 unaccounted — and the mock, being always in exactly
-      // that state, was raising -32003 on the normal path. That is a FALSE POSITIVE on the
-      // common case, which is strictly worse than an unexercised branch. Measured by the
-      // parity probe as `MOCKERR maintenance.restore` where the engine returned a clean result.
+      //   checkpoint copy MISSING + original PRESENT -> skipped (never moved / already back);
+      //   checkpoint copy MISSING + original MISSING -> UNACCOUNTED;
+      //   checkpoint copy PRESENT  + original MISSING -> a pending move BACK.
       //
-      // `skip_unaccounted` is the honest trigger because a caller only ever passes it when it
-      // EXPECTS unaccountable entries — it is the API's own signal for this state.
+      // The modelled state after an applied execute is: every original ABSENT (the execute
+      // moved it away) and every checkpoint copy PRESENT. `skip_unaccounted` is taken as the
+      // caller asserting the checkpoint copies are gone — the mock has no filesystem, so that
+      // is the only signal available, and it is the API's own signal for this state. Applying
+      // the engine's rule to that state yields ALL entries unaccounted and NO pending move,
+      // which is exactly what the engine answers for the same manifest. An earlier version
+      // marked "exactly one" entry unaccounted, which was an invented number: the probe
+      // measured engine 2 / mock 1 on the same input.
       //
-      // DISCLOSED COST: the engine's fail-closed REFUSAL (unaccounted and no skip) is
-      // therefore not reachable from the mock. It cannot be, without inventing unaccountable
-      // entries the engine would not report. The refusal still fires in the shipped app, so a
-      // panel must handle a -32003 from restore even though a dev run will not produce one.
-      const unaccounted = skip && moves.length > 1 ? [moves[0].source] : [];
-      const pending = moves.filter((m) => !unaccounted.includes(m.source));
+      // NOT the duplicate-entry guards (`maintenance.py:776-781`). Those refuse a manifest
+      // whose entries repeat an original or a checkpoint copy, and they are unreachable here:
+      // this mock's own `plan` already blocks `duplicate-target` and de-dupes destinations, so
+      // a manifest it issued can never contain a repeat. Porting them would add a branch no
+      // input can reach.
+      //
+      // DISCLOSED COST: because "unaccounted exists" is tied to the caller passing `skip`, the
+      // engine's fail-closed REFUSAL (unaccounted and no skip) cannot fire here. A panel must
+      // still handle a -32003 from restore, which a dev run will not produce.
+      const checkpointPresent = !skip;
+      const pending: PlannedMove[] = [];
+      const unaccounted: string[] = [];
+      for (const entry of record.moves) {
+        if (!checkpointPresent) {
+          unaccounted.push(entry.source);
+          continue;
+        }
+        // DIRECTION IS INVERTED relative to the execute plan: restoring moves the CHECKPOINT
+        // COPY back onto the ORIGINAL path, so the recorded `destination` becomes the source
+        // and the recorded `source` becomes the destination. The mock used to echo the plan
+        // unchanged, which reads as an arrow pointing the wrong way in any panel that renders
+        // "moving X -> Y" — a divergence no structural diff can see, since both are strings.
+        pending.push({
+          session_id: entry.session_id,
+          source: entry.destination,
+          destination: entry.source,
+        });
+      }
+      if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
       // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1590-1591`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
-        executed: params.apply ?? false,
+        executed: apply,
         manifest_path: manifestPath,
-        // Only the ACCOUNTED moves are pending; an unaccounted entry is reported, never
-        // presented as a completed move.
-        moves: [...pending],
-        unaccounted: [...unaccounted],
+        moves: pending,
+        unaccounted,
       };
     },
 

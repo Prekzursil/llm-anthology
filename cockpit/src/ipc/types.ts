@@ -628,10 +628,10 @@ export interface MaintenanceCopy {
   session_id: string;
   file_path: string;
   store_kind: MaintenanceStoreKind;
-  /** Epoch ms, or null (`maintenance.py:188`). */
+  /** Epoch ms, or null (`maintenance.py:206`). */
   last_write_ms: number | null;
   size_bytes: number;
-  /** Being written right now — raises a REVIEW warning (`maintenance.py:509-512`). */
+  /** Being written right now — raises a REVIEW warning (`maintenance.py:561-564`). */
   is_hot: boolean;
 }
 
@@ -646,7 +646,7 @@ export interface MaintenanceBlocked {
  * One preview warning (`llm_anthology/sidecar.py:1487-1488`).
  *
  * A CLEAN PLAN IS NOT A QUIET PLAN. The engine emits a DANGEROUS warning for EVERY allowed
- * target plus a closing INFO summary (`llm_anthology/maintenance.py:506-527`), so a 2-file
+ * target plus a closing INFO summary (`llm_anthology/maintenance.py:558-560`, `:576-579`), so a 2-file
  * plan carries 3 warnings with nothing wrong. A UI that treats a non-empty `warnings` as
  * "something is broken" flags every healthy plan; filter on `severity` instead.
  */
@@ -708,7 +708,7 @@ export interface MaintenancePreview {
   action: MaintenanceActionName;
   store_root: string;
   /**
-   * The EFFECTIVE destination, not the one requested (`maintenance.py:538`, `:404-411`):
+   * The EFFECTIVE destination, not the one requested (`maintenance.py:452-461`):
    * a `delete` quarantines under `<checkpoint_root>/deleted` and a `reconcile` under
    * `<destination_root>/reconciled`. This is the path the files really go to.
    */
@@ -718,13 +718,13 @@ export interface MaintenancePreview {
   blocked: MaintenanceBlocked[];
   warnings: MaintenanceWarning[];
   plan: PlannedMove[];
-  /** Always true (`maintenance.py:535`). */
+  /** Always true (`maintenance.py:587`). */
   requires_checkpoint: boolean;
-  /** Always true (`maintenance.py:536`). */
+  /** Always true (`maintenance.py:588`). */
   requires_typed_confirmation: boolean;
   /**
    * The exact phrase the operator must type, e.g. `"DELETE 2 FILES"` / `"ARCHIVE 1 FILE"`
-   * (`maintenance.py:414-419`). Derived from the ALLOWED count, never from what the caller
+   * (`maintenance.py:463-470`). Derived from the ALLOWED count, never from what the caller
    * offered — so a plan that changed since the operator last looked changes the phrase too.
    * Echo it verbatim; do not reconstruct it client-side.
    */
@@ -760,7 +760,7 @@ export interface MaintenanceRestoreParams {
   /**
    * Restore the accounted moves anyway and REPORT the rest in
    * {@link MaintenanceResult.unaccounted}. Without it an unaccounted move refuses the whole
-   * batch rather than guessing (`maintenance.py:742-747`).
+   * batch rather than guessing (`maintenance.py:794-799`).
    */
   skip_unaccounted?: boolean;
 }
@@ -769,7 +769,7 @@ export interface MaintenanceRestoreParams {
  * `maintenance.execute` / `maintenance.restore` result (`llm_anthology/sidecar.py:1498-1504`).
  *
  * `manifest_path` is `""` — NOT null and NOT absent — on a dry run
- * (`llm_anthology/maintenance.py:266`, `tests/test_sidecar_maintenance.py:216-217`), so
+ * (`llm_anthology/maintenance.py:670`, `tests/test_sidecar_maintenance.py:216-217`), so
  * truthiness is the correct test for "did this write a checkpoint".
  */
 export interface MaintenanceResult {
@@ -778,13 +778,13 @@ export interface MaintenanceResult {
   /** The checkpoint manifest; `""` when nothing was written. Feed it to `maintenance.restore`. */
   manifest_path: string;
   moves: PlannedMove[];
-  /** Recorded originals a restore could not account for (`maintenance.py:260-262`). */
+  /** Recorded originals a restore could not account for (`maintenance.py:285`). */
   unaccounted: string[];
 }
 
 /**
- * One row of the destructive-run audit ledger (`llm_anthology/maintenance.py:786-787`,
- * schema at `:772-780`). Newest first; `manifest_path` breaks ties (`maintenance.py:817-820`).
+ * One row of the destructive-run audit ledger (`llm_anthology/maintenance.py:849-858`,
+ * schema at `:823-836`). Newest first; `manifest_path` breaks ties (`maintenance.py:870-871`).
  *
  * Only an APPLIED run lands here — a dry run does not
  * (`tests/test_sidecar_maintenance.py:305-312`).
@@ -792,7 +792,7 @@ export interface MaintenanceResult {
 export interface MaintenanceRun {
   manifest_path: string;
   action: string;
-  /** `pending` | `executed` | `restored` (`maintenance.py:698-703`, `:756`). */
+  /** `pending` | `executed` | `restored` (`maintenance.py:715`, `:720`, `:808`). */
   status: string;
   recorded_at_ms: number;
   moved_count: number;
@@ -870,7 +870,7 @@ export const RPC_CORPUS_EXISTS = -32006;
  * failure", never as success.
  *
  * A missing checkpoint manifest is worth knowing about specifically: `read_checkpoint`
- * opens the file directly (`llm_anthology/maintenance.py:577`), so a bad path raises
+ * opens the file directly (`llm_anthology/maintenance.py:626`), so a bad path raises
  * `FileNotFoundError`, which is NOT a `MaintenanceRefused` and escapes the refusal mapping
  * — it arrives as {@link RPC_INTERNAL_ERROR}, not {@link RPC_MAINTENANCE_REFUSED}.
  */

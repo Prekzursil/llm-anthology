@@ -235,6 +235,10 @@ describe("changedSetParams — the tri-state write", () => {
 
   it("never emits null for any field", () => {
     const params = changedSetParams(stored, { alias: "", tagText: "", notes: "" });
+    // Asserted BEFORE the loop, and that is the point of the line rather than a courtesy:
+    // `Object.values(null ?? {})` is EMPTY, so if this ever returned null the loop below
+    // would run zero assertions and the test would pass green while proving nothing.
+    expect(params).not.toBeNull();
     for (const value of Object.values(params ?? {})) expect(value).not.toBeNull();
   });
 

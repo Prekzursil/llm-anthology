@@ -482,10 +482,41 @@ mod tests {
         // Guard the DETECTOR before trusting its verdict: if the scrape silently stopped
         // matching, an empty method list would make this test vacuously green — the same
         // no-op-gate shape it exists to prevent.
+        //
+        // Anchored on NAMES rather than on a count, because a count guard is pinned to the
+        // present. The scrape finds exactly 32 today, so the previous `>= 32` had ZERO margin:
+        // deleting one dispatch entry — actually removing `research.synthesize` rather than
+        // leaving it registered, say — failed with "found only 31 methods, so this gate is not
+        // actually checking anything" and sent the reader hunting a parser bug that did not
+        // exist. Equality-to-a-pinned-count cannot serve as a safety check: legitimate work
+        // moves the count, and every move then looks like sabotage. A confidently wrong
+        // diagnosis costs more than a plain failure, because it spends the time in the wrong
+        // place.
+        //
+        // These three span three namespaces AND three positions in the table (`corpus.*` near
+        // the top, `maintenance.*` at the very bottom), so a parser that stopped matching, that
+        // only ever matched one entry shape, or that truncated part-way fails on a name it can
+        // point at. Losing one of them for real is a breaking change to the data surface and
+        // SHOULD require editing this list on purpose.
+        const SCRAPE_ANCHORS: [&str; 3] = ["corpus.stats", "graph.roots", "maintenance.plan"];
+        for anchor in SCRAPE_ANCHORS {
+            assert!(
+                methods.contains(&anchor),
+                "the dispatch-table scrape did not find `{anchor}`. EITHER the parser has \
+                 stopped matching the shape of sidecar.py's dispatch table, OR `{anchor}` was \
+                 genuinely removed from the engine — grep sidecar.py for it to tell which. If \
+                 it is really gone, update SCRAPE_ANCHORS deliberately. The scrape found {} \
+                 methods: {methods:?}",
+                methods.len()
+            );
+        }
+        // Belt and braces, and deliberately LOOSE — a handful, not the present count. This can
+        // only fire on a scrape that collapsed, never on ordinary add-or-remove work, so it
+        // never needs re-baselining.
         assert!(
-            methods.len() >= 32,
-            "the dispatch-table scrape found only {} methods, so this gate is not actually \
-             checking anything: {methods:?}",
+            methods.len() >= 8,
+            "the dispatch-table scrape found only {} methods, far below any plausible engine \
+             surface — the parser is broken rather than the engine being small: {methods:?}",
             methods.len()
         );
 
