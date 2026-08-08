@@ -25,10 +25,16 @@ shipped. If you were tracking `main`, the second list is the one worth reading.
 - **Read your conversations.** Open a session and read the actual transcript — the
   reader is windowed for very long threads and tells you what it is not currently
   showing rather than silently truncating.
-- **Bring in five providers.** ChatGPT, Claude (both web exports and Claude Code),
-  Gemini, Codex and Grok Build sessions all land in one corpus with one model behind
-  them. Every source is opt-in, so a Grok-only or Claude-Code-only import is a normal
-  thing to ask for.
+- **Bring in six providers.** ChatGPT, Claude web exports, Claude Code, Gemini, Codex
+  and Grok Build sessions all land in one corpus with one model behind them. Every
+  source is opt-in, so a Grok-only or Claude-Code-only import is a normal thing to ask
+  for.
+
+  Counted as six rather than five — folding Claude Code into "Claude" reads naturally
+  but contradicts the code, which treats them as distinct providers throughout:
+  `discover.PROVIDERS` carries separate `claude` and `claude-code` entries, they get
+  separate colours in the graph palette, and they take different roots because one is a
+  downloaded export and the other a live session store on disk.
 - **Let the app find your data.** First run scans for AI session stores already on the
   machine and shows you what it found, instead of asking you to hunt for paths. You can
   build a corpus from inside the app; the CLI equivalent is `llm-anthology index`.

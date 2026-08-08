@@ -66,10 +66,21 @@ def build_parser():
     i.add_argument("out_index", help="the SQLite index FILE to write; hand it to "
                                      "`sidecar --index <this>`")
     i.add_argument("--codex-home", default=None,
-                   help="directory holding state_5.sqlite (the spawn graph). Omitted "
-                        "means the LIVE store ($CODEX_HOME, else ~/.codex) — the "
-                        "resolved path is always printed. Point this at a directory "
-                        "with no state_5.sqlite to index the rollouts alone.")
+                   help="directory holding state_5.sqlite (the spawn graph). OMITTED "
+                        "MEANS NO SPAWN GRAPH IS MERGED — not 'go find one'. The help "
+                        "here used to promise a fallback to the LIVE store ($CODEX_HOME, "
+                        "else ~/.codex); loaders.py guards the merge on this argument "
+                        "being named, so that fallback is gone and omission is the safe "
+                        "choice. Whether the graph was merged is printed either way.")
+    i.add_argument("--grok-root", default=None,
+                   help="a Grok Build session store (<enc-cwd>/<session-id>/). OPT-IN "
+                        "and never defaulted: a Grok store holds private material, so "
+                        "omitting this reads none. Reachable from the cockpit before "
+                        "this flag existed, and from nowhere on the command line.")
+    i.add_argument("--claude-root", default=None,
+                   help="a Claude Code store (the projects/ tree under a Claude home). "
+                        "OPT-IN and never defaulted, for the same reason — ~/.claude is "
+                        "private and omitting this reads nothing.")
     return p
 
 
@@ -101,15 +112,38 @@ def _build_index(args):
     # re-assertion must not be able to hide inside quote marks. Do not restore the
     # quote and then relax the gate.
     print("INDEX_BUILDING", args.src, "->", args.out_index, flush=True)
-    # Disclose the state store BEFORE reading it. With no --codex-home, load_corpus
-    # falls back to the LIVE Codex store ($CODEX_HOME, else ~/.codex — see
-    # adapters/codex_state.py:129) and that read is otherwise SILENT: an absent or busy
-    # DB is skipped without a word. Someone indexing an ARCHIVED sessions tree would get
-    # this machine's live spawn graph merged in and never know. Resolved through
-    # _db_path itself so the disclosure can never drift from the path actually read.
-    print("CODEX_STATE_DB", codex_state._db_path(args.codex_home), flush=True)
+    # Disclose the state store BEFORE reading it. The read is otherwise SILENT — an absent
+    # or busy DB is skipped without a word — so someone indexing an ARCHIVED sessions tree
+    # could get a live spawn graph merged in and never know. Resolved through _db_path
+    # itself so the path can never drift from the one actually read.
+    #
+    # AND disclose whether it is read AT ALL, which is the half that was missing. This
+    # printed the resolved live path unconditionally, on the premise that an omitted
+    # --codex-home falls back to the LIVE store. `loaders.py` guards the entire state
+    # merge on the argument being named, so that premise is dead: omitting the flag reads
+    # nothing. The unconditional line therefore named the owner's real ~/.codex and
+    # implied it had been opened — a false privacy alarm — while a user trusting the help
+    # got an index with no spawn graph, which is the cockpit's primary view, and no error
+    # to explain it. The path is still printed when one IS named, because the original
+    # reason for printing it has not changed.
+    #
+    # The path shown in the NOT-read case is still resolved through the real resolution
+    # order (`adapters/codex_state.py:129` — explicit home, else $CODEX_HOME, else
+    # ~/.codex), so it names the store that WOULD be read. Printing it is what makes the
+    # "not read" line meaningful: naming the store and then saying it was skipped is the
+    # disclosure; suppressing the path entirely would leave a user unable to tell which
+    # store they just failed to merge.
+    merged = bool(args.codex_home)
+    if merged:
+        print("CODEX_STATE_DB", codex_state._db_path(args.codex_home), flush=True)
+    else:
+        print("CODEX_STATE_DB", codex_state._db_path(args.codex_home),
+              "(NOT read — no --codex-home)", flush=True)
+    print("STATE_GRAPH_MERGED", "yes" if merged else "no", flush=True)
 
-    result, errors = loaders.load_corpus(args.src, out, codex_home=args.codex_home)
+    result, errors = loaders.load_corpus(args.src, out, codex_home=args.codex_home,
+                                         grok_root=args.grok_root,
+                                         claude_root=args.claude_root)
 
     conn = corpus.open_index(out)
     try:

@@ -442,7 +442,7 @@ PY_PINS = [
     # ------------------------------------------------------------------------ cli.py (4)
     ("cli.py", "loaders.py", 320, "def load_corpus", "load_corpus DOES accept a progress callback"),
     ("cli.py", "loaders.py", 445, "progress=progress", "...and forwards it after every committed chunk"),
-    ("cli.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "the LIVE-store fallback it discloses"),
+    ("cli.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "where the disclosed path resolves from, even when it is NOT read"),
     ("cli.py", "build.py", 107, "carries NO turns is a silent", "the silent false-success this was bitten by"),
 
     # ----------------------------------------------------------------- claude_code.py (11)

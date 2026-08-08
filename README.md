@@ -23,8 +23,12 @@ Everything runs offline. The engine makes zero network requests, and the pages i
 
 ## What it does
 
-### Ingest — four providers, one model
+### Ingest — six providers, one model
 Each adapter parses its native export into a small provider-agnostic IR (`llm_anthology/ir.py`); everything downstream consumes only the IR.
+
+There are two shapes here and the difference is not cosmetic. The first four are **account exports** — one file or directory you download, rendered to HTML/MD by `llm_anthology <provider> <src> <out>`. The last two are **live session stores** on your own disk, which feed the searchable corpus index instead (`llm_anthology index`, or the cockpit's import). Codex is the only one that is both.
+
+Every session store is **opt-in and never defaulted**: omit its flag and nothing under that path is read. That is deliberate rather than cautious — these directories hold whatever you have said to the tool, and an earlier default-to-the-live-store is how an automated probe once read the owner's real sessions.
 
 | Provider | Input | Status |
 |---|---|---|
@@ -32,6 +36,8 @@ Each adapter parses its native export into a small provider-agnostic IR (`llm_an
 | **Gemini** | Takeout "Gemini Apps" activity (+ optional web harvest) | **Validated** on 1,060 real records → 2,027 turns. Conversation **grouping is PROVISIONAL** (time-gap heuristic) unless a harvest supplies true boundaries |
 | **Codex** | `rollout-*.jsonl` session files + `state_5` store | Powers the spawn tree and dedup |
 | **ChatGPT** | `conversations.json` (message tree) | **UNVALIDATED at scale** — hardened adapter + synthetic tests, but no large real export has been run through it |
+| **Grok** | a Grok Build session store (`<enc-cwd>/<session-id>/`) | Session store, `--grok-root`. Brings its own spawn edges from `subagents/` metas |
+| **Claude Code** | the `projects/` tree under a Claude home | Session store, `--claude-root`. **UNVALIDATED at scale** — 875 lines of synthetic tests, and deliberately never run against the real store, which is private |
 
 ### Render — a view copy and a keep copy
 Two artifacts per conversation: a self-contained **HTML** page that reads like the original web app, and clean portable **Markdown** that survives any future tooling and is safe to re-feed to a model.

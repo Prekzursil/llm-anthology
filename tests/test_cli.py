@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 
-from llm_anthology import cli, corpus, index
+from llm_anthology import cli, corpus, index, loaders
 
 
 def _write(path, obj):
@@ -420,6 +420,46 @@ def test_index_missing_sessions_root_is_a_clean_error_not_a_traceback(tmp_path):
     assert cli.main(["index", str(tmp_path / "nope"), str(tmp_path / "i.sqlite")]) == 1
 
 
+def test_index_forwards_the_grok_and_claude_roots_it_now_accepts(tmp_path, monkeypatch):
+    """The two roots reach `load_corpus`, and are NEVER defaulted when unnamed.
+
+    `corpus.build` has taken `grok_root` and `claude_root` for a while; the CLI took
+    neither, so both stores were importable from the cockpit and from nowhere on the
+    command line. This pins the forward.
+
+    SCOPE, stated because the assertion is deliberately narrow: this tests the CLI's job,
+    which is threading flags, not the ingest itself — `test_loaders_corpus.py` owns what
+    each root actually does and runs at 100% coverage. A wiring test that claimed to prove
+    ingest would be the overclaim, so it does not.
+
+    The None case is the half that matters most. Both roots are opt-in against private
+    stores, and a default of "" would read differently from None if the guard downstream
+    ever changed from truthiness to a None check — so the CLI must pass the absence
+    through verbatim rather than normalising it.
+    """
+    seen = {}
+
+    def fake(src, out, codex_home=None, progress=None, grok_root=None, claude_root=None):
+        seen.update(src=src, codex_home=codex_home, grok_root=grok_root,
+                    claude_root=claude_root)
+        return corpus.Corpus(), []
+
+    monkeypatch.setattr(loaders, "load_corpus", fake)
+    sessions = tmp_path / "sessions"
+    _sessions_tree(str(sessions))
+
+    assert cli.main(["index", str(sessions), str(tmp_path / "a.sqlite"),
+                     "--grok-root", "G:\\grok", "--claude-root", "C:\\cc\\projects"]) == 0
+    assert seen["grok_root"] == "G:\\grok"
+    assert seen["claude_root"] == "C:\\cc\\projects"
+
+    seen.clear()
+    assert cli.main(["index", str(sessions), str(tmp_path / "b.sqlite")]) == 0
+    assert seen["grok_root"] is None, "an unnamed Grok store must stay unnamed"
+    assert seen["claude_root"] is None, "an unnamed Claude Code store must stay unnamed"
+    assert seen["codex_home"] is None
+
+
 def test_index_without_codex_home_discloses_the_live_store_it_will_read(
         tmp_path, monkeypatch, capsys):
     """With no --codex-home, `load_corpus` falls back to the LIVE Codex store
@@ -441,4 +481,15 @@ def test_index_without_codex_home_discloses_the_live_store_it_will_read(
     # load_corpus reads through — so a path built from $CODEX_HOME can only appear here
     # if the env var was consulted. That the graph then LANDS is a separate claim, and
     # test_index_persists_the_spawn_graph_the_cockpit_renders owns it.
-    assert "CODEX_STATE_DB " + state_db in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "CODEX_STATE_DB " + state_db in out
+    # ...and the disclosure must be TRUE. This is the half that was missing: the test
+    # asserted a path was PRINTED and never that it was READ, so it stayed green while
+    # the sentence became false. `loaders.py:428` guards the whole state merge with
+    # `if codex_home:`, so an omitted flag reads nothing — the printed path names a store
+    # this run never opened. Two harms, and the privacy one is why it matters: it points
+    # at the owner's real `~/.codex` and says it was read, while a user who believes the
+    # help gets an index with NO spawn graph — the cockpit's primary view — and no error.
+    assert "STATE_GRAPH_MERGED no" in out, (
+        "with no --codex-home the state graph is NOT merged; the line above must not "
+        "imply otherwise")
