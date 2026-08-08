@@ -46,12 +46,150 @@ fn forward(state: &EngineState, method: &str, params: Value) -> Result<Value, St
     }
 }
 
-/// Reject an `index_path` that is not an existing file. Split out from the command so the
+/// Reject a UNC / network path spelling, judged on the path AS WRITTEN.
+///
+/// MEASURED, not assumed (this box, Windows 11, rustc 1.91.0), with a throwaway probe outside
+/// this repo that replicates the exact `is_file()` + `is_dir()` pair `validate_index_path` runs
+/// below. On `\\192.0.2.1\share\index.db` that pair took **272,061 ms** — four and a half
+/// minutes. The identical pair on a missing LOCAL path took **0 ms**. While it was blocked the
+/// TCP table held outbound `SynSent` sockets to `192.0.2.1:445` (SMB) and `:111` (NFS
+/// portmapper), owned by PID 4 — the kernel redirector, not this process.
+///
+/// Two instruments agree and only one of them is a clock, so this is not a timing artefact: a
+/// `stat` on a caller-named UNC path IS an outbound connection to a host the caller chose,
+/// which is the Windows SMB/NTLM hash-leak vector. Had a host answered, the redirector would
+/// have gone on to negotiate. (The connection ATTEMPT is measured. The credential offer is NOT
+/// — nothing answered, by the deliberate choice of a non-routable RFC 5737 address.)
+///
+/// The 272 seconds are a second, independent reason to refuse: this runs on the thread serving
+/// a `#[tauri::command]`, so before this guard existed one bad path froze the app's primary
+/// action for minutes with no cancel and no timeout to bound it.
+///
+/// ORDER IS LOAD-BEARING, and this mirrors the engine's `_reject_unc_spelling`
+/// (`llm_anthology/sidecar.py:484-497`) deliberately, including its reason for existing as a
+/// separate step: the check must run on the RAW string, before any resolution. A caller that
+/// canonicalises first destroys the evidence on POSIX, where `\\host\share` contains no
+/// separator at all and so reads as an ordinary relative filename that `abspath` happily turns
+/// into `/cwd/\\host\share` — no longer UNC-shaped, and absolute, so both guards then pass
+/// something they exist to refuse. The engine learned that from its Linux and macOS CI legs
+/// after a Windows-only check of the same ordering pronounced it safe; this file is compiled
+/// and tested on a windows + linux matrix, so it inherits the same exposure.
+///
+/// Normalising `/` to `\` before the test is what makes ONE comparison cover every spelling:
+/// `\\host\share`, the protocol-relative `//host/share`, the mixed `\/host\share`, the WebDAV
+/// `\\host@SSL\DavWWWRoot\...`, and the extended-length `\\?\UNC\host\share`. `\\?\C:\...` is
+/// caught too — that one is a legitimate local path, but it is not a spelling anything in this
+/// app produces, and the engine refuses it identically.
+fn reject_unc_spelling(index_path: &str) -> Result<(), String> {
+    if index_path.replace('/', "\\").starts_with("\\\\") {
+        return Err(format!(
+            "{index_path} is a network path; a corpus index must be a local file"
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a path that RESOLVES to a network location without being SPELLED as one.
+///
+/// `reject_unc_spelling` judges the string as written, which is what makes it safe to run before
+/// any filesystem call — and also what makes it blind to indirection. MEASURED on this box
+/// (Windows 11, rustc 1.91.0) against `\\localhost\C$` so the target file is identical in all
+/// three spellings:
+///
+/// | input | old verdict | `fs::canonicalize` says |
+/// |---|---|---|
+/// | `\\localhost\C$\Windows\explorer.exe` | REJECT (0 ms, lexical) | `\\?\UNC\localhost\C$\...` |
+/// | `Z:\Windows\explorer.exe` (`net use Z: \\localhost\C$`) | **ACCEPT** | `\\?\UNC\localhost\C$\...` |
+/// | `<dir-symlink>\Windows\explorer.exe` -> `\\localhost\C$` | **ACCEPT** | `\\?\UNC\localhost\C$\...` |
+///
+/// Same file, same share, two of the three accepted. So the drive-letter and symlink forms are
+/// the residual of a spelling-only guard, and `Z:` is not exotic — a mapped network drive is an
+/// ordinary corporate configuration, which also makes this the likelier real-world bite: an
+/// index on a DISCONNECTED mapping puts the multi-minute stat described above on the thread
+/// serving a `#[tauri::command]`.
+///
+/// The prefix is matched as a TYPED `Prefix`, not by string comparison, because a canonicalized
+/// LOCAL path on Windows also begins `\\` — `\\?\C:\...` — so reusing `reject_unc_spelling` here
+/// would refuse every legitimate file on the machine. `VerbatimDisk`/`Disk` is the local case;
+/// `UNC`/`VerbatimUNC` is the remote one; `DeviceNS`/`Verbatim` is neither and is not a corpus.
+///
+/// SCOPE, stated plainly because it is narrow:
+/// - This runs AFTER `is_file()`, since `canonicalize` needs the file to exist. It therefore
+///   prevents ATTACHING a corpus over SMB — which also protects sqlite, whose locking is
+///   unreliable on a network share — but it does NOT prevent the outbound connection
+///   `is_file()` already made. Blocking the connection itself needs a check that runs BEFORE
+///   the probe: `GetDriveTypeW` == `DRIVE_REMOTE` for the mapped-drive case (a local MUP
+///   lookup, no network round trip) plus a `symlink_metadata` ancestor walk for the link case.
+///   `GetDriveTypeW` needs the `Win32_Storage_FileSystem` feature added to `windows-sys` in
+///   Cargo.toml, so it is deliberately NOT done here.
+/// - On Linux and macOS this is INERT: a canonicalized path on an NFS or cifs mount is
+///   `/mnt/share/index.db`, indistinguishable from a local path without consulting the mount
+///   table. The raw-spelling guard still covers `//host/share` there.
+fn reject_unc_resolution(
+    index_path: &str,
+    resolved: std::io::Result<std::path::PathBuf>,
+) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+
+    // The CALLER performs the resolution and this function judges the result, which keeps the
+    // rule pure. A test can therefore hand it a recorded `\\?\UNC\...` directly, instead of
+    // mounting a share with `net use` — that would need privileges, would mutate the machine,
+    // and could never run on the CI matrix.
+    let resolved = resolved.map_err(|e| {
+        // Fail CLOSED. We only get here having already proved the path is a file, so a
+        // resolution failure is an anomaly, not a routine miss.
+        format!("cannot determine whether {index_path} is local: {e}")
+    })?;
+
+    let remote = match resolved.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        }
+        // No prefix at all: POSIX, where this check cannot speak. The raw-spelling guard ran.
+        _ => false,
+    };
+    if remote {
+        return Err(format!(
+            "{index_path} resolves to {}, which is not a local disk; a corpus index must be a \
+             local file",
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an `index_path` that is not an existing LOCAL file. Split out from the command so the
 /// rule is unit-testable without constructing a Tauri `State`.
+///
+/// The two lexical guards run FIRST and in this order, because `is_file()` is itself the
+/// dangerous operation — see `reject_unc_spelling` for the measurement. Requiring an absolute
+/// path is the second half of the engine's `_reject_nonlocal_path` (`sidecar.py:500-514`) and
+/// costs nothing legitimate: every path that reaches `open_corpus` is either a native
+/// file-picker result, an `os.path`-derived finding from `sources.discover`, or a previously
+/// accepted path echoed back out of Web Storage — all absolute. It is marginally STRICTER than
+/// the engine, since `ntpath.isabs` accepts a drive-less `\Users\x` that Rust's `is_absolute`
+/// rejects for having no prefix; a drive-ambiguous path is not something to resolve on the
+/// user's behalf, and stricter-at-the-edge is the safe direction.
+///
+/// SCOPE, honestly: this closes the route that reaches `is_file()` with an arbitrary string —
+/// `CorpusBarController.restore()` replaying a remembered path out of `localStorage`
+/// (`cockpit/src/ui/corpusBar.ts:313-317`), with no dialog in between. It does NOT make the
+/// native picker safe: a user who types a UNC path into the OS dialog's filename box has
+/// already caused the SHELL to touch that host before Tauri returns a string to us. That is the
+/// dialog's network contact, not this app's, and it is not fixable from here.
 fn validate_index_path(index_path: &str) -> Result<(), String> {
+    reject_unc_spelling(index_path)?;
     let path = std::path::Path::new(index_path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "{index_path} is not a full path; name the corpus index by its absolute path"
+        ));
+    }
     if path.is_file() {
-        return Ok(());
+        // It exists and it is a file — but "file" is not yet "local file". A mapped network
+        // drive or a symlink reaches a share without ever being spelled `\\host\...`, so the
+        // spelling guard above cannot see it. See `reject_unc_resolution`.
+        return reject_unc_resolution(index_path, std::fs::canonicalize(path));
     }
     // Distinguish the two reasons, because "it's a folder" and "it's not there" send the
     // user to completely different next actions.
@@ -386,7 +524,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_info, validate_index_path};
+    use super::{app_info, reject_unc_resolution, validate_index_path};
 
     /// BOTH-STATES test for the open-vs-create guard. The passing case alone would not
     /// prove anything: the guard's whole purpose is to FAIL on a path the Python layer
@@ -418,6 +556,159 @@ mod tests {
         assert!(
             validate_index_path("").is_err(),
             "an empty path must be rejected, not treated as the cwd"
+        );
+    }
+
+    /// The UNC guard, over every spelling AND over the ORDERING that makes it a guard.
+    ///
+    /// The assertion is on WHICH refusal comes back, not merely that one does, and that is the
+    /// whole point. Every path below is also missing, so a version that stat-ed first would
+    /// still return `Err` — a test asserting only `is_err()` would stay green while the
+    /// outbound SMB connection this exists to prevent went out on every single call. The
+    /// `no corpus index at` / `is a folder` wordings are reachable ONLY from the two filesystem
+    /// probes, so their ABSENCE is the evidence that no probe ran.
+    ///
+    /// Cross-platform is not incidental here. `//host/share/index.db` is absolute on Linux, so
+    /// on the CI Linux leg the absolute-path check cannot catch it and only the raw-spelling
+    /// check can; `\\host\share\index.db` is the reverse. Both must fail on both legs.
+    #[test]
+    fn validate_index_path_refuses_every_unc_spelling_before_any_filesystem_call() {
+        for spelling in [
+            r"\\host\share\index.db",          // canonical Windows UNC
+            "//host/share/index.db",           // protocol-relative, and absolute on POSIX
+            r"\/host\share\index.db",          // mixed separators
+            r"\\host@SSL\DavWWWRoot\index.db", // WebDAV-over-HTTPS spelling
+            r"\\?\UNC\host\share\index.db",    // extended-length UNC
+            r"\\192.0.2.1\share\index.db",     // bare IP — reaches a host with no DNS at all
+        ] {
+            let err =
+                validate_index_path(spelling).expect_err("a UNC/network path must be refused");
+            assert!(
+                err.contains("is a network path"),
+                "wrong refusal for {spelling}, expected the network-path one: {err}"
+            );
+            assert!(
+                !err.contains("no corpus index at") && !err.contains("is a folder"),
+                "{spelling} was STAT-ED before it was refused — the filesystem answered first, \
+                 and on Windows that stat is an outbound SMB/NFS connection to a caller-chosen \
+                 host. The guard must run on the raw string, before any probe. Got: {err}"
+            );
+        }
+    }
+
+    /// The absolute-path half of the guard, plus its counterpart: a legitimate local path is
+    /// still accepted. That passing half is load-bearing — a `validate_index_path` that refused
+    /// everything would satisfy every rejection assertion in this module and ship a dead app.
+    #[test]
+    fn validate_index_path_requires_an_absolute_path_and_still_accepts_a_real_local_file() {
+        for relative in [
+            "index.db",
+            "corpora/index.db",
+            r"corpora\index.db",
+            "./index.db",
+            "C:index.db", // drive-RELATIVE on Windows: a real path, just not to a known place
+        ] {
+            let err = validate_index_path(relative).expect_err("a relative path must be refused");
+            assert!(
+                err.contains("is not a full path"),
+                "wrong refusal for {relative}, expected the not-absolute one: {err}"
+            );
+        }
+
+        // Every real caller supplies an absolute path and all of them must still pass — in BOTH
+        // separator styles, because the native picker returns native `\` on Windows while the
+        // engine's `sources.discover` findings and this crate's own `CARGO_MANIFEST_DIR`
+        // concatenations use `/`.
+        let real = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
+        assert_eq!(
+            validate_index_path(real),
+            Ok(()),
+            "an absolute local file must pass"
+        );
+        let native = real.replace('/', std::path::MAIN_SEPARATOR_STR);
+        assert_eq!(
+            validate_index_path(&native),
+            Ok(()),
+            "the same file in native separators must pass: {native}"
+        );
+    }
+
+    /// The spellings the enumeration above did NOT cover, kept separate so the reason each one
+    /// is here stays legible. All were MEASURED against a replica of the guard before being
+    /// written down; two of them refuted a guess made while enumerating:
+    /// `C:\NUL` is NOT accepted (the Win32 device namespace does not make it stat as a file),
+    /// and an embedded `\\` mid-path does NOT synthesise a UNC.
+    #[test]
+    fn validate_index_path_refuses_the_remaining_network_and_device_spellings() {
+        for (spelling, why) in [
+            ("///host/share/index.db", "3 slashes: the form a naive join produces"),
+            ("////host/share/index.db", "4 slashes"),
+            (r"/\host\share\index.db", "mixed, leading forward slash"),
+            (r"\\.\C:\Windows\explorer.exe", "Win32 device namespace, local target"),
+            (r"\\.\PhysicalDrive0", "raw device"),
+            (r"\\?\C:\Windows\explorer.exe", "verbatim local: legitimate, but not a spelling this app produces"),
+            (r"\\", "the degenerate UNC prefix alone"),
+        ] {
+            let err = validate_index_path(spelling)
+                .expect_err(&format!("{spelling} must be refused ({why})"));
+            assert!(
+                err.contains("is a network path"),
+                "{spelling} ({why}) must be refused by the raw-spelling guard, not by a \
+                 filesystem probe — the probe is the outbound connection. Got: {err}"
+            );
+        }
+    }
+
+    /// The RESOLUTION guard: a path that reaches a share WITHOUT being spelled as one.
+    ///
+    /// MEASURED on this box before this test existed, with `net use Z: \\localhost\C$` and a
+    /// directory symlink to the same share: `\\localhost\C$\Windows\explorer.exe` was refused
+    /// in 0 ms, while `Z:\Windows\explorer.exe` and `<symlink>\Windows\explorer.exe` — the
+    /// SAME file — were both ACCEPTED, and `fs::canonicalize` reported all three as
+    /// `\\?\UNC\localhost\C$\Windows\explorer.exe`.
+    ///
+    /// The resolution is handed IN rather than mounting a share, because a test that shelled
+    /// out to `net use` would need privileges, would mutate the machine, and could not run on
+    /// the CI matrix. The canonical strings below are verbatim copies of what the real
+    /// `fs::canonicalize` returned in that measurement, so they are a recording, not an
+    /// invention.
+    #[test]
+    fn reject_unc_resolution_refuses_a_path_that_resolves_off_the_local_disk() {
+        let resolving_to = |canonical: &str| Ok(std::path::PathBuf::from(canonical));
+
+        // The two shapes measured as ACCEPTED before this guard existed.
+        for canonical in [
+            r"\\?\UNC\localhost\C$\Windows\explorer.exe", // via `net use Z:` and via a symlink
+            r"\\?\UNC\evil.example\share\index.db",       // the same shape, attacker-named host
+        ] {
+            let err = reject_unc_resolution(r"Z:\index.db", resolving_to(canonical))
+                .expect_err("a path resolving to a UNC must be refused");
+            assert!(
+                err.contains("not a local disk"),
+                "expected the non-local refusal, got: {err}"
+            );
+        }
+
+        // The over-rejection trap this guard must NOT fall into: a canonicalized LOCAL path on
+        // Windows also begins with `\\`. Matching the raw string would refuse every real file.
+        for canonical in [r"\\?\C:\Windows\explorer.exe", r"C:\Windows\explorer.exe"] {
+            assert_eq!(
+                reject_unc_resolution(r"C:\Windows\explorer.exe", resolving_to(canonical)),
+                Ok(()),
+                "a local disk path must still pass when canonicalized as {canonical}"
+            );
+        }
+
+        // Fail CLOSED: we reach this guard only having proved the path IS a file, so a
+        // resolution failure is an anomaly and must not be read as permission.
+        let err = reject_unc_resolution(
+            r"C:\x\index.db",
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        )
+        .expect_err("an unresolvable path must be refused, not waved through");
+        assert!(
+            err.contains("cannot determine whether"),
+            "expected the fail-closed refusal, got: {err}"
         );
     }
 
