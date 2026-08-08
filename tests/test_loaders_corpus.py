@@ -615,10 +615,19 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     """The detector control: a resumed session is normal, not a collision.
 
     A resumed Codex session writes a SECOND rollout with the same session_id, and a
-    copied Grok store can repeat a session id too. Those are already handled (the thread
-    upserts, the conversation dedupes by id) and must NOT be reported. A collision check
-    keyed on the id alone would fire here — so this pins that it is keyed on the id AND
-    the source, and would have caught a detector that flags every resume.
+    copied Grok store can repeat a session id too. Those must NOT be reported as
+    collisions. A collision check keyed on the id alone would fire here — so this pins
+    that it is keyed on the id AND the source, and would have caught a detector that
+    flags every resume.
+
+    WHAT THIS TEST USED TO CLAIM, AND WHY IT WAS WRONG. The docstring here said the
+    repeat was "already handled (the thread upserts, the conversation dedupes by id)".
+    The second half of that stopped being true when `corpus.add_conversation` was changed
+    to RE-INDEX rather than early-return (corpus.py:318-331): "dedupes by id" became
+    "OVERWRITES by id". This test did not notice, because it asserted only on errors,
+    thread ids and edges — it never checked that both legs' CONTENT survived. It passed
+    throughout the entire period the data loss was live. The content assertions now live
+    in the two tests below; this one keeps its original, narrower job.
     """
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     groot, idx = str(tmp_path / "grok_sessions"), str(tmp_path / "index.sqlite")
@@ -642,6 +651,156 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     assert errors == [], "a resumed/repeated same-source id must not be reported"
     assert set(c.threads) == {"C1", _G1}
     assert [(e.parent_thread_id, e.child_thread_id) for e in c.edges] == [("P1", "C1")]
+
+
+def _user_with_id(text, ts, mid):
+    """A user message carrying the provider's opaque item id (codex_rollout.py:274 reads
+    `payload["id"]` into `Turn.uuid`). Needed to exercise the replay case, where the same
+    item really does appear in two rollout files of one resumed session."""
+    return _rec("response_item",
+                {"type": "message", "role": "user", "id": mid,
+                 "content": [{"type": "input_text", "text": text}]}, ts)
+
+
+def test_a_RESUMED_session_keeps_BOTH_legs_of_the_conversation(tmp_path):
+    """MEASURED DATA LOSS on the owner's real store, not a hypothetical.
+
+    A resumed Codex session writes a SECOND rollout file under the SAME session_id, and
+    `codex_rollout._assemble` sets `Conversation.id = session_id` (codex_rollout.py:296,
+    314). Two files therefore yield two Conversations with an IDENTICAL id, both admitted
+    (same source, correctly not a collision) and both written to an index whose
+    `conversations.conversation_id` is UNIQUE. Since add_conversation now OVERWRITES
+    instead of early-returning, the later leg REPLACED the earlier one: the earlier
+    rollout's turns became unsearchable, with zero ingest errors and exit 0.
+
+    Scale, measured over ~/.codex/sessions before this fix: 2024 rollout files, 1069
+    distinct session ids, 236 of them spread across more than one file, covering 1189
+    files — so 953 files (47.1% of the store) were dropped silently. Not one of the 236
+    was a harmless replay in which the survivor was a superset: 156 were fully disjoint
+    and 78 partially overlapping. One id spanned 66 files.
+
+    A resumed session is ONE conversation continued, so the legs MERGE rather than
+    refusing or overwriting each other.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        _user("zebracrossing on the first leg", "2026-07-24T10:00:01.000Z"),
+        _assistant("acknowledged the first leg", "2026-07-24T10:00:02.000Z"),
+    ])
+    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        _user("quokkasandwich on the resumed leg", "2026-07-24T12:00:01.000Z"),
+    ])
+    home.mkdir()
+
+    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    assert errors == [], "a resume is not an error"
+    assert [conv.id for conv in c.conversations] == ["C1"], \
+        "the two legs are ONE conversation, not two rows fighting over one id"
+    merged = c.conversations[0]
+    assert len(merged.turns) == 3, "every turn from both legs survives the merge"
+
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 1
+        # THE REGRESSION THIS PINS: before the fix the first leg matched ZERO rows.
+        assert len(corpus.search(conn, "zebracrossing")) == 1, \
+            "the FIRST leg must stay searchable after the session is resumed"
+        assert len(corpus.search(conn, "quokkasandwich")) == 1
+    finally:
+        conn.close()
+
+
+def test_a_RESUMED_session_does_not_DUPLICATE_a_REPLAYED_turn(tmp_path):
+    """78 of the 236 real shared ids PARTIALLY overlap — the later rollout repeats some
+    items of the earlier one. So a naive concatenation would show the user duplicated
+    messages, which is the opposite failure to the one being fixed. Turns already present
+    are dropped on merge, keyed on the provider's opaque item id.
+
+    Only the incoming leg is filtered, and only against the turns admitted BEFORE it: a
+    genuine repeat WITHIN one rollout is the adapter's output and is left exactly as-is.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        _user_with_id("the shared prefix", "2026-07-24T10:00:01.000Z", "msg_shared"),
+    ])
+    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        _user_with_id("the shared prefix", "2026-07-24T12:00:00.500Z", "msg_shared"),
+        _user_with_id("only in the second leg", "2026-07-24T12:00:01.000Z", "msg_new"),
+    ])
+    home.mkdir()
+
+    c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    merged = c.conversations[0]
+    assert [t.uuid for t in merged.turns] == ["msg_shared", "msg_new"], \
+        "the replayed item appears once, and the new one is appended after it"
+
+
+def test_a_RESUMED_session_merges_legs_that_carry_NO_item_id(tmp_path):
+    """Roughly a third of real rollout items carry no `payload["id"]`, and the Grok
+    adapter never sets `Turn.uuid` at all (grok.py:311). Identity therefore cannot rest on
+    the uuid alone: an id that identifies nothing maps onto nothing (the rule dedup.py and
+    _admit already follow), so an id-less turn falls back to its own content.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
+    ])
+    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        # byte-identical replay of the opening turn: same role, stamp and text
+        _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
+        _user("a genuinely new id-less turn", "2026-07-24T12:00:01.000Z"),
+    ])
+    home.mkdir()
+
+    c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    merged = c.conversations[0]
+    texts = [b.text for t in merged.turns for b in t.blocks]
+    assert texts == ["an id-less opening turn", "a genuinely new id-less turn"], \
+        "an id-less replay collapses; an id-less NEW turn survives"
+
+
+def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
+    """A merged conversation is stitched from more than one file, so the single
+    `rollout_path` the reader opens can no longer describe where it came from. The legs
+    are recorded rather than silently folded away — an ingest that quietly rewrites what
+    it read is the failure mode this whole area exists to prevent.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    first = _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
+        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+        _user("leg one", "2026-07-24T10:00:01.000Z"),
+    ])
+    second = _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
+        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+        _user("leg two", "2026-07-24T12:00:01.000Z"),
+    ])
+    home.mkdir()
+
+    c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    merged = c.conversations[0]
+    assert merged.meta["rollout_paths"] == [first, second]
+    # the newest leg stays the resume target, because that is the one Codex continues
+    assert merged.meta["rollout_path"] == second
+    # and the conversation's window covers both legs, not just the first
+    assert merged.updated_at == "2026-07-24T12:00:01.000Z"
 
 
 def _blank_thread_id_grok_doc(session_dir, conv_id):

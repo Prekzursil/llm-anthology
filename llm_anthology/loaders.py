@@ -325,6 +325,10 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
     result = corpus.Corpus()
     sources, errors = [], []
     seen_edges, claimed_by = set(), {}
+    # thread id -> the Conversation already admitted for it, so a LATER rollout of the
+    # same thread can be merged into it rather than overwriting it in the index. See
+    # `_merge_resumed_leg`.
+    admitted = {}
 
     # The document-producing sources, in INGEST ORDER (see the merge policy above). Each
     # entry is (label, adapter MODULE, the doc attribute naming its unit on disk, root).
@@ -354,7 +358,7 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
         errors.extend(source_errors)
         for doc in docs:
             errors.extend(_admit(result, doc, label, path_attr, claimed_by, seen_edges,
-                                 sources))
+                                 sources, admitted))
 
     # The Codex state graph is merged ONLY when a home was named. Two reasons, and the
     # second is the important one:
@@ -405,14 +409,27 @@ def _ingest_docs(adapter, root, label):
     return docs, [dict(err, source=label) for err in errors]
 
 
-def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources):
+def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admitted):
     """Fold ONE parsed document into `result`, or refuse it as a collision.
 
     Returns the error entries the attempt produced: empty when it was admitted, one
     collision entry when its thread id already belongs to a DIFFERENT source. A repeated
     id from the SAME source is admitted, because that is a resumed session (a second
-    rollout for one thread) or a copied store — the thread upserts and the conversation
-    dedupes by id, exactly as before this function existed.
+    rollout for one thread) or a copied store — but it is MERGED into the conversation it
+    continues, not appended as a second record under the same id (`_merge_resumed_leg`).
+
+    THE CLAIM THIS DOCSTRING USED TO MAKE was that a same-source repeat needed nothing
+    doing, because "the thread upserts and the conversation dedupes by id, exactly as
+    before this function existed". The second half died when `corpus.add_conversation`
+    was changed to re-index rather than early-return (corpus.py:318-331): dedupes-by-id
+    became OVERWRITES-by-id. Two rollouts of one resumed session then meant two records
+    with one `conversations.conversation_id`, and the later simply replaced the earlier —
+    2 files in, 1 row out, the older leg's turns unsearchable, 0 errors, exit 0.
+
+    Measured on the owner's live store before the fix: 236 of 1069 session ids spanned
+    more than one rollout file, covering 1189 files, so 953 files — 47.1% of the store —
+    were being dropped silently. None of the 236 was a benign replay (156 fully disjoint,
+    78 partially overlapping), and one id spanned 66 files.
 
     A BLANK id neither claims nor collides — see the comment on the guard below.
     """
@@ -444,10 +461,17 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources):
                      "stage": "thread-id-collision",
                      "error": "thread id %r is already held by %s; this %s session was NOT "
                               "ingested" % (thread_id, holder, label)}]
+        if holder is not None:
+            # SAME source, same id: a resumed session's next leg. Merge, never append.
+            _merge_resumed_leg(result, admitted[thread_id], doc, path_attr, sources)
+            return []
         claimed_by[thread_id] = label
 
     conv = doc.conversation
     conv.meta["thread_id"] = thread_id                  # link the FTS row to its thread
+    conv.meta["rollout_paths"] = [getattr(doc, path_attr)]
+    if thread_id:
+        admitted[thread_id] = conv
     result.conversations.append(conv)
     result.add_thread(doc.thread)
     for edge in doc.edges:
@@ -455,6 +479,87 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources):
     sources.append(index.IndexSource(file=getattr(doc, path_attr),
                                      content_hash=_fingerprint(conv), records=[conv]))
     return []
+
+
+def _turn_key(turn):
+    """The identity of a turn for merge purposes.
+
+    The provider's opaque item id when there is one — `codex_rollout.py:274,283` reads
+    `payload["id"]` into `Turn.uuid`. Roughly a third of real rollout items carry no such
+    id, and `grok.py:311` never sets one at all, so a uuid-only key would treat every
+    id-less turn as unique and re-append the whole replayed prefix. An id that identifies
+    nothing maps onto nothing (the rule `dedup.py:339-345` and `_admit` already follow),
+    so those fall back to their own content: role, stamp and block text.
+    """
+    if turn.uuid:
+        return ("id", turn.uuid)
+    return ("body", turn.role, turn.timestamp,
+            tuple((b.type, b.text) for b in turn.blocks))
+
+
+def _merge_resumed_leg(result, prior, doc, path_attr, sources):
+    """Fold a LATER rollout of an already-admitted thread into the conversation it
+    continues, rather than letting it overwrite that conversation in the index.
+
+    Filtering is one-directional and one-shot: the incoming leg is compared against the
+    turns admitted BEFORE it, snapshotted first. A turn repeated WITHIN a single rollout
+    is the adapter's own output and is left exactly as it came — this function's job is
+    to reconcile files, not to second-guess one.
+
+    WHICH SIDE WINS, per field, and why:
+      * turns          — appended in file order, minus anything already present. 156 of
+                         the 236 measured real overlaps are fully disjoint, so this is
+                         mostly pure concatenation; 78 partially overlap, which is what
+                         the filter is for.
+      * title/preview  — the FIRST leg's. `_assemble` derives the title from the first
+        /created_at      user message IN ITS OWN FILE, so a resumed leg's title is the
+                         resume prompt, not what the conversation is actually about.
+      * updated_at     — the LATEST leg's; the conversation now extends to it.
+      * tokens_used    — the maximum. Codex reports a per-rollout cumulative figure, so
+                         taking the max is right whether it accumulates across legs or
+                         restarts; summing would double-count the former.
+      * rollout_path   — the LATEST leg's, because that is the file `codex resume`
+                         continues and the one the reader should open. The full list is
+                         kept in `meta["rollout_paths"]` so the earlier legs stay visible
+                         rather than being silently folded away.
+    """
+    seen = {_turn_key(t) for t in prior.turns}
+    for turn in doc.conversation.turns:
+        key = _turn_key(turn)
+        if key not in seen:
+            seen.add(key)
+            prior.turns.append(turn)
+
+    path = getattr(doc, path_attr)
+    later = doc.conversation
+    prior.updated_at = max(prior.updated_at, later.updated_at)
+    prior.meta["rollout_paths"] = prior.meta.get("rollout_paths", []) + [path]
+    prior.meta["rollout_path"] = path
+    prior.meta["tokens_used"] = max(prior.meta.get("tokens_used", 0) or 0,
+                                    later.meta.get("tokens_used", 0) or 0)
+
+    # The thread node is upserted by id, so a bare `add_thread` would let the resumed
+    # leg's title/preview replace the original's. Carry only the fields that genuinely
+    # advance with the session.
+    #
+    # Subscripted, not `.get()` with a None fallback: reaching here means `claimed_by`
+    # already holds this id for this source, and the admit that set it also ran
+    # `result.add_thread(doc.thread)` — `RolloutDoc.thread_id` is an alias of
+    # `thread.id` (codex_rollout.py:96,103), so the node is present by construction. A
+    # `if node is None: add_thread(...)` fallback was written here first and proved
+    # unreachable (coverage found it, nothing could exercise it). Restoring it would
+    # convert a broken invariant into a silent divergence — the resumed leg's title
+    # quietly replacing the original's — where a KeyError says so immediately.
+    node = result.threads[doc.thread.id]
+    node.updated_at_ms = max(node.updated_at_ms or 0, doc.thread.updated_at_ms or 0)
+    node.tokens_used = max(node.tokens_used or 0, doc.thread.tokens_used or 0)
+    node.rollout_path = doc.thread.rollout_path or node.rollout_path
+
+    # One IndexSource per FILE regardless, so every leg is checkpointed and a resumed
+    # ingest stays resumable. Each carries the SAME merged conversation object, so
+    # whichever sources the checkpoint replays, the row written is the complete one.
+    sources.append(index.IndexSource(file=path, content_hash=_fingerprint(prior),
+                                     records=[prior]))
 
 
 def _add_edge(result, edge, seen_edges):
