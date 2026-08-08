@@ -470,6 +470,23 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     conv = doc.conversation
     conv.meta["thread_id"] = thread_id                  # link the FTS row to its thread
     conv.meta["rollout_paths"] = [getattr(doc, path_attr)]
+    if not conv.id:
+        # An id-less session still needs a UNIQUE index key. `_assemble` sets
+        # `Conversation.id = tid`, so the conversation id is blank in exactly the case
+        # the guard above exists for — and `conversations.conversation_id` is UNIQUE, so
+        # two id-less sessions overwrote each other on disk. The guard got them both into
+        # the returned corpus; it never got them both into the INDEX, and the test that
+        # pinned it asserted on the corpus, so the disk half went unnoticed.
+        #
+        # This is NOT the id-namespacing the cross-provider policy above rejects: that
+        # refuses to diverge a shown id from a PROVIDER's id, and here the provider issued
+        # none. Nothing is renamed — only the blank is filled.
+        #
+        # Keyed on the BASENAME, not the full path, because Codex moves a finished session
+        # into `archived_sessions/`; a full-path key would read the move as a brand-new
+        # conversation and grow the corpus on the next build. The thread id is left blank
+        # regardless: an id that identifies nothing still claims no graph node.
+        conv.id = "unidentified:%s" % os.path.basename(getattr(doc, path_attr))
     if thread_id:
         admitted[thread_id] = conv
     result.conversations.append(conv)

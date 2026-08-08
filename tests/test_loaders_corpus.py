@@ -653,6 +653,72 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     assert [(e.parent_thread_id, e.child_thread_id) for e in c.edges] == [("P1", "C1")]
 
 
+def test_TWO_id_less_sessions_both_reach_the_INDEX_not_just_the_corpus(tmp_path):
+    """The blank-id guard in `_admit` got both id-less sessions into the in-memory corpus.
+    It did not get them onto DISK.
+
+    `codex_rollout._assemble` sets `Conversation.id = tid`, and tid is blank in exactly
+    the case the guard exists for — so two id-less sessions arrive as two Conversations
+    both keyed "", and `conversations.conversation_id` is UNIQUE. Result: 2 conversations
+    in memory, 1 row in the index, the first one's turns unsearchable, zero errors. The
+    same overwrite the resumed-session fix removed, one layer down, and the same reason it
+    survived review — the test that pinned the guard asserted on the returned corpus and
+    the thread ids, never on what the index actually held.
+
+    Two id-less sessions are DIFFERENT conversations, so they cannot be merged the way a
+    resumed session's legs are; they need distinct keys instead. The real store holds one
+    such file today, so nothing is being lost right now — but "currently only one" is not
+    a guarantee, and the failure is silent when it stops being true.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    # No session_meta and no UUID in the filename: the measured way tid comes out blank.
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-first.jsonl",
+                   [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")])
+    _write_rollout(day, "rollout-2026-07-24T11-00-00-second.jsonl",
+                   [_user("octopusgarden", "2026-07-24T11:00:01.000Z")])
+    home.mkdir()
+
+    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    assert len(c.conversations) == 2, "both id-less sessions are still admitted"
+    assert {conv.meta["thread_id"] for conv in c.conversations} == {""}, \
+        "and neither invents a THREAD id — a blank id still claims no graph node"
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 2, "both must reach the index, not overwrite each other"
+        assert len(corpus.search(conn, "narwhalpudding")) == 1, \
+            "the FIRST id-less session must stay searchable"
+        assert len(corpus.search(conn, "octopusgarden")) == 1
+    finally:
+        conn.close()
+
+
+def test_an_id_less_session_keeps_its_key_across_a_re_run(tmp_path):
+    """The synthetic key has to be STABLE, or a re-ingest appends a second row for the
+    same session and the corpus grows on every build. Derived from the unit's BASENAME,
+    not its full path, so that Codex moving a finished session into `archived_sessions/`
+    — which it does — is not seen as a new conversation.
+    """
+    sessions, home = tmp_path / "sessions", tmp_path / "no_state"
+    idx = str(tmp_path / "index.sqlite")
+    day = os.path.join(str(sessions), "2026", "07", "24")
+    _write_rollout(day, "rollout-2026-07-24T10-00-00-first.jsonl",
+                   [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")])
+    home.mkdir()
+
+    first, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+    again, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
+
+    assert first.conversations[0].id == again.conversations[0].id
+    conn = corpus.open_index(idx)
+    try:
+        assert index.count(conn) == 1, "a re-run must not add a second row"
+    finally:
+        conn.close()
+
+
 def _user_with_id(text, ts, mid):
     """A user message carrying the provider's opaque item id (codex_rollout.py:274 reads
     `payload["id"]` into `Turn.uuid`). Needed to exercise the replay case, where the same
@@ -935,7 +1001,15 @@ def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, mon
     assert "" in c.threads, "the codex fixture stopped producing a blank thread id"
     # THE REGRESSION: neither id-less session is a collision, and BOTH are ingested.
     assert [e for e in errors if e["stage"] == "thread-id-collision"] == [], errors
-    assert {conv.id for conv in c.conversations} == {"", "GROK-NO-THREAD-ID"}
+    # A blank THREAD id and a blank CONVERSATION id are different things, and only the
+    # first stays blank. This assertion used to read `{"", "GROK-NO-THREAD-ID"}`, pinning
+    # the empty conversation id — which was the overwrite bug itself, since
+    # `conversations.conversation_id` is UNIQUE and a second id-less codex session would
+    # have replaced this one on disk. The Grok doc is untouched because it HAS a
+    # conversation id; only the codex rollout, which had none, is given a stable key.
+    assert {conv.id for conv in c.conversations} == {
+        "unidentified:rollout-2026-07-24T10-00-00-plainname.jsonl", "GROK-NO-THREAD-ID"}
+    assert "" in c.threads, "and the blank THREAD id is still blank — no node invented"
 
 
 def test_a_broken_grok_store_does_not_cost_the_codex_ingest(tmp_path):
