@@ -243,6 +243,19 @@ describe("groupDigits", () => {
     expect(groupDigits(999)).toBe("999");
     expect(groupDigits(1_284_000)).toBe("1,284,000");
   });
+
+  it("shows a non-finite count as itself rather than as a grouped lie", () => {
+    // Every number here arrives off the wire, so NaN/Infinity is reachable from a malformed
+    // payload. The digit regex would turn NaN into "NaN" and Infinity into "Infinity"
+    // anyway, but only after Math.trunc — which yields NaN, so the guard is what keeps this
+    // from printing a plausible-looking number for a count nobody measured.
+    expect(groupDigits(Number.NaN)).toBe("NaN");
+    expect(groupDigits(Number.POSITIVE_INFINITY)).toBe("Infinity");
+  });
+
+  it("groups a negative count without losing the sign", () => {
+    expect(groupDigits(-2043)).toBe("-2,043");
+  });
 });
 
 describe("countLabel", () => {
@@ -268,8 +281,16 @@ describe("kindLabel", () => {
 
 describe("formatDetailValue", () => {
   it("omits an empty string, because that MEANS the marker was not found", () => {
-    // discover.py:531 writes `state_db: ""` for a marker file it did not find.
+    // discover.py:564 writes `state_db: ""` for a marker file it did not find.
     expect(formatDetailValue("")).toBeNull();
+  });
+
+  it("renders a boolean as yes/no rather than as a bare true/false", () => {
+    // `detail` is rendered key-agnostically, so any provider may put a flag in it. `false`
+    // must survive as a rendered value: returning null for it would drop the key entirely
+    // and make "we checked and it is off" indistinguishable from "we never looked".
+    expect(formatDetailValue(true)).toBe("yes");
+    expect(formatDetailValue(false)).toBe("no");
   });
 
   it("shortens a path value to its final segment", () => {
@@ -452,6 +473,20 @@ describe("groupFindings ordering", () => {
     ]);
   });
 
+  it("sorts a kind it does not recognise LAST rather than first", () => {
+    // Adding a kind is a table edit in the engine (discover.py:48-51), so an unknown one is
+    // expected rather than impossible. It must land after everything actionable: ranking it 0
+    // by accident would put a row the panel can do nothing with at the top of a first run.
+    const groups = groupFindings(
+      scan([
+        finding({ provider: "future", kind: "brand_new_kind", newest_mtime: NOW_SEC }),
+        builtIndex({ newest_mtime: NOW_SEC - 999_999 }),
+      ]),
+      { ...OPEN_CTX, nowMs: NOW },
+    );
+    expect(groups.map((g) => g.kind)).toEqual(["built_index", "brand_new_kind"]);
+  });
+
   it("orders equal-rank groups by recency", () => {
     const groups = groupFindings(
       scan([
@@ -464,7 +499,7 @@ describe("groupFindings ordering", () => {
   });
 
   it("puts the newest finding first WITHIN a group", () => {
-    // The engine sorts survivors by (kind, provider, PATH) — discover.py:788-789 — so wire
+    // The engine sorts survivors by (kind, provider, PATH) — discover.py:819-820 — so wire
     // order is not presentation order and the UI has to re-sort.
     const groups = groupFindings(
       scan([
@@ -733,6 +768,18 @@ interface Harness {
   ipc: DiscoveryIpc & { builds: BuildParams[]; created: string[]; opened: string[] };
 }
 
+/**
+ * A destination the harness's `openCorpus` REFUSES to attach.
+ *
+ * Threaded through the PATH rather than added as a harness flag, so the failure arm is
+ * reachable from the seams the tests already use (`chooseDestination` picks it) while the
+ * call recording below stays intact. An `over.openCorpus` override cannot do that job here:
+ * it replaces the recorder, so `opened` would go silent and a test could no longer assert
+ * that the create-then-open sequence ran at all — which is the thing that distinguishes
+ * "the engine declined" from "we never asked".
+ */
+const UNATTACHABLE = "C:\\refuses-to-attach.db";
+
 function harness(
   over: Partial<DiscoveryIpc> = {},
   deps: Partial<DiscoveryDeps> = {},
@@ -754,6 +801,9 @@ function harness(
     },
     async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
       opened.push(indexPath);
+      // `ok: false` is a REFUSAL, not a throw: `open_corpus` answers that shape, so the
+      // controller has to notice it rather than rely on a rejected promise.
+      if (indexPath === UNATTACHABLE) return { ok: false, index: "" };
       return { ok: true, index: indexPath };
     },
     async createCorpus(indexPath: string): Promise<CreateCorpusResult> {
@@ -909,6 +959,97 @@ describe("DiscoveryPanelController.activate", () => {
     // Once for the freshly-created index, once when the build reaches a terminal state.
     expect(h.ready).toEqual(["C:\\new.db", "C:\\new.db"]);
   });
+
+  it("stops when the engine CREATED the index but declined to attach it", async () => {
+    // The dangerous middle of importStore: create succeeded, so an index now exists on disk,
+    // but the attach did not. Continuing would fire `corpus.build` with nothing attached and
+    // surface the engine's internal "call open_corpus first" — the leak ui/errors exists to
+    // stop. It must stop here instead, and it must NOT announce a corpus it does not have.
+    const h = harness({}, { chooseDestination: async (): Promise<string | null> => UNATTACHABLE });
+    await h.controller.activate(codexStore());
+    expect(h.ipc.created).toEqual([UNATTACHABLE]);
+    expect(h.ipc.opened).toEqual([UNATTACHABLE]);
+    expect(h.ipc.builds).toEqual([]);
+    expect(h.ready).toEqual([]);
+    expect(h.controller.current.phase).toBe("error");
+    expect(h.controller.current.status).toContain("Import failed");
+    expect(h.controller.current.busy).toBe(false);
+  });
+
+  it("reports a build that could not be started, carrying the engine's reason", async () => {
+    // The other way into the same catch, and the likelier one in the field: the index is
+    // attached and `corpus.build` itself rejects.
+    const h = harness({
+      async corpusBuild(): Promise<{ job_id: string }> {
+        throw new Error("disk is full");
+      },
+    });
+    h.controller.setCorpusAttached("C:\\existing.db");
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).toBe("error");
+    // `Error:` and not just the message, because `engineErrorText` renders through
+    // `String(err)` (`ui/errors.ts:45`) so that a non-Error throwable still says something.
+    // Pinned rather than loosened to `toContain`: this is the exact text a user reads.
+    expect(h.controller.current.status).toBe("Import failed: Error: disk is full");
+    expect(h.controller.current.busy).toBe(false);
+  });
+
+  it("never leaks the engine's not-attached instruction out of a failed import", async () => {
+    // `ui/errors` REPLACES this one outright rather than prefixing it, so the assertion is
+    // that "Import failed" is gone too — the user is told what to do, not what the RPC said.
+    // Getting this backwards is how the raw string reached users in the first place.
+    const h = harness({
+      async corpusBuild(): Promise<{ job_id: string }> {
+        throw new Error("no corpus attached: call open_corpus first");
+      },
+    });
+    h.controller.setCorpusAttached("C:\\existing.db");
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).toBe("error");
+    expect(h.controller.current.status).not.toContain("open_corpus");
+    expect(h.controller.current.status).toContain("Open corpus");
+  });
+
+  it("ignores a re-entrant activate while one is in flight", async () => {
+    // Single-flight, for the same reason `scan` is: a double-click on Import would otherwise
+    // start a second build the engine refuses by naming a job id the user never saw.
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const h = harness({
+      async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
+        await gate;
+        return { ok: true, index: indexPath };
+      },
+    });
+    const first = h.controller.activate(builtIndex());
+    await h.controller.activate(builtIndex()); // dropped, not queued
+    release();
+    await first;
+    expect(h.ready).toEqual(["C:\\Users\\me\\Documents\\anthology.db"]);
+  });
+
+  it("does nothing at all once destroyed", async () => {
+    const h = harness();
+    h.controller.destroy();
+    await h.controller.activate(builtIndex());
+    await h.controller.scan();
+    expect(h.ipc.opened).toEqual([]);
+    expect(h.views).toEqual([]);
+  });
+
+  it("abandons an import when the panel is destroyed while the picker is open", async () => {
+    // The picker is a NATIVE dialog, so it can sit open indefinitely while the app moves on.
+    // Creating an index after that would leave a file behind for a panel that is gone.
+    const h = harness({}, {
+      chooseDestination: async (): Promise<string | null> => {
+        h.controller.destroy();
+        return "C:\\new.db";
+      },
+    });
+    await h.controller.activate(codexStore());
+    expect(h.ipc.created).toEqual([]);
+    expect(h.ipc.builds).toEqual([]);
+  });
 });
 
 describe("DiscoveryPanelController build polling", () => {
@@ -1001,6 +1142,109 @@ describe("DiscoveryPanelController build polling", () => {
     await h.controller.activate(codexStore());
     expect(polls).toBe(1);
   });
+
+  it("stops between the poll and the emit when destroyed mid-request", async () => {
+    // The other disposal window: destroyed while `build_status` is in flight. Emitting after
+    // that would repaint a panel the app has already torn down.
+    let panel: DiscoveryPanelController | null = null;
+    const h = harness({
+      async corpusBuildStatus(): Promise<BuildStatus> {
+        panel?.destroy();
+        return { state: "done", indexed_conversations: 9, errors: [] };
+      },
+    });
+    panel = h.controller;
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).not.toBe("done");
+    // Only the create-time announcement; the terminal one never fired.
+    expect(h.ready).toEqual(["C:\\new.db"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delivering the outcome
+// ---------------------------------------------------------------------------
+
+describe("a terminal import outcome the user must actually read", () => {
+  /** A done build that skipped `n` files. */
+  function skipping(n: number): Partial<DiscoveryIpc> {
+    return {
+      async corpusBuildStatus(): Promise<BuildStatus> {
+        return {
+          state: "done",
+          indexed_conversations: 2003,
+          errors: Array.from({ length: n }, (_, i) => `f${i}.jsonl: unreadable`),
+        };
+      },
+    };
+  }
+
+  it("marks a SUCCESSFUL import that skipped files as needing attention", async () => {
+    // The measured defect: the shell collapses on `done` BEFORE writing the status line, so
+    // this message was composed and discarded and a partial import looked complete.
+    // `buildOutcomeMessage` is the only formatter of `BuildStatus.errors` in the cockpit, so
+    // the count had nowhere else to surface. The flag is what holds the panel open; that the
+    // DOM then shows it is asserted in `tools/smoke_boot.mjs`, which vitest cannot do here.
+    const h = harness(skipping(40));
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).toBe("done");
+    expect(h.controller.current.needsAttention).toBe(true);
+    expect(h.controller.current.status).toContain("40 files could not be read");
+    expect(h.controller.current.status).toContain("2,003 conversations");
+  });
+
+  it("leaves a CLEAN import unmarked, so it still collapses silently", async () => {
+    // Half of the requirement, and the half a careless fix breaks: nothing was skipped, so
+    // there is nothing to read and no reason to keep the pane off the graph.
+    const h = harness();
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).toBe("done");
+    expect(h.controller.current.needsAttention).toBe(false);
+  });
+
+  it("does not mark a FAILED build, whose phase already keeps the panel open", async () => {
+    const h = harness({
+      async corpusBuildStatus(): Promise<BuildStatus> {
+        return { state: "failed", error: "disk is full", indexed_conversations: 0, errors: [] };
+      },
+    });
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.phase).toBe("error");
+    expect(h.controller.current.needsAttention).toBe(false);
+  });
+
+  it("clears the mark when the user acknowledges it", async () => {
+    const h = harness(skipping(3));
+    await h.controller.activate(codexStore());
+    const before = h.views.length;
+    h.controller.acknowledge();
+    expect(h.controller.current.needsAttention).toBe(false);
+    // It emits, because the shell only collapses on a repaint.
+    expect(h.views.length).toBe(before + 1);
+    // And the outcome text is left intact: acknowledging is not forgetting.
+    expect(h.controller.current.status).toContain("3 files could not be read");
+  });
+
+  it("acknowledging nothing is a no-op that does not repaint", async () => {
+    const h = harness();
+    await h.controller.activate(codexStore());
+    const before = h.views.length;
+    h.controller.acknowledge();
+    h.controller.acknowledge();
+    expect(h.views.length).toBe(before);
+  });
+
+  it("never lets a later transition inherit the mark", async () => {
+    // `emit` merges patches, so without a per-transition reset the marker would survive into
+    // an unrelated success and pin the panel open forever. Import 40 skipped files, then open
+    // a corpus: that open must collapse.
+    const h = harness(skipping(40));
+    await h.controller.activate(codexStore());
+    expect(h.controller.current.needsAttention).toBe(true);
+    await h.controller.activate(builtIndex());
+    expect(h.controller.current.phase).toBe("done");
+    expect(h.controller.current.needsAttention).toBe(false);
+  });
 });
 
 describe("DiscoveryPanelController.setCorpusAttached", () => {
@@ -1033,5 +1277,14 @@ describe("DiscoveryPanelController.toggleGroup", () => {
     expect(h.controller.current.groups[0].rows).toHaveLength(12);
     h.controller.toggleGroup("chatgpt/export_file");
     expect(h.controller.current.groups[0].rows).toHaveLength(5);
+  });
+
+  it("survives a toggle before any scan has produced something to group", () => {
+    // Unlike `setCorpusAttached`, this one re-derives unconditionally, so the no-scan case
+    // reaches `regroup` with no result at all. It must answer an empty list rather than
+    // throw: nothing in the shell can guarantee the ordering of a boot-time toggle.
+    const h = harness();
+    h.controller.toggleGroup("chatgpt/export_file");
+    expect(h.controller.current.groups).toEqual([]);
   });
 });

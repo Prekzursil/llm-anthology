@@ -234,6 +234,114 @@ const main = async () => {
     && (await page.locator("#graph-pane").isVisible())
     && (await page.locator("#btn-maintenance").getAttribute("aria-expanded")) === "false");
 
+  // ---------------------------------------------------------------------------
+  // AUTO-DISCOVERY: does a successful import actually TELL the user what it skipped?
+  //
+  // `watchBuild` composed "Import finished -- 2003 conversations. 40 files could not be read
+  // and were skipped." and `paint()` then returned at its `phase === "done"` teardown BEFORE
+  // writing the status line, so the message was built and thrown away. A partial import was
+  // indistinguishable from a complete one -- and `buildOutcomeMessage` is the only place in
+  // the cockpit that formats `BuildStatus.errors`, so the count was lost app-wide.
+  //
+  // WHY IT IS TESTED LIKE THIS. The discard is in DOM code, and vitest here runs
+  // `environment: "node"`, so no unit test can reach it -- the existing test named for this
+  // behaviour (`discoveryPanel.test.ts`, "reports skipped files even on SUCCESS") asserts the
+  // STRING and passed throughout. So the real `DiscoveryPanel` class is instantiated HERE, in
+  // real Chromium, over a stub ipc that reports skipped files. Under the vite dev server a
+  // runtime `import()` of the source module is served and transformed on request, so this is
+  // the shipped class and not a copy of it.
+  //
+  // WHAT IT DOES NOT PROVE, and why not: it does not drive the APP's own discovery panel to
+  // this state, because the app cannot reach it in a browser -- the mock ipc always answers
+  // `errors: []` (`src/ipc/mock.ts`) and the real destination picker is Tauri-only. The seam
+  // proven here is paint()-to-DOM; the app's wiring of that panel is covered by boot.
+  const discovery = await page.evaluate(async () => {
+    const mod = await import("/src/ui/discoveryPanel.ts");
+
+    const stub = (buildErrors) => ({
+      async discoverSources() {
+        return {
+          // A `report="base"` Codex store: `path` is the home and `detail.items_root` the
+          // sessions tree, which is the shape that supplies both `corpus.build` parameters
+          // and so is the only one offered an Import.
+          findings: [{
+            provider: "codex",
+            kind: "session_store",
+            path: "C:\\Users\\probe\\.codex",
+            count: 2043,
+            newest_mtime: 1750000000,
+            confidence: "high",
+            detail: { items_root: "C:\\Users\\probe\\.codex\\sessions", rollouts_zst: 2043 },
+          }],
+          stats: { roots_scanned: 4, elapsed_seconds: 1.8, budget_exhausted: false, errors: [] },
+        };
+      },
+      async openCorpus(p) { return { ok: true, index: p }; },
+      async createCorpus(p) { return { index_path: p, created: true }; },
+      async corpusBuild() { return { job_id: "probe-1" }; },
+      async corpusBuildStatus() {
+        return { state: "done", indexed_conversations: 2003, errors: buildErrors };
+      },
+    });
+
+    const run = async (buildErrors) => {
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const panel = new mod.DiscoveryPanel(stub(buildErrors), host, () => {}, {
+        now: () => 0,
+        sleep: async () => {},
+        chooseDestination: async () => "C:\\Users\\probe\\new-corpus.db",
+      });
+      await panel.scan();
+      // Scoped through `.discovery-row` deliberately: `.discovery-action` is the panel's
+      // shared button style and the Dismiss control carries it too, so a bare
+      // `.discovery-action` selects Dismiss (it is created first, in the skeleton). That is
+      // not hypothetical -- the unscoped selector clicked Dismiss, ran no import, and this
+      // probe reported four failures against a working fix.
+      const action = host.querySelector(".discovery-row .discovery-action");
+      const label = action === null ? "(no action button)" : (action.textContent ?? "");
+      if (action !== null) action.click();
+      await new Promise((r) => setTimeout(r, 400));
+
+      const dismiss = host.querySelector(".discovery-dismiss");
+      const offered = dismiss !== null && dismiss.hidden === false;
+      const out = {
+        label,
+        text: host.textContent ?? "",
+        collapsed: host.childElementCount === 0,
+        dismissOffered: offered,
+        collapsedAfterDismiss: null,
+      };
+      if (offered) {
+        dismiss.click();
+        await new Promise((r) => setTimeout(r, 50));
+        out.collapsedAfterDismiss = host.childElementCount === 0;
+      }
+      host.remove();
+      return out;
+    };
+
+    // 40 unreadable rollouts out of 2,043 -- the scenario in the defect report.
+    const skipped = await run(Array.from({ length: 40 }, (_, i) => `f${i}.jsonl: unreadable`));
+    const clean = await run([]);
+    return { skipped, clean };
+  });
+
+  check("the discovery panel offered an Import for a both-parameters store",
+    discovery.skipped.label !== "(no action button)", discovery.skipped.label);
+  check("a PARTIAL import tells the user what it skipped",
+    discovery.skipped.text.includes("40 files could not be read")
+    && discovery.skipped.text.includes("2,003 conversations"),
+    discovery.skipped.text.slice(0, 96).replace(/\s+/g, " "));
+  check("the panel does NOT collapse while that report is unread",
+    discovery.skipped.collapsed === false && discovery.skipped.dismissOffered);
+  check("dismissing the report then collapses the panel",
+    discovery.skipped.collapsedAfterDismiss === true);
+  // The other half of the contract: the fix must not make a clean import noisy.
+  check("a CLEAN import still collapses silently",
+    discovery.clean.collapsed === true && discovery.clean.text === ""
+    && discovery.clean.dismissOffered === false);
+
   check("no uncaught page errors across the whole journey", errors.length === 0,
     errors.slice(0, 2).join(" | "));
 

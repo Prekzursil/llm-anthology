@@ -13,14 +13,16 @@
  *   * `built_index`   -> OPEN it. `open_corpus` takes exactly this path.
  *   * `session_store` -> IMPORT it, but ONLY when the finding actually supplies both
  *     parameters `corpus.build` requires. The engine defaults NEITHER `sessions_root` nor
- *     `codex_home` (`llm_anthology/sidecar.py:704-716`), deliberately, because defaulting
- *     the latter would read the user's live private store unasked. So a store whose
- *     finding names only one of them gets a stated reason, not a guessed default.
+ *     `codex_home` (`llm_anthology/sidecar.py:838-843` states the rule and names the
+ *     measured reason; `:856-861` enforces that at least one source is named),
+ *     deliberately, because defaulting the latter would read the user's live private store
+ *     unasked. So a store whose finding names only one of them gets a stated reason, not a
+ *     guessed default.
  *   * `export_file`   -> NOTHING but the fact it exists. There is no import RPC for a
- *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:461-489`) has one
+ *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:602-607`) has one
  *     ingest verb, `corpus.build`, and it runs `loaders.load_corpus`, which is Codex
- *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:280`,
- *     `:298`). Offering an "Import" button here would be inventing a capability.
+ *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:280`).
+ *     Offering an "Import" button here would be inventing a capability.
  *
  * THE SPLIT. Same shape as `ui/corpusBar` and `ui/exportPanel`: pure derivations carry
  * every DECISION (what is actionable, how findings group and rank, what each of the two
@@ -30,13 +32,20 @@
  *
  * DECISIONS THIS FILE MAKES THAT THE READER SHOULD KNOW ABOUT:
  *
- *   * It does NOT gate the import on `detail.ingestable`. That counter excludes compressed
- *     rollouts (`discover.py:291-295` marks `rollout-*.jsonl.zst` `ingestable=False`), but
- *     the ingest globs BOTH forms (`adapters/codex_rollout.py:416-419`) and a measured live
- *     store holds 2043 `.zst` against 0 plain `.jsonl` (`codex_rollout.py:357-358`). Gating
- *     on it would therefore hide a working import of the user's entire Codex history behind
- *     the words "0 importable". The counter is still displayed, generically, with the rest
- *     of `detail`.
+ *   * It does NOT gate the import on `detail.ingestable`, because that counter is a
+ *     HAND-MAINTAINED capability flag in the engine's spec table and it has already been
+ *     wrong once. `ItemPattern.ingestable` defaults to True (`discover.py:225`) and
+ *     `detail.ingestable` is just the sum over the patterns that carry it (`discover.py:572`),
+ *     so today BOTH Codex rollout shapes count and the number equals the total. It read 0
+ *     for months while `.zst` was flagged unreadable, and `discover.py:285-295` records both
+ *     the flip and the damage: the shipped panel told users their entire Codex history could
+ *     not be imported, of a store the reader had just been fixed to glob whole
+ *     (`adapters/codex_rollout.py:416-419`, measured 2043 `.zst` against 0 plain `.jsonl` at
+ *     `adapters/codex_rollout.py:357-359`). A UI that gates on the flag inherits that
+ *     staleness and understates the product as confidently as a wrong flag overstates it, so
+ *     the counter is displayed — generically, with the rest of `detail` — and never obeyed.
+ *     (The mock's discovery fixture still hardcodes `ingestable: 0` for its Codex store,
+ *     `ipc/mock.ts`, so a preview shows the historical value rather than the current one.)
  *   * `detail` is rendered key-agnostically. Its keys are provider-specific and adding a
  *     provider is a table edit in the engine (`discover.py:48-51`), so a renderer built
  *     around a fixed key set would silently drop whatever a new provider reports.
@@ -100,7 +109,8 @@ export const UNKNOWN_KIND_REASON = "Detected. This app has no action for this ki
  *
  * Two conversions in one, and both have bitten this codebase's neighbours: discovery is
  * the only surface here that reports seconds while every other timestamp is `_ms`, and it
- * reports `0.0` — never null — when nothing datable was seen (`discover.py:552`). Passing
+ * reports `0.0` — never null — when nothing datable was seen (`discover.py:583` for a store,
+ * and `_mtime`'s own fallback at `discover.py:788`). Passing
  * that 0 to `new Date()` yields 1 January 1970, which reads as a real (and very wrong)
  * date rather than as "no date".
  */
@@ -198,7 +208,7 @@ export function kindLabel(kind: string): string {
  * One `detail` value as display text, or null to omit the key entirely.
  *
  * Omission is meaningful, not tidying: the engine writes `state_db: ""` for a marker file
- * it did NOT find (`discover.py:531`), so rendering the empty string would assert the
+ * it did NOT find (`discover.py:564`), so rendering the empty string would assert the
  * opposite of what it means. A path value is shortened to its final segment because the
  * row already carries the full location.
  */
@@ -270,9 +280,10 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * have them.
  *
  * The derivation is STRUCTURAL rather than a provider name-check, because the structure is
- * exactly what encodes the difference. `discover.py:550-551` names a store finding's `path`
- * from its spec's `report` field: a `report="base"` store (Codex) names its BASE, with the
- * item tree carried separately as `detail.items_root` — so `path` is the Codex home and
+ * exactly what encodes the difference. `discover.py:582` names a store finding's `path`
+ * from its spec's `report` field, and `:578` carries the item tree alongside it: a
+ * `report="base"` store (Codex) names its BASE, with the item tree separate in
+ * `detail.items_root` — so `path` is the Codex home and
  * `items_root` is the sessions root, and both parameters exist. A `report="subdir"` store
  * (Claude Code) names the item tree ITSELF, so `path` and `items_root` are the same
  * directory and no home is named anywhere in the finding.
@@ -280,8 +291,9 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * That second case is not a gap worth papering over with a default: `corpus.build` would
  * then be pointed at a Claude Code transcript directory, where `ingest_sessions` globs
  * `rollout-*.jsonl` (`adapters/codex_rollout.py:416-419`) and matches nothing — a build
- * that reports complete success having imported zero conversations, which the engine's own
- * author calls out as "worse than failing" (`sidecar.py:700-702`).
+ * that reports complete success having imported zero conversations — the exact outcome the
+ * engine's own docstring calls out, having added an existing-directory check to stop it
+ * (`sidecar.py:845-847`).
  *
  * KNOWN LIMIT, stated rather than hidden: this reads a base-reporting store as
  * Codex-shaped. That is true of every store in the shipped table (`discover.py:271-333`
@@ -384,7 +396,7 @@ export function deriveAction(finding: DiscoveryFinding, ctx: ActionContext): Dis
  *
  * Mirrors the engine's own `_KIND_RANK` (`discover.py:77`) — but it is re-stated here
  * rather than relied upon, because the engine sorts survivors by `(kind, provider, path)`
- * (`discover.py:788-789`) whereas a person wants the NEWEST first within a group. The two
+ * (`discover.py:819-820`) whereas a person wants the NEWEST first within a group. The two
  * orderings genuinely differ, so the UI re-sorts instead of rendering wire order.
  */
 function kindRank(kind: string): number {
@@ -595,7 +607,7 @@ export type PollOutcome = "continue" | "terminal" | "timeout";
  *
  * Anything that is not `running` is terminal — `done` and `failed` obviously, but also
  * `idle`, which `corpus.build_status` reports when it holds no job at all
- * (`llm_anthology/sidecar.py:824`). Treating `idle` as "keep waiting" would spin forever
+ * (`llm_anthology/sidecar.py:973-975`). Treating `idle` as "keep waiting" would spin forever
  * against an engine that has nothing to report.
  */
 export function pollOutcome(state: string, elapsedMs: number, limits: PollLimits): PollOutcome {
@@ -677,6 +689,23 @@ export interface DiscoveryView {
   status: string;
   /** True while an engine call is in flight; the shell disables its controls. */
   busy: boolean;
+  /**
+   * True when `status` reports something the user CANNOT learn anywhere else, so the panel
+   * must stay on screen even in a phase it would otherwise collapse from.
+   *
+   * This exists because of a measured defect. The panel collapses on `done` — correctly, so
+   * an attached corpus gets the whole graph pane back — but that collapse happened BEFORE
+   * the status line was written, so a build that skipped unreadable files composed
+   * {@link buildOutcomeMessage} and then threw it away. A partial import was
+   * indistinguishable from a complete one, and `buildOutcomeMessage` is the only place in
+   * the cockpit that formats `BuildStatus.errors` at all, so the skipped count was lost
+   * app-wide rather than merely here.
+   *
+   * A ONE-SHOT, not a mode: it describes the state being emitted, so {@link
+   * DiscoveryPanelController.emit} clears it on every transition. A clean import sets it
+   * false and still collapses silently — the fix must not make a successful import noisy.
+   */
+  needsAttention: boolean;
 }
 
 export type DiscoveryViewListener = (view: DiscoveryView) => void;
@@ -684,7 +713,15 @@ export type DiscoveryViewListener = (view: DiscoveryView) => void;
 export type CorpusReadyListener = (indexPath: string) => void;
 
 function initialView(): DiscoveryView {
-  return { phase: "idle", groups: [], notes: [], emptyLabel: "", status: "", busy: false };
+  return {
+    phase: "idle",
+    groups: [],
+    notes: [],
+    emptyLabel: "",
+    status: "",
+    busy: false,
+    needsAttention: false,
+  };
 }
 
 /**
@@ -694,8 +731,9 @@ function initialView(): DiscoveryView {
  *
  * Single-flight throughout, like {@link import("./corpusBar").CorpusBarController}: a
  * re-entrant call while one is in flight is ignored rather than queued, so a double-click
- * on "Import" cannot start two builds — which the engine would refuse anyway, with an
- * error about a job the user never knew existed (`llm_anthology/sidecar.py:722-726`).
+ * on "Import" cannot start two builds — which the engine would refuse anyway, with a
+ * BUILD_IN_PROGRESS naming a job id the user never knew existed
+ * (`llm_anthology/sidecar.py:892-896`).
  */
 export class DiscoveryPanelController {
   private view: DiscoveryView = initialView();
@@ -721,7 +759,11 @@ export class DiscoveryPanelController {
   }
 
   private emit(patch: Partial<DiscoveryView>): void {
-    this.view = { ...this.view, ...patch };
+    // `needsAttention` is reset BEFORE the patch is applied, so an explicit value in the
+    // patch still wins. Without the reset the merge would carry a previous run's unread-
+    // outcome marker forward and pin the panel open forever: import 2 skipped files, then
+    // open a different corpus, and that unrelated success would inherit the marker.
+    this.view = { ...this.view, needsAttention: false, ...patch };
     this.onChange(this.view);
   }
 
@@ -829,8 +871,10 @@ export class DiscoveryPanelController {
    * Import a session store, creating and attaching an index first when nothing is open.
    *
    * That first step is not optional: `corpus.build` is forwarded only when a corpus is
-   * already attached (`cockpit/src-tauri/src/lib.rs:35-45`) and the engine additionally
-   * requires that index to exist on disk (`sidecar.py:717-720`). Firing the build anyway
+   * already attached (`cockpit/src-tauri/src/lib.rs:35-45`), the engine re-checks that
+   * itself (`sidecar.py:848` calling `_require_corpus`, `sidecar.py:701-703`), and it
+   * additionally refuses an index it cannot reopen from disk (`sidecar.py:887-889`).
+   * Firing the build anyway
    * on a fresh install would surface the engine's internal "no corpus attached: call
    * open_corpus first" — the exact leak `ui/errors` exists to stop.
    */
@@ -884,6 +928,12 @@ export class DiscoveryPanelController {
         this.emit({
           phase: ok ? "done" : "error",
           status: buildOutcomeMessage(status),
+          // A skipped file is the one thing here the user can learn NOWHERE else, so a
+          // non-clean import holds the panel open until acknowledged. Keyed on the errors
+          // list rather than on `ok`, because a FAILED build already keeps the panel open
+          // (the error phase never collapses) — it is success that was silently discarding
+          // its own report.
+          needsAttention: status.errors.length > 0,
           busy: false,
         });
         // Reload on BOTH outcomes: the graph is committed before the long conversation
@@ -906,6 +956,18 @@ export class DiscoveryPanelController {
       this.emit({ phase: "building", status: buildProgressLabel(status), busy: true });
       await this.deps.sleep(this.limits.intervalMs);
     }
+  }
+
+  /**
+   * The user has READ an outcome the panel was being held open for.
+   *
+   * Clearing the marker is what lets the panel finally collapse, so the acknowledgement —
+   * not the emit — is the delivery guarantee: an import that skipped files cannot vanish
+   * before someone dismissed the report of it. Re-entrant and safe when nothing is pending.
+   */
+  acknowledge(): void {
+    if (!this.view.needsAttention) return;
+    this.emit({ needsAttention: false });
   }
 
   /** Stop any in-flight poll loop. Safe to call more than once. */
@@ -934,6 +996,7 @@ export class DiscoveryPanel {
   /** The stable skeleton, or null while the container is collapsed. */
   private shell: {
     status: HTMLElement;
+    dismiss: HTMLButtonElement;
     notes: HTMLElement;
     groups: HTMLElement;
   } | null = null;
@@ -1000,6 +1063,22 @@ export class DiscoveryPanel {
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
 
+    // Sits immediately after the status line it acknowledges, so it is both adjacent to the
+    // outcome and the first focusable thing after it. Hidden unless the panel is actually
+    // being held open — an always-present "Dismiss" would invite closing the panel during a
+    // scan or an import, which is not what it does.
+    //
+    // `.discovery-action` is reused purely for its existing button STYLE, which makes that
+    // class shared rather than row-specific: anything selecting a ROW's action must scope
+    // through `.discovery-row .discovery-action`, because this button is created first and a
+    // bare selector finds it instead. `.discovery-dismiss` is the identifying hook.
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "discovery-action discovery-dismiss";
+    dismiss.textContent = "Dismiss";
+    dismiss.hidden = true;
+    dismiss.addEventListener("click", () => this.controller.acknowledge());
+
     const notes = document.createElement("p");
     notes.className = "discovery-notes muted";
 
@@ -1008,19 +1087,25 @@ export class DiscoveryPanel {
 
     this.container.setAttribute("role", "group");
     this.container.setAttribute("aria-labelledby", "discovery-title");
-    this.container.replaceChildren(heading, status, notes, groups);
-    this.shell = { status, notes, groups };
+    this.container.replaceChildren(heading, status, dismiss, notes, groups);
+    this.shell = { status, dismiss, notes, groups };
     return this.shell;
   }
 
   private paint(view: DiscoveryView): void {
-    if (view.phase === "idle" || view.phase === "done") {
+    // `needsAttention` is what keeps a terminal phase on screen. Everything else about the
+    // collapse is unchanged: an idle panel and a CLEAN import still hand the pane straight
+    // back to the graph, with no toggle for the user to find.
+    if ((view.phase === "idle" || view.phase === "done") && !view.needsAttention) {
       // Its job is finished: collapse and hand the pane back to the graph.
       this.teardown();
       return;
     }
     const shell = this.ensureShell();
     shell.status.textContent = view.status;
+    // Offered ONLY while the panel is held open, because dismissing is then the only way
+    // out — nothing else will collapse a panel whose outcome has not been read.
+    shell.dismiss.hidden = !view.needsAttention;
     shell.notes.textContent = view.notes.join(" ");
     shell.groups.replaceChildren(
       ...(view.emptyLabel !== "" ? [this.renderEmpty(view.emptyLabel)] : []),
