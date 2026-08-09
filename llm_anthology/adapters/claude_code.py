@@ -75,9 +75,19 @@ Nine traps this adapter is built around:
     result) stays human, because the prose is real.
 
  3. THE ID MUST COME FROM THE PATH, NOT FROM `sessionId`. `conversations.conversation_id`
-    is UNIQUE and `corpus.add_conversation:278-281` treats a duplicate as
-    already-present — so an id collision does not raise, it SILENTLY DROPS a
-    conversation. Two independent collision risks, both closed here:
+    is UNIQUE and `corpus.py:347` (`add_conversation`) OVERWRITES a duplicate — so an id
+    collision does not raise, it silently REPLACES the conversation already stored under
+    that id. Two independent collision risks, both closed here:
+      (That sentence used to read "treats a duplicate as already-present ... SILENTLY
+      DROPS", and cited `corpus.add_conversation:278-281`. Both halves were wrong and the
+      combination was invisible: the anchor pointed at `init_index`, and the FUNCTION-
+      qualified citation shape is one the gate's scraper does not recognise, so nothing
+      ever checked it. The claim described the pre-reindex behaviour — an early-return
+      that is exactly the premise whose death silently destroyed 47% of the Codex store
+      through `loaders._admit`. The DECISION here is unaffected and if anything better
+      justified: overwriting loses the earlier conversation outright, where dropping at
+      least kept it.)
+
       * a child transcript may carry its PARENT's `sessionId` (the spec's own open
         question, `:120-122`), which would collapse all ~78 children of a session into
         one row. The child id is therefore derived from its path.

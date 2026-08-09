@@ -446,6 +446,13 @@ PY_PINS = [
     ("cli.py", "build.py", 107, "carries NO turns is a silent", "the silent false-success this was bitten by"),
 
     # ----------------------------------------------------------------- claude_code.py (11)
+    # Converted from a FUNCTION-qualified citation (`corpus.add_conversation:278-281`) to
+    # the file form, which is the only shape the scraper recognises. As written it was
+    # outside the gate entirely: the anchor pointed at `init_index`, and the CLAIM beside
+    # it described the pre-reindex early-return — the same dead premise that let
+    # `loaders._admit` destroy 47% of the Codex store. Nothing could catch either, because
+    # an unrecognised shape is not an unpinned citation, it is an invisible one.
+    ("claude_code.py", "corpus.py", 347, "def add_conversation", "a duplicate id OVERWRITES, it does not drop"),
     ("claude_code.py", "discover.py", 318, 'StoreSpec(provider="claude-code"', "the StoreSpec that finds this store"),
     ("claude_code.py", "discover.py", 315, "Claude Code writes one .jsonl transcript", "the corrected openable note"),
     ("claude_code.py", "grok.py", 626, "def _read_subagents", "grok has the PARENT read `subagents/`"),
@@ -486,8 +493,8 @@ PY_PINS = [
 #: make the suite permanently red for three citations that are correct.
 PY_ORPHAN_SECONDARIES = {
     ("claude_code.py", 38, "`:116-122"),
-    ("claude_code.py", 82, "`:120-122"),
-    ("claude_code.py", 458, "`:102"),
+    ("claude_code.py", 92, "`:120-122"),
+    ("claude_code.py", 468, "`:102"),
 }
 
 #: Claims found FALSE — not mis-anchored, but contradicted by the code they cite — and
