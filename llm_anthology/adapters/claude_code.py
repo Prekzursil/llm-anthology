@@ -78,15 +78,20 @@ Nine traps this adapter is built around:
     is UNIQUE and `corpus.py:347` (`add_conversation`) OVERWRITES a duplicate — so an id
     collision does not raise, it silently REPLACES the conversation already stored under
     that id. Two independent collision risks, both closed here:
-      (That sentence used to read "treats a duplicate as already-present ... SILENTLY
-      DROPS", and cited `corpus.add_conversation:278-281`. Both halves were wrong and the
-      combination was invisible: the anchor pointed at `init_index`, and the FUNCTION-
-      qualified citation shape is one the gate's scraper does not recognise, so nothing
-      ever checked it. The claim described the pre-reindex behaviour — an early-return
-      that is exactly the premise whose death silently destroyed 47% of the Codex store
-      through `loaders._admit`. The DECISION here is unaffected and if anything better
-      justified: overwriting loses the earlier conversation outright, where dropping at
-      least kept it.)
+      (That sentence used to say a duplicate was treated as already-present and SILENTLY
+      DROPPED, anchored by a FUNCTION-qualified citation naming `add_conversation` and a
+      line range in the 270s. Both halves were wrong and the combination was invisible:
+      the range pointed at `init_index`, and that citation shape is one the gate's scraper
+      cannot parse, so nothing ever checked either. The claim described the pre-reindex
+      early-return — the same dead premise whose death silently destroyed 47% of the Codex
+      store through `loaders._admit`. The DECISION here is unaffected and if anything
+      better justified: overwriting loses the earlier conversation outright, where
+      dropping at least kept it.
+
+      The old citation is DESCRIBED rather than reproduced, deliberately. Quoting it
+      verbatim re-introduces the very shape the new detector exists to refuse — and
+      teaching that detector to ignore quoted text would let a real one hide inside quote
+      marks, which is the trade the sibling gate already refused for dead phrases.)
 
       * a child transcript may carry its PARENT's `sessionId` (the spec's own open
         question, `:120-122`), which would collapse all ~78 children of a session into

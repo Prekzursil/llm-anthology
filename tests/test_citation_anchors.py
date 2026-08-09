@@ -493,8 +493,8 @@ PY_PINS = [
 #: make the suite permanently red for three citations that are correct.
 PY_ORPHAN_SECONDARIES = {
     ("claude_code.py", 38, "`:116-122"),
-    ("claude_code.py", 92, "`:120-122"),
-    ("claude_code.py", 468, "`:102"),
+    ("claude_code.py", 97, "`:120-122"),
+    ("claude_code.py", 473, "`:102"),
 }
 
 #: Claims found FALSE — not mis-anchored, but contradicted by the code they cite — and
@@ -673,6 +673,71 @@ def test_every_pinned_engine_citation_lands_on_its_construct():
                 % (src, target, cited, about, token, actual.strip(), token, target)
             )
     assert not problems, "engine citation anchors have drifted:\n  " + "\n  ".join(problems)
+
+
+#: A token SHAPED like a citation: a dotted identifier followed by `:<line>`. Every segment
+#: must begin with a letter or underscore, which is what keeps `192.0.2.1:445` and
+#: `127.0.0.1:8812` — both real in these files — out of the match.
+_CITATION_SHAPED = re.compile(r"\b([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+):(\d+)")
+
+#: The suffixes `_PRIMARY` can actually resolve. Anything else ending a citation-shaped
+#: token is a spelling the scraper will silently skip.
+_READABLE_SUFFIXES = ("py", "ts", "rs", "json", "html", "md", "toml", "jsonl", "mjs", "yml",
+                      "yaml", "ps1", "sh", "lock", "cfg", "ini", "txt")
+
+
+def test_no_citation_uses_a_shape_the_scraper_cannot_SEE():
+    """The gate's own blind spot, which is the one thing it cannot report on itself.
+
+    `_PRIMARY` requires a `.py` filename. A FUNCTION-qualified citation —
+    `corpus.add_conversation:278-281` — matches nothing, so it is not an unpinned citation,
+    it is an INVISIBLE one: `test_every_engine_citation_is_pinned` cannot complain about a
+    citation it never parses, and every other leg here is downstream of that same parse.
+
+    That is not hypothetical. Exactly one existed, in `claude_code.py`, and it was wrong in
+    both available ways at once: the anchor pointed at `init_index` rather than
+    `add_conversation`, and the CLAIM beside it — that a duplicate id is "treated as
+    already-present" and "SILENTLY DROPS" — described the pre-reindex early-return. That
+    dead premise is the same one that let `loaders._admit` destroy 47% of the real Codex
+    store, living on in a second file where nothing could see it. It survived every pass
+    this suite has made.
+
+    So the fix is not to teach the scraper one more shape — it is to refuse shapes it cannot
+    read, which converts an invisible citation into a loud one. A reader who wants to cite a
+    FUNCTION can still name it in prose; what must be machine-checkable is the anchor.
+    """
+    offenders = []
+    for name, path in list(PY_SOURCES.items()) + list(TS_FILES.items()):
+        for lineno, line in enumerate(_read(path).split("\n"), 1):
+            for m in _CITATION_SHAPED.finditer(line):
+                dotted = m.group(1)
+                if dotted.rsplit(".", 1)[-1].lower() in _READABLE_SUFFIXES:
+                    continue                      # a real filename — the scraper reads it
+                offenders.append(
+                    "%s:%d cites %r, which `_PRIMARY` cannot parse — so nothing verifies "
+                    "it. Re-spell it as <file>.py:<line> (name the function in prose if "
+                    "that matters) and add a PINS row." % (name, lineno, m.group(0)))
+    assert not offenders, "citation shapes the scraper cannot see:\n  " + "\n  ".join(offenders)
+
+
+def test_the_unreadable_shape_detector_can_actually_fire():
+    """Control for the test above — its whole value is a NEGATIVE result, and a negative
+    result from a detector that cannot fire is worth nothing.
+
+    The real corpus is (now) clean, so the passing case alone would be identical to a regex
+    that matches nothing at all. This feeds it the exact string that was live in
+    `claude_code.py`, and the two false-positive shapes that must NOT trip it: an IP:port
+    and a dotted version, both of which appear in these files for real.
+    """
+    def unreadable(text):
+        return [m.group(0) for m in _CITATION_SHAPED.finditer(text)
+                if m.group(1).rsplit(".", 1)[-1].lower() not in _READABLE_SUFFIXES]
+
+    assert unreadable("`corpus.add_conversation:278-281` treats a duplicate") == [
+        "corpus.add_conversation:278"], "the shape that actually shipped must be caught"
+    assert unreadable("outbound SynSent to 192.0.2.1:445 (SMB)") == [], "an IP:port is not a citation"
+    assert unreadable("the agent-mail server on 127.0.0.1:8812") == []
+    assert unreadable("see corpus.py:347 and mock.ts:1241") == [], "real filenames are readable"
 
 
 def test_every_engine_citation_is_pinned():
