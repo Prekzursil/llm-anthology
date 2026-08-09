@@ -183,7 +183,7 @@ jobs:
       # Pinned rather than @stable: `clippy -D warnings` would turn every
       # unrelated PR red the day a new Rust release adds a lint. 1.91.0 is the
       # toolchain this code is developed against.
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
 

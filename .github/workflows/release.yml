@@ -246,7 +246,7 @@ jobs:
 
       # Pinned to match ci.yml's cockpit job: a floating @stable would change the
       # compiler under a release build.
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       # NOTE: deliberately no Swatinem/rust-cache here, unlike ci.yml. CI caches to
       # keep fix iterations cheap; a release build is rare and should not be able to
