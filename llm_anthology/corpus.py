@@ -290,10 +290,10 @@ def init_index(conn):
     falls back; a new COLUMN would instead be silently absent and every INSERT naming it
     would raise, which is a migration, not a no-op."""
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(INDEX_SCHEMA % {
-        "delete_opt": (",\n    contentless_delete=1"\
-                       if _CONTENTLESS_DELETE else ""),
-    })
+    check_schema_version(conn)  # REFUSES here, BEFORE any DDL runs — see D-1 at EOF
+    opt = ",\n    contentless_delete=1" if _CONTENTLESS_DELETE else ""
+    conn.executescript(INDEX_SCHEMA % {"delete_opt": opt})
+    stamp_schema_version(conn)
     return conn
 
 
@@ -543,3 +543,186 @@ def _conversation_body(conv):
         for block in turn.blocks:
             parts.append(block.text)
     return "\n".join(p for p in parts if p)
+
+
+# ------------------------------------------------- on-disk schema version (D-1)
+#
+# WHAT THIS IS FOR. Until now an index recorded nothing about its own shape, so a build
+# that changes the schema in a way `IF NOT EXISTS` cannot patch up had no way to tell an
+# index it understands from one it does not — and an OLDER build pointed at a NEWER
+# index would happily write into it. The marker makes both detectable.
+#
+# WHY A TABLE, NOT `PRAGMA user_version`. `init_index` above states the schema's own
+# migration rule: a NEW FACT is added as a new TABLE and never as a new column, because
+# every statement is `IF NOT EXISTS` and so a new table simply appears (empty) on an old
+# index while a new column would be silently absent and every INSERT naming it would
+# raise. `schema_meta(key, value)` obeys that rule, is readable in any sqlite browser,
+# and extends to the next piece of metadata without another migration. `user_version` is
+# a bare int in the file header with room for exactly one fact.
+#
+# WHY THIS SECTION SITS AT THE END OF THE MODULE, below the code that calls it. Module
+# globals resolve at CALL time, so the position is harmless — and it is deliberate:
+# `corpus.py` line numbers are cited BY LINE from other modules (`sidecar.py:737,742`,
+# `discover.py:285`, `claude_code.py:78`, `cockpit/src/ipc/types.ts`) and pinned by
+# `tests/test_citation_anchors.py`, so inserting lines higher up silently rots citations
+# in files this change does not own. Append-only is the honest way to grow this file.
+#
+# Distinct from `CORPUS_VERSION` at the top of the module, which is deliberately left
+# alone: it has no on-disk meaning and, measured across the repo, no production caller at
+# all (only a test asserting it is an int). Repurposing it would have made ONE name mean
+# two things; adding a second, precisely-scoped constant means neither is ambiguous.
+
+#: The version of the ON-DISK index schema this build writes and knows how to read.
+#: Bump it in the SAME commit as the change it describes, and say in that commit whether
+#: the delta is additive (then also add the previous version to `_ADDITIVE_FROM`).
+SCHEMA_VERSION = 1
+
+#: What an index carrying NO marker row IS. Every index in existence before this change
+#: has no marker, and all of them are the schema this build calls 1 — so an absent marker
+#: is read as 1 and stamped, never treated as "unknown, refuse". It is a SEPARATE
+#: constant from `SCHEMA_VERSION` on purpose: when `SCHEMA_VERSION` becomes 2, an
+#: unmarked index is still a 1, and assuming otherwise would skip a real migration.
+UNSTAMPED_VERSION = 1
+
+#: The `schema_meta` key the version lives under. Other keys are free for later facts.
+SCHEMA_VERSION_KEY = "schema_version"
+
+#: Index versions this build can migrate FORWARD in place, without a rebuild. A version
+#: belongs here only when every change between it and `SCHEMA_VERSION` was ADDITIVE — a
+#: new TABLE, never a changed or added column — because that is the entire delta
+#: `init_index` can apply on its own, and applying it is then the whole migration.
+#:
+#: EMPTY at `SCHEMA_VERSION` 1, and not for lack of effort: 1 is the first version there
+#: is, so there is no older version to migrate FROM. The unit that rebuilds the FTS table
+#: is expected to bump `SCHEMA_VERSION` to 2 and leave this empty (recreating a virtual
+#: table is not additive), at which point a version-1 index correctly reports that a
+#: rebuild is required instead of being opened and half-read.
+_ADDITIVE_FROM = frozenset()
+
+#: The marker table's own DDL, kept OUT of `INDEX_SCHEMA`: this is the one table that has
+#: to exist before the schema `INDEX_SCHEMA` describes is applied, because the version
+#: gate reads it first and decides whether applying that schema is safe at all.
+_SCHEMA_META_DDL = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+"""
+
+
+class IndexVersionError(RuntimeError):
+    """This index's schema version is not one this build can safely open.
+
+    The base class of both refusals so a caller that only needs "unusable, tell the user
+    why" can catch one thing and relay `str(exc)`, which is written to be read by a
+    person. Raised directly when the marker is present but unreadable.
+    """
+
+
+class IndexTooNewError(IndexVersionError):
+    """The index was written by a NEWER build. Refusing is the point: `init_index` is
+    otherwise happy to re-create anything missing, which on a newer index means writing a
+    shape that build deliberately changed."""
+
+
+class IndexRebuildRequired(IndexVersionError):
+    """The index is OLDER and the delta is not additive, so it cannot be migrated in
+    place. Reported, never acted on: silently rebuilding would delete an archive the user
+    may want to export or open with the older build first."""
+
+
+def _version_verdict(found, expected, additive_from):
+    """Pure policy: what to DO about an index at version `found`.
+
+    One of exactly four words — "ok" (same version), "newer" (refuse), "migrate"
+    (additive, apply in place), "rebuild" (older and breaking). Pure and fully
+    argument-driven so the whole policy is testable without a database, and so the
+    module-level constants stay patchable by a test proving the older-index half that no
+    real index can exercise yet.
+    """
+    if found == expected:
+        return "ok"
+    if found > expected:
+        return "newer"
+    if found in additive_from:
+        return "migrate"
+    return "rebuild"
+
+
+def read_schema_version(conn):
+    """The version stamped on `conn`, or None if it carries no marker.
+
+    None is a legitimate, expected answer: it is what every index built before the marker
+    existed reports, and it covers both "no `schema_meta` table" and "table but no row".
+    The table's presence is read off `sqlite_master` rather than probed by running the
+    SELECT and catching the error — the same reason `_fts_can_delete` does, so a failed
+    statement never has to be swallowed mid-transaction.
+
+    Raises IndexVersionError if a marker IS present but is not an integer. A hand-edited
+    or truncated marker is exactly the case where guessing is worst: "unreadable" must
+    not silently become "current".
+    """
+    table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+    ).fetchone()
+    if table is None:
+        return None
+    row = conn.execute("SELECT value FROM schema_meta WHERE key=?",
+                       (SCHEMA_VERSION_KEY,)).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        raise IndexVersionError(
+            "this index records an unreadable schema version (%.40r); it may be corrupt "
+            "or hand-edited. This build writes version %d."
+            % (row[0], SCHEMA_VERSION))
+
+
+def check_schema_version(conn):
+    """Decide whether this build may open `conn`, and return the version it is at.
+
+    Called by `init_index` BEFORE the schema is applied, so a refusal leaves the file
+    exactly as it was found. Both refusals name both versions, because "wrong version" is
+    useless to someone deciding whether to upgrade the app or rebuild the index.
+
+    Returns the version found — `UNSTAMPED_VERSION` for an unmarked index — for "ok" and
+    for "migrate" alike: an additive migration needs no work here, since `init_index`'s
+    own `IF NOT EXISTS` DDL creates exactly what an additive delta added.
+    """
+    found = read_schema_version(conn)
+    if found is None:
+        found = UNSTAMPED_VERSION
+    verdict = _version_verdict(found, SCHEMA_VERSION, _ADDITIVE_FROM)
+    if verdict == "newer":
+        raise IndexTooNewError(
+            "this index is schema version %d, but this build of LLM Anthology only "
+            "understands version %d. Update the app, or point it at a different index — "
+            "opening it with an older build could corrupt it." % (found, SCHEMA_VERSION))
+    if verdict == "rebuild":
+        raise IndexRebuildRequired(
+            "this index is schema version %d and this build needs version %d; the change "
+            "between them cannot be applied in place, so the index has to be rebuilt. "
+            "Nothing has been modified — the existing index is still readable by the "
+            "build that wrote it." % (found, SCHEMA_VERSION))
+    return found
+
+
+def stamp_schema_version(conn):
+    """Record `SCHEMA_VERSION` on `conn`, creating the marker table if it is absent.
+
+    Writes only when the marker does not already read `SCHEMA_VERSION`, so opening an
+    up-to-date index — which every read path does — dirties nothing.
+
+    COMMITS. Every other writer here leaves the transaction to its caller, but this one
+    runs inside `init_index`, which read paths call and which no caller expects to leave a
+    write transaction open: uncommitted, the marker would be rolled back on close AND the
+    connection would hold a lock the sidecar's second connection then blocks on.
+    """
+    conn.executescript(_SCHEMA_META_DDL)
+    if read_schema_version(conn) == SCHEMA_VERSION:
+        return
+    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+                 (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)))
+    conn.commit()
