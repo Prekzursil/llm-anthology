@@ -108,8 +108,16 @@ describe("KNOWN DIVERGENCE — an ABSENT optional field serialises differently",
   /*
    * Found by the new committed cases, which is the first evidence this gate has ever
    * produced. It is NOT reached by the renderer parity fixtures and NOT reached by the
-   * local real-corpus layer either — all 45 real-claude cases pass, so none of them
-   * carries a files/attachment/tool block at all.
+   * local real-corpus layer either: counted by name, that fixture holds 42 `real-claude-*`
+   * cases and they all pass, so none of them carries a files/attachment/tool block at all.
+   *
+   * That count also corrects the record. The commit that added this file (2df58b0) says
+   * "all 45 real-claude cases pass" — 45 was never measured and is wrong; 42 is the counted
+   * value. The same count turned up something the old gate's reputation did not survive:
+   * the local fixture holds ZERO `real-*` chatgpt and ZERO `real-*` gemini cases (44/1/1
+   * per provider, of which 4 are the tools generator's own synthetic ones). So even on the
+   * one machine where it did run, the "real corpus" check only ever covered Claude. The
+   * committed layer is what gives chatgpt and gemini any parity cases at all.
    *
    * Measured. For a claude `files` entry with no `file_uuid`:
    *   python  claude.py:236  data={"file_name": ..., "file_uuid": f.get("file_uuid")}
