@@ -126,10 +126,14 @@ describe("KNOWN DIVERGENCE — an ABSENT optional field serialises differently",
    *                          -> get() returns undefined, so JSON.stringify DROPS the key
    *
    * So the IR OBJECTS agree — the key is present on both sides and both read falsy — and
-   * the divergence exists only at the JSON boundary. That is why it is benign today: the
-   * renderers test `data.file_uuid` for truthiness, and the committed byte-for-byte
-   * renderer gate (fixtures/render-parity.json) is green. It would stop being benign the
-   * moment this rail serialises IR to JSON the way python's `index` command does.
+   * the divergence exists only at the JSON boundary. Benign today, and that is measured
+   * rather than assumed: every consumer of Block.data collapses the two, always as an
+   * explicit pair (`v === null || v === undefined` at render_html.ts:53, and
+   * `!== undefined && !== null` at render_html.ts:196,207,275 · render_md.ts:115,126,173 ·
+   * audit.ts:30). Not one of them can tell null from undefined, and the committed
+   * byte-for-byte renderer gate (fixtures/render-parity.json) is green. It would stop being
+   * benign the moment this rail serialises IR to JSON the way python's `index` command
+   * does, since there the difference is a present-vs-absent key.
    *
    * NOT FIXED HERE: the change belongs in js/src/adapters/claude.ts (`get` returning null,
    * or an explicit `?? null` per optional), which is outside this unit's file scope and is
