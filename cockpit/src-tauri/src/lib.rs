@@ -1,5 +1,6 @@
 mod sidecar;
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -13,12 +14,31 @@ use sidecar::SidecarClient;
 /// separately via `health_ping` once a corpus is attached with `open_corpus`. The
 /// `engine` field stays "not-wired" here because a bare launch has no sidecar spawned
 /// until the user opens an index.
+///
+/// It ALSO carries the DECISION G-10 default locations, and that placement is deliberate
+/// rather than convenient. They are static per-install metadata, exactly like the version;
+/// and putting them on an already-registered command means the resolution has a production
+/// caller — run against the REAL environment on every status query — without adding a new
+/// Tauri command, whose TypeScript binding lives in files this work unit does not own.
+/// (`cockpit/src/ipc/real.test.ts` pins `app_info` as the one registered command the
+/// adapter never calls, so a new unbound command would fail that suite.)
+///
+/// `locations` and `locations_error` are ALWAYS both present and exactly one is null, so a
+/// consumer branches on shape rather than on a missing key. Resolution can genuinely fail
+/// — a stripped environment with no `%USERPROFILE%` / `$HOME` — and when it does the status
+/// line must still answer, degraded and saying why, rather than take the app down with it.
 #[tauri::command]
 fn app_info() -> Value {
+    let (locations, locations_error) = match app_locations() {
+        Ok(resolved) => (resolved.to_json(), Value::Null),
+        Err(why) => (Value::Null, Value::String(why)),
+    };
     json!({
         "name": "Cockpit",
         "version": env!("CARGO_PKG_VERSION"),
         "engine": "not-wired",
+        "locations": locations,
+        "locations_error": locations_error,
     })
 }
 
@@ -285,6 +305,338 @@ fn validate_index_path_with(
     } else {
         format!("no corpus index at {index_path}")
     })
+}
+
+// -- DECISION G-10: standard OS app-data locations ------------------------------------
+//
+// The app writes to exactly FOUR places, and every one of them is derived here. That is
+// not tidiness: `sidecar.rs`'s `Membrane::AppContainer` is implemented and tested but
+// INACTIVE, because a sandboxed engine can only touch paths explicitly granted to its
+// package SID — so the membrane needs a path set that is fixed, small, and enumerable.
+// `AppLocations::grant_roots` is that enumeration.
+//
+// WHERE, and why:
+//   - machine data (index, logs, cache) -> the per-machine app-data root. On Windows that
+//     is `%LOCALAPPDATA%`, NEVER `%APPDATA%`: the latter is `...\AppData\Roaming`, which a
+//     domain-joined machine copies to a server at logon, so a 55-75 MB corpus index placed
+//     there is dragged over the network on every login. `reject_roaming` enforces that.
+//   - the default export destination -> `Documents\LLM Anthology`, because an export is a
+//     document the human goes looking for.
+//
+// The index path remains USER-OVERRIDABLE. Nothing here constrains `open_corpus`, which
+// still accepts any absolute local file — a growing archive belongs on whatever drive the
+// user wants, and `a_user_chosen_index_outside_the_app_data_root_is_still_accepted` pins
+// that this resolution never became a jail.
+
+/// The product's folder name as a human reads it. Used for every USER-VISIBLE folder.
+const APP_DISPLAY_NAME: &str = "LLM Anthology";
+
+/// The same product, spelled for a POSIX dotfile root. `~/.local/share/llm-anthology`
+/// matches what every other application there looks like; `~/.local/share/LLM Anthology`
+/// does not, and a space in a path that shell scripts and XDG tooling handle is a
+/// gratuitous hazard. Windows has the opposite convention — `%LOCALAPPDATA%` is full of
+/// display-cased, space-bearing folder names — so the machine folder's leaf name is
+/// platform-dependent while the Documents folder's is not.
+#[cfg(not(windows))]
+const APP_SLUG: &str = "llm-anthology";
+
+/// The corpus index filename inside the app's data folder. Keeps the name the owner's
+/// existing corpus already uses, so only the DIRECTORY changes.
+const INDEX_FILE_NAME: &str = "anthology.sqlite";
+
+/// The leaf name of the machine-data folder. See [`APP_SLUG`] for why it differs.
+#[cfg(windows)]
+fn machine_dir_name() -> &'static str {
+    APP_DISPLAY_NAME
+}
+
+#[cfg(not(windows))]
+fn machine_dir_name() -> &'static str {
+    APP_SLUG
+}
+
+/// The platform base directories every default path is derived from.
+///
+/// Handed IN rather than read from the environment inside the resolver, for the same
+/// reason `validate_index_path_with` takes its drive-type lookup as a parameter: the rule
+/// is then testable without depending on whose machine ran the test, and the windows and
+/// ubuntu CI legs can each assert the layout they actually have.
+#[derive(Debug)]
+pub struct BaseDirs {
+    /// Per-machine (non-roaming) application data. Windows: `%LOCALAPPDATA%`.
+    /// POSIX: `$XDG_DATA_HOME`, default `$HOME/.local/share`.
+    pub local_data: PathBuf,
+    /// Discardable cache root. Windows: the SAME directory as `local_data` — Windows has
+    /// no separate cache base, so the cache lives inside the app's own folder.
+    /// POSIX: `$XDG_CACHE_HOME`, default `$HOME/.cache`, which is deliberately outside the
+    /// data root so a backup tool can skip it.
+    pub cache: PathBuf,
+    /// The user's documents folder, parent of the default export destination.
+    pub documents: PathBuf,
+}
+
+/// Every path the app writes to by default.
+#[derive(Debug)]
+pub struct AppLocations {
+    /// The one machine-data folder. On Windows everything below lives inside it.
+    pub data_dir: PathBuf,
+    /// The DEFAULT corpus index. A default, not a requirement — see the module note.
+    pub index_path: PathBuf,
+    pub logs_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    /// Default destination for `export.run` artifacts.
+    pub exports_dir: PathBuf,
+}
+
+impl AppLocations {
+    /// The MINIMAL set of directory roots that must be granted to the AppContainer
+    /// package SID before `Membrane::AppContainer` can be switched on.
+    ///
+    /// Minimal because each grant is a real `icacls` walk — the membrane test in
+    /// `sidecar.rs` grants the CPython prefix (~8k files) rather than a whole profile
+    /// (~130k) for precisely that reason — and because granting a directory already
+    /// covers everything beneath it. Any candidate that is inside another is therefore
+    /// dropped rather than listed twice. On Windows that folds logs and cache into
+    /// `data_dir` and yields two roots; under XDG the cache has its own base and yields
+    /// three.
+    pub fn grant_roots(&self) -> Vec<&Path> {
+        let mut roots: Vec<&Path> = Vec::new();
+        for candidate in [
+            self.data_dir.as_path(),
+            self.cache_dir.as_path(),
+            self.exports_dir.as_path(),
+        ] {
+            // `starts_with` is component-wise, and true for equal paths — which is what
+            // makes this also the de-duplicator when two bases coincide.
+            if roots.iter().any(|kept| candidate.starts_with(kept)) {
+                continue;
+            }
+            roots.retain(|kept| !kept.starts_with(candidate));
+            roots.push(candidate);
+        }
+        roots
+    }
+
+    /// The set as JSON, for the frontend and for a later grant step to enumerate.
+    fn to_json(&self) -> Value {
+        json!({
+            "data_dir": self.data_dir.to_string_lossy(),
+            "index_path": self.index_path.to_string_lossy(),
+            "logs_dir": self.logs_dir.to_string_lossy(),
+            "cache_dir": self.cache_dir.to_string_lossy(),
+            "exports_dir": self.exports_dir.to_string_lossy(),
+            "grant_roots": self
+                .grant_roots()
+                .iter()
+                .map(|p| p.to_string_lossy())
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// Refuse a base that resolves under a ROAMING profile.
+///
+/// This is the load-bearing half of "use `%LOCALAPPDATA%`". The failure it guards is not
+/// hypothetical: `%LOCALAPPDATA%` can be absent from a stripped or service environment,
+/// and the obvious-looking fallback is `%APPDATA%` — which is the roaming half of the same
+/// `AppData` folder. A domain-joined machine synchronises that to a server at logon, so an
+/// index there is copied over the network every login. `base_dirs_with` never reads
+/// `APPDATA` at all; this check is the belt to that braces, and it also catches a base
+/// handed in by a caller (or a future settings file) that points at the roaming profile.
+///
+/// Compared case-INSENSITIVELY because Windows paths are, and the spelling comes from
+/// whatever set the variable. Runs on POSIX too — a roaming profile has no meaning there,
+/// so the check is inert in practice, but one code path means the ubuntu CI leg still
+/// exercises it and a POSIX directory literally named `Roaming` is refused in the safe
+/// direction.
+fn reject_roaming(what: &str, base: &Path) -> Result<(), String> {
+    if base
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case("Roaming"))
+    {
+        return Err(format!(
+            "{what} ({}) is inside a roaming profile; a corpus index and its cache must \
+             live in per-machine storage or a domain logon will copy them over the network",
+            base.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Windows keeps no separate cache base, so `base.cache` is normally the very same
+/// directory as `base.local_data` and this lands at `%LOCALAPPDATA%\LLM Anthology\cache`:
+/// one folder to grant, one folder to delete.
+///
+/// Derived from `base.cache` rather than from the already-built `data_dir`, even though
+/// the two produce an identical answer for every real input. A field that one platform
+/// reads and the other silently ignores cannot be VALIDATED on the platform that ignores
+/// it, and a caller who set it would be overruled without being told. The first draft did
+/// read `data_dir` here, and `the_default_index_path_passes_every_pre_filesystem_guard_in_
+/// the_open_corpus_chain` caught it by poisoning each base in turn: a UNC cache base was
+/// discarded instead of refused, which also made the roaming-cache assertion in
+/// `a_roaming_base_is_refused_and_a_local_one_is_accepted` a check on an unreachable value.
+#[cfg(windows)]
+fn cache_dir_for(base: &BaseDirs) -> PathBuf {
+    base.cache.join(machine_dir_name()).join("cache")
+}
+
+/// XDG gives the cache its OWN base so that backup and sync tools can skip it, so on POSIX
+/// the cache is deliberately NOT inside the data directory.
+#[cfg(not(windows))]
+fn cache_dir_for(base: &BaseDirs) -> PathBuf {
+    base.cache.join(APP_SLUG)
+}
+
+/// Apply the PRE-FILESYSTEM half of `open_corpus`'s guard chain to a default path.
+///
+/// Same functions, same order — `reject_unc_spelling` on the raw string, then
+/// `is_absolute`, then `reject_remote_drive` before anything touches the disk. Reusing
+/// them rather than restating the rules is the point: a default that the real chain would
+/// refuse must fail HERE, at resolution, instead of being discovered when the user presses
+/// Open. The two probes that chain ends with (`is_file` / `canonicalize`) are deliberately
+/// NOT run — a default index does not exist yet on a fresh machine, and a default export
+/// folder has not been created either.
+///
+/// The guard's own wording is preserved inside the message so a caller (and the tests) can
+/// still tell WHICH guard fired; `what` only adds the context of which path it was.
+fn reject_nonlocal_default(
+    what: &str,
+    path: &Path,
+    drive_type: &impl Fn(&str) -> Option<u32>,
+) -> Result<(), String> {
+    let text = path.to_str().ok_or_else(|| {
+        format!(
+            "{what} ({}) is not valid UTF-8, so it cannot be handed to the engine",
+            path.display()
+        )
+    })?;
+    let context = |cause: String| format!("{what} is unusable: {cause}");
+    reject_unc_spelling(text).map_err(context)?;
+    if !path.is_absolute() {
+        return Err(context(format!(
+            "{text} is not a full path; the app-data base must be absolute"
+        )));
+    }
+    reject_remote_drive(text, drive_type(text)).map_err(context)
+}
+
+/// Resolve every default path from INJECTED base directories.
+///
+/// Fails rather than returning a path the app could not then use: a roaming base, a UNC
+/// base, a relative base, or a base on a mapped network drive are all refused here.
+pub fn app_locations_from(
+    base: &BaseDirs,
+    drive_type: impl Fn(&str) -> Option<u32>,
+) -> Result<AppLocations, String> {
+    reject_roaming("the app-data folder", &base.local_data)?;
+    reject_roaming("the cache folder", &base.cache)?;
+
+    let data_dir = base.local_data.join(machine_dir_name());
+    let locations = AppLocations {
+        index_path: data_dir.join(INDEX_FILE_NAME),
+        logs_dir: data_dir.join("logs"),
+        cache_dir: cache_dir_for(base),
+        exports_dir: base.documents.join(APP_DISPLAY_NAME),
+        data_dir,
+    };
+
+    // Every root the app will WRITE to has to survive the same chain `open_corpus`
+    // applies, because the same SMB/NTLM exposure applies to an export destination on a
+    // share as to an index on one.
+    reject_nonlocal_default(
+        "the default corpus index",
+        &locations.index_path,
+        &drive_type,
+    )?;
+    reject_nonlocal_default("the cache folder", &locations.cache_dir, &drive_type)?;
+    reject_nonlocal_default(
+        "the default export destination",
+        &locations.exports_dir,
+        &drive_type,
+    )?;
+    Ok(locations)
+}
+
+/// The Windows base directories, with the environment lookup INJECTED.
+///
+/// `std::env::var` is not called here so that a test can drive every branch: mutating the
+/// real environment is process-global, `unsafe` from the 2024 edition on, and would race
+/// the other tests in this binary, which cargo runs on parallel threads.
+///
+/// `%APPDATA%` is never consulted, by design — see [`reject_roaming`]. When
+/// `%LOCALAPPDATA%` is missing the fallback is derived from `%USERPROFILE%`, which is the
+/// same directory Windows itself would have named.
+///
+/// LIMITATION, stated inline because it is a real one and not measured here: `Documents`
+/// is taken as `%USERPROFILE%\Documents`, which is wrong for a user whose Documents folder
+/// has been REDIRECTED (OneDrive backup, or a roamed folder on a domain). The correct
+/// answer is `SHGetKnownFolderPath(FOLDERID_Documents)`. UNVERIFIED whether this box's
+/// Documents is redirected; the settling experiment is to call that API and compare its
+/// answer with `%USERPROFILE%\Documents`. It is left for a follow-up because it needs a
+/// `Win32_UI_Shell` + `Win32_System_Com` feature and a `CoTaskMemFree`-owning wrapper, and
+/// because the failure mode is a benign one: exports land in a real, writable folder that
+/// is simply not the one the shell shows as Documents.
+#[cfg(windows)]
+fn base_dirs_with(var: impl Fn(&str) -> Option<String>) -> Result<BaseDirs, String> {
+    // A variable that is present but blank is NOT a value: used verbatim it would make
+    // every derived path relative, which the guard chain then refuses.
+    let present = |name: &str| var(name).filter(|v| !v.trim().is_empty());
+    let profile = present("USERPROFILE").map(PathBuf::from);
+    let local = present("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| profile.as_ref().map(|p| p.join("AppData").join("Local")))
+        .ok_or_else(|| {
+            "neither LOCALAPPDATA nor USERPROFILE is set, so there is no per-machine \
+             app-data folder to use"
+                .to_string()
+        })?;
+    let documents = profile.map(|p| p.join("Documents")).ok_or_else(|| {
+        "USERPROFILE is not set, so the Documents folder cannot be located".to_string()
+    })?;
+    Ok(BaseDirs {
+        // Windows has no separate cache base; the app's own folder holds it.
+        cache: local.clone(),
+        local_data: local,
+        documents,
+    })
+}
+
+/// The POSIX base directories, per the XDG Base Directory specification — the real
+/// counterpart to the Windows branch rather than a platform this feature skips.
+///
+/// `XDG_DOCUMENTS_DIR` belongs to xdg-user-dirs rather than the base-directory spec and is
+/// usually NOT exported into the environment, so `$HOME/Documents` is the normal answer;
+/// it is honoured when present because a user who did set it meant it.
+#[cfg(not(windows))]
+fn base_dirs_with(var: impl Fn(&str) -> Option<String>) -> Result<BaseDirs, String> {
+    let present = |name: &str| var(name).filter(|v| !v.trim().is_empty());
+    let home = present("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set, so no XDG base directory can be resolved".to_string())?;
+    // The spec: "If an implementation encounters a relative path in any of these variables
+    // it should consider the path invalid and ignore it." Ignoring it also keeps a
+    // relative value from defeating the absolute-path guard downstream.
+    let xdg = |name: &str, fallback: &[&str]| -> PathBuf {
+        match present(name).map(PathBuf::from).filter(|p| p.is_absolute()) {
+            Some(absolute) => absolute,
+            None => fallback.iter().fold(home.clone(), |acc, seg| acc.join(seg)),
+        }
+    };
+    Ok(BaseDirs {
+        local_data: xdg("XDG_DATA_HOME", &[".local", "share"]),
+        cache: xdg("XDG_CACHE_HOME", &[".cache"]),
+        documents: xdg("XDG_DOCUMENTS_DIR", &["Documents"]),
+    })
+}
+
+/// The default locations for THIS process, resolved from the real environment.
+///
+/// The only place the environment is read. `drive_type_of` is the same lookup
+/// `validate_index_path` uses, so a profile on a mapped network drive is refused here for
+/// the same reason and by the same code.
+pub fn app_locations() -> Result<AppLocations, String> {
+    let base = base_dirs_with(|name| std::env::var(name).ok())?;
+    app_locations_from(&base, drive_type_of)
 }
 
 /// (Re)spawn the engine sidecar pointed at `index_path`. Replacing the previous
@@ -614,9 +966,11 @@ mod tests {
     #[cfg(windows)]
     use super::drive_type_of;
     use super::{
-        app_info, reject_remote_drive, reject_unc_resolution, validate_index_path,
-        validate_index_path_with, DRIVE_REMOTE,
+        app_info, app_locations_from, base_dirs_with, reject_remote_drive,
+        reject_unc_resolution, validate_index_path, validate_index_path_with, BaseDirs,
+        APP_DISPLAY_NAME, DRIVE_REMOTE, INDEX_FILE_NAME,
     };
+    use std::path::{Path, PathBuf};
     // Used only by the POSIX leg; importing it unconditionally is an unused import
     // on Windows, which `-D warnings` correctly refuses.
     #[cfg(not(windows))]
@@ -1101,5 +1455,464 @@ mod tests {
             "version must be a non-empty string, got {:?}",
             info["version"]
         );
+    }
+
+    // -- DECISION G-10: standard OS app-data locations --------------------------------
+
+    /// A synthetic profile, per platform. The bases are HANDED IN exactly as
+    /// `validate_index_path_with` has the drive-type lookup handed in: reading the real
+    /// environment inside a unit test would make the assertions depend on whose machine
+    /// ran them, and on CI the answer differs between the windows and ubuntu legs.
+    ///
+    /// The two shapes are not interchangeable and that is the point — `Path::is_absolute`
+    /// disagrees about both of them, so a single hardcoded spelling would test the guard
+    /// on one leg and something else entirely on the other. Same lesson as
+    /// `the_remote_drive_check_runs_before_the_filesystem_is_touched`.
+    fn synthetic_base() -> BaseDirs {
+        if cfg!(windows) {
+            BaseDirs {
+                local_data: PathBuf::from(r"C:\Users\tester\AppData\Local"),
+                // Windows has no separate cache root; %LOCALAPPDATA% is it.
+                cache: PathBuf::from(r"C:\Users\tester\AppData\Local"),
+                documents: PathBuf::from(r"C:\Users\tester\Documents"),
+            }
+        } else {
+            BaseDirs {
+                local_data: PathBuf::from("/home/tester/.local/share"),
+                cache: PathBuf::from("/home/tester/.cache"),
+                documents: PathBuf::from("/home/tester/Documents"),
+            }
+        }
+    }
+
+    /// The synthetic profile root, i.e. the WRONG place for a 55-75 MB index.
+    fn synthetic_home() -> PathBuf {
+        PathBuf::from(if cfg!(windows) {
+            r"C:\Users\tester"
+        } else {
+            "/home/tester"
+        })
+    }
+
+    /// A local drive type, so the remote-drive guard inside the resolver falls through.
+    /// `Some(3)` is DRIVE_FIXED; the constant is not re-exported, and `reject_remote_drive`
+    /// already has its own both-states coverage above.
+    fn local_drive(_: &str) -> Option<u32> {
+        Some(3)
+    }
+
+    /// THE LAYOUT the owner locked: machine data under the per-machine app-data root,
+    /// exports under Documents, and — the actual regression — the index NOT at the
+    /// profile root.
+    #[test]
+    fn the_default_index_lives_under_the_app_data_root_and_never_at_the_profile_root() {
+        let base = synthetic_base();
+        let loc = app_locations_from(&base, local_drive).expect("a normal profile must resolve");
+
+        // The bug this unit exists to fix. The shipped example index sat at
+        // `C:/Users/<user>/anthology.sqlite` — the profile ROOT, which no installed app
+        // should write to. Asserted as a literal comparison against that exact shape so
+        // the test names the defect rather than merely describing a preference.
+        assert_ne!(
+            loc.index_path,
+            synthetic_home().join(INDEX_FILE_NAME),
+            "the default index must not sit at the profile root"
+        );
+
+        // Every machine-owned path is inside ONE folder, which is what makes the set
+        // enumerable for the AppContainer grant a later unit must perform.
+        assert!(
+            loc.index_path.starts_with(&loc.data_dir),
+            "index {:?} must live inside the data dir {:?}",
+            loc.index_path,
+            loc.data_dir
+        );
+        assert!(loc.logs_dir.starts_with(&loc.data_dir), "logs: {:?}", loc.logs_dir);
+        assert_eq!(loc.index_path.file_name().and_then(|n| n.to_str()), Some(INDEX_FILE_NAME));
+
+        // The data dir is derived from the LOCAL app-data base, not from Documents and
+        // not from the profile root.
+        assert!(
+            loc.data_dir.starts_with(&base.local_data),
+            "data dir {:?} must derive from the local app-data base {:?}",
+            loc.data_dir,
+            base.local_data
+        );
+
+        // Exports go to a folder the human browses, so they use the DISPLAY name on both
+        // platforms — unlike the machine folder, whose leaf follows platform convention
+        // (`LLM Anthology` in %LOCALAPPDATA%, `llm-anthology` under ~/.local/share).
+        assert_eq!(loc.exports_dir, base.documents.join(APP_DISPLAY_NAME));
+        assert_ne!(
+            loc.exports_dir, base.documents,
+            "exports must go to a named subfolder, not scatter into Documents itself"
+        );
+
+        // Per-platform spellings, pinned. Written out in full because a relative
+        // assertion ("contains the app name") would pass for a wrong parent.
+        if cfg!(windows) {
+            assert_eq!(
+                loc.data_dir,
+                PathBuf::from(r"C:\Users\tester\AppData\Local\LLM Anthology")
+            );
+            assert_eq!(loc.cache_dir, loc.data_dir.join("cache"));
+        } else {
+            assert_eq!(loc.data_dir, PathBuf::from("/home/tester/.local/share/llm-anthology"));
+            // XDG keeps the cache under its OWN root so a backup tool can skip it.
+            assert_eq!(loc.cache_dir, PathBuf::from("/home/tester/.cache/llm-anthology"));
+            assert!(
+                !loc.cache_dir.starts_with(&loc.data_dir),
+                "on POSIX the cache must NOT be inside the data dir: {:?}",
+                loc.cache_dir
+            );
+        }
+    }
+
+    /// ROAMING IS THE REFUSAL, and it is the whole reason G-10 names `%LOCALAPPDATA%`
+    /// explicitly. `%APPDATA%` is `...\AppData\Roaming`, which a domain-joined machine
+    /// synchronises to a server at logon — so a 55-75 MB corpus index placed there is
+    /// copied over the network on every login, which is hostile rather than merely untidy.
+    ///
+    /// BOTH STATES: the same resolver must accept the Local base and refuse the Roaming
+    /// one. Asserting only the refusal would be satisfied by a resolver that refuses
+    /// everything.
+    #[test]
+    fn a_roaming_base_is_refused_and_a_local_one_is_accepted() {
+        let local = synthetic_base();
+        assert!(
+            app_locations_from(&local, local_drive).is_ok(),
+            "the Local base is the correct one and must be accepted"
+        );
+
+        // Case-insensitively, because Windows paths are, and `%APPDATA%` is spelled by
+        // whatever set it.
+        for spelling in ["Roaming", "roaming", "ROAMING"] {
+            let roaming = BaseDirs {
+                local_data: synthetic_home().join("AppData").join(spelling),
+                cache: local.cache.clone(),
+                documents: local.documents.clone(),
+            };
+            let err = app_locations_from(&roaming, local_drive)
+                .expect_err("a roaming base must be refused");
+            assert!(
+                err.contains("roaming"),
+                "expected the roaming refusal for {spelling}, got: {err}"
+            );
+        }
+
+        // The CACHE base too: a synced cache is the same defect with a different name.
+        let roaming_cache = BaseDirs {
+            local_data: local.local_data.clone(),
+            cache: synthetic_home().join("AppData").join("Roaming"),
+            documents: local.documents.clone(),
+        };
+        assert!(
+            app_locations_from(&roaming_cache, local_drive).is_err(),
+            "a roaming CACHE base must be refused too"
+        );
+    }
+
+    /// THE DEFAULT MUST SURVIVE `open_corpus`'s GUARD CHAIN. That chain
+    /// (`reject_unc_spelling` -> `is_absolute` -> `reject_remote_drive` -> `is_file` ->
+    /// `reject_unc_resolution`) is a real SMB/NTLM defence, and a default path that it
+    /// refuses would produce an app whose out-of-the-box index cannot be opened.
+    ///
+    /// The assertion is on WHICH refusal comes back. The default index does not exist on
+    /// a fresh machine, so `validate_index_path` MUST answer "no corpus index at" — the
+    /// message reachable only from the final filesystem probe. Any other refusal means a
+    /// lexical guard fired, i.e. the default is UNC-shaped, relative, or on a remote
+    /// drive. A bare `is_err()` here would pass for all four and prove nothing.
+    #[test]
+    fn the_default_index_path_passes_every_pre_filesystem_guard_in_the_open_corpus_chain() {
+        let loc = app_locations_from(&synthetic_base(), local_drive).expect("resolve");
+        let index = loc.index_path.to_str().expect("the default index path is UTF-8");
+
+        let err = validate_index_path_with(index, local_drive)
+            .expect_err("the default index does not exist yet, so open must still refuse it");
+        assert!(
+            err.contains("no corpus index at"),
+            "the ONLY refusal a fresh default may attract is not-found — anything else \
+             means a lexical guard rejected the default itself. Got: {err}"
+        );
+        // Named individually so a failure says which guard fired.
+        assert!(!err.contains("is a network path"), "default is UNC-shaped: {err}");
+        assert!(!err.contains("is not a full path"), "default is not absolute: {err}");
+        assert!(!err.contains("mapped network drive"), "default is on a remote drive: {err}");
+
+        // And the resolver REFUSES to hand back a default that the chain would reject,
+        // rather than leaving that to be discovered at open time.
+        //
+        // EVERY base, not just the first. Only three paths are checked explicitly
+        // (`index_path`, `cache_dir`, `exports_dir`) because the other two live inside
+        // `data_dir` and so share its prefix — but that means a forgotten check would be
+        // INVISIBLE unless each base is poisoned in turn. So each one is, and the poison
+        // is a UNC spelling because that is the guard whose absence carries the SMB/NTLM
+        // exposure. `//server/...` is used for the POSIX leg's benefit: `\\server\...`
+        // contains no separator at all there and would read as one relative filename,
+        // which the absolute-path guard would then catch for the WRONG reason.
+        let unc_root = if cfg!(windows) {
+            PathBuf::from(r"\\server\profiles\tester")
+        } else {
+            PathBuf::from("//server/profiles/tester")
+        };
+        for (which, poisoned) in [
+            (
+                "app-data",
+                BaseDirs {
+                    local_data: unc_root.clone(),
+                    cache: synthetic_base().cache,
+                    documents: synthetic_base().documents,
+                },
+            ),
+            (
+                "cache",
+                BaseDirs {
+                    local_data: synthetic_base().local_data,
+                    cache: unc_root.clone(),
+                    documents: synthetic_base().documents,
+                },
+            ),
+            (
+                "documents",
+                BaseDirs {
+                    local_data: synthetic_base().local_data,
+                    cache: synthetic_base().cache,
+                    documents: unc_root.clone(),
+                },
+            ),
+        ] {
+            let err = app_locations_from(&poisoned, local_drive)
+                .expect_err(&format!("a UNC {which} base must be refused"));
+            assert!(
+                err.contains("is a network path"),
+                "the UNC {which} base must be refused by the raw-SPELLING guard, not by \
+                 something downstream of a filesystem touch. Got: {err}"
+            );
+        }
+
+        let relative = BaseDirs {
+            local_data: PathBuf::from("AppData/Local"),
+            cache: synthetic_base().cache,
+            documents: synthetic_base().documents,
+        };
+        assert!(
+            app_locations_from(&relative, local_drive).is_err(),
+            "a relative app-data base must be refused"
+        );
+
+        // A mapped network drive, via the SAME injected seam `validate_index_path_with`
+        // uses. This is the ordering-sensitive one: the resolver must ASK before it
+        // hands the path out.
+        let err = app_locations_from(&synthetic_base(), |_| Some(DRIVE_REMOTE))
+            .expect_err("an app-data base on a mapped network drive must be refused");
+        assert!(
+            err.contains("mapped network drive"),
+            "expected the remote-drive refusal, got: {err}"
+        );
+    }
+
+    /// THE INDEX PATH STAYS USER-OVERRIDABLE — a growing archive belongs on whatever
+    /// drive the user wants, so resolving a default must not turn into a jail. Nothing
+    /// in `open_corpus` may require the index to be under `data_dir`.
+    #[test]
+    fn a_user_chosen_index_outside_the_app_data_root_is_still_accepted() {
+        let loc = app_locations_from(&synthetic_base(), local_drive).expect("resolve");
+        // A real file that is definitely NOT under the app-data root: this source file.
+        let elsewhere = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
+        assert!(
+            !Path::new(elsewhere).starts_with(&loc.data_dir),
+            "precondition: the override must be outside the app-data root"
+        );
+        assert_eq!(
+            validate_index_path(elsewhere),
+            Ok(()),
+            "a user-chosen index outside the default folder must still open"
+        );
+    }
+
+    /// THE GRANT SET, which is why this unit blocks the membrane one.
+    /// `Membrane::AppContainer` is implemented and tested in `sidecar.rs` but inactive,
+    /// because a sandboxed engine can only write where the package SID has been granted
+    /// access — so activating it needs a small, fixed, enumerable set of roots. This is
+    /// that set, and it must be MINIMAL: granting a directory already covers everything
+    /// beneath it, and each redundant `icacls` grant is a real cost (the sibling
+    /// membrane test grants ~8k files rather than ~130k for exactly this reason).
+    #[test]
+    fn grant_roots_are_minimal_and_still_cover_every_default_path() {
+        let loc = app_locations_from(&synthetic_base(), local_drive).expect("resolve");
+        let roots = loc.grant_roots();
+
+        // COVERAGE: every default path must be under some granted root, or a sandboxed
+        // engine would fail to write it.
+        for path in [&loc.data_dir, &loc.index_path, &loc.logs_dir, &loc.cache_dir, &loc.exports_dir] {
+            assert!(
+                roots.iter().any(|root| path.starts_with(root)),
+                "{path:?} is not covered by any grant root: {roots:?}"
+            );
+        }
+
+        // MINIMALITY: no root may be inside another.
+        for (i, a) in roots.iter().enumerate() {
+            for (j, b) in roots.iter().enumerate() {
+                assert!(
+                    i == j || !a.starts_with(b),
+                    "grant root {a:?} is redundant — it is already covered by {b:?}"
+                );
+            }
+        }
+
+        // The COUNT is platform-specific and pinned, because "minimal" is only meaningful
+        // against a known layout. Windows folds logs+cache inside the one %LOCALAPPDATA%
+        // folder, so two roots suffice; XDG puts the cache under its own root, so three.
+        assert_eq!(roots.len(), if cfg!(windows) { 2 } else { 3 }, "roots: {roots:?}");
+        assert!(roots.contains(&loc.data_dir.as_path()));
+        assert!(roots.contains(&loc.exports_dir.as_path()));
+    }
+
+    /// The ENVIRONMENT half, on Windows. Injected `var` lookup rather than
+    /// `std::env::set_var` — that is process-global, `unsafe` as of the 2024 edition, and
+    /// would race the other tests in this binary, which cargo runs on parallel threads.
+    #[test]
+    #[cfg(windows)]
+    fn windows_base_dirs_prefer_localappdata_and_never_fall_back_to_roaming() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+
+        // 1. The normal case: %LOCALAPPDATA% is set and is used verbatim.
+        let base = base_dirs_with(env(&[
+            ("LOCALAPPDATA", r"C:\Users\tester\AppData\Local"),
+            ("APPDATA", r"C:\Users\tester\AppData\Roaming"),
+            ("USERPROFILE", r"C:\Users\tester"),
+        ]))
+        .expect("a normal Windows environment must resolve");
+        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+        assert_eq!(base.documents, PathBuf::from(r"C:\Users\tester\Documents"));
+
+        // 2. %LOCALAPPDATA% ABSENT — the case that produces the defect. %APPDATA% is
+        //    present and points at Roaming, and it must be ignored: the fallback is
+        //    derived from the profile, not from the roaming variable.
+        let base = base_dirs_with(env(&[
+            ("APPDATA", r"C:\Users\tester\AppData\Roaming"),
+            ("USERPROFILE", r"C:\Users\tester"),
+        ]))
+        .expect("USERPROFILE alone must be enough");
+        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+        assert!(
+            !base.local_data.to_string_lossy().to_lowercase().contains("roaming"),
+            "APPDATA (Roaming) must never become the app-data base: {:?}",
+            base.local_data
+        );
+
+        // 3. An EMPTY variable is not a value. A blank %LOCALAPPDATA% used verbatim would
+        //    make every default path relative, which the guard chain then refuses.
+        let base = base_dirs_with(env(&[
+            ("LOCALAPPDATA", "   "),
+            ("USERPROFILE", r"C:\Users\tester"),
+        ]))
+        .expect("a blank LOCALAPPDATA must fall back, not be used");
+        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+
+        // 4. Nothing to go on: fail LOUDLY rather than invent a relative default.
+        let err = base_dirs_with(env(&[("APPDATA", r"C:\Users\tester\AppData\Roaming")]))
+            .expect_err("with no LOCALAPPDATA and no USERPROFILE there is no honest answer");
+        assert!(err.contains("LOCALAPPDATA"), "the error must name what is missing: {err}");
+    }
+
+    /// The ENVIRONMENT half, on POSIX — the real counterpart, not a skipped test.
+    /// `%LOCALAPPDATA%` has no meaning here; the equivalent contract is the XDG Base
+    /// Directory specification, so that is what is asserted.
+    #[test]
+    #[cfg(not(windows))]
+    fn posix_base_dirs_follow_the_xdg_base_directory_spec() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+
+        // 1. XDG variables set: honoured verbatim.
+        let base = base_dirs_with(env(&[
+            ("HOME", "/home/tester"),
+            ("XDG_DATA_HOME", "/data/tester"),
+            ("XDG_CACHE_HOME", "/scratch/tester"),
+        ]))
+        .expect("a normal POSIX environment must resolve");
+        assert_eq!(base.local_data, PathBuf::from("/data/tester"));
+        assert_eq!(base.cache, PathBuf::from("/scratch/tester"));
+        assert_eq!(base.documents, PathBuf::from("/home/tester/Documents"));
+
+        // 2. Unset: the spec's defaults, which are NOT the home root.
+        let base = base_dirs_with(env(&[("HOME", "/home/tester")])).expect("HOME alone resolves");
+        assert_eq!(base.local_data, PathBuf::from("/home/tester/.local/share"));
+        assert_eq!(base.cache, PathBuf::from("/home/tester/.cache"));
+
+        // 3. "If an implementation encounters a relative path in any of these variables
+        //    it should consider the path invalid and ignore it." Honoured, because a
+        //    relative base would otherwise defeat the absolute-path guard downstream.
+        let base = base_dirs_with(env(&[
+            ("HOME", "/home/tester"),
+            ("XDG_DATA_HOME", "relative/share"),
+            ("XDG_CACHE_HOME", ""),
+        ]))
+        .expect("a relative XDG value must fall back, not be used");
+        assert_eq!(base.local_data, PathBuf::from("/home/tester/.local/share"));
+        assert_eq!(base.cache, PathBuf::from("/home/tester/.cache"));
+
+        // 4. No HOME: fail loudly rather than resolve to a relative default.
+        let err = base_dirs_with(env(&[("XDG_DATA_HOME", "/data/tester")]))
+            .expect_err("without HOME there is no honest answer for Documents");
+        assert!(err.contains("HOME"), "the error must name what is missing: {err}");
+    }
+
+    /// The resolution is REACHABLE, and reachable against the REAL environment — which
+    /// is the half a fully-injected test can never prove. `app_info` is the app's static
+    /// metadata command and is already registered, so wiring the locations there gives
+    /// the resolver a production caller without adding a command whose TypeScript
+    /// binding lives outside this unit's file scope.
+    #[test]
+    fn app_info_reports_the_default_locations_resolved_from_the_real_environment() {
+        let info = app_info();
+        // Both keys ALWAYS present, exactly one of them null, so a consumer can branch on
+        // shape rather than on absence.
+        assert!(
+            info.get("locations").is_some() && info.get("locations_error").is_some(),
+            "app_info must always carry both keys: {info}"
+        );
+
+        match info["locations"].as_object() {
+            Some(loc) => {
+                assert!(info["locations_error"].is_null(), "{info}");
+                for key in ["data_dir", "index_path", "logs_dir", "cache_dir", "exports_dir"] {
+                    let value = loc.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+                    assert!(!value.is_empty(), "{key} must be a non-empty string: {info}");
+                    assert!(
+                        Path::new(value).is_absolute(),
+                        "{key} must be absolute on this platform, got {value:?}"
+                    );
+                }
+                assert!(
+                    loc.get("grant_roots").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()),
+                    "grant_roots must be a non-empty array so a later unit can enumerate it: {info}"
+                );
+            }
+            // Resolution CAN fail (a stripped environment with no HOME/USERPROFILE), and
+            // when it does the status line must still work — degraded, and saying so.
+            None => {
+                assert!(info["locations"].is_null(), "{info}");
+                assert!(
+                    info["locations_error"].as_str().is_some_and(|e| !e.is_empty()),
+                    "a failed resolution must carry a reason: {info}"
+                );
+            }
+        }
     }
 }
