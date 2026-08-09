@@ -35,7 +35,18 @@ classifiers = [
 # measured store held 2043 `rollout-*.jsonl.zst` against ZERO plain `.jsonl`. Without this
 # the bundled engine reads that user's entire history as zero conversations — and reports
 # zero errors doing it. `archive.py` already depended on it while it was undeclared.
-dependencies = ["markdown-it-py>=2.2", "zstandard>=0.22"]
+#
+# markdown-it-py is capped BELOW 5, not below 4. It renders the HTML this product exists
+# to show, there is no lockfile on the Python rail, and no test asserts an exact rendered
+# string — so an unbounded major arrives on the next clean install and rewrites
+# user-facing output with the suite still green. `<5` is the ceiling that changes nothing
+# today and blocks the next unreviewed major: measured 2026-08-10, PyPI's latest is 4.2.0
+# and 4.x requires Python >=3.10, so the 3.13 legs already resolve 4.x while the 3.9 leg
+# resolves 3.0.0 — both lines are green in CI right now. `<4` would instead DOWNGRADE
+# three of the four legs and break cross-rail parity: markdown-it-py 4.0.0's release
+# notes put it at upstream Markdown-It v14.1.0, which is the line js/package.json pins
+# at 14.3.0, while 3.x ports the 13.x line.
+dependencies = ["markdown-it-py>=2.2,<5", "zstandard>=0.22"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4"]
