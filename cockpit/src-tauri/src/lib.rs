@@ -617,6 +617,10 @@ mod tests {
         app_info, reject_remote_drive, reject_unc_resolution, validate_index_path,
         validate_index_path_with, DRIVE_REMOTE,
     };
+    // Used only by the POSIX leg; importing it unconditionally is an unused import
+    // on Windows, which `-D warnings` correctly refuses.
+    #[cfg(not(windows))]
+    use super::reject_unc_spelling;
 
     /// BOTH-STATES test for the open-vs-create guard. The passing case alone would not
     /// prove anything: the guard's whole purpose is to FAIL on a path the Python layer
@@ -808,8 +812,19 @@ mod tests {
         // Proven without mounting a share: hand it DRIVE_REMOTE for a path that does NOT
         // exist. If the check runs first the answer is the remote refusal; if it runs after
         // `is_file()`, the answer is "no corpus index at". Only one ordering produces this.
-        let err = validate_index_path_with(r"Z:\nonexistent\index.db", |_| Some(DRIVE_REMOTE))
-            .unwrap_err();
+        //
+        // PLATFORM-SPLIT, and it is not a formality. `Z:\...` is absolute on Windows and
+        // RELATIVE on POSIX, so on Linux the absolute-path guard answers first and this
+        // asserted the wrong string entirely. That is what CI's ubuntu leg caught after a
+        // fully green Windows run — the exact shape of cross-platform coverage theatre, and
+        // the reason the assertion is split rather than the test being cfg'd away: each
+        // platform still verifies the contract it actually has.
+        let posix_shaped = if cfg!(windows) {
+            r"Z:\nonexistent\index.db"
+        } else {
+            "/nonexistent/index.db"
+        };
+        let err = validate_index_path_with(posix_shaped, |_| Some(DRIVE_REMOTE)).unwrap_err();
         assert!(
             err.contains("mapped network drive"),
             "the remote-drive refusal must win over not-found, or the check ran too late: {err}"
@@ -818,7 +833,7 @@ mod tests {
         // Control: the same non-existent path with a LOCAL drive type falls through to the
         // ordinary not-found message, so the test above is measuring the drive type rather
         // than just the path being absent.
-        let local = validate_index_path_with(r"Z:\nonexistent\index.db", |_| Some(3)).unwrap_err();
+        let local = validate_index_path_with(posix_shaped, |_| Some(3)).unwrap_err();
         assert!(
             local.contains("no corpus index at"),
             "a local drive type must not be refused as remote: {local}"
@@ -845,7 +860,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn reject_unc_resolution_refuses_a_path_that_resolves_off_the_local_disk() {
+        // WINDOWS-ONLY, because the rule itself is. `Component::Prefix` exists only on
+        // Windows: on POSIX a `\\?\UNC\...` string parses as one ordinary relative filename
+        // with no prefix, so the guard correctly answers Ok and `expect_err` panics. The
+        // function's own docstring already says it is INERT off Windows — the test simply
+        // did not say so too, and CI's ubuntu leg found that after a fully green Windows
+        // run. The POSIX contract is asserted separately below, so nothing is lost by
+        // scoping this one.
         let resolving_to = |canonical: &str| Ok(std::path::PathBuf::from(canonical));
 
         // The two shapes measured as ACCEPTED before this guard existed.
@@ -882,6 +905,42 @@ mod tests {
             err.contains("cannot determine whether"),
             "expected the fail-closed refusal, got: {err}"
         );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn on_posix_the_resolution_guard_is_inert_and_the_spelling_guard_carries_it() {
+        // The POSIX half of the pair above, so the ubuntu CI leg still verifies this
+        // function instead of merely skipping it. Asserting the inertness is the point: a
+        // reader who sees only a `#[cfg(windows)]` test cannot tell whether POSIX is
+        // covered by something else or simply forgotten.
+        //
+        // `Component::Prefix` does not exist off Windows, so a canonicalized `\\?\UNC\...`
+        // string parses as ONE ordinary relative filename and the guard answers Ok. That is
+        // correct and documented — a cifs mount canonicalizes to `/mnt/share/x`, which is
+        // genuinely indistinguishable from a local path without reading the mount table.
+        let resolving_to = |c: &str| Ok(std::path::PathBuf::from(c));
+        assert_eq!(
+            reject_unc_resolution("/mnt/share/index.db", resolving_to(r"\\?\UNC\host\share\i.db")),
+            Ok(()),
+            "off Windows this guard cannot speak, and must not pretend to"
+        );
+
+        // So the raw-SPELLING guard is what actually protects POSIX, and it still does —
+        // which is exactly why `reject_unc_spelling` runs on the unresolved string rather
+        // than after canonicalization, where the evidence would already be destroyed.
+        for spelling in [r"\\host\share\index.db", "//host/share/index.db"] {
+            assert!(
+                reject_unc_spelling(spelling).is_err(),
+                "the spelling guard is POSIX's only cover and must refuse {spelling}"
+            );
+        }
+        // Fail-closed still holds on both platforms.
+        assert!(reject_unc_resolution(
+            "/x/index.db",
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        )
+        .is_err());
     }
 
     /// Every engine RPC must be EITHER a registered Tauri command spelled by the contract,
