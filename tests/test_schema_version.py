@@ -24,6 +24,8 @@ constants (`SCHEMA_VERSION`, `_ADDITIVE_FROM`) are the seam that lets it be prov
 now instead of the first time it matters. The pure verdict function is tested
 directly with explicit arguments, so the policy itself needs no patching at all.
 """
+import hashlib
+import pathlib
 import sqlite3
 
 import pytest
@@ -254,6 +256,30 @@ def test_the_refusal_happens_BEFORE_the_schema_is_touched(tmp_path):
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "ingest_checkpoint" not in tables
+
+
+def test_a_refused_open_does_not_write_a_single_byte(tmp_path):
+    """"Before the schema is touched" is not enough: `journal_mode` is a PERSISTENT
+    header setting, so enabling WAL on an archive a newer build owns is still a write
+    into a shape this build does not understand. Measured with the pragma running one
+    line ahead of the gate: `delete` became `wal` and the file hash changed. The gate
+    therefore runs before ANY statement, and this pins the whole file."""
+    path = str(tmp_path / "future.sqlite")
+    seed = _track(sqlite3.connect(path))
+    seed.execute("PRAGMA journal_mode=DELETE")   # the hostile case: NOT already WAL
+    seed.executescript(corpus._SCHEMA_META_DDL)
+    _set_marker(seed, str(corpus.SCHEMA_VERSION + 1))
+    seed.close()
+    before = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+    conn = _track(sqlite3.connect(path))
+    with pytest.raises(corpus.IndexTooNewError):
+        corpus.init_index(conn)
+    conn.close()
+
+    assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() == before
+    assert _track(sqlite3.connect(path)).execute(
+        "PRAGMA journal_mode").fetchone()[0] == "delete"
 
 
 # ---------------------------------------------------- an index OLDER than us

@@ -289,10 +289,10 @@ def init_index(conn):
     an index that predates it, and every reader treats "no rows" as "not recorded yet" and
     falls back; a new COLUMN would instead be silently absent and every INSERT naming it
     would raise, which is a migration, not a no-op."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    check_schema_version(conn)  # REFUSES here, BEFORE any DDL runs — see D-1 at EOF
-    opt = ",\n    contentless_delete=1" if _CONTENTLESS_DELETE else ""
-    conn.executescript(INDEX_SCHEMA % {"delete_opt": opt})
+    wal = "PRAGMA journal_mode=WAL"  # EXECUTED at 294, after the version gate at 293
+    check_schema_version(conn)  # REFUSES here, before ANY statement — see D-1 at EOF
+    conn.execute(wal)
+    conn.executescript(INDEX_SCHEMA % {"delete_opt": _delete_opt()})
     stamp_schema_version(conn)
     return conn
 
@@ -545,6 +545,14 @@ def _conversation_body(conv):
     return "\n".join(p for p in parts if p)
 
 
+def _delete_opt():
+    """The `contentless_delete=1` clause `INDEX_SCHEMA` interpolates, or "" on a SQLite
+    too old to support it. A function only so `init_index` fits on one line per step: the
+    version gate has to run before the WAL pragma (see below), and every line above this
+    point in the file is cited BY LINE from elsewhere in the tree."""
+    return ",\n    contentless_delete=1" if _CONTENTLESS_DELETE else ""
+
+
 # ------------------------------------------------- on-disk schema version (D-1)
 #
 # WHAT THIS IS FOR. Until now an index recorded nothing about its own shape, so a build
@@ -683,9 +691,16 @@ def read_schema_version(conn):
 def check_schema_version(conn):
     """Decide whether this build may open `conn`, and return the version it is at.
 
-    Called by `init_index` BEFORE the schema is applied, so a refusal leaves the file
-    exactly as it was found. Both refusals name both versions, because "wrong version" is
-    useless to someone deciding whether to upgrade the app or rebuild the index.
+    Called by `init_index` before ANY statement runs — not merely before the DDL, but
+    ahead of the `PRAGMA journal_mode=WAL` too, which is why that pragma is declared a
+    line early and executed a line late. Measured: with the pragma running first, a
+    refused open flipped a `journal_mode=delete` index to `wal` and changed the file
+    hash. `journal_mode` is a persistent header setting, so that was still a write into
+    an archive this build does not understand. A refusal now leaves the file
+    byte-identical, which `test_a_refused_open_does_not_write_a_single_byte` pins.
+
+    Both refusals name both versions, because "wrong version" is useless to someone
+    deciding whether to upgrade the app or rebuild the index.
 
     Returns the version found — `UNSTAMPED_VERSION` for an unmarked index — for "ok" and
     for "migrate" alike: an additive migration needs no work here, since `init_index`'s
