@@ -491,10 +491,24 @@ PY_PINS = [
 #: `claude_code.py:31`), and rewording honest prose to please a `.py`-only scraper is the
 #: dishonesty this file's header already refuses. Dropping the exemption entirely would
 #: make the suite permanently red for three citations that are correct.
+#: KEYED BY (file, spelling) — NOT by line number, which is what it used to be.
+#:
+#: The line number was pure maintenance cost with no verification value. It pinned nothing
+#: about the citation; it only recorded where the citation happened to sit, so ANY edit
+#: above one of these lines reddened the gate for a reason that had nothing to do with
+#: citations. That is not theoretical — it fired three times in a single session, twice on
+#: edits to the very docstring being corrected, and each time the "fix" was to renumber a
+#: waiver that had never been wrong. A gate whose false alarms outnumber its catches is a
+#: gate somebody eventually deletes.
+#:
+#: Dropping the line does NOT widen the waiver, because the exactly-one-site check below
+#: replaces what the line was doing: a waiver may cover ONE orphan, and a second occurrence
+#: of the same spelling in the same file is reported rather than silently absorbed. So the
+#: set still cannot grow coverage by accident — it just stops caring where the line moved.
 PY_ORPHAN_SECONDARIES = {
-    ("claude_code.py", 38, "`:116-122"),
-    ("claude_code.py", 97, "`:120-122"),
-    ("claude_code.py", 473, "`:102"),
+    ("claude_code.py", "`:116-122"),
+    ("claude_code.py", "`:120-122"),
+    ("claude_code.py", "`:102"),
 }
 
 #: Claims found FALSE — not mis-anchored, but contradicted by the code they cite — and
@@ -772,10 +786,19 @@ def test_every_engine_citation_is_pinned():
         rows, probs = _citations(_read(path), engines=PY_TARGETS)
         cited.update((name, t, a) for t, a in rows)
         for p in probs:
-            lineno = int(p.split()[1])
             spelling = p.split("anchor ")[1].split(" but")[0].strip("`") if "anchor " in p else ""
-            key = (name, lineno, "`:" + spelling.lstrip("`:"))
+            key = (name, "`:" + spelling.lstrip("`:"))
             if key in PY_ORPHAN_SECONDARIES:
+                # A waiver covers ONE site. This is what the line number used to do, without
+                # the false alarms: dropping the line stopped the gate caring WHERE the
+                # anchor sits, and this keeps it caring HOW MANY it excuses, so a second
+                # occurrence of the same spelling cannot slip in under an existing waiver.
+                if key in exercised:
+                    problems.append(
+                        "%s: a SECOND orphan anchor `%s` — one waiver excuses one site, so "
+                        "this one is unwaived. Give it a primary on its own line, or add a "
+                        "deliberate second entry." % (name, spelling))
+                    continue
                 exercised.add(key)
                 continue
             problems.append("%s: %s" % (name, p))
@@ -798,7 +821,7 @@ def test_every_engine_citation_is_pinned():
         "and only the pin was ever read. Re-point the row to the line the source now cites, "
         "or delete it with the citation." % ", ".join(orphaned)
     )
-    spent = sorted("%s:%d %s`" % k for k in PY_ORPHAN_SECONDARIES - exercised)
+    spent = sorted("%s %s`" % k for k in PY_ORPHAN_SECONDARIES - exercised)
     assert not spent, (
         "PY_ORPHAN_SECONDARIES waives %s, which no longer matches any orphan anchor. Either "
         "the citation moved (re-point the entry to the spelling the scraper now reports) or "
