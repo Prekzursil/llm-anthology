@@ -1,0 +1,1429 @@
+{
+ "chatgpt": [
+  {
+   "input": {
+    "conversation_id": "x",
+    "create_time": 1.0,
+    "current_node": null,
+    "mapping": {
+     "a": {
+      "children": [
+       "b"
+      ],
+      "id": "a",
+      "message": {
+       "author": {
+        "role": "user"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "hello"
+        ]
+       },
+       "create_time": 1.0,
+       "id": "a",
+       "metadata": {}
+      },
+      "parent": "r"
+     },
+     "b": {
+      "children": [],
+      "id": "b",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "hi there"
+        ]
+       },
+       "create_time": 2.0,
+       "id": "b",
+       "metadata": {}
+      },
+      "parent": "a"
+     },
+     "r": {
+      "children": [
+       "a"
+      ],
+      "id": "r",
+      "message": null,
+      "parent": null
+     }
+    },
+    "title": "t"
+   },
+   "ir": {
+    "account": "",
+    "created_at": "1970-01-01T00:00:01+00:00",
+    "id": "x",
+    "ir_version": 1,
+    "meta": {},
+    "provider": "chatgpt",
+    "title": "t",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "hello",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "1970-01-01T00:00:01+00:00",
+      "uuid": "a"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "hi there",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "1970-01-01T00:00:02+00:00",
+      "uuid": "b"
+     }
+    ],
+    "updated_at": ""
+   },
+   "name": "synthetic-null-current-node"
+  },
+  {
+   "input": {
+    "conversation_id": "regen-1",
+    "create_time": 1700000000.0,
+    "current_node": "b2",
+    "mapping": {
+     "b1": {
+      "children": [],
+      "id": "b1",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "DISCARDED reply"
+        ]
+       },
+       "create_time": 1700000001.0,
+       "id": "b1",
+       "metadata": {}
+      },
+      "parent": "u"
+     },
+     "b2": {
+      "children": [
+       "u2"
+      ],
+      "id": "b2",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "kept reply"
+        ]
+       },
+       "create_time": 1700000002.0,
+       "id": "b2",
+       "metadata": {}
+      },
+      "parent": "u"
+     },
+     "r": {
+      "children": [
+       "u"
+      ],
+      "id": "r",
+      "message": null,
+      "parent": null
+     },
+     "u": {
+      "children": [
+       "b1",
+       "b2"
+      ],
+      "id": "u",
+      "message": {
+       "author": {
+        "role": "user"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "ask once"
+        ]
+       },
+       "create_time": 1700000000.0,
+       "id": "u",
+       "metadata": {}
+      },
+      "parent": "r"
+     },
+     "u2": {
+      "children": [],
+      "id": "u2",
+      "message": {
+       "author": {
+        "role": "user"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "and again"
+        ]
+       },
+       "create_time": 1700000003.5,
+       "id": "u2",
+       "metadata": {}
+      },
+      "parent": "b2"
+     }
+    },
+    "title": "regen"
+   },
+   "ir": {
+    "account": "",
+    "created_at": "2023-11-14T22:13:20+00:00",
+    "id": "regen-1",
+    "ir_version": 1,
+    "meta": {},
+    "provider": "chatgpt",
+    "title": "regen",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "ask once",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "2023-11-14T22:13:20+00:00",
+      "uuid": "u"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "kept reply",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "2023-11-14T22:13:22+00:00",
+      "uuid": "b2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "name": "synthetic-branch-regeneration"
+  },
+  {
+   "input": {
+    "conversation_id": "types-1",
+    "create_time": 1700000000.0,
+    "current_node": "n5",
+    "mapping": {
+     "n1": {
+      "children": [
+       "n2"
+      ],
+      "id": "n1",
+      "message": {
+       "author": {
+        "role": "user"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "run it"
+        ]
+       },
+       "create_time": 1700000000.0,
+       "id": "n1",
+       "metadata": {}
+      },
+      "parent": "r"
+     },
+     "n2": {
+      "children": [
+       "n3"
+      ],
+      "id": "n2",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "thoughts",
+        "thoughts": [
+         {
+          "content": "step one",
+          "summary": "plan"
+         }
+        ]
+       },
+       "create_time": 1700000001.0,
+       "id": "n2",
+       "metadata": {}
+      },
+      "parent": "n1"
+     },
+     "n3": {
+      "children": [
+       "n4"
+      ],
+      "id": "n3",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "code",
+        "language": "python",
+        "text": "print(1)"
+       },
+       "create_time": 1700000002.0,
+       "id": "n3",
+       "metadata": {}
+      },
+      "parent": "n2"
+     },
+     "n4": {
+      "children": [
+       "n5"
+      ],
+      "id": "n4",
+      "message": {
+       "author": {
+        "role": "tool"
+       },
+       "content": {
+        "content_type": "execution_output",
+        "text": "1"
+       },
+       "create_time": 1700000003.0,
+       "id": "n4",
+       "metadata": {
+        "is_visually_hidden_from_conversation": true
+       }
+      },
+      "parent": "n3"
+     },
+     "n5": {
+      "children": [],
+      "id": "n5",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "multimodal_text",
+        "parts": [
+         {
+          "asset_pointer": "file-service://file-SYNTHETIC",
+          "content_type": "image_asset_pointer",
+          "height": 8,
+          "width": 8
+         },
+         "and a caption"
+        ]
+       },
+       "create_time": 1700000004.0,
+       "id": "n5",
+       "metadata": {}
+      },
+      "parent": "n4"
+     },
+     "r": {
+      "children": [
+       "n1"
+      ],
+      "id": "r",
+      "message": null,
+      "parent": null
+     }
+    },
+    "title": "types"
+   },
+   "ir": {
+    "account": "",
+    "created_at": "2023-11-14T22:13:20+00:00",
+    "id": "types-1",
+    "ir_version": 1,
+    "meta": {},
+    "provider": "chatgpt",
+    "title": "types",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "run it",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "2023-11-14T22:13:20+00:00",
+      "uuid": "n1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {
+         "summary": "plan"
+        },
+        "text": "step one",
+        "type": "thinking"
+       },
+       {
+        "citations": [],
+        "data": {
+         "language": "python"
+        },
+        "text": "print(1)",
+        "type": "code"
+       },
+       {
+        "citations": [],
+        "data": {
+         "path": "file-SYNTHETIC",
+         "pointer": "file-service://file-SYNTHETIC"
+        },
+        "text": "file-service://file-SYNTHETIC",
+        "type": "media"
+       },
+       {
+        "citations": [],
+        "data": {},
+        "text": "and a caption",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "2023-11-14T22:13:21+00:00",
+      "uuid": "n2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "name": "synthetic-content-types"
+  },
+  {
+   "input": {
+    "__project_id": "g-p-SYNTHETIC",
+    "create_time": 1700000000.0,
+    "current_node": "b",
+    "id": "old-key-1",
+    "mapping": {
+     "a": {
+      "children": [
+       "b"
+      ],
+      "id": "a",
+      "message": {
+       "author": {
+        "role": "user"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "tagged q"
+        ]
+       },
+       "create_time": 1700000000.0,
+       "id": "a",
+       "metadata": {}
+      },
+      "parent": "r"
+     },
+     "b": {
+      "children": [],
+      "id": "b",
+      "message": {
+       "author": {
+        "role": "assistant"
+       },
+       "content": {
+        "content_type": "text",
+        "parts": [
+         "tagged a"
+        ]
+       },
+       "create_time": 1700000001.0,
+       "id": "b",
+       "metadata": {}
+      },
+      "parent": "a"
+     },
+     "r": {
+      "children": [
+       "a"
+      ],
+      "id": "r",
+      "message": null,
+      "parent": null
+     }
+    },
+    "title": "tagged"
+   },
+   "ir": {
+    "account": "",
+    "created_at": "2023-11-14T22:13:20+00:00",
+    "id": "old-key-1",
+    "ir_version": 1,
+    "meta": {},
+    "provider": "chatgpt",
+    "title": "tagged",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "tagged q",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "2023-11-14T22:13:20+00:00",
+      "uuid": "a"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "tagged a",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "2023-11-14T22:13:21+00:00",
+      "uuid": "b"
+     }
+    ],
+    "updated_at": ""
+   },
+   "name": "synthetic-project-tagged"
+  }
+ ],
+ "claude": [
+  {
+   "input": {
+    "account": {
+     "uuid": "a"
+    },
+    "chat_messages": [
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "root one q",
+        "type": "text"
+       }
+      ],
+      "created_at": "t1",
+      "files": [],
+      "parent_message_uuid": null,
+      "sender": "human",
+      "text": "",
+      "uuid": "r1"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "root one a",
+        "type": "text"
+       }
+      ],
+      "created_at": "t2",
+      "files": [],
+      "parent_message_uuid": "r1",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "a1"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "orphan root q",
+        "type": "text"
+       }
+      ],
+      "created_at": "t3",
+      "files": [],
+      "parent_message_uuid": "GONE",
+      "sender": "human",
+      "text": "",
+      "uuid": "r2"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "orphan root a",
+        "type": "text"
+       }
+      ],
+      "created_at": "t4",
+      "files": [],
+      "parent_message_uuid": "r2",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "a2"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "follow up",
+        "type": "text"
+       }
+      ],
+      "created_at": "t5",
+      "files": [],
+      "parent_message_uuid": "a1",
+      "sender": "human",
+      "text": "",
+      "uuid": "b1"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "ABANDONED",
+        "type": "text"
+       }
+      ],
+      "created_at": "t6",
+      "files": [],
+      "parent_message_uuid": "b1",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "old"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "LIVE longer thread",
+        "type": "text"
+       }
+      ],
+      "created_at": "t7",
+      "files": [],
+      "parent_message_uuid": "b1",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "new"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "continues under newer",
+        "type": "text"
+       }
+      ],
+      "created_at": "t8",
+      "files": [],
+      "parent_message_uuid": "new",
+      "sender": "human",
+      "text": "",
+      "uuid": "cont"
+     }
+    ],
+    "name": "multi",
+    "uuid": "c"
+   },
+   "ir": {
+    "account": "a",
+    "created_at": "",
+    "id": "c",
+    "ir_version": 1,
+    "meta": {
+     "summary": ""
+    },
+    "provider": "claude",
+    "title": "multi",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "root one q",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "t1",
+      "uuid": "r1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "root one a",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "t2",
+      "uuid": "a1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "follow up",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "t5",
+      "uuid": "b1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "LIVE longer thread",
+        "type": "text"
+       }
+      ],
+      "branch": {
+       "index": 2,
+       "total": 2
+      },
+      "role": "assistant",
+      "timestamp": "t7",
+      "uuid": "new"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "continues under newer",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "t8",
+      "uuid": "cont"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "orphan root q",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "t3",
+      "uuid": "r2"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "orphan root a",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "t4",
+      "uuid": "a2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "is_design_chat": false,
+   "name": "synthetic-multiroot"
+  },
+  {
+   "input": {
+    "messages": [
+     {
+      "content": {
+       "content": "design me a thing"
+      },
+      "role": "user",
+      "uuid": "m1"
+     },
+     {
+      "content": {
+       "contentBlocks": [
+        {
+         "text": "here it is",
+         "type": "text"
+        }
+       ]
+      },
+      "role": "assistant",
+      "uuid": "m2"
+     }
+    ],
+    "title": "Design",
+    "uuid": "d"
+   },
+   "ir": {
+    "account": "",
+    "created_at": "",
+    "id": "d",
+    "ir_version": 1,
+    "meta": {
+     "kind": "design_chat"
+    },
+    "provider": "claude",
+    "title": "Design",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "design me a thing",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "",
+      "uuid": "m1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "here it is",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "",
+      "uuid": "m2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "is_design_chat": true,
+   "name": "synthetic-design-chat"
+  },
+  {
+   "input": {
+    "account": {
+     "uuid": "acct-1"
+    },
+    "chat_messages": [
+     {
+      "attachments": [
+       {
+        "extracted_content": "hello",
+        "file_name": "notes.txt",
+        "file_size": 12,
+        "file_type": "text/plain"
+       }
+      ],
+      "content": [
+       {
+        "citations": [],
+        "text": "see attached",
+        "type": "text"
+       }
+      ],
+      "created_at": "2026-02-03T04:05:06.789012Z",
+      "files": [
+       {
+        "file_name": "pic.png",
+        "file_uuid": "synthetic-file-uuid"
+       }
+      ],
+      "parent_message_uuid": null,
+      "sender": "human",
+      "text": "",
+      "uuid": "m1"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "got it",
+        "type": "text"
+       }
+      ],
+      "created_at": "2026-02-03T04:05:07.000000Z",
+      "files": [],
+      "parent_message_uuid": "m1",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "m2"
+     }
+    ],
+    "created_at": "2026-02-03T04:05:06.789012Z",
+    "name": "With files",
+    "uuid": "att"
+   },
+   "ir": {
+    "account": "acct-1",
+    "created_at": "2026-02-03T04:05:06.789012Z",
+    "id": "att",
+    "ir_version": 1,
+    "meta": {
+     "summary": ""
+    },
+    "provider": "claude",
+    "title": "With files",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {
+         "extracted_content": "hello",
+         "file_name": "notes.txt",
+         "file_size": 12,
+         "file_type": "text/plain"
+        },
+        "text": "notes.txt",
+        "type": "attachment"
+       },
+       {
+        "citations": [],
+        "data": {
+         "file_name": "pic.png",
+         "file_uuid": "synthetic-file-uuid"
+        },
+        "text": "pic.png",
+        "type": "file"
+       },
+       {
+        "citations": [],
+        "data": {},
+        "text": "see attached",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "2026-02-03T04:05:06.789012Z",
+      "uuid": "m1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "got it",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "2026-02-03T04:05:07.000000Z",
+      "uuid": "m2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "is_design_chat": false,
+   "name": "synthetic-attachments"
+  },
+  {
+   "input": {
+    "account": {
+     "uuid": "acct-1"
+    },
+    "chat_messages": [
+     {
+      "attachments": [],
+      "content": [
+       {
+        "citations": [],
+        "text": "search it",
+        "type": "text"
+       }
+      ],
+      "created_at": "t1",
+      "files": [],
+      "parent_message_uuid": null,
+      "sender": "human",
+      "text": "",
+      "uuid": "m1"
+     },
+     {
+      "attachments": [],
+      "content": [
+       {
+        "summaries": [
+         {
+          "summary": "weighing it up"
+         }
+        ],
+        "thinking": "considering the options",
+        "type": "thinking"
+       },
+       {
+        "display_content": "Searching",
+        "icon_name": "magnifier",
+        "id": "toolu_SYNTH",
+        "input": {
+         "query": "a synthetic query"
+        },
+        "integration_name": "search",
+        "name": "web_search",
+        "type": "tool_use"
+       },
+       {
+        "content": [
+         {
+          "text": "a synthetic result",
+          "type": "text"
+         }
+        ],
+        "display_content": "1 result",
+        "icon_name": "magnifier",
+        "integration_name": "search",
+        "is_error": false,
+        "name": "web_search",
+        "tool_use_id": "toolu_SYNTH",
+        "type": "tool_result"
+       },
+       {
+        "citations": [],
+        "text": "here is what I found",
+        "type": "text"
+       }
+      ],
+      "created_at": "t2",
+      "files": [],
+      "parent_message_uuid": "m1",
+      "sender": "assistant",
+      "text": "",
+      "uuid": "m2"
+     }
+    ],
+    "name": "Tools",
+    "uuid": "tool"
+   },
+   "ir": {
+    "account": "acct-1",
+    "created_at": "",
+    "id": "tool",
+    "ir_version": 1,
+    "meta": {
+     "summary": ""
+    },
+    "provider": "claude",
+    "title": "Tools",
+    "turns": [
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {},
+        "text": "search it",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "human",
+      "timestamp": "t1",
+      "uuid": "m1"
+     },
+     {
+      "blocks": [
+       {
+        "citations": [],
+        "data": {
+         "hidden": false,
+         "summaries": [
+          {
+           "summary": "weighing it up"
+          }
+         ]
+        },
+        "text": "considering the options",
+        "type": "thinking"
+       },
+       {
+        "citations": [],
+        "data": {
+         "icon_name": "magnifier",
+         "id": "toolu_SYNTH",
+         "input": {
+          "query": "a synthetic query"
+         },
+         "integration_name": "search",
+         "name": "web_search"
+        },
+        "text": "Searching",
+        "type": "tool_use"
+       },
+       {
+        "citations": [],
+        "data": {
+         "content": [
+          {
+           "text": "a synthetic result",
+           "type": "text"
+          }
+         ],
+         "icon_name": "magnifier",
+         "integration_name": "search",
+         "is_error": false,
+         "name": "web_search",
+         "tool_use_id": "toolu_SYNTH"
+        },
+        "text": "1 result",
+        "type": "tool_result"
+       },
+       {
+        "citations": [],
+        "data": {},
+        "text": "here is what I found",
+        "type": "text"
+       }
+      ],
+      "branch": null,
+      "role": "assistant",
+      "timestamp": "t2",
+      "uuid": "m2"
+     }
+    ],
+    "updated_at": ""
+   },
+   "is_design_chat": false,
+   "name": "synthetic-tool-and-thinking"
+  }
+ ],
+ "gemini": [
+  {
+   "groups": [
+    {
+     "id": "g1",
+     "title": "First",
+     "turn_idxs": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "g2",
+     "title": "Second",
+     "turn_idxs": [
+      2
+     ]
+    }
+   ],
+   "ir": [
+    {
+     "account": "",
+     "created_at": "2026-01-01T10:00:00",
+     "id": "g1",
+     "ir_version": 1,
+     "meta": {},
+     "provider": "gemini",
+     "title": "First",
+     "turns": [
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "q1",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "human",
+       "timestamp": "2026-01-01T10:00:00",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "a1",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "assistant",
+       "timestamp": "2026-01-01T10:00:00",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {
+          "detail": "d",
+          "name": "Used"
+         },
+         "text": "Used Canvas",
+         "type": "event"
+        }
+       ],
+       "branch": null,
+       "role": "assistant",
+       "timestamp": "2026-01-01T10:05:00",
+       "uuid": ""
+      }
+     ],
+     "updated_at": "2026-01-01T10:05:00"
+    },
+    {
+     "account": "",
+     "created_at": "2026-01-01T11:00:00",
+     "id": "g2",
+     "ir_version": 1,
+     "meta": {
+      "gems": [
+       "CustomGem"
+      ]
+     },
+     "provider": "gemini",
+     "title": "Second",
+     "turns": [
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "q2",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "human",
+       "timestamp": "2026-01-01T11:00:00",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "a2",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "assistant",
+       "timestamp": "2026-01-01T11:00:00",
+       "uuid": ""
+      }
+     ],
+     "updated_at": "2026-01-01T11:00:00"
+    }
+   ],
+   "name": "synthetic-grouped",
+   "records": [
+    {
+     "gem": null,
+     "prompt": "q1",
+     "response_md": "a1",
+     "timestamp_iso": "2026-01-01T10:00:00",
+     "verb": "Prompted"
+    },
+    {
+     "detail": "d",
+     "gem": null,
+     "timestamp_iso": "2026-01-01T10:05:00",
+     "title": "Used Canvas",
+     "verb": "Used"
+    },
+    {
+     "gem": "CustomGem",
+     "prompt": "q2",
+     "response_md": "a2",
+     "timestamp_iso": "2026-01-01T11:00:00",
+     "verb": "Prompted"
+    }
+   ]
+  },
+  {
+   "groups": [
+    {
+     "id": "unmatched",
+     "title": "(unmatched Takeout activity)",
+     "turn_idxs": [
+      0,
+      1
+     ]
+    }
+   ],
+   "ir": [
+    {
+     "account": "",
+     "created_at": "2026-03-04T05:06:07",
+     "id": "unmatched",
+     "ir_version": 1,
+     "meta": {},
+     "provider": "gemini",
+     "title": "(unmatched Takeout activity)",
+     "turns": [
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {
+          "file_name": "a.pdf",
+          "path": "",
+          "resolved": false
+         },
+         "text": "a.pdf",
+         "type": "attachment"
+        },
+        {
+         "citations": [],
+         "data": {
+          "path": "b.png"
+         },
+         "text": "b.png",
+         "type": "media"
+        },
+        {
+         "citations": [],
+         "data": {},
+         "text": "with a file",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "human",
+       "timestamp": "2026-03-04T05:06:07",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "ok",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "assistant",
+       "timestamp": "2026-03-04T05:06:07",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "no timestamp",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "human",
+       "timestamp": "",
+       "uuid": ""
+      },
+      {
+       "blocks": [
+        {
+         "citations": [],
+         "data": {},
+         "text": "still rendered",
+         "type": "text"
+        }
+       ],
+       "branch": null,
+       "role": "assistant",
+       "timestamp": "",
+       "uuid": ""
+      }
+     ],
+     "updated_at": "2026-03-04T05:06:07"
+    }
+   ],
+   "name": "synthetic-unmatched-bucket",
+   "records": [
+    {
+     "attachments": [
+      {
+       "name": "a.pdf"
+      }
+     ],
+     "gem": null,
+     "media": [
+      {
+       "name": "b.png"
+      }
+     ],
+     "prompt": "with a file",
+     "response_md": "ok",
+     "timestamp_iso": "2026-03-04T05:06:07",
+     "verb": "Prompted"
+    },
+    {
+     "gem": null,
+     "prompt": "no timestamp",
+     "response_md": "still rendered",
+     "timestamp_iso": "",
+     "verb": "Prompted"
+    }
+   ]
+  }
+ ]
+}
