@@ -179,6 +179,97 @@ describe("chatgpt", () => {
   });
 });
 
+// ---------------------------------------------------------- chatgpt: shard selection
+//
+// A real ChatGPT Data Export ships the corpus SHARDED as conversations-000.json ...
+// conversations-NNN.json (17 shards / 1613 conversations in the observed export), so a
+// DIRECTORY argument must contribute every shard. This rail used to filter both
+// positionals through `statSync(p).isFile()`, which DROPPED a directory outright: the
+// measured symptom was `chatgpt <dir>` -> CONVERSATIONS_RENDERED 0 of 0, ERRORS 0,
+// exit 0 against the python rail's 2 of 2 on the same input, with `chatgpt <one shard>`
+// -> 1 of 1 as the control proving the loader itself was fine.
+//
+// These mirror tests/test_coverage_paths.py:55-78 one-for-one so the two rails'
+// file-selection semantics are pinned to the same cases, and add the two paths python
+// reaches through the SAME helper that no python test names: the --projects positional
+// (`_chatgpt_files` is applied to both) and a directory holding no export at all.
+// a real 2-turn conversation, id-keyed. NOT the zero-turn `{mapping:{}}` shape the python
+// test uses: this rail exits 3 on "conversations in, zero turns out", so a zero-turn fixture
+// would assert exit 0 against a legitimate exit 3 and hide the shard bug behind it.
+const cgConv = (id: string) => ({ ...chatgptExport()[0], conversation_id: id, title: id });
+
+describe("chatgpt shard selection (loaders.py:120-135 parity)", () => {
+  // the rendered filename is `NNN-<title>`, and these fixtures set title === id, so the
+  // output directory listing IS the set of conversation ids that survived loading
+  const ids = (out: string): string[] =>
+    readdirSync(join(out, "html"))
+      .map((f) => f.replace(/^\d+-/, "").replace(/\.html$/, ""))
+      .sort();
+
+  it("reads every shard in an export directory, ignoring non-export json", () => {
+    const dir = join(root, "export");
+    mkdirSync(dir, { recursive: true });
+    write(join(dir, "conversations-000.json"), [cgConv("a")]);
+    write(join(dir, "conversations-001.json"), [cgConv("b")]);
+    write(join(dir, "not-a-conversation.json"), [cgConv("zz")]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", dir, out])).toBe(0);
+    const rep = report(out);
+    expect(ids(out)).toEqual(["a", "b"]);
+    expect(rep.errors).toEqual([]);
+  });
+
+  it("a directory also takes a plain conversations.json (older/renamed export)", () => {
+    const dir = join(root, "export");
+    mkdirSync(dir, { recursive: true });
+    write(join(dir, "conversations.json"), [cgConv("solo")]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", dir, out])).toBe(0);
+    expect(ids(out)).toEqual(["solo"]);
+    expect(report(out).errors).toEqual([]);
+  });
+
+  it("dedupes a conversation present in two shards", () => {
+    const dir = join(root, "export");
+    mkdirSync(dir, { recursive: true });
+    write(join(dir, "conversations-000.json"), [cgConv("dup")]);
+    write(join(dir, "conversations-001.json"), [cgConv("dup")]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", dir, out])).toBe(0);
+    expect(ids(out)).toEqual(["dup"]);
+  });
+
+  it("--projects may itself be a sharded directory", () => {
+    const src = write(join(root, "cg.json"), [cgConv("main")]);
+    const proj = join(root, "projects");
+    mkdirSync(proj, { recursive: true });
+    write(join(proj, "conversations-000.json"), [{ ...cgConv("p1"), __project_id: "g-p-1" }]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", src, out, "--projects", proj])).toBe(0);
+    expect(ids(out)).toEqual(["main", "p1"]);
+    expect(readFileSync(join(out, "index.html"), "utf-8")).toContain("g-p-1");
+  });
+
+  it("a --projects path that does not exist is skipped, not a crash", () => {
+    // python's _chatgpt_files returns [] for a path that is neither a dir nor a file, so a
+    // typo'd --projects must degrade to "main export only" on both rails
+    const src = write(join(root, "cg.json"), [cgConv("main")]);
+    const out = join(root, "out");
+    expect(main(["chatgpt", src, out, "--projects", join(root, "nope.json")])).toBe(0);
+    expect(ids(out)).toEqual(["main"]);
+    expect(report(out).errors).toEqual([]);
+  });
+
+  it("a directory holding no export contributes nothing and does not throw", () => {
+    const dir = join(root, "empty");
+    mkdirSync(dir, { recursive: true });
+    write(join(dir, "user.json"), { id: "not-a-conversation" });
+    const out = join(root, "out");
+    expect(main(["chatgpt", dir, out])).toBe(0);
+    expect(Number(report(out).conversations)).toBe(0);
+  });
+});
+
 describe("gemini", () => {
   it("provisional grouping is labelled", () => {
     const src = write(join(root, "t.json"), geminiRecords());

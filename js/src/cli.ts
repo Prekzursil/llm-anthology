@@ -14,11 +14,11 @@
  *   * python has two subcommands this rail does not: `codex` (a third export shape, whose
  *     absence matters because feeding codex.json to `chatgpt` yields zero conversations
  *     silently) and `index` (the SQLite corpus the cockpit reads). cli.py:47,62.
- *   * `chatgpt <dir>`: a real ChatGPT Data Export ships the corpus SHARDED as
- *     conversations-000.json … conversations-NNN.json, and loaders.py:120-135 contributes
- *     every shard. loadChatgpt below accepts only a file, so a directory argument loads
- *     nothing here. UNVERIFIED whether any packaged consumer passes a directory — nothing
- *     in this repo does, and no test covers it either way.
+ *
+ * `chatgpt <dir>` USED to be on that list — a real sharded Data Export directory loaded
+ * NOTHING here and still exited 0, against the python rail's 2 of 2 on the same input.
+ * `chatgptFiles` below now mirrors loaders.py:120-135, and test/cli.test.ts pins the same
+ * cases as tests/test_coverage_paths.py:55-78.
  *
  * Nothing here is on the byte-for-byte-parity-tested renderer path; the heavy lifting is
  * delegated to the same ported modules the tests cover.
@@ -41,7 +41,7 @@ import { verify } from "./verify.js";
 const USAGE = `llm_anthology — render ChatGPT / Claude / Gemini session exports to HTML + Markdown (offline).
 
   llm-anthology claude   <export.json | dir>  <out_dir>
-  llm-anthology chatgpt  <conversations.json> <out_dir> [--projects FILE]
+  llm-anthology chatgpt  <conversations.json | export dir> <out_dir> [--projects FILE|dir]
   llm-anthology gemini   <transcript.json>    <out_dir> [--harvest FILE]
   llm-anthology demo     <out.html>
 `;
@@ -265,11 +265,58 @@ function cid(c: Record<string, unknown>): string {
   return typeof v === "string" ? v : "";
 }
 
+/** fnmatch `conversations-*.json`, anchored — `*` never crosses a path separator. */
+const CHATGPT_SHARD = /^conversations-.*\.json$/;
+
+/**
+ * Resolve ONE cli argument to the export files it stands for. 1:1 with
+ * `_chatgpt_files` (loaders.py:120-135), and every part of that mapping is load-bearing:
+ *
+ *   * A real ChatGPT Data Export ships the corpus SHARDED as conversations-000.json …
+ *     conversations-NNN.json (17 shards / 1613 conversations in the observed export), so
+ *     a DIRECTORY must contribute every shard. The previous code filtered both positionals
+ *     through `statSync(p).isFile()`, which dropped a directory silently: measured,
+ *     `chatgpt <dir>` printed CONVERSATIONS_RENDERED 0 of 0 / ERRORS 0 and exited 0 while
+ *     the python rail rendered 2 of 2 from the same directory. Nothing on stdout said the
+ *     whole export had been discarded.
+ *   * Shards FIRST (sorted), then `conversations.json`. Order decides dedup: load_chatgpt
+ *     keeps the FIRST record for an id, so swapping these swaps which copy of a duplicated
+ *     conversation wins.
+ *   * NOT recursive, unlike loadClaude's `**` globs — python uses a single-segment
+ *     glob.glob here, so a shard one level down is deliberately NOT picked up.
+ *   * No file/directory test on the matched names, also matching python: glob.glob returns
+ *     a DIRECTORY named `conversations-x.json` too, and both rails then fail it as a
+ *     `parse` error rather than skipping it silently.
+ *
+ * Residual divergence, INLINE because it is real: python's glob matches through fnmatch,
+ * which normcases on Windows, so a shard spelled `Conversations-000.JSON` would be picked
+ * up by the python rail on Windows and by neither rail on Linux. This regex is
+ * case-SENSITIVE on every platform. UNVERIFIED whether any export ships a non-lowercase
+ * shard name — the observed export is all-lowercase; the settling experiment is a
+ * directory listing of a real ChatGPT Data Export.
+ */
+function chatgptFiles(p: string): string[] {
+  const st = statSync(p, { throwIfNoEntry: false });
+  if (!st) return [];
+  if (!st.isDirectory()) return st.isFile() ? [p] : [];
+  // readdirSync + a name filter rather than fs.globSync: the latter only stabilised in
+  // Node 22 and crashes on the Node 20 this package supports. Sorting names is equivalent
+  // to python's sorted(glob(...)) over full paths — the directory prefix is common to all.
+  const files = readdirSync(p)
+    .filter((n) => CHATGPT_SHARD.test(n))
+    .sort()
+    .map((n) => join(p, n));
+  const single = join(p, "conversations.json");
+  if (statSync(single, { throwIfNoEntry: false })?.isFile()) files.push(single);
+  return files;
+}
+
 function loadChatgpt(mainPath: string, projectsPath?: string): [Conversation[], LoadError[], Map<string, string>] {
   const errors: LoadError[] = [];
   const byId = new Map<string, Record<string, unknown>>();
   const projOf = new Map<string, string>();
-  for (const path of [mainPath, projectsPath].filter((p): p is string => Boolean(p && statSync(p, { throwIfNoEntry: false })?.isFile()))) {
+  const paths = [mainPath, projectsPath].flatMap((p) => (p ? chatgptFiles(p) : []));
+  for (const path of paths) {
     let raw: unknown;
     try {
       raw = loadJson(path);
