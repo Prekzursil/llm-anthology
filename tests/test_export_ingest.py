@@ -806,6 +806,19 @@ def test_the_index_subcommand_still_takes_a_sessions_root_and_both_at_once(
     assert _ids(idx) == ["S1", "c-1"]
 
 
+def test_the_session_conversation_count_says_which_half_it_counts(tmp_path, capsys):
+    """INGESTED_CONVERSATIONS counts SESSION-store conversations only, so an export-only
+    import legitimately prints 0 beside a non-zero INDEX_ROWS. Unlabelled, a successful
+    import reads as a failed one."""
+    src = _write(str(tmp_path / "conversations.json"), [_chatgpt_conv("c-1", "alpha")])
+
+    assert cli.main(["index", str(tmp_path / "i.sqlite"), "--chatgpt-export", src]) == 0
+
+    out = capsys.readouterr().out
+    assert "INGESTED_CONVERSATIONS 0 (session stores; exports are counted above)" in out
+    assert "EXPORT_CONVERSATIONS 1" in out and "INDEX_ROWS 1" in out
+
+
 def test_the_index_subcommand_refuses_to_build_from_NO_source_at_all(tmp_path, capsys):
     """`index <one-path>` used to be an argparse error (out_index missing). With the
     sessions root optional that spelling now parses, so the guard has to be explicit —

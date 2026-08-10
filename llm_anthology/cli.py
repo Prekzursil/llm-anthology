@@ -292,7 +292,13 @@ def _build_index(args):
     finally:
         conn.close()
 
-    print("INGESTED_CONVERSATIONS", len(result.conversations))   # read out of the tree
+    # The trailing note is not decoration: this line counts SESSION-STORE conversations
+    # only, and since exports became a source (G-1) it can legitimately read 0 while
+    # INDEX_ROWS below reads 3. Without saying which half it counts, a successful
+    # export-only import looks like a failed one. The token and the number keep their
+    # position, so `INGESTED_CONVERSATIONS <n>` still parses as before.
+    print("INGESTED_CONVERSATIONS", len(result.conversations),   # read out of the tree
+          "(session stores; exports are counted above)")
     print("INDEX_ROWS", rows)                                    # ...and landed on disk
     print("INDEX_THREADS", len(graph.threads))
     print("INDEX_EDGES", len(graph.edges))

@@ -819,10 +819,42 @@ def _persist_graph(conn, result):
 # list to `index.build_index`, whose `IndexSource.records` is a materialised list it takes
 # `len()` of. Both are export-SIZED, and DECISION G-7 exists precisely to stop that: the
 # owner's ChatGPT export is ~728 MB and a whole-file `json.load` was measured at x3.69
-# memory amplification, i.e. ~2.7 GB of peak heap for one import. Streaming has to write
-# each conversation and drop it, which no accumulating contract can express. So exports
-# get their own chunked, checkpointed writer here, against the SAME index, the SAME
-# `corpus.add_conversation` write contract and the SAME error/exit-code discipline.
+# memory amplification. Streaming has to write each conversation and drop it, which no
+# accumulating contract can express. So exports get their own chunked, checkpointed writer
+# here, against the SAME index, the SAME `corpus.add_conversation` write contract and the
+# SAME error/exit-code discipline.
+#
+# MEASURED, on two synthetic exports, each route in its own process, with TWO mechanically
+# independent probes — `tracemalloc` (live Python allocations) and the Win32 peak WORKING
+# SET (everything the process touched, incl. C-side buffers and allocator arenas).
+# Baseline for the imports alone: 3.8 MB traced / 27.3 MB working set.
+#
+#   shape A — 1000 conversations x ~200 KB of text (205.2 MB), FEW huge nodes:
+#     json.load alone         393.9 MB traced /  417.0 MB WS
+#     load_chatgpt (the OLD   397.6 MB traced /  426.0 MB WS   = x1.9 of the export
+#       render-only route)
+#     ingest_exports (this)     5.8 MB traced /   30.3 MB WS   = x0.03
+#
+#   shape B — 2000 conversations x 120 small message nodes (70.1 MB), the shape a REAL
+#   export actually has, because object overhead rather than text volume is what
+#   amplifies:
+#     json.load alone         429.9 MB traced / 1046.3 MB WS
+#     load_chatgpt             481.6 MB traced / 1259.4 MB WS  = x17.6 of the export
+#     ingest_exports (this)      5.8 MB traced /   33.4 MB WS  = x0.09
+#
+# The point is not the ratio, it is that the streaming peak is FLAT: 5.8 MB traced on a
+# 205 MB export and 5.8 MB on a 70 MB one, i.e. independent of export size, while the
+# whole-file route scales with it. The briefed x3.69 sits between the two shapes measured
+# here and is if anything conservative for a node-heavy export — at shape B's x17.6, the
+# owner's 728 MB export would want ~12.8 GB of working set, which is not a slow import but
+# a failed one. COST, stated: streaming is ~1.7x slower in wall time on shape B (51.9s vs
+# 30.1s) — and that comparison flatters the old route, which writes no index at all, while
+# this figure includes building the whole FTS index and one sha256 pass for the checkpoint.
+#
+# UNVERIFIED: the amplification of the owner's ACTUAL 728 MB export. It was deliberately
+# not read (it holds private conversations), so the two shapes above bracket it rather than
+# measure it. The settling experiment is to run the same two probes against the real file
+# and report only the two peak numbers, never any content.
 #
 # WHAT AN IMPORTED EXPORT DELIBERATELY DOES NOT PRODUCE: spawn-graph nodes or edges. An
 # export format carries no parent/child session relationship — only a live agent store
