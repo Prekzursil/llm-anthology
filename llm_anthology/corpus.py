@@ -623,7 +623,16 @@ def _fts_opts():
 #: The version of the ON-DISK index schema this build writes and knows how to read.
 #: Bump it in the SAME commit as the change it describes, and say in that commit whether
 #: the delta is additive (then also add the previous version to `_ADDITIVE_FROM`).
-SCHEMA_VERSION = 1
+#:
+#: 2 (G-4) — the delta is NOT additive. `conversation_bodies` on its own would have been
+#: (a new table simply appears), but the same change recreates `conversations_fts` at
+#: `detail=full`, and an FTS5 table's option set is fixed at CREATE time: `IF NOT EXISTS`
+#: deliberately leaves an existing virtual table alone rather than dropping a user's index
+#: to rebuild it. So a version-1 index cannot be carried forward in place, and version 1
+#: stays OUT of `_ADDITIVE_FROM`. The cost is stated where a user meets it: every index
+#: built before this has to be rebuilt once, and `IndexRebuildRequired` says so by name
+#: instead of opening it and half-reading it.
+SCHEMA_VERSION = 2
 
 #: What an index carrying NO marker row IS. Every index in existence before this change
 #: has no marker, and all of them are the schema this build calls 1 — so an absent marker
@@ -640,11 +649,15 @@ SCHEMA_VERSION_KEY = "schema_version"
 #: new TABLE, never a changed or added column — because that is the entire delta
 #: `init_index` can apply on its own, and applying it is then the whole migration.
 #:
-#: EMPTY at `SCHEMA_VERSION` 1, and not for lack of effort: 1 is the first version there
-#: is, so there is no older version to migrate FROM. The unit that rebuilds the FTS table
-#: is expected to bump `SCHEMA_VERSION` to 2 and leave this empty (recreating a virtual
-#: table is not additive), at which point a version-1 index correctly reports that a
-#: rebuild is required instead of being opened and half-read.
+#: STILL EMPTY at `SCHEMA_VERSION` 2, and now for a substantive reason rather than for want
+#: of an older version. It was empty at 1 because 1 is the first version there is; the note
+#: here predicted that the unit rebuilding the FTS table would bump to 2 and leave this
+#: empty, because recreating a virtual table is not additive. That is exactly what G-4 did,
+#: so a version-1 index correctly reports that a rebuild is required instead of being opened
+#: and half-read.
+#:
+#: The next ADDITIVE change (a new table and nothing else) is the one that should finally put
+#: `2` in here, in the same commit that bumps `SCHEMA_VERSION` to 3.
 _ADDITIVE_FROM = frozenset()
 
 #: The marker table's own DDL, kept OUT of `INDEX_SCHEMA`: this is the one table that has
@@ -728,6 +741,21 @@ def read_schema_version(conn):
             % (row[0], SCHEMA_VERSION))
 
 
+def _holds_an_index(conn):
+    """Does `conn` already hold a corpus index, as opposed to being an empty database?
+
+    `conversations` is the probe because it is the core table every index has always had —
+    an index cannot exist without it, and nothing else in this schema creates it. A count of
+    `sqlite_master` objects would be the more obvious "is this file empty" test and is the
+    wrong question: a connection can legitimately carry the `conversation_metadata` table
+    (`metadata.ensure_schema` runs on a bare connection) before an index is ever built, and
+    that must still read as "no index here".
+    """
+    return conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+    ).fetchone() is not None
+
+
 def check_schema_version(conn):
     """Decide whether this build may open `conn`, and return the version it is at.
 
@@ -745,9 +773,30 @@ def check_schema_version(conn):
     Returns the version found — `UNSTAMPED_VERSION` for an unmarked index — for "ok" and
     for "migrate" alike: an additive migration needs no work here, since `init_index`'s
     own `IF NOT EXISTS` DDL creates exactly what an additive delta added.
+
+    AN ABSENT MARKER MEANS TWO DIFFERENT THINGS and only one of them is a version. This was
+    a latent defect from the moment the gate was written, invisible for exactly as long as
+    `SCHEMA_VERSION` was also 1:
+
+      * a database that ALREADY HOLDS an index but no marker is a genuine pre-marker index,
+        and `UNSTAMPED_VERSION` is what it is;
+      * an EMPTY database is not an old index at all — it is the file `init_index` is about
+        to create one in, and `open_index` creates it on every first run.
+
+    Reading the second as `UNSTAMPED_VERSION` was harmless while that equalled
+    `SCHEMA_VERSION` (the verdict came out "ok" either way). At `SCHEMA_VERSION` 2 it made
+    every `sqlite3.connect` of a new file report as a version-1 index, so `init_index`
+    refused to create one and told the user to rebuild an index that did not exist.
+    Measured on the bump: 432 tests failed, every one of them at `open_index`.
+
+    The presence of `conversations` is therefore the second signal, and it is read off
+    `sqlite_master` for the same reason `read_schema_version` and `_fts_can_delete` do —
+    so no failed statement has to be swallowed mid-transaction.
     """
     found = read_schema_version(conn)
     if found is None:
+        if not _holds_an_index(conn):
+            return SCHEMA_VERSION            # a new database, not an old index
         found = UNSTAMPED_VERSION
     verdict = _version_verdict(found, SCHEMA_VERSION, _ADDITIVE_FROM)
     if verdict == "newer":

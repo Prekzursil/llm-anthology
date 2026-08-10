@@ -25,9 +25,9 @@ express on its own:
 
 Query side: `count` is the fast total, `search` is the ranked bm25 search (delegating to
 corpus.search, whose `ORDER BY rank` IS bm25), and `ranked_search` exposes the bm25 score
-per row. NOTE the index is contentless (content='') with detail=none, so bm25 has no
-term-frequency signal — matching rows tend to score equally; the score is the ordering
-key, not a fine-grained relevance separation.
+per row. The index is contentless (content='') but is `detail=full` since G-4, so bm25 DOES
+carry a term-frequency and document-length signal: measured, a doc holding the term eight
+times outranks one holding it once, and one hit in a long doc ranks below one in a short one.
 
 PRIVACY: this module moves opaque conversation text into an inverted index and reads
 counts/shapes; it never emits conversation content. Tests use synthetic fixtures only.
@@ -197,9 +197,15 @@ def search(conn, query, limit=DEFAULT_LIMIT):
 
 def ranked_search(conn, query, limit=DEFAULT_LIMIT):
     """Like `search`, but each returned row carries a `bm25_score`, best-first (ascending
-    bm25). The index is contentless with detail=none, so bm25 has no term-frequency
-    signal and matching rows tend to tie — the score exposes the ordering key, not a
-    fine-grained relevance separation."""
+    bm25 — in FTS5, more-negative is better).
+
+    THIS DOCSTRING USED TO DISCLOSE A RESIDUAL THAT IS NOW GONE. It said bm25 "has no
+    term-frequency signal and matching rows tend to tie", which was true and measured under
+    `detail=none`: every matching row scored exactly -0.0. G-4 rebuilt the table at
+    `detail=full`, so the score now separates rows by term frequency AND by document length.
+    The disclosure is kept as a note rather than deleted because the ORDERING of an
+    `index.ranked_search` result silently changed meaning at that commit, and a reader
+    comparing old output to new deserves to know why."""
     q = query.strip()
     if not q:
         return []

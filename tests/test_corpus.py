@@ -221,9 +221,25 @@ def test_depth_is_finite_on_a_cycle_never_infinite_recursion():
 
 # ------------------------------------------------------- schema as a constant
 
-def test_index_schema_declares_a_contentless_detail_none_fts5_over_records():
-    s = corpus.INDEX_SCHEMA
-    assert "conversations_fts" in s and "content=''" in s and "detail=none" in s
+def test_index_schema_declares_a_contentless_detail_full_fts5_over_records():
+    """WHY THIS ASSERTS AGAINST THE EXECUTED SCHEMA AND NOT THE TEMPLATE STRING.
+
+    This test used to read `assert ... and "detail=none" in s` against `INDEX_SCHEMA`, and
+    when G-4 changed the DDL to `detail=full` it kept passing — because the SQL comment above
+    the table still MENTIONS `detail=none` while explaining why it is gone. A substring check
+    over a string that contains prose cannot tell a declaration from a discussion of one, so
+    it went green against the shape it was written to reject. Executing the schema and reading
+    the DDL back out of `sqlite_master` is a measurement; grepping the template is not.
+
+    `test_the_fts_table_is_created_at_detail_full` in `tests/test_corpus_fts_rebuild.py`
+    covers the same ground with the capability pairs behind it; this row stays because it is
+    the one that lives beside the other schema-constant tests.
+    """
+    conn = _track(corpus.init_index(sqlite3.connect(":memory:")))
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+    assert "content=''" in ddl and "detail=full" in ddl
+    assert "detail=none" not in ddl
 
 
 def test_index_schema_declares_the_threads_edges_and_checkpoint_tables():
@@ -241,8 +257,8 @@ def test_init_index_creates_every_contract_table():
     conn = _track(corpus.init_index(sqlite3.connect(":memory:")))
     names = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"conversations", "conversations_fts", "threads",
-            "thread_spawn_edges", "ingest_checkpoint"} <= names
+    assert {"conversations", "conversations_fts", "threads", "thread_spawn_edges",
+            "ingest_checkpoint", "conversation_bodies"} <= names
 
 
 def test_open_index_enables_wal_on_a_file_db(tmp_path):

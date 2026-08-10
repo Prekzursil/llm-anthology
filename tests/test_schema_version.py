@@ -17,12 +17,20 @@ This file pins the marker and the whole OPEN POLICY around it:
   * an index with NO marker row — which is EVERY index that exists today — keeps
     working: it is version 1 by definition, and it is stamped on open.
 
-WHY SOME TESTS MONKEYPATCH THE CONSTANTS. `SCHEMA_VERSION` is 1 and 1 is the first
-version there is, so no real on-disk index can currently be OLDER than this build.
-The older-index half of the policy therefore has no real-data instance yet, and the
-constants (`SCHEMA_VERSION`, `_ADDITIVE_FROM`) are the seam that lets it be proven
-now instead of the first time it matters. The pure verdict function is tested
-directly with explicit arguments, so the policy itself needs no patching at all.
+WHY SOME TESTS MONKEYPATCH THE CONSTANTS — and why fewer of them need to now.
+`SCHEMA_VERSION` was 1, and 1 being the first version there is meant no real on-disk index
+could be OLDER than the build, so the older-index half of the policy had no real-data
+instance and the constants were the seam that let it be proven early.
+
+G-4 spent that seam for real: the FTS rebuild (`detail=none` -> `detail=full`) cannot be
+applied in place, so `SCHEMA_VERSION` is 2, `_ADDITIVE_FROM` stays EMPTY, and a version-1
+index — which is every index in existence before G-4 — now genuinely reports that a rebuild
+is required. `test_a_real_pre_G4_index_is_REFUSED_with_a_rebuild_instruction` exercises that
+with no patching at all. The MIGRATE branch is still hypothetical (nothing additive has
+shipped yet) and still needs its patch.
+
+The pure verdict function is tested directly with explicit arguments, so the policy itself
+needs no patching in any case.
 """
 import hashlib
 import pathlib
@@ -72,14 +80,29 @@ def _set_marker(conn, value):
 
 
 def _premarker_index(path):
-    """An index built the way every index that exists TODAY was built: full schema,
-    real data, and NO marker table at all. Built with the current `init_index` and
-    then stripped, because that is the only way to produce the pre-marker shape from
-    a build that always stamps."""
+    """An index built the way every index that existed before G-4 was built: no marker
+    table, a `detail=none` contentless FTS, and no `conversation_bodies`.
+
+    IT REALLY IS THE OLD SHAPE, not just the current shape with the marker stripped. That
+    shortcut was what this fixture did while `SCHEMA_VERSION` was 1 and it was harmless
+    then, because the only thing under test was the absent marker. It stopped being
+    harmless the moment version 1 acquired a MEANING: an index that carries the new FTS and
+    the new bodies table but no marker is a version-2 index that lost its stamp, which is a
+    different situation from the one every real user has. Reverting the two G-4 changes here
+    keeps the fixture honest about what is on those users' disks.
+    """
     conn = sqlite3.connect(path)
     corpus.init_index(conn)
     _populate(conn)
-    conn.executescript("DROP TABLE schema_meta")
+    conn.executescript(
+        "DROP TABLE schema_meta;\n"
+        "DROP TABLE conversation_bodies;\n"
+        "DROP TABLE conversations_fts;\n"
+        "CREATE VIRTUAL TABLE conversations_fts USING fts5("
+        "title, body, content='', detail=none);")
+    conn.execute("INSERT INTO conversations_fts(rowid, title, body) "
+                 "SELECT rowid, title, 'alpha bravo' FROM conversations")
+    conn.commit()
     conn.close()
 
 
@@ -88,9 +111,14 @@ def _premarker_index(path):
 def test_the_shipped_version_constants_are_todays_truth():
     """Documents the state the older-index branches are measured against: version 1
     is the first version, so there is nothing to migrate FROM yet."""
-    assert corpus.SCHEMA_VERSION == 1
-    assert corpus.UNSTAMPED_VERSION == 1
-    assert corpus._ADDITIVE_FROM == frozenset()
+    assert corpus.SCHEMA_VERSION == 2, "G-4 rebuilt the FTS table, which is not additive"
+    assert corpus.UNSTAMPED_VERSION == 1, (
+        "an UNMARKED index is still a 1 and must stay a 1 — this is exactly the constant "
+        "whose separateness from SCHEMA_VERSION stops a version bump from skipping a real "
+        "migration, and the bump to 2 is the first time that mattered")
+    assert corpus._ADDITIVE_FROM == frozenset(), (
+        "recreating a virtual table is not additive, so version 1 may NOT be migrated in "
+        "place — it has to be reported as needing a rebuild")
     assert corpus.SCHEMA_VERSION_KEY == "schema_version"
 
 
@@ -149,6 +177,34 @@ def test_the_stamp_is_COMMITTED_so_it_survives_a_reconnect(tmp_path):
     assert corpus.read_schema_version(fresh) == corpus.SCHEMA_VERSION
 
 
+def test_a_BRAND_NEW_database_is_not_mistaken_for_a_version_one_index(tmp_path):
+    """A LATENT DEFECT THAT ONLY EXISTS ABOVE VERSION 1, and the bump to 2 is what exposed
+    it: creating an index stopped working entirely.
+
+    `check_schema_version` read an absent marker as `UNSTAMPED_VERSION` (1) unconditionally.
+    That is right for an index built before the marker existed and WRONG for an empty file
+    that is about to BECOME an index — and while `SCHEMA_VERSION` was also 1 the two were
+    indistinguishable, so the verdict came out "ok" either way and nothing was ever wrong.
+    At `SCHEMA_VERSION` 2 the same read makes a fresh `sqlite3.connect(...)` report as a
+    version-1 index and `init_index` refuses it with `IndexRebuildRequired` — asking the user
+    to rebuild an index that does not exist yet. Measured: 432 tests failed on the bump, all
+    of them at `open_index`, none of them about the FTS change that motivated it.
+
+    The fix is the missing half of the distinction: an absent marker means version
+    `UNSTAMPED_VERSION` only when the database ALREADY HOLDS an index. So the presence of
+    `conversations` is the second signal, and this test covers both directions — a bare
+    database is created, and one holding an index without a marker is still refused
+    (`test_a_real_pre_G4_index_is_REFUSED_with_a_rebuild_instruction`).
+    """
+    conn = _track(corpus.open_index(str(tmp_path / "brand-new.sqlite")))
+    assert corpus.read_schema_version(conn) == corpus.SCHEMA_VERSION
+    assert conn.execute(
+        "SELECT count(*) FROM conversations").fetchone()[0] == 0
+    # and in-memory, which is what most of the suite and every ad-hoc reader uses
+    assert corpus.read_schema_version(
+        _track(corpus.init_index(sqlite3.connect(":memory:")))) == corpus.SCHEMA_VERSION
+
+
 def test_read_returns_none_when_the_marker_table_is_absent():
     """A bare database is not an error — "no marker" is a legitimate answer, and it is
     what every index built before this change reports."""
@@ -171,23 +227,52 @@ def test_an_unreadable_marker_is_refused_rather_than_guessed():
 
 # ------------------------------------------- an index that predates the marker
 
-def test_a_premarker_index_still_reads(tmp_path):
-    """THE compatibility proof: an index built WITHOUT the marker opens, and every
-    conversation and thread in it is still there afterwards."""
+def test_a_real_pre_G4_index_is_REFUSED_with_a_rebuild_instruction(tmp_path):
+    """THE behaviour change G-4 buys, and the price it charges.
+
+    This test previously asserted the OPPOSITE — that a pre-marker index simply opens and is
+    stamped as version 1 — and it was right to, because at `SCHEMA_VERSION` 1 there was no
+    difference between an unmarked index and a current one. G-4 rebuilds the FTS table, which
+    `IF NOT EXISTS` cannot patch up (the option set of a virtual table is fixed at create
+    time), so version 1 is now genuinely a DIFFERENT shape and opening it would half-read it:
+    the schema apply would leave the old `detail=none` table in place while every new query
+    assumed positions were available.
+
+    So it is refused, by name, with both versions in the message. Recorded rather than
+    quietly re-pointed, because "every existing index must be rebuilt once" is a real cost to
+    a real user and the reason for it should not have to be reconstructed from a diff.
+    """
     path = str(tmp_path / "old.sqlite")
     _premarker_index(path)
 
-    conn = _track(corpus.open_index(path))
+    conn = _track(sqlite3.connect(path))
+    with pytest.raises(corpus.IndexRebuildRequired) as exc:
+        corpus.init_index(conn)
+    message = str(exc.value)
+    assert "1" in message and str(corpus.SCHEMA_VERSION) in message
+    assert "rebuilt" in message.lower(), "says what the user has to DO"
 
-    assert [r["conversation_id"] for r in corpus.search(conn, "bravo")] == ["c1"]
-    assert sorted(corpus.load_corpus(conn).threads) == ["t1"]
 
-
-def test_a_premarker_index_is_stamped_as_version_one_on_open(tmp_path):
+def test_the_refused_pre_G4_index_is_left_completely_alone(tmp_path):
+    """A rebuild is REPORTED, never started. The old index keeps its rows, its old FTS
+    table, and its absent marker, so the user can export or open it with the older build
+    first. The file is compared by HASH, which also covers the `journal_mode` header the
+    refusal deliberately runs ahead of."""
     path = str(tmp_path / "old.sqlite")
     _premarker_index(path)
-    conn = _track(corpus.open_index(path))
-    assert corpus.read_schema_version(conn) == 1
+    before = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+    conn = sqlite3.connect(path)
+    with pytest.raises(corpus.IndexRebuildRequired):
+        corpus.init_index(conn)
+    conn.close()
+
+    assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() == before
+    check = _track(sqlite3.connect(path))
+    assert check.execute("SELECT count(*) FROM conversations").fetchone()[0] == 1
+    assert corpus.read_schema_version(check) is None, "not stamped"
+    assert "detail=none" in check.execute(
+        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
 
 
 #: Every INSERT a `_SpyConn` saw aimed at `schema_meta`. A module-level list because
