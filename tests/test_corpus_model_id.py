@@ -52,7 +52,7 @@ whichever unit adds a `conversation.model` RPC and finds out whether one string 
 conversation is enough.
 
 DISTINCT FROM `threads.model_provider`, which is the VENDOR — measured 'openai' on 92.8% of
-real Codex rollouts and never a model name (`corpus.py:72-76`).
+real Codex rollouts and never a model name (`corpus.py:73-76`).
 `test_the_model_id_is_not_the_vendor_in_threads` keeps the two from being conflated again.
 
 THESE TESTS WERE MUTATION-CHECKED, because a green suite is not evidence that it protects a
@@ -312,7 +312,7 @@ def test_the_recorded_model_is_queryable_by_plain_SQL():
 
 def test_the_model_id_is_not_the_vendor_in_threads():
     """`threads.model_provider` is the VENDOR ('openai' on 92.8% of measured Codex rollouts)
-    and is explicitly NOT a model name (`corpus.py:72-76`). Conflating them is what made
+    and is explicitly NOT a model name (`corpus.py:73-76`). Conflating them is what made
     every Codex node render as the palette's unknown grey, so the two facts are asserted to
     live in different tables with different values."""
     conn = _open()
