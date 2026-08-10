@@ -1383,10 +1383,16 @@ export function createMockIpc(
       return nodes.slice(offset, offset + limit);
     },
 
-    async graphChildren(threadId: string): Promise<ThreadNode[]> {
-      return graph.childrenOf(threadId).map((id) => graph.node(id));
-    },
-
+    // NO `graphChildren` / `graphAncestors` HERE — DECISION G-17 removed both from the
+    // contract, because nothing in the app ever called either.
+    //
+    // `MockGraph.childrenOf` and `.collectAncestors` both STAY, for different reasons.
+    // `childrenOf` has real internal callers (`fanOut`, `collectSubtree`, `rollup`).
+    // `collectAncestors` is now reached only from `mock.test.ts`, and is kept DELIBERATELY:
+    // it is the only implementation of the shared-ancestor BFS dedup, whose property (a
+    // node above two parents is listed ONCE, nearest first — engine parity with
+    // `_collect_ancestors`) is a real mock-fidelity check. That test calls it directly now,
+    // the same way the `childrenOf`/`depth`/`fanOut` fixture test already does.
     async graphSubtree(threadId: string, depth?: number): Promise<Subtree> {
       const ids = graph.collectSubtree(threadId, depth);
       const idset = new Set(ids);
@@ -1394,10 +1400,6 @@ export function createMockIpc(
         nodes: ids.map((id) => graph.node(id)),
         edges: graph.edgesWithin(idset),
       };
-    },
-
-    async graphAncestors(threadId: string): Promise<ThreadNode[]> {
-      return graph.collectAncestors(threadId).map((id) => graph.node(id));
     },
 
     async searchQuery(params: SearchParams): Promise<SearchResult> {

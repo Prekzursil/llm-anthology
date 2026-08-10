@@ -11,13 +11,13 @@
  * WHAT THIS ADDS OVER `index.test.ts`. That file already asserts the RPC -> command rule for
  * the ELEVEN metadata/dedup/maintenance bindings. Three things were still unasserted:
  *
- *   1. the other TWENTY methods — names, `{ params }` wrapping, and the by-name exceptions;
+ *   1. the other EIGHTEEN methods — names, `{ params }` wrapping, and the by-name exceptions;
  *   2. whether a command real.ts invokes is REGISTERED in Rust at all. `lib.rs:232` says
  *      "`invoke_handler` is equally invisible": a perfectly rule-abiding name that nobody
  *      added to `generate_handler!` fails exactly like a typo. Nothing checked that;
  *   3. that results pass through unreshaped and rejections propagate.
  *
- * HOW THE NAMES ARE CHECKED WITHOUT CIRCULARITY. Transcribing 31 command names out of
+ * HOW THE NAMES ARE CHECKED WITHOUT CIRCULARITY. Transcribing 29 command names out of
  * `real.ts` into a table would faithfully reproduce a typo and call it verified. So instead
  * each row carries the RPC method the ENGINE dispatches (`llm_anthology/sidecar.py`'s handler
  * map) and the expected command is DERIVED from it by the pinned rule `a.b` -> `a_b`; and,
@@ -148,20 +148,10 @@ const BINDINGS: Record<string, Binding> = {
     call: () => realIpc.graphRoots({ limit: 5, offset: 10, order: "recent" }),
     args: { params: { limit: 5, offset: 10, order: "recent" } },
   },
-  graphChildren: {
-    rpc: "graph.children",
-    call: () => realIpc.graphChildren("t-1"),
-    args: { params: { thread_id: "t-1" } },
-  },
   graphSubtree: {
     rpc: "graph.subtree",
     call: () => realIpc.graphSubtree("t-1", 3),
     args: { params: { thread_id: "t-1", depth: 3 } },
-  },
-  graphAncestors: {
-    rpc: "graph.ancestors",
-    call: () => realIpc.graphAncestors("t-1"),
-    args: { params: { thread_id: "t-1" } },
   },
   searchQuery: {
     rpc: "search.query",
@@ -325,8 +315,31 @@ describe("real adapter binding table", () => {
     expect(Object.keys(BINDINGS).sort()).toEqual(methodsOf(realIpc));
   });
 
-  it("covers all 31 bindings", () => {
-    expect(Object.keys(BINDINGS)).toHaveLength(31);
+  it("covers all 29 bindings", () => {
+    expect(Object.keys(BINDINGS)).toHaveLength(29);
+  });
+
+  // -- DECISION G-17 ----------------------------------------------------------------
+  //
+  // `graphChildren` and `graphAncestors` are GONE from the IPC surface. Both had zero
+  // production callers: no panel, no view and no `app.ts` path ever asked for a node's
+  // direct children or its ancestor chain, because the graph pane renders from
+  // `graphRoots` + `graphSubtree` and the reader walks `threadGet`. They were contract
+  // surface built ahead of a consumer that never arrived.
+  //
+  // An absence assertion rather than a silent deletion, because the pair is easy to
+  // re-add reflexively — `graph.children` and `graph.ancestors` still exist on the
+  // engine AND still have registered Tauri commands (the Rust
+  // `every_engine_rpc_has_a_registered_tauri_command` gate requires that, since the
+  // engine serves them), so nothing else in the stack objects to a new binding.
+  //
+  // Re-adding one is fine; do it WITH the caller, and delete this test in the same
+  // change so the next reader is not told a fixed fact that stopped being true.
+  it("has no binding for the two graph walks G-17 removed", () => {
+    expect(Object.keys(BINDINGS)).not.toContain("graphChildren");
+    expect(Object.keys(BINDINGS)).not.toContain("graphAncestors");
+    expect(methodsOf(realIpc)).not.toContain("graphChildren");
+    expect(methodsOf(realIpc)).not.toContain("graphAncestors");
   });
 });
 
@@ -342,15 +355,24 @@ describe("every method invokes the command Rust registers", () => {
       await binding.call();
       used.push(invokeMock.mock.calls[0][0]);
     }
-    expect(used).toHaveLength(31);
+    expect(used).toHaveLength(29);
     const unregistered = used.filter((command) => !registered.includes(command));
     expect(unregistered).toEqual([]);
   });
 
-  it("leaves `app_info` as the ONLY registered command the adapter never calls", async () => {
-    // Pinned deliberately rather than left to drift: `app_info` is local Rust state
-    // (`lib.rs:17-21`) with no place on the data surface. If a future command is registered
-    // and never bound, this says so instead of the omission being invisible.
+  it("pins the three registered commands the adapter never calls", async () => {
+    // Pinned deliberately rather than left to drift. If a future command is registered and
+    // never bound, this says so instead of the omission being invisible.
+    //
+    //   * `app_info` — local Rust state (`lib.rs:17-21`) with no place on the data surface.
+    //   * `graph_children`, `graph_ancestors` — DECISION G-17 removed the two IPC methods
+    //     for having no caller, but the COMMANDS stay registered because the engine still
+    //     serves `graph.children` / `graph.ancestors`, and the Rust
+    //     `every_engine_rpc_has_a_registered_tauri_command` gate requires a command for
+    //     every RPC the engine serves. So the dead end is one layer lower than it was, and
+    //     this list is where that is recorded rather than left for someone to rediscover.
+    //     Fully retiring them means deleting the engine RPCs too — a bigger decision than
+    //     dropping an unused TS method, and not this change.
     const used = new Set<string>();
     for (const binding of Object.values(BINDINGS)) {
       invokeMock.mockClear();
@@ -358,7 +380,7 @@ describe("every method invokes the command Rust registers", () => {
       used.add(invokeMock.mock.calls[0][0]);
     }
     const unused = rustRegisteredCommands().filter((command) => !used.has(command));
-    expect(unused).toEqual(["app_info"]);
+    expect(unused.sort()).toEqual(["app_info", "graph_ancestors", "graph_children"]);
   });
 });
 
@@ -381,9 +403,9 @@ describe("per-method command name and arguments", () => {
 });
 
 describe("the naming rule, and its two verified exceptions", () => {
-  it("derives 28 of the 31 command names from the RPC method by the rule", () => {
+  it("derives 26 of the 29 command names from the RPC method by the rule", () => {
     const byRule = Object.values(BINDINGS).filter((b) => b.exception === undefined);
-    expect(byRule).toHaveLength(28);
+    expect(byRule).toHaveLength(26);
     for (const binding of byRule) {
       expect(binding.rpc).not.toBeNull();
       // Both halves of `a.b` survive: a rule of "take the tail" would also produce a

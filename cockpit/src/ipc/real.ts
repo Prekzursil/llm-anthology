@@ -109,16 +109,10 @@ export const realIpc: IpcClient = {
   graphRoots(params: RootsParams = {}): Promise<ThreadNode[]> {
     return cmd<ThreadNode[]>("graph_roots", params);
   },
-  graphChildren(threadId: string): Promise<ThreadNode[]> {
-    return cmd<ThreadNode[]>("graph_children", { thread_id: threadId });
-  },
   graphSubtree(threadId: string, depth?: number): Promise<Subtree> {
     const params: Record<string, unknown> = { thread_id: threadId };
     if (depth !== undefined) params.depth = depth;
     return cmd<Subtree>("graph_subtree", params);
-  },
-  graphAncestors(threadId: string): Promise<ThreadNode[]> {
-    return cmd<ThreadNode[]>("graph_ancestors", { thread_id: threadId });
   },
   searchQuery(params: SearchParams): Promise<SearchResult> {
     return cmd<SearchResult>("search_query", params);

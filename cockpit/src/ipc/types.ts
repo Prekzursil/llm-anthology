@@ -946,9 +946,12 @@ export interface IpcClient {
   healthPing(): Promise<HealthInfo>;
   corpusStats(): Promise<CorpusStats>;
   graphRoots(params?: RootsParams): Promise<ThreadNode[]>;
-  graphChildren(threadId: string): Promise<ThreadNode[]>;
   graphSubtree(threadId: string, depth?: number): Promise<Subtree>;
-  graphAncestors(threadId: string): Promise<ThreadNode[]>;
+  // NOT BOUND (DECISION G-17): `graph.children` and `graph.ancestors`. The engine serves
+  // both and Rust registers both commands, but no panel, view or `app.ts` path ever asked
+  // for a node's direct children or its ancestor chain — the graph pane renders from
+  // `graphRoots` + `graphSubtree`, and the reader walks `threadGet`. Declaring them here
+  // obliged both adapters to carry a method nothing called. Re-add WITH the caller.
   searchQuery(params: SearchParams): Promise<SearchResult>;
   threadGet(threadId: string): Promise<ThreadMeta>;
   conversationGet(id: string): Promise<Conversation>;

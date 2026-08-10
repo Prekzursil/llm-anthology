@@ -270,15 +270,15 @@ describe("mockIpc IpcClient contract", () => {
     }
   });
 
-  it("graph.children and graph.ancestors walk the edges", async () => {
-    expect((await mockIpc.graphChildren("pruned-parent")).map((n) => n.id)).toEqual([
-      "orphan",
-    ]);
-    expect((await mockIpc.graphAncestors("deepfix")).map((n) => n.id)).toEqual([
-      "layout",
-      "plan",
-      "orch",
-    ]);
+  // DECISION G-17: the mock no longer answers `graph.children` / `graph.ancestors`,
+  // because the IPC contract no longer declares them — nothing in the app ever called
+  // either one. Asserted rather than just deleted: the mock is the surface a dev sees in
+  // a browser, so a method reappearing HERE with no contract entry would make a preview
+  // pane look wired while `real.ts` had no route at all. That mock/real divergence is the
+  // exact failure `ipc/index.ts` documents.
+  it("does not answer the two graph walks G-17 removed", () => {
+    expect("graphChildren" in mockIpc).toBe(false);
+    expect("graphAncestors" in mockIpc).toBe(false);
   });
 
   it("search.query matches titles/previews and filters by provider", async () => {
@@ -360,9 +360,13 @@ describe("graph.rollup (mirrors llm_anthology/rollup.py over the forest)", () =>
     expect(Object.keys(table).sort()).toEqual([...FOREST_NODE_IDS].sort());
     for (const id of FOREST_NODE_IDS) {
       expect(table[id].self_count).toBe(1);
-      // child_count is the direct out-degree — cross-checked against graph.children.
-      const kids = await mockIpc.graphChildren(id);
-      expect(table[id].child_count).toBe(kids.length);
+      // child_count is the direct out-degree, cross-checked against the raw edge fixture.
+      // This used to go through `graph.children` (removed by DECISION G-17) — counting
+      // MOCK_EDGES is the STRONGER check anyway: `graphChildren` and `graphRollup` both
+      // derived from the same `MockGraph`, so agreeing proved only that one class was
+      // self-consistent. The fixture is an independent signal.
+      const outDegree = MOCK_EDGES.filter((e) => e.parent === id).length;
+      expect(table[id].child_count).toBe(outDegree);
       expect(table[id].subtree_tokens).toBeGreaterThanOrEqual(table[id].self_tokens);
       expect(table[id].subtree_count).toBeGreaterThanOrEqual(1);
     }
@@ -1732,11 +1736,16 @@ describe("MockGraph walks not otherwise exercised", () => {
     expect((await mockIpc.graphSubtree("orch")).nodes.map((n) => n.id)).toContain("deepfix");
   });
 
-  it("graph.ancestors reports a shared ancestor ONCE, nearest first", async () => {
+  it("the ancestor walk reports a shared ancestor ONCE, nearest first", () => {
     // `review` is reached from three parents and `repro` sits above two of them, so an
     // un-deduped BFS would list it twice and a panel would draw the same thread as two
     // ancestors (`_collect_ancestors`, `sidecar.py:1689-1698`).
-    const anc = (await mockIpc.graphAncestors("review")).map((n) => n.id);
+    //
+    // Driven through `MockGraph.collectAncestors` rather than an IPC method: DECISION G-17
+    // removed `graphAncestors` from the contract (no caller), but the BFS-dedup property is
+    // engine-parity behaviour worth keeping under test, and this is its only implementation.
+    // Same shape as the `childrenOf`/`depth`/`fanOut` fixture test above.
+    const anc = new MockGraph(MOCK_THREADS, MOCK_EDGES).collectAncestors("review");
     expect(anc).toEqual([
       "crosscheck", "bisect", "orphan", // the direct parents, in edge order
       "repro", "real", "pruned-parent", // their parents
