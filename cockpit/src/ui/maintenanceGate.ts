@@ -68,8 +68,14 @@ export interface MaintenanceGateOptions {
    * Never on construction: `app.ts` builds this in its own constructor, so a callback fired
    * there would run against half-initialised fields and would be indistinguishable, to any
    * listener, from the user having asked for the plane.
+   *
+   * REQUIRED, not optional, and that is a safety choice rather than a coverage one. Hiding the
+   * button is only half of a revocation — the other half is closing the pane if it is currently
+   * open, which only the caller can do. An optional callback invites a caller that omits it and
+   * leaves the whole destructive form live in the workspace region after the flag was turned
+   * off, which is the exact opposite of gating it.
    */
-  onChange?: (enabled: boolean) => void;
+  onChange: (enabled: boolean) => void;
   /** Defaults to the real `localStorage`-backed flag. */
   flag?: FeatureFlag;
 }
@@ -84,7 +90,7 @@ export class MaintenanceGate {
   constructor(options: MaintenanceGateOptions) {
     this.flag = options.flag ?? localFeatureFlag();
     this.button = options.button;
-    this.onChange = options.onChange ?? ((): void => {});
+    this.onChange = options.onChange;
 
     const label = document.createElement("label");
     label.className = "feature-toggle";

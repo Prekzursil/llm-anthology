@@ -38,8 +38,14 @@ export const MAINTENANCE_FLAG_KEY = "cockpit.features.maintenance";
  * The value written for ON. `"1"` rather than `"true"` for no deep reason — it is short and
  * unambiguous — but it is written in ONE place and read back through {@link parseFeatureFlag},
  * so the two can never disagree.
+ *
+ * There is deliberately no counterpart for OFF. Off is stored as ABSENCE of the key (see
+ * {@link makeFeatureFlag}), so a `serializeFeatureFlag(false)` would be a second representation
+ * of off that nothing writes and everything would have to keep parsing forever. Exported
+ * because the probes in `cockpit/tools/` have to write it (see this module's header) and should
+ * not retype it.
  */
-const ON_TOKEN = "1";
+export const FEATURE_ON_TOKEN = "1";
 
 /**
  * Spellings accepted as ON, compared lowercased and trimmed.
@@ -49,17 +55,12 @@ const ON_TOKEN = "1";
  * nothing happen concludes the switch is broken rather than that they mistyped. Every OTHER
  * value — including `"0"`, `"false"`, `"off"` and anything corrupt — is OFF.
  */
-const ON_SPELLINGS: ReadonlySet<string> = new Set([ON_TOKEN, "true", "on", "yes"]);
+const ON_SPELLINGS: ReadonlySet<string> = new Set([FEATURE_ON_TOKEN, "true", "on", "yes"]);
 
 /** A stored value -> whether the feature is on. Anything unrecognised is OFF. */
 export function parseFeatureFlag(raw: string | null): boolean {
   if (raw === null) return false;
   return ON_SPELLINGS.has(raw.trim().toLowerCase());
-}
-
-/** The value to store for `on`. Only meaningful for `true`; OFF is stored as ABSENCE. */
-export function serializeFeatureFlag(on: boolean): string {
-  return on ? ON_TOKEN : "";
 }
 
 /** One opt-in feature, readable and settable. */
@@ -98,7 +99,7 @@ export function makeFeatureFlag(
     set(on: boolean): void {
       if (storage === null) return;
       try {
-        if (on) storage.setItem(key, serializeFeatureFlag(true));
+        if (on) storage.setItem(key, FEATURE_ON_TOKEN);
         else storage.removeItem(key);
       } catch {
         // Persisting is best-effort. It must never throw out of a click handler, and the
