@@ -210,6 +210,25 @@ def _scrub_conversation(conv):
 
 # ------------------------------------------------------- G-6 shareable projection
 
+def export_graph(corpus, *, mode=MODE_FULL, home=None):
+    """The corpus AS AN ARTIFACT OF `mode` WOULD CARRY IT: hidden-unicode sanitized, then
+    mode-projected. Nothing is written and the input is not mutated.
+
+    The ONE definition of "what an export of this mode contains", shared by the real write
+    (:func:`export_with_gate`), the credential warning (:func:`scan_for_export`) and the
+    dry-run tally in the sidecar's ``export.plan``. Two copies of that answer would drift,
+    and the failure mode is a preview that disagrees with the file the user then gets.
+
+    Raises ExportModeError on an unknown mode — fail closed, so a caller that asked for
+    something it believed was a privacy mode is never handed archive-of-record bytes.
+    """
+    if mode not in EXPORT_MODES:
+        raise ExportModeError("unknown export mode %r (expected one of %s)"
+                              % (mode, ", ".join(EXPORT_MODES)))
+    clean = _sanitize_corpus(corpus)
+    return _project_shareable(clean, home=home) if mode == MODE_SHAREABLE else clean
+
+
 def _project_shareable(corpus, home=None):
     """A NEW Corpus projected for SHAREABLE mode: every node through
     `redact.shareable_thread` (preview dropped, cwd/rollout_path relativized to `~`,
@@ -252,6 +271,32 @@ def _graph_findings(corpus):
         out += _located(redact.scan_credential_shapes(e.status), "edge",
                         "%s->%s" % (e.parent_thread_id, e.child_thread_id), "status")
     return out
+
+
+def _credential_scan(findings, scrubbed):
+    """The G-5 warning block. `coverage_limit` is unconditional — see the module docstring:
+    the sentence is the feature, and a findings list without it invites "clean == safe"."""
+    return {
+        "findings": _sorted_findings(findings),
+        "coverage_limit": redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+        "scrubbed": bool(scrubbed),
+    }
+
+
+def scan_for_export(corpus, *, mode=MODE_FULL, home=None):
+    """The credential-shape warning for the graph a `mode` export WOULD write — computed
+    WITHOUT writing anything, for a dry run (``export.plan``).
+
+    Identical shape to ``export_with_gate``'s ``report["credential_scan"]`` and built by
+    the same code over the same :func:`export_graph` projection, so the pre-write warning
+    and the post-write report cannot disagree. `scrubbed` is False because a dry run
+    changes nothing by definition.
+
+    A dry run is where this warning is most useful: it is the only point at which the user
+    can still choose a different mode, or opt into a scrub, BEFORE the bytes land.
+    """
+    return _credential_scan(
+        _graph_findings(export_graph(corpus, mode=mode, home=home)), False)
 
 
 # --------------------------------------------------------------- path safety
@@ -354,15 +399,10 @@ def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
         See llm_anthology.redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT.
     A finding never blocks the write; only the two fidelity gates do.
     """
-    if mode not in EXPORT_MODES:
-        raise ExportModeError("unknown export mode %r (expected one of %s)"
-                              % (mode, ", ".join(EXPORT_MODES)))
+    clean = export_graph(corpus, mode=mode, home=home)   # validates `mode`, fails closed
     if root is None:
         root = Path.cwd()
     target = _confined_target(dest_path, root)
-    clean = _sanitize_corpus(corpus)
-    if mode == MODE_SHAREABLE:
-        clean = _project_shareable(clean, home=home)
 
     findings = _graph_findings(clean)
 
@@ -398,11 +438,7 @@ def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
                     "edges": graph_diff.removed_edges},
         "changed": graph_diff.changed_nodes,
         "missing_tokens": missing,
-        "credential_scan": {
-            "findings": _sorted_findings(findings),
-            "coverage_limit": redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT,
-            "scrubbed": bool(scrub),
-        },
+        "credential_scan": _credential_scan(findings, scrub),
     }
     if graph_diff.is_empty() and not missing:
         _write_artifact(target, serialize_graph(clean), conv_out, mode)

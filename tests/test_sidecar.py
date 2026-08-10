@@ -738,8 +738,16 @@ def test_export_plan_dry_run_tally():
     # conversation Σ(char_count), which nothing writes. This keeps the preview honest and
     # matching the file run.
     assert plan["conversation_count"] == 0
-    assert plan["est_bytes"] == len(
-        sidecar.export.serialize_graph(srv.corpus).encode("utf-8"))
+    # Measured on THE GRAPH THAT MODE WRITES (`export.export_graph` = sanitize, then apply
+    # the G-6 mode projection), not on the raw in-memory corpus. The raw form counts the
+    # hidden-unicode bytes that sanitization strips before the write — measured 1989 raw vs
+    # 1977 written on this fixture — so the old expression overstated the artifact by 12
+    # bytes here and would have overstated a `mode="shareable"` artifact by every dropped
+    # `preview` excerpt. Both sides now call the same function the write calls.
+    assert plan["est_bytes"] == len(sidecar.export.serialize_graph(
+        sidecar.export.export_graph(srv.corpus)).encode("utf-8"))
+    assert plan["est_bytes"] < len(
+        sidecar.export.serialize_graph(srv.corpus).encode("utf-8"))   # hidden chars gone
     assert plan["est_bytes"] > 0
 
 

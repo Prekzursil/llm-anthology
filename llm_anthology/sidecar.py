@@ -93,16 +93,28 @@ Method status (all implemented; honest caveats inline)
                          child_count/depth are computed OVER THE SNAPSHOT, so the moment is
                          internally coherent (a node's fan-out matches its visible edges).
 * ``export.plan``      — FULL. A dry-run tally ``{node_count, edge_count,
-                         conversation_count, est_bytes}`` of what ``export.run`` ACTUALLY
-                         writes — the GRAPH only, so ``conversation_count`` is 0 and
-                         ``est_bytes`` is the serialized graph's byte size (NOT a transcript
+                         conversation_count, est_bytes, mode, credential_scan}`` of what
+                         ``export.run`` ACTUALLY writes — the GRAPH only, so
+                         ``conversation_count`` is 0 and ``est_bytes`` is the serialized
+                         graph's byte size for the REQUESTED ``mode`` (NOT a transcript
                          Σ char_count that this bite never bundles). No filesystem access.
+                         This is the PRE-WRITE warning surface (G-5): ``credential_scan``
+                         carries the credential-shape findings for the artifact that mode
+                         would write, plus the coverage-limit sentence saying the scan
+                         matches SHAPES only and is blind to personal and medical content —
+                         so an empty findings list is not a safety verdict.
 * ``export.run``       — FULL. Writes the spawn-graph artifact to a drive-absolute-local
                          ``dest_path`` (UNC/network + relative + parent-traversal rejected)
-                         and returns ``{ok, graph_gate, transcript_gate, written_path?}``,
-                         gate-enforced by ``llm_anthology.export.export_with_gate``. This bite
-                         exports the GRAPH only (the sidecar holds no rendered transcripts),
-                         so ``transcript_gate`` is vacuously true.
+                         and returns ``{ok, graph_gate, transcript_gate, mode,
+                         credential_scan, written_path?}``, gate-enforced by
+                         ``llm_anthology.export.export_with_gate``. This bite exports the
+                         GRAPH only (the sidecar holds no rendered transcripts), so
+                         ``transcript_gate`` is vacuously true. Optional ``mode``
+                         (``"full"`` default | ``"shareable"`` — G-6: drop the ``preview``
+                         excerpt, relativize ``cwd``/``rollout_path`` to ``~``, keep
+                         structure/title/repo/branch) and optional ``scrub`` (bool, default
+                         False — G-5: warn only, never silently mutate). Both fail closed at
+                         -32602 on an unrecognized value.
 * ``search.query``     — FULL match / paging / D-3 facets. ``provider``, ``since`` and
                          ``until`` narrow the set (dates are ``YYYY[-MM[-DD]]``, inclusive
                          at whatever width is given); ``histogram`` asks for a
@@ -1110,6 +1122,35 @@ class Sidecar:
         as_of = _req_int(params, "as_of_ms")
         return self._project_snapshot(timetravel.corpus_as_of(self.corpus, as_of))
 
+    def _export_mode(self, params):
+        """The optional G-6 ``mode`` param, validated against ``export.EXPORT_MODES``.
+
+        FAILS CLOSED on anything unrecognized — including ``""`` and ``null``. The
+        ``_opt_str`` convention of collapsing empty-to-unspecified is deliberately NOT used
+        here: for a privacy mode, a client bug that sent an empty string would otherwise be
+        answered with archive-of-record bytes while its user believed they had chosen the
+        shareable projection. Only an ABSENT ``mode`` defaults, and it defaults to FULL —
+        the mode that changes nothing.
+        """
+        if "mode" not in params:
+            return export.MODE_FULL
+        mode = params["mode"]
+        if mode not in export.EXPORT_MODES:
+            raise RpcError(-32602, "mode must be one of: %s"
+                                   % ", ".join(export.EXPORT_MODES))
+        return mode
+
+    def _export_scrub(self, params):
+        """The optional G-5 ``scrub`` opt-in. Absent -> False (warn only, touch nothing);
+        anything that is not a real boolean -> -32602 rather than a truthiness guess, since
+        the difference between the two values is whether the artifact gets modified."""
+        if "scrub" not in params:
+            return False
+        value = params["scrub"]
+        if not isinstance(value, bool):
+            raise RpcError(-32602, "scrub must be a boolean")
+        return value
+
     def _export_plan(self, params):
         """A dry-run tally of what ``export.run`` ACTUALLY writes — the spawn GRAPH only
         (this bite bundles NO transcripts, so ``export.run`` writes zero conversations and
@@ -1117,15 +1158,36 @@ class Sidecar:
         endpoints), spawn edges, ``conversation_count`` = 0 (none are written), and
         ``est_bytes`` = the serialized graph artifact's UTF-8 byte size — so the dry-run
         preview matches the file run instead of overstating a Σ(char_count) of transcripts
-        that never leave the index. No filesystem access; ints only, so no sanitization is
-        needed. [Wiring transcript bundling is a later bite; when it lands, this tally grows
-        the conversation_count/bytes it will then actually write — settle by mirroring
-        export.run's conversation set here.]"""
+        that never leave the index. No filesystem access. [Wiring transcript bundling is a
+        later bite; when it lands, this tally grows the conversation_count/bytes it will then
+        actually write — settle by mirroring export.run's conversation set here.]
+
+        THIS IS THE PRE-WRITE WARNING SURFACE (G-5). It carries ``credential_scan`` — the
+        credential-shape findings for the artifact this mode WOULD write, plus the
+        coverage-limit sentence that states what the scan cannot see (it matches credential
+        shapes and is blind to personal and medical content, so an empty findings list is
+        not a safety verdict). A dry run is the only moment the user can still choose a
+        different mode or opt into a scrub, so the warning has to exist here and not only in
+        the result of a write that already happened.
+
+        ``mode`` (optional, default FULL) selects the G-6 projection, and BOTH ``est_bytes``
+        and the scan are measured on that projection via ``export.export_graph`` — the same
+        function the write uses. A shareable preview therefore is not quoted at the size of
+        the full artifact (measured on the synthetic fixture: dropping `preview` alone is a
+        real reduction), and the estimate now also excludes the hidden-unicode bytes
+        sanitization strips (measured 1989 -> 1977 on the test corpus), which the earlier
+        raw-corpus estimate silently counted.
+        """
         self._require_corpus()
-        est_bytes = len(export.serialize_graph(self.corpus).encode("utf-8"))
+        mode = self._export_mode(params)
+        graph = export.export_graph(self.corpus, mode=mode)
         return {"node_count": len(self.corpus._nodes()),
                 "edge_count": len(self.corpus.edges),
-                "conversation_count": 0, "est_bytes": est_bytes}
+                "conversation_count": 0,
+                "est_bytes": len(export.serialize_graph(graph).encode("utf-8")),
+                "mode": mode,
+                "credential_scan": _sanitize_tree(
+                    export.scan_for_export(self.corpus, mode=mode))}
 
     def _export_run(self, params):
         """Write the spawn-graph export to ``dest_path`` and return the fidelity verdict.
@@ -1138,13 +1200,25 @@ class Sidecar:
         rendered transcripts — so ``transcript_gate`` is vacuously true: no conversation
         body is bundled, so none can be lost. [UNVERIFIED: bundling + per-conversation
         token gating is a later bite; settle by wiring conversation.get -> render_html ->
-        verify per row and passing the pairs to export_with_gate.]"""
+        verify per row and passing the pairs to export_with_gate.]
+
+        Two owner-locked privacy params, both defaulting to the behaviour that changes
+        nothing:
+          * ``mode`` (G-6) — FULL (default) writes every field; SHAREABLE drops the
+            ``preview`` excerpt and relativizes ``cwd``/``rollout_path`` to ``~``.
+          * ``scrub`` (G-5) — False (default) means the credential-shape scan WARNS and the
+            bytes are untouched; True opts into replacing each reported shape.
+        The result carries ``credential_scan`` either way, including its coverage limit.
+        A finding never blocks the write — only the fidelity gates do.
+        """
         self._require_corpus()
         dest_path = _req_str(params, "dest_path")
+        mode, scrub = self._export_mode(params), self._export_scrub(params)
         _reject_nonlocal_dest(dest_path)
         try:
             report = export.export_with_gate(
-                self.corpus, dest_path, root=os.path.dirname(dest_path))
+                self.corpus, dest_path, root=os.path.dirname(dest_path),
+                mode=mode, scrub=scrub)
         except export.ExportPathError as e:
             raise RpcError(-32602, "unsafe dest_path: %s" % e)
         return self._project_export_run(report)
@@ -1812,15 +1886,26 @@ class Sidecar:
 
     def _project_export_run(self, report):
         """export_with_gate's report -> the ExportResult DTO ``{ok, graph_gate,
-        transcript_gate, written_path?}``. ``graph_gate`` is the structural round-trip
-        verdict (no node/edge add/remove and no changed field); ``transcript_gate`` is
-        the token-fidelity verdict (no missing tokens); ``written_path`` is present only
-        on a successful write, and is sanitized like any wire string."""
+        transcript_gate, mode, credential_scan, written_path?}``. ``graph_gate`` is the
+        structural round-trip verdict (no node/edge add/remove and no changed field);
+        ``transcript_gate`` is the token-fidelity verdict (no missing tokens);
+        ``written_path`` is present only on a successful write, and is sanitized like any
+        wire string.
+
+        ``credential_scan`` is the G-5 warning — findings (each with scope/id/field/offset
+        and a masked preview), the always-present coverage limit, and whether a scrub was
+        applied. It is forwarded on FAILURE too: a blocked export is exactly when the user
+        is about to retry, and dropping the warning there would make them retry blind.
+        Every string in it goes through ``_sanitize_tree`` — defence in depth, since the
+        export sanitizes before it scans, so the wire projection does not depend on that.
+        """
         graph_gate = not (report["added"]["nodes"] or report["added"]["edges"]
                           or report["removed"]["nodes"] or report["removed"]["edges"]
                           or report["changed"])
         result = {"ok": report["ok"], "graph_gate": graph_gate,
-                  "transcript_gate": not report["missing_tokens"]}
+                  "transcript_gate": not report["missing_tokens"],
+                  "mode": report["mode"],
+                  "credential_scan": _sanitize_tree(report["credential_scan"])}
         if report["ok"]:
             result["written_path"] = _clean(report["path"])
         return result

@@ -367,6 +367,52 @@ def test_the_scan_describes_the_artifact_not_the_source_corpus(tmp_path):
     assert KEY_PROBE not in (tmp_path / "s.json").read_bytes().decode("utf-8")
 
 
+def test_a_key_smuggled_apart_by_hidden_unicode_is_still_found(tmp_path):
+    """ORDER IS LOAD-BEARING: sanitize FIRST, then scan. A zero-width char inside a key
+    breaks the shape match on the raw text, so a scanner that ran before the
+    hidden-unicode strip would report the corpus clean while writing the working key into
+    the artifact."""
+    smuggled = "sk-" + "\u200b" + "S" * 40      # a zero-width space splits the shape
+    assert redact.scan_credential_shapes(smuggled) == []       # invisible to a raw scan
+    report = export.export_with_gate(_corpus(threads=[_tm("t1", title=smuggled)]),
+                                     tmp_path / "g.json", root=tmp_path)
+    findings = report["credential_scan"]["findings"]
+    assert [f["shape"] for f in findings] == ["openai-api-key"]
+
+
+# ------------------------------------------- the dry-run preview shares one definition
+
+def test_scan_for_export_matches_the_real_run_and_never_writes(tmp_path):
+    """`scan_for_export` is the pre-write warning (the only moment the user can still
+    change their mind). It must agree with the report the write produces, so both are
+    computed from the same projection by the same code."""
+    c = _corpus(threads=[_tm("t1", title="key " + KEY_PROBE, preview=AWS_PROBE)])
+    dry = export.scan_for_export(c)
+    dest = tmp_path / "g.json"
+    wet = export.export_with_gate(c, dest, root=tmp_path)["credential_scan"]
+    assert dry == wet
+    assert dry["scrubbed"] is False
+    assert dry["coverage_limit"] == redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT
+
+    share = export.scan_for_export(c, mode=export.MODE_SHAREABLE, home=HOME)
+    assert [f["field"] for f in share["findings"]] == ["title"]   # preview never written
+
+
+def test_export_graph_is_the_single_definition_of_what_a_mode_writes(tmp_path):
+    dest = tmp_path / "share.json"
+    src = _rich()
+    export.export_with_gate(src, dest, root=tmp_path, mode=export.MODE_SHAREABLE,
+                            home=HOME)
+    projected = export.export_graph(src, mode=export.MODE_SHAREABLE, home=HOME)
+    assert export.serialize_graph(projected) == _artifact(dest)["graph"]
+    assert export.export_graph(src).threads["t1"].preview == MEDICAL   # FULL keeps it
+
+
+def test_export_graph_refuses_an_unknown_mode():
+    with pytest.raises(export.ExportModeError):
+        export.export_graph(_rich(), mode="anonymized")
+
+
 def test_shareable_and_scrub_compose(tmp_path):
     dest = tmp_path / "both.json"
     c = _corpus(threads=[_tm("t1", title="key " + KEY_PROBE, preview=MEDICAL,
