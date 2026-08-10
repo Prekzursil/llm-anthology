@@ -69,7 +69,20 @@ def _grok_session_dir(tmp_path):
 
 
 def _server(tmp_path, rows):
-    """A sidecar over an index holding one row per (id, provider, path)."""
+    """A sidecar over an index holding one row per (id, provider, path), with NO stored body.
+
+    WHY THE BODY IS DROPPED. Since G-4, `conversation.get` serves `conversation_bodies` and
+    re-parses `rollout_path` only when no body is stored, so an index with bodies never
+    reaches the parser this whole file is about. Dropping them puts the fixture in the state
+    the fall-back exists for — a pre-G-4 index — which is also the only state in which the
+    per-provider parser dispatch is observable through the RPC.
+
+    It is dropped rather than never written because `add_conversation` writes it
+    unconditionally and on purpose: an ingest that could be talked out of storing a body is
+    the defect G-4 fixed. The fixture is also not a shape a real ingest produces — its
+    synthetic one-turn records are deliberately unrelated to the rollout each row points at,
+    which is what lets a test tell "parsed the file" from "read the index".
+    """
     conn = corpus.open_index(":memory:")
     records = [ir.Conversation(id=cid, title=cid, provider=provider,
                                turns=[ir.Turn(role="human",
@@ -82,6 +95,7 @@ def _server(tmp_path, rows):
     for cid, _provider, path in rows:
         conn.execute("UPDATE conversations SET rollout_path=? WHERE conversation_id=?",
                      (path, cid))
+    conn.execute("DELETE FROM conversation_bodies")      # see the docstring
     return sidecar.Sidecar(conn), conn
 
 

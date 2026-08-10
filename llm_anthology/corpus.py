@@ -391,7 +391,7 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
     """
     if body is None:
         body = _conversation_body(conv)
-    set_conversation_body(conn, conv.id, conv.turns)
+    set_conversation_body(conn, conv.id, conv.turns, conv.meta)
     values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
               conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path)
     existing = conn.execute(
@@ -918,11 +918,20 @@ from . import archive, ir                                                # noqa:
 #: whole claim is self-containment. `test_text_bytes_equals_the_archives_own_decompressed_size`
 #: stops the two drifting apart.
 #:
+#: `meta` is `ir.Conversation.meta` as JSON, and it is a COLUMN rather than an extra frame so
+#: the archive keeps its one-frame-per-turn invariant (a header frame would make `frame(i)`
+#: mean turn i-1, which is the kind of off-by-one that only shows up in production). It is
+#: stored because it is part of the conversation: the adapters put `thread_id`, the parsed
+#: `rollout_path` and their hidden-character audit in there, so a reader served from the
+#: archive without it would silently answer with an emptier conversation than a re-parse did
+#: — the degraded-transcript failure this whole unit exists to avoid.
+#:
 #: Contains no literal `%`: `init_index` runs `%`-formatting over the concatenation.
 _BODIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation_bodies (
     conversation_id TEXT PRIMARY KEY,
     text_bytes      INTEGER NOT NULL DEFAULT 0,
+    meta            TEXT NOT NULL DEFAULT '{}',
     archive         BLOB NOT NULL
 );
 """
@@ -983,8 +992,9 @@ def encode_turns(turns):
         json.dumps(_turn_record(t), **_JSON) for t in turns)
 
 
-def set_conversation_body(conn, conversation_id, turns):
-    """Store `turns` as the archived body of `conversation_id`, replacing any previous one.
+def set_conversation_body(conn, conversation_id, turns, meta=None):
+    """Store `turns` (+ `meta`) as the archived body of `conversation_id`, replacing any
+    previous one.
 
     REPLACES rather than appends, because the ingest is authoritative — the same rule
     `set_conversation_rollouts` follows. A session that GREW must read back grown, and a
@@ -998,29 +1008,35 @@ def set_conversation_body(conn, conversation_id, turns):
     """
     blob = encode_turns(turns)
     conn.execute(
-        "INSERT OR REPLACE INTO conversation_bodies(conversation_id, text_bytes, archive) "
-        "VALUES (?,?,?)",
+        "INSERT OR REPLACE INTO conversation_bodies"
+        "(conversation_id, text_bytes, meta, archive) VALUES (?,?,?,?)",
         (conversation_id, archive.SeekableReader(blob).decompressed_size,
-         sqlite3.Binary(blob)))
+         json.dumps(meta or {}, **_JSON), sqlite3.Binary(blob)))
 
 
-def load_conversation_turns(conn, conversation_id):
-    """The archived turns of `conversation_id`, or None when no body is stored.
+def load_conversation_body(conn, conversation_id):
+    """The archived `(turns, meta)` of `conversation_id`, or None when no body is stored.
 
-    None vs `[]` IS THE WHOLE CONTRACT and the caller must not conflate them:
+    None vs `([], {})` IS THE WHOLE CONTRACT and the caller must not conflate them:
 
-      * `[]` — a body IS stored and the conversation genuinely has no turns.
+      * `([], {})` — a body IS stored and the conversation genuinely has no turns. A Codex
+        rollout carrying only a `session_meta` line parses to exactly that.
       * None — nothing is stored. Either the id is not in the index, or the index predates
         `conversation_bodies` (every index built before G-4). ONLY this answer may fall
         back to re-parsing the source file.
 
     Collapsing the two would make a legitimately-empty conversation re-open its rollout on
     every read, which is the behaviour this table exists to end.
+
+    ONE ROW READ, returning both halves, rather than a turns reader plus a meta reader. The
+    two facts live in the same row and every caller wants both, so splitting them would buy a
+    second query and an opportunity for the pair to disagree.
     """
     row = conn.execute(
-        "SELECT archive FROM conversation_bodies WHERE conversation_id=?",
+        "SELECT meta, archive FROM conversation_bodies WHERE conversation_id=?",
         (conversation_id,)).fetchone()
     if row is None:
         return None
-    return [_turn_from_record(json.loads(frame))
-            for frame in archive.SeekableReader(bytes(row[0]))]
+    turns = [_turn_from_record(json.loads(frame))
+             for frame in archive.SeekableReader(bytes(row[1]))]
+    return turns, json.loads(row[0])

@@ -124,6 +124,27 @@ def _text(dto):
     return " ".join(b["text"] for t in dto["turns"] for b in t["blocks"])
 
 
+def _forget_bodies(idx):
+    """Put the index FILE in the pre-G-4 state: rows indexed, no archived bodies.
+
+    Since G-4, `conversation.get` serves `conversation_bodies` and re-parses `rollout_path`
+    only when no body is stored — and the ingest stores the ALREADY-MERGED conversation, so
+    the archive answers correctly no matter what happens to the legs afterwards. That is the
+    point of the feature and it is why the three tests below have to reach the fall-back
+    deliberately: their subject is the READ-TIME fold, which a stored body makes unnecessary.
+
+    Each of them says in its own docstring what the archive now does instead, because "the
+    reader no longer needs the legs" is the interesting half and deleting the old assertion
+    without recording it would hide a real improvement.
+    """
+    conn = sqlite3.connect(idx)
+    try:
+        conn.execute("DELETE FROM conversation_bodies")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _legs_on_disk(idx, cid):
     """The recorded legs, read through a connection that applies NO schema."""
     conn = sqlite3.connect(idx)
@@ -223,18 +244,13 @@ def test_a_single_leg_conversation_reads_exactly_as_before(tmp_path):
     assert "rollout_legs" not in out["meta"]
 
 
-def test_a_LOSSY_reconciliation_is_visible_to_the_reader(tmp_path):
-    """One provider item id, two renderings: the richer body wins and the count is
-    surfaced. A reconciliation that drops characters must never be silent.
-
-    The count is RE-DERIVED by the reader's own fold rather than read from a column, so it
-    describes what the reader actually reconciled — it cannot claim a merge it did not do.
-    """
-    idx, _first, _second, _built = _two_leg_store(
+def _lossy_two_leg_store(tmp_path):
+    """One provider item id arriving twice with two different bodies: the run was cut short,
+    so leg one holds only the opening of the answer and leg two holds the whole thing."""
+    return _two_leg_store(
         tmp_path,
         first_records=[
             _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-            # the run was cut short here: this leg saw only the opening of the answer
             _assistant_with_id("short", "2026-07-24T10:00:01.000Z", "msg_run"),
         ],
         second_records=[
@@ -242,10 +258,45 @@ def test_a_LOSSY_reconciliation_is_visible_to_the_reader(tmp_path):
             _assistant_with_id("the whole answer, at length",
                                "2026-07-24T12:00:01.000Z", "msg_run"),
         ])
+
+
+def test_a_LOSSY_reconciliation_is_visible_to_the_reader(tmp_path):
+    """One provider item id, two renderings: the richer body wins and the count is
+    surfaced. A reconciliation that drops characters must never be silent.
+
+    A CORRECTED CLAIM. This docstring used to say the count is "RE-DERIVED by the reader's own
+    fold rather than read from a column, so it describes what the reader actually reconciled".
+    That was true when every read re-parsed, and G-4 made it false for a current index: the
+    INGEST performs the fold, records `merge_divergent_turns` in `conv.meta`, and the archive
+    carries it to the wire — nothing is re-derived here. The property that survives, and the
+    one that actually matters, is that the count describes a fold that really happened; which
+    side of the ingest/read boundary performed it is not what the assertion is about.
+
+    The read-time re-derivation still exists for a pre-G-4 index and is covered by the twin
+    below, which is where that original sentence is true.
+    """
+    idx, _first, _second, _built = _lossy_two_leg_store(tmp_path)
     out = _read(idx, "conversation.get", {"id": "C1"})
     assert _text(out) == "the whole answer, at length", \
         "the fuller rendering replaces the truncated one, in place"
     assert out["meta"]["merge_divergent_turns"] == 1
+
+
+def test_a_LOSSY_reconciliation_is_RE_DERIVED_on_a_pre_G4_index(tmp_path):
+    """The twin: with no stored body the reader folds the legs itself and must reach the same
+    verdict, so the disclosure does not depend on which path answered.
+
+    This is the assertion the test above used to make. It is kept as a separate test rather
+    than folded in because the two exercise DIFFERENT code — `_reparse_conversation`'s fold
+    versus `_archived_conversation`'s pass-through — and a single test could only cover one of
+    them while appearing to cover the feature.
+    """
+    idx, _first, _second, _built = _lossy_two_leg_store(tmp_path)
+    _forget_bodies(idx)
+    out = _read(idx, "conversation.get", {"id": "C1"})
+    assert _text(out) == "the whole answer, at length"
+    assert out["meta"]["merge_divergent_turns"] == 1
+    assert out["meta"]["rollout_legs"] == 2
 
 
 def test_a_clean_merge_reports_NO_divergence(tmp_path):
@@ -265,8 +316,17 @@ def test_an_index_that_PREDATES_the_legs_table_still_reads(tmp_path):
 
     Simulated by DROPPING the table and reopening, which is the state a pre-fix index is in
     the first time the new engine opens it.
+
+    G-4 MAKES THIS SCENARIO UNREACHABLE FOR A CURRENT INDEX, and that is an improvement worth
+    stating rather than a reason to delete the test. The ingest stores the already-MERGED
+    conversation in `conversation_bodies`, so dropping the legs table no longer costs the
+    reader anything — measured: with the body left in place this test's `LEG_ONE_ONLY not in
+    body` assertion FAILS, because the first leg is served from the archive. The pre-fix
+    limitation therefore only reproduces on a pre-G-4 index, which is what `_forget_bodies`
+    builds, and that is the only index that can still be in this state.
     """
     idx, _first, second, _built = _two_leg_store(tmp_path)
+    _forget_bodies(idx)
     raw = sqlite3.connect(idx)
     raw.execute("DROP TABLE conversation_rollouts")
     raw.commit()
@@ -279,6 +339,27 @@ def test_an_index_that_PREDATES_the_legs_table_still_reads(tmp_path):
     assert LEG_ONE_ONLY not in body, \
         "and the pre-fix limitation is honestly reproduced rather than papered over"
     assert out["meta"]["rollout_path"] == os.path.basename(second)
+
+
+def test_a_CURRENT_index_reads_every_leg_even_with_the_legs_table_GONE(tmp_path):
+    """The other side of the test above, and the reason the pre-fix limitation now needs a
+    pre-G-4 fixture to reproduce at all.
+
+    G-4 stores the already-MERGED conversation in `conversation_bodies`, so the read-time fold
+    — and therefore `conversation_rollouts` — is no longer on the reader's critical path. Drop
+    the leg table on a CURRENT index and both legs still render, because nothing is being
+    folded at read time any more. Asserted so that the migration story is recorded from both
+    ends: the fall-back still honestly reproduces the old limitation, and the archive removes
+    the exposure that made the limitation matter.
+    """
+    idx, _first, _second, _built = _two_leg_store(tmp_path)
+    raw = sqlite3.connect(idx)
+    raw.execute("DROP TABLE conversation_rollouts")
+    raw.commit()
+    raw.close()
+
+    body = _text(_read(idx, "conversation.get", {"id": "C1"}))
+    assert LEG_ONE_ONLY in body and LEG_TWO_ONLY in body
 
 
 def test_a_plain_REBUILD_repairs_an_index_that_predates_the_table(tmp_path):
@@ -305,8 +386,14 @@ def test_a_plain_REBUILD_repairs_an_index_that_predates_the_table(tmp_path):
 def test_a_MISSING_leg_is_disclosed_rather_than_silently_dropped(tmp_path):
     """A leg the user moved or deleted must not take the whole transcript down, and the
     partial render must SAY it is partial — the reader now knows how many legs it was
-    supposed to fold, so silence here would be a new lie in place of the old one."""
+    supposed to fold, so silence here would be a new lie in place of the old one.
+
+    ON A CURRENT INDEX THE LEG IS NOT MISSED AT ALL: the merged transcript is in
+    `conversation_bodies`, so removing the file costs nothing and there is nothing to
+    disclose. The disclosure still has to work for a pre-G-4 index whose sources have
+    since moved, which is what `_forget_bodies` builds here."""
     idx, first, _second, _built = _two_leg_store(tmp_path)
+    _forget_bodies(idx)
     os.remove(first)
 
     out = _read(idx, "conversation.get", {"id": "C1"})
@@ -318,7 +405,11 @@ def test_a_MISSING_leg_is_disclosed_rather_than_silently_dropped(tmp_path):
 
 
 def test_when_EVERY_leg_is_gone_the_reader_stubs_with_the_first_reason(tmp_path):
+    """The last remaining route to a stub, and it needs a pre-G-4 index to reach: with a
+    stored body, losing every source file is exactly the case G-4 makes survivable —
+    `tests/test_sidecar_bodies.py` asserts that direction."""
     idx, first, second, _built = _two_leg_store(tmp_path)
+    _forget_bodies(idx)
     os.remove(first)
     os.remove(second)
 

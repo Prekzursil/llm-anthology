@@ -397,14 +397,14 @@ def fts_match_expression(raw):
     is words, and today those same operators are mostly a way to crash it. Prefix search is
     kept, because ``foo*`` is a thing people genuinely type and FTS5 supports ``"foo"*``.
 
-    WHY EACH QUOTED TERM MUST BE A SINGLE TOKEN. Quoting alone is not enough, and the first
-    version of this function was wrong in a way that mattered. ``corpus.py`` builds the index
-    ``detail=none`` (a measured choice: p95 33ms over 2.2M records), and **detail=none cannot
-    execute phrase queries at all** — ``fts5: phrase queries are not supported (detail!=full)``.
+    WHY EACH QUOTED TERM WAS SPLIT TO A SINGLE TOKEN. Quoting alone was not enough, and the
+    first version of this function was wrong in a way that mattered. ``corpus.py`` built the
+    index ``detail=none`` (a measured choice: p95 33ms over 2.2M records), and **detail=none
+    cannot execute phrase queries at all** — ``fts5: phrase queries are not supported``.
     A quoted string holding two tokens IS a phrase. So ``"file.py"`` still raised, because the
     tokenizer splits it into ``file`` + ``py``. Every path, hyphenated word, apostrophe and
     version number a user types was still a crash, which is most of what people search for in
-    a corpus of coding sessions.
+    a corpus of coding sessions. G-4 removed that constraint — see the note below.
 
     The terms are therefore split on the tokenizer's own boundary before quoting, so no term
     can ever be a phrase. The split rule is "runs of alphanumerics", which is unicode61's
@@ -413,9 +413,9 @@ def fts_match_expression(raw):
     32/32, while a deliberately-wrong rule disagreed on 14/32 — so the check can fail.
     (`.scratch/probe_tokenizer.py`.)
 
-    Consequence worth stating plainly: ``file.py`` searches for ``file`` AND ``py``, not for
-    the exact string. Exact-phrase search is not a feature this index can offer at all;
-    offering it would mean rebuilding every index at ``detail=full``.
+    Consequence worth stating plainly: ``file.py`` searches for ``file`` AND ``py``, not the
+    exact string — a CHOICE now, not a limit: G-4 rebuilt at ``detail=full``, so the engine
+    DOES run phrase queries; exposing them is a search-box syntax call, not made here.
 
     Returns "" for input with no usable token, which the caller must treat as "no results"
     rather than passing on — an empty MATCH is itself a syntax error.
@@ -1191,7 +1191,7 @@ class Sidecar:
             "WHERE conversation_id=?", (cid,)).fetchone()
         if row is None:
             raise RpcError(THREAD_NOT_FOUND, "conversation not found: %s" % cid)
-        conv, info = self._reparse_conversation(row)
+        conv, info = self._read_conversation(row)   # archive first, reparse only as fallback
         if conv is None:
             return self._conversation_stub(row, info)
         return self._serialize_conversation(conv, info)
@@ -1842,23 +1842,35 @@ class Sidecar:
         frm = ("FROM conversations_fts JOIN conversations c "
                "ON c.rowid = conversations_fts.rowid WHERE " + where)
         total = self.conn.execute("SELECT COUNT(*) " + frm, args).fetchone()[0]
-        # NEWEST FIRST, `conversation_id` breaking ties — a TOTAL order, which is what
+        # MOST RELEVANT FIRST, `conversation_id` breaking ties — a TOTAL order, which is what
         # makes LIMIT/OFFSET paging correct instead of lucky.
         #
-        # This was `ORDER BY rank`, which sorts by nothing here: the index is contentless
-        # with `detail=none`, so FTS5 has no column or position data to score with and
-        # `rank` collapses to one constant (measured -0.0 for all 49 matches on the
-        # synthetic corpus). A sort key equal for every row leaves the order unspecified,
-        # so pages partitioned the result set only by whatever scan order SQLite happened
-        # to pick. It is stable today; nothing promises it stays so once an index is added,
-        # a provider filter narrows the plan, or SQLite changes — and the failure mode is
-        # silent duplicate and dropped rows across pages, not an error.
+        # THIS SORT HAS BEEN WRONG TWICE, in opposite directions, and both reasons are worth
+        # keeping because the second one is why it moved back.
         #
-        # Recency is the honest substitute for relevance given rank carries no signal.
-        # An empty `created_at` sorts LAST under DESC rather than reading as epoch-old.
+        # It was originally `ORDER BY rank`, which sorted by NOTHING: the index was
+        # contentless with `detail=none`, so FTS5 had no column or position data to score
+        # with and `rank` collapsed to one constant (measured -0.0 for all 49 matches on the
+        # synthetic corpus). A sort key equal for every row leaves the order unspecified, so
+        # pages partitioned the result set only by whatever scan order SQLite happened to
+        # pick — the failure mode being silent duplicate and dropped rows across pages, not
+        # an error. It was replaced by `created_at DESC, conversation_id`, described here as
+        # "the honest substitute for relevance given rank carries no signal".
+        #
+        # G-4 removed that premise: the table is `detail=full` now, and bm25 separates rows
+        # by term frequency AND document length (measured — 3 distinct scores over 3 matching
+        # docs, 8 hits outranking 1, and 1 hit in a long document ranking last). So recency
+        # is retired as a substitute for a signal that exists again, and a search box sorts
+        # by relevance. `conversation_id` stays as the tiebreaker: bm25 separates rows only
+        # when they DIFFER, and byte-identical bodies still tie, so the totality of the order
+        # — the property paging actually depends on — is not bought by the score.
+        #
+        # `bm25()` is spelled in both the SELECT and the ORDER BY rather than sorted by an
+        # alias: `created_at` is still selected because the wire's `ts_ms` comes from it, and
+        # naming the function twice is what keeps this a single statement SQLite can plan.
         rows = self.conn.execute(
             "SELECT c.conversation_id, c.thread_id, c.provider, c.title, c.created_at "
-            + frm + " ORDER BY c.created_at DESC, c.conversation_id LIMIT ? OFFSET ?",
+            + frm + " ORDER BY bm25(conversations_fts), c.conversation_id LIMIT ? OFFSET ?",
             args + [limit, offset]).fetchall()
         return total, rows
 
@@ -1966,6 +1978,94 @@ class Sidecar:
         return {"type": block.type, "text": _clean(block.text),
                 "data": _sanitize_tree(block.data),
                 "citations": _sanitize_tree(block.citations)}
+
+    # -- the archive reader (G-4) -------------------------------------------------
+    #
+    # APPENDED HERE, at the end of the class, rather than beside `_conversation_get` where it
+    # is called. `sidecar.py` line numbers are cited BY LINE from `mock.ts`, `types.ts`,
+    # `claude_code.py`, `grok.py` and `discover.py`, the highest pinned anchor is 1665, and
+    # `tests/test_citation_anchors.py` turns a shifted anchor into a red build. Inserting a
+    # method at 1185 would move ~40 of those anchors in files this change does not own and
+    # may not edit, so `_conversation_get` swaps ONE call for another at its original line
+    # count and the new code lives below every pin.
+
+    def _read_conversation(self, row):
+        """One conversation as `(ir.Conversation, errors)`, or `(None, reason)`. Never
+        raises. The two-source resolution G-4 introduced lives here.
+
+        WHAT WAS WRONG. This used to be a direct call to :meth:`_reparse_conversation`, so
+        every read re-opened `rollout_path` and re-parsed the source file. The answer to
+        "what is in this conversation" therefore depended on a file the index does not own:
+        move the store, compact it, or delete the export it was imported from, and a fully
+        indexed conversation came back as `{available: false, reason: "rollout unavailable"}`.
+        On the owner's live corpus that was 1,071 conversations and 122.1 MB of text held
+        hostage by paths that happened to still exist.
+
+        STORED BODY FIRST, and the order is deliberate rather than incidental. It is NOT
+        "whichever is fresher": `corpus.add_conversation` rewrites the body on every
+        re-index, so the stored copy IS the ingest's current answer, and preferring the file
+        would hand the reader straight back the dependency the archive exists to remove.
+
+        THE FALL-BACK IS THE MIGRATION, and it is keyed on None, never on emptiness.
+        `corpus.load_conversation_body` answers None only when no body row exists — which is
+        every index built before G-4 — and `([], {})` for a conversation that genuinely has
+        no turns (a Codex rollout carrying only a `session_meta` line parses to exactly
+        that). Falling back on `not turns` instead would send every legitimately-empty
+        conversation back to its rollout on every single read, which is the loop
+        `conversation_bodies` exists to break.
+
+        `errors` is `[]` on the archive path, and that is a statement rather than a
+        placeholder: parse errors are a property of PARSING, they were counted when the body
+        was ingested, and re-reporting them here would be inventing a number. Nothing was
+        parsed to produce this answer.
+        """
+        stored = corpus.load_conversation_body(self.conn, row["conversation_id"])
+        if stored is None:
+            return self._reparse_conversation(row)
+        turns, meta = stored
+        return self._archived_conversation(row, turns, meta), []
+
+    def _archived_conversation(self, row, turns, meta):
+        """A stored body + its indexed row -> an ir.Conversation.
+
+        THE DISPLAY COLUMNS COME FROM THE ROW, not from the archive, and deliberately are
+        not stored twice. `title`, `provider`, `created_at`, `updated_at` and `account` are
+        already columns on `conversations` — the surface search, listing and every other
+        reader answers from. A second copy inside the archive could disagree with them, and
+        the only way to notice would be a user seeing one title in a search hit and another
+        in the reader.
+
+        `meta` DOES come from the archive, because it is the one part of `ir.Conversation`
+        that no column holds. `_serialize_conversation` still runs it through
+        `_redact_paths` and the shared sanitizer, so a stored `rollout_path` is reduced to
+        its basename and hostile text in an imported export cannot ride out to the UI.
+
+        THE LEG PATH LIST IS TRANSLATED, NOT RELAYED — a privacy defect this method would
+        otherwise have introduced. `loaders._bind` puts `meta["rollout_paths"]` on every
+        ingested conversation (`loaders.py:546`, and `_merge_resumed_leg` appends to it): a
+        LIST of absolute local paths, one per
+        resumed leg. Before G-4 it could not reach the UI, because the wire only ever saw a
+        freshly RE-PARSED conversation and no adapter produces that key — and `_redact_paths`
+        would not have caught it either, since it basenames the SINGULAR `rollout_path` and
+        knows nothing about the plural. Serving stored meta verbatim would therefore have
+        published the user's whole session-store layout to the renderer.
+
+        :meth:`_reparse_conversation` already states the policy this restores: the leg PATHS
+        stay off the wire, `meta` carries the COUNT plus the single basenamed resume target.
+        The count is set only when there really was a fold, because an ABSENT `rollout_legs`
+        means "one file" — which is what every conversation looked like before legs existed,
+        and what that path still reports for an un-merged session.
+        """
+        meta = dict(meta)
+        legs = meta.pop("rollout_paths", None) or []
+        if legs:
+            meta.setdefault("rollout_path", legs[-1])   # basenamed by _redact_paths
+        if len(legs) > 1:
+            meta["rollout_legs"] = len(legs)
+        return ir.Conversation(
+            id=row["conversation_id"], title=row["title"], provider=row["provider"],
+            turns=turns, created_at=row["created_at"], updated_at=row["updated_at"],
+            account=row["account"], meta=meta)
 
 
 # -------------------------------------------------------------------- entrypoint

@@ -96,7 +96,26 @@ def test_the_body_is_a_new_TABLE_and_conversations_gained_no_column():
     cols = {r[1] for r in conn.execute("PRAGMA table_info(conversations)")}
     assert cols == set(corpus._CONV_COLS) | {"rowid"}
     body_cols = {r[1] for r in conn.execute("PRAGMA table_info(conversation_bodies)")}
-    assert body_cols == {"conversation_id", "text_bytes", "archive"}
+    assert body_cols == {"conversation_id", "text_bytes", "meta", "archive"}
+
+
+def test_conversation_meta_is_stored_alongside_the_turns():
+    """`ir.Conversation.meta` is part of the conversation, not decoration: the adapters put
+    `thread_id`, the parsed `rollout_path` and their hidden-character audit in it. A reader
+    served from the archive without it would answer with an emptier conversation than a
+    re-parse did — quietly, which is the failure mode this unit exists to remove."""
+    conn = _open()
+    conv = _conv(turns=[_turn()])
+    conv.meta = {"thread_id": "t7", "rollout_path": "/synthetic/rollout-x.jsonl",
+                 "hidden_char_hits": 3}
+    corpus.add_conversation(conn, conv)
+    assert corpus.load_conversation_body(conn, "c1")[1] == conv.meta
+
+
+def test_an_absent_meta_round_trips_as_an_empty_dict_not_None():
+    conn = _open()
+    corpus.add_conversation(conn, _conv(turns=[_turn()]))
+    assert corpus.load_conversation_body(conn, "c1")[1] == {}
 
 
 # ---------------------------------------------------------------- storing a body
@@ -150,7 +169,7 @@ def test_the_stored_body_round_trips_every_IR_FIELD_a_turn_carries():
     conn = _open()
     original = _rich_turns()
     corpus.add_conversation(conn, _conv(turns=original))
-    restored = corpus.load_conversation_turns(conn, "c1")
+    restored = corpus.load_conversation_body(conn, "c1")[0]
     assert restored == original
 
 
@@ -160,12 +179,12 @@ def test_a_conversation_with_no_turns_stores_an_empty_archive_not_a_missing_row(
     second may fall back to re-parsing."""
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[]))
-    assert corpus.load_conversation_turns(conn, "c1") == []
+    assert corpus.load_conversation_body(conn, "c1") == ([], {})
 
 
 def test_an_unstored_conversation_reads_back_None_not_an_empty_list():
     conn = _open()
-    assert corpus.load_conversation_turns(conn, "never-indexed") is None
+    assert corpus.load_conversation_body(conn, "never-indexed") is None
 
 
 def test_a_grown_conversation_REPLACES_its_stored_body():
@@ -175,7 +194,7 @@ def test_a_grown_conversation_REPLACES_its_stored_body():
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[_turn(text="first")]))
     corpus.add_conversation(conn, _conv(turns=[_turn(text="first"), _turn(text="second")]))
-    restored = corpus.load_conversation_turns(conn, "c1")
+    restored = corpus.load_conversation_body(conn, "c1")[0]
     assert [b.text for t in restored for b in t.blocks] == ["first", "second"]
     assert conn.execute("SELECT COUNT(*) FROM conversation_bodies").fetchone()[0] == 1
 
@@ -184,8 +203,8 @@ def test_two_conversations_keep_separate_bodies():
     conn = _open()
     corpus.add_conversation(conn, _conv("c1", turns=[_turn(text="alpha only")]))
     corpus.add_conversation(conn, _conv("c2", turns=[_turn(text="beta only")]))
-    assert corpus.load_conversation_turns(conn, "c1")[0].blocks[0].text == "alpha only"
-    assert corpus.load_conversation_turns(conn, "c2")[0].blocks[0].text == "beta only"
+    assert corpus.load_conversation_body(conn, "c1")[0][0].blocks[0].text == "alpha only"
+    assert corpus.load_conversation_body(conn, "c2")[0][0].blocks[0].text == "beta only"
 
 
 # ------------------------------------------------------- the size accounting
@@ -224,5 +243,5 @@ def test_the_body_needs_no_source_file_at_all():
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[_turn(text="survives its source")]),
                             rollout_path="/no/such/rollout-deleted.jsonl")
-    restored = corpus.load_conversation_turns(conn, "c1")
+    restored = corpus.load_conversation_body(conn, "c1")[0]
     assert [b.text for t in restored for b in t.blocks] == ["survives its source"]

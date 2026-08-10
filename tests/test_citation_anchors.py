@@ -416,6 +416,10 @@ PY_PINS = [
     ("sidecar.py", "loaders.py", 454, "_persist_graph(conn, result)", "the graph commits BEFORE the long ingest"),
     ("sidecar.py", "loaders.py", 394, "result = corpus.Corpus()", "load_corpus starts from a FRESH Corpus"),
     ("sidecar.py", "loaders.py", 788, "upsert_thread(conn", "the run is UPSERTed into a previous build's tables"),
+    # G-4: why `_archived_conversation` translates the stored leg list into a COUNT instead
+    # of relaying it. The cited line is where the absolute-path list is put on every
+    # ingested conversation, which is what makes serving stored meta verbatim a leak.
+    ("sidecar.py", "loaders.py", 546, 'conv.meta["rollout_paths"]', "the ingest stores a LIST of absolute leg paths"),
 
     # ------------------------------------------------------------------ discover.py (19)
     ("discover.py", "loaders.py", 64, "never ingest our own output", "loaders already refuses its own output tree"),

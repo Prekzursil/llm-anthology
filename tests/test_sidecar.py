@@ -64,6 +64,23 @@ def _mk_conv(conn, cid, provider, title, body, thread_id="", rollout_path="",
                             rollout_path=rollout_path)
 
 
+def _forget_bodies(conn):
+    """Put the index in the PRE-G-4 state: rows indexed, no archived body.
+
+    Since G-4, `conversation.get` serves `conversation_bodies` and re-parses `rollout_path`
+    only when no body is stored, so any test whose subject is the RE-PARSE path has to reach
+    it deliberately. That is not a workaround — a pre-G-4 index is exactly the state the
+    fall-back exists for, and these fixtures are not a shape a real ingest produces: they pair
+    a metadata-only row (often `nturns=0`) with a rollout holding real turns, which is what
+    lets an assertion tell "parsed the file" from "read the index".
+
+    Dropped rather than never written because `add_conversation` stores a body unconditionally
+    and on purpose: an ingest that could be talked out of it is the defect G-4 fixed.
+    """
+    conn.execute("DELETE FROM conversation_bodies")
+    conn.commit()
+
+
 def _populate(conn):
     """The standard synthetic corpus: a rich root, a diamond, and a dangling edge.
 
@@ -802,26 +819,61 @@ def test_export_run_missing_dest_and_requires_corpus(tmp_path):
 
 # ------------------------------------------------------------------ search.query
 
-def test_search_results_have_a_DETERMINISTIC_order_not_whatever_sqlite_returns():
-    """`ORDER BY rank` sorts by nothing here, so it cannot be relied on for paging.
+def test_search_results_are_ordered_by_RELEVANCE_and_the_order_is_still_TOTAL():
+    """Two properties at once, and the first one only became available with G-4.
 
-    The FTS index is contentless with `detail=none`, under which FTS5 has no per-column or
-    position data to score with and `rank` collapses to a single constant — measured
-    -0.0 for every one of 49 matches on the synthetic corpus. A sort key that is equal for
-    every row imposes NO order, so `LIMIT/OFFSET` paging over it partitions the result set
-    only by whatever scan order SQLite happens to choose. It happens to be stable today;
-    it is not promised to be, and an added index, a provider filter, or a different SQLite
-    build can change it — at which point pages silently duplicate and drop rows.
+    WHAT THIS TEST USED TO ASSERT, and why it changed. `ORDER BY rank` sorted by nothing:
+    the index was contentless with `detail=none`, so FTS5 had no position data to score with
+    and `rank` collapsed to a single constant — measured -0.0 for every one of 49 matches on
+    the synthetic corpus. A sort key equal for every row imposes NO order, so `LIMIT/OFFSET`
+    paging over it partitioned the result set only by whatever scan order SQLite happened to
+    pick, and the failure mode was silent duplicate and dropped rows across pages. Recency
+    was adopted as "the honest substitute for relevance given rank carries no signal".
 
-    So the order is stated explicitly: newest first, `conversation_id` breaking ties. That
-    is a TOTAL order (ids are unique), which is what makes paging correct rather than
-    lucky. A conversation with no `created_at` sorts last rather than being treated as
-    epoch-old.
+    G-4 rebuilt the table at `detail=full` and that premise is gone: bm25 now separates rows
+    by term frequency and document length (measured, `tests/test_corpus_fts_rebuild.py`). So
+    the substitute is retired and the sort is relevance-first — which is what a search box
+    means — with `conversation_id` still breaking ties so the order stays TOTAL and paging
+    stays correct rather than lucky.
+
+    The expected order is a relevance claim that can be checked by hand: "rocket" appears 3x
+    in c-codex-1 (title + twice in the body), 2x in c-claude-1, and once in c-codex-2, whose
+    body is also the longest. Under the OLD recency sort this read
+    ["c-claude-1", "c-codex-1", "c-codex-2"], so the two orders are genuinely different and
+    this test cannot pass under both.
     """
     res = _mem_server().dispatch("search.query", {"q": "rocket"})
     ids = [h["conversation_id"] for h in res["hits"]]
-    #   c-claude-1 2026-01-02 . c-codex-1 2026-01-01 . c-codex-2 (no date -> last)
-    assert ids == ["c-claude-1", "c-codex-1", "c-codex-2"]
+    assert ids == ["c-codex-1", "c-claude-1", "c-codex-2"]
+    assert res["total"] == 3
+    # the positional pseudo-score still descends with rank position, so the most relevant
+    # hit carries the highest score rather than merely arriving first
+    assert [h["score"] for h in res["hits"]] == [1.0, 0.5, 1.0 / 3]
+
+
+def test_EQUALLY_relevant_hits_are_still_totally_ordered_so_paging_cannot_drop_rows():
+    """The tie case, which is what "total order" is for. bm25 separates rows only when they
+    differ; three byte-identical bodies score identically, and without a tiebreaker the page
+    boundary would fall wherever the scan order put it.
+
+    Paged one row at a time, so a broken tiebreaker shows up as a duplicate or a gap rather
+    than as a merely-odd ordering.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    corpus.init_index(conn)
+    _track(conn)
+    for cid in ("c-gamma", "c-alpha", "c-beta"):        # inserted out of id order
+        _mk_conv(conn, cid, "codex", "identical title", "identical body zebrafish")
+    conn.commit()
+    srv = sidecar.Sidecar(conn)
+
+    whole = [h["conversation_id"]
+             for h in srv.dispatch("search.query", {"q": "zebrafish"})["hits"]]
+    assert whole == ["c-alpha", "c-beta", "c-gamma"], "ties fall back to the id"
+    paged = [srv.dispatch("search.query", {"q": "zebrafish", "limit": 1, "offset": i}
+                          )["hits"][0]["conversation_id"] for i in range(3)]
+    assert paged == whole, "paging must partition the result set, not resample it"
 
 
 def test_search_pages_PARTITION_the_result_set():
@@ -927,6 +979,7 @@ def test_conversation_get_reparse_full_transcript(tmp_path):
     _mk_conv(conn, "conv-thread-1", "codex", "opening" + ZW, "body text",
              thread_id="conv-thread-1", rollout_path=path, nturns=0)
     conn.commit()
+    _forget_bodies(conn)                 # the subject is the reparse path — see the helper
     srv = sidecar.Sidecar(conn)
 
     conv = srv.dispatch("conversation.get", {"id": "conv-thread-1"})
@@ -946,6 +999,7 @@ def test_conversation_get_reparse_full_transcript(tmp_path):
 
 def test_conversation_get_stub_when_no_rollout():
     srv = _mem_server()                     # c-claude-1 has rollout_path=""
+    _forget_bodies(srv.conn)                # ...and, for this test, no archived body either
     conv = srv.dispatch("conversation.get", {"id": "c-claude-1"})
     assert conv["available"] is False
     assert conv["turns"] == [] and conv["provider"] == "claude"
@@ -960,6 +1014,7 @@ def test_conversation_get_stub_when_rollout_missing(tmp_path):
     _track(conn)
     _mk_conv(conn, "c-missing", "codex", "t", "b", rollout_path=missing)
     conn.commit()
+    _forget_bodies(conn)                 # the subject is the reparse path — see the helper
     conv = sidecar.Sidecar(conn).dispatch("conversation.get", {"id": "c-missing"})
     assert conv["available"] is False
 
@@ -972,6 +1027,7 @@ def test_conversation_get_stub_when_rollout_unreadable(tmp_path, monkeypatch):
     _track(conn)
     _mk_conv(conn, "c-broken", "codex", "t", "b", rollout_path=path)
     conn.commit()
+    _forget_bodies(conn)                 # the subject is the reparse path — see the helper
 
     def _boom(_p):
         raise OSError("permission denied")
