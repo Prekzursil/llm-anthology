@@ -698,6 +698,56 @@ describe("export.plan / export.run", () => {
     expect(shareable.credential_scan.coverage_limit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
   });
 
+  it("SCRUBS a home path mentioned inside a title or branch, not just a cwd", async () => {
+    // CF-23 (868a033) closed this engine-side: `shareable_thread` now runs `title` and
+    // `git_branch` through `scrub_home_mentions`. A title is PROSE, not a path — for the
+    // Codex adapter it is the opening user sentence — so the realistic leak is a path
+    // EMBEDDED in it, and `relativize_home` (which only rewrites a value that IS home-rooted)
+    // returns that untouched. The mock modelled the pre-CF-23 projection, which made the
+    // preview under-report what a shareable export now actually contains.
+    const rows = [
+      {
+        id: "t1",
+        title: "see C:/Users/synthuser/notes.md for the repro",
+        provider: "claude",
+        created_at_ms: Date.UTC(2026, 2, 1),
+        git_branch: "fix/C:/Users/synthuser/scratch",
+      },
+    ];
+    const ipc = createMockIpc(rows, []);
+    const shareable = await ipc.exportPlan(undefined, "shareable");
+    const full = await ipc.exportPlan(undefined, "full");
+    expect(shareable.est_bytes).toBeLessThan(full.est_bytes);
+
+    // ISOLATED, one field at a time. The first draft used the row above — title AND branch
+    // together — and asserted only that SOMETHING shrank. A mutation removing the title
+    // scrub left it GREEN, because the branch scrub still shrank the artifact. "At least one
+    // of these two works" is not what this is meant to prove.
+    const only = async (over: Record<string, unknown>) => {
+      const one = createMockIpc(
+        [{ id: "x", title: "t", provider: "claude", created_at_ms: 1, ...over }],
+        [],
+      );
+      return [
+        (await one.exportPlan(undefined, "full")).est_bytes,
+        (await one.exportPlan(undefined, "shareable")).est_bytes,
+      ];
+    };
+    const [titleFull, titleShare] = await only({ title: "see C:/Users/synthuser/notes.md" });
+    expect(titleShare).toBeLessThan(titleFull); // TITLE alone
+    const [branchFull, branchShare] = await only({ git_branch: "fix/C:/Users/synthuser/x" });
+    expect(branchShare).toBeLessThan(branchFull); // BRANCH alone
+
+    // ...and only the HOME ROOT is substituted. A non-home absolute path is NOT a home leak
+    // and is deliberately left alone, so the UI warning must not claim otherwise.
+    const other = createMockIpc(
+      [{ id: "t2", title: "see D:/work/client-x/notes.md", provider: "claude", created_at_ms: 1 }],
+      [],
+    );
+    const otherPlan = await other.exportPlan(undefined, "shareable");
+    expect(otherPlan.est_bytes).toBe((await other.exportPlan(undefined, "full")).est_bytes);
+  });
+
   it("relativizes a home-anchored cwd in shareable mode", async () => {
     // NO `preview` on this row, deliberately. That isolates the cwd: preview-dropping is
     // already covered above, so with it absent the ONLY difference between the two

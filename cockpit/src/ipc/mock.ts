@@ -1237,7 +1237,31 @@ const SCANNED_NODE_FIELDS = [
 function projectNode(node: ThreadNode, mode: ExportMode): ThreadNode {
   if (mode !== "shareable") return node;
   const { preview: _dropped, ...kept } = node;
-  return kept.cwd === undefined ? kept : { ...kept, cwd: relativizeHome(kept.cwd) };
+  const out: ThreadNode = { ...kept };
+  if (out.cwd !== undefined) out.cwd = relativizeHome(out.cwd);
+  // TITLE AND BRANCH GET A DIFFERENT FUNCTION, and the difference is the whole point.
+  // `relativizeHome` asks "is this value a home-rooted path?" and returns anything else
+  // verbatim — right for `cwd`, useless for a TITLE, which is prose. For the Codex adapter a
+  // title is the opening user sentence, so the realistic leak is a path EMBEDDED in it, and
+  // measuring `relativizeHome` against `see C:/Users/<name>/notes.md` returns it untouched.
+  // Applying it here would have looked like a fix while leaving that case leaking.
+  out.title = scrubHomeMentions(out.title);
+  if (out.git_branch !== undefined) out.git_branch = scrubHomeMentions(out.git_branch);
+  // `agent_role` / `agent_nickname` are NOT scrubbed, matching the engine. They are not
+  // path-bearing by construction, and the mock must model what the engine does rather than
+  // what would be tidier.
+  return out;
+}
+
+/**
+ * Replace every MENTION of a home directory inside free text with `~`.
+ *
+ * CONSERVATIVE BY CONSTRUCTION, exactly like the engine's `scrub_home_mentions`: it
+ * substitutes the home ROOT and nothing else. `D:/work/client-x` is not a home leak and is
+ * deliberately left alone — which is why the mode label must not claim paths are stripped.
+ */
+function scrubHomeMentions(text: string): string {
+  return text.replace(/(?:[A-Za-z]:)?[\\/](?:Users|home)[\\/][^\\/\s"']+/g, "~");
 }
 
 /** `~`-relativize a home-anchored absolute path; anything else is returned unchanged. */

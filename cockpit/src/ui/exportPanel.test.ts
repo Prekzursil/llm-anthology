@@ -162,9 +162,26 @@ describe("the export privacy plane", () => {
     const label = modeLabel("shareable");
     expect(label).toMatch(/preview/i);
     expect(label).toMatch(/~/);
-    expect(label).toMatch(/title/i); // names the gap rather than implying it is covered
     expect(label).not.toMatch(/anonymi[sz]ed|safe to share|removes all/i);
     expect(modeLabel("full")).toMatch(/every field|archive of record/i);
+
+    // UPDATED FOR CF-23 (868a033). The first version of this label said title and git branch
+    // are "NOT stripped". That was true when written and the engine has since closed it —
+    // `shareable_thread` now runs both through `scrub_home_mentions` — so the warning became
+    // inaccurate in the SAFE direction, which is still inaccurate. A label that overstates
+    // the risk trains the reader to discount it.
+    expect(label).toMatch(/home/i); // says WHAT is scrubbed out of the prose fields
+    expect(label).not.toMatch(/title.{0,30}NOT stripped/i);
+    // POSITIVE, not merely the negation above. The label must NAME the two prose fields it
+    // now scrubs. Without these two lines a mutant that silently drops "out of the title and
+    // git branch" keeps every other assertion in this case green — measured, it SURVIVED.
+    // /home/i alone is satisfied by the unrelated "only HOME paths" clause further down.
+    expect(label).toMatch(/title/i);
+    expect(label).toMatch(/branch/i);
+    // ...and it still names the two real residuals, because both survive: only the home ROOT
+    // is substituted, and agent role/nickname are untouched by construction.
+    expect(label).toMatch(/nickname/i);
+    expect(label).toMatch(/D:|non-home|only home/i);
   });
 
   it("surfaces the scan on the verdict too, INCLUDING a blocked run", () => {

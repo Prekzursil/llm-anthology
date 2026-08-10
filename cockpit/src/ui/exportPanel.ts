@@ -85,17 +85,24 @@ export interface CredentialScanView {
 /**
  * What each mode ACTUALLY does today, in the words a user is shown.
  *
- * DELIBERATELY UNDERSOLD. `redact.shareable_thread` drops `preview` and relativizes `cwd` /
- * `rollout_path` — and that is all. `title`, `git_branch` and `agent_nickname` pass through
- * untouched, and a Codex title is the first line of the opening user message, so for a coding
- * corpus the title FREQUENTLY IS A PATH. Calling this "anonymised" would be the UI telling a
- * lie on the engine's behalf, and the person who believes it is the one about to hand the file
- * to somebody else. Naming the gap is the honest option until the engine closes it.
+ * DELIBERATELY UNDERSOLD, AND KEPT CURRENT. `redact.shareable_thread` drops `preview`,
+ * relativizes `cwd`/`rollout_path`, and — since CF-23 (868a033) — runs `title` and
+ * `git_branch` through `scrub_home_mentions`, because a title is PROSE and the realistic leak
+ * is a path embedded in it.
+ *
+ * THE TWO RESIDUALS ARE REAL AND ARE NAMED. Only the home ROOT is substituted, so a non-home
+ * absolute path (`D:/work/client-x`) survives; and `agent_role`/`agent_nickname` are untouched
+ * by construction. An earlier version of this label said title and git branch are "NOT
+ * stripped" — true when written, and CF-23 made it inaccurate in the SAFE direction. That is
+ * still inaccurate: a warning that overstates the risk teaches the reader to discount it, the
+ * same way one that understates it gets them hurt. Calling the mode "anonymised" remains a lie
+ * the UI would be telling on the engine's behalf.
  */
 export function modeLabel(mode: ExportMode): string {
   return mode === "shareable"
-    ? "shareable — drops the preview excerpt and rewrites cwd/rollout_path to ~. " +
-        "Note: title, git branch and agent nickname are NOT stripped, and a title is often a path."
+    ? "shareable — drops the preview excerpt, rewrites cwd/rollout_path to ~, and scrubs " +
+        "home-directory mentions out of the title and git branch. Note: only HOME paths are " +
+        "scrubbed (a path like D:/work/client-x survives), and agent role/nickname are not."
     : "full — the archive of record: every field, unchanged.";
 }
 

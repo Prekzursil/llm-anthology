@@ -753,7 +753,7 @@ export class CockpitApp {
     modeSelect.setAttribute("aria-label", "Export mode");
     for (const [value, text] of [
       ["full", "Full — every field (archive of record)"],
-      ["shareable", "Shareable — drops preview, rewrites paths to ~"],
+      ["shareable", "Shareable — drops preview, scrubs home paths (see note)"],
     ] as const) {
       const option = document.createElement("option");
       option.value = value;

@@ -340,9 +340,11 @@ PINS = [
     ("types.ts", "sidecar.py", 300, "A second corpus.build while one is still running", "the build-in-progress code"),
     ("types.ts", "sidecar.py", 303, "cannot run against THIS engine", "the build-unavailable code"),
     ("types.ts", "sidecar.py", 306, "where a file already exists", "the corpus-exists code"),
-    ("types.ts", "sidecar.py", 319, "INDEX_REBUILD_REQUIRED = -32007", "the index-rebuild code, distinct from not-indexed"),
+    # ONE row, not two: this line was pinned independently by two units within a minute of
+    # each other and both landed. The set-based `pinned` lookup made the duplicate a silent
+    # no-op, so nothing caught it — merged by hand, keeping both halves of the reason.
     ("types.ts", "sidecar.py", 319, "INDEX_REBUILD_REQUIRED = -32007",
-     "the index-too-old code CF-22 added, wired to the UI by the IPC unit"),
+     "the index-too-old code CF-22 added, distinct from not-indexed, wired to the UI here"),
 
     # ------------------------------------------------- test_sidecar_maintenance.py (8)
     ("mock.ts", "test_sidecar_maintenance.py", 103, "def test_a_parent_traversal_root_is_caught_by_the_ENGINE", "traversal is the engine's refusal, not the edge's"),
