@@ -11,7 +11,7 @@ import json
 import os
 import sqlite3
 
-from llm_anthology import corpus, dedup, ir
+from llm_anthology import corpus, dedup
 
 
 # --------------------------------------------------------------------- helpers
@@ -228,8 +228,8 @@ def test_path_breaks_the_final_tie_case_insensitively_and_totally():
 
 def test_a_truncated_live_copy_is_flagged_when_a_bigger_sibling_is_demoted(tmp_path):
     """Size-DESC only breaks ties WITHIN a store, so across stores a crash-truncated
-    LIVE rollout stays canonical while its complete backup sibling drops out of
-    `collapse_corpus`'s output. Measured on real files: live 1 turn vs backup 9 turns,
+    LIVE rollout stays canonical while its complete backup sibling drops out of any view
+    built from the canonical alone. Measured on real files: live 1 turn vs backup 9 turns,
     same session_id, and the rendered view showed only the 1-turn copy.
 
     The pick itself is deliberate (the live store is authoritative). The defect was
@@ -673,140 +673,3 @@ def test_load_sessions_from_an_empty_table_is_empty():
     conn = _mem()
     dedup.ensure_schema(conn)
     assert dedup.load_sessions(conn) == []
-
-
-# ---------------------------------------------------- composing with corpus.Corpus
-
-def _conv(cid, path, title="t"):
-    return ir.Conversation(id=cid, title=title, provider="codex",
-                           turns=[ir.Turn("human", [ir.Block("text", text="hi")])],
-                           created_at="", updated_at="", account="",
-                           meta={"rollout_path": path})
-
-
-def test_collapse_corpus_keeps_one_thread_and_conversation_per_logical_session():
-    """The MAPPING: N physical copies of session X -> ONE ThreadMeta (id=X,
-    rollout_path=canonical) and ONE Conversation (the canonical file's)."""
-    src = corpus.Corpus()
-    src.add_thread(corpus.ThreadMeta(id=UUID_A, rollout_path="/bak/a.jsonl"))
-    src.add_thread(corpus.ThreadMeta(id=UUID_B, rollout_path="/live/b.jsonl"))
-    src.conversations.extend([_conv(UUID_A, "/bak/a.jsonl"),
-                              _conv(UUID_A, "/live/a.jsonl"),
-                              _conv(UUID_B, "/live/b.jsonl")])
-    sessions = dedup.consolidate([
-        _copy(UUID_A, "/live/a.jsonl", dedup.STORE_LIVE, 10, 100),
-        _copy(UUID_A, "/bak/a.jsonl", dedup.STORE_BACKUP, 20, 100),
-        _copy(UUID_B, "/live/b.jsonl", dedup.STORE_LIVE, 30, 300)])
-
-    out = dedup.collapse_corpus(src, sessions)
-
-    assert len(out.conversations) == 2
-    assert sorted(c.id for c in out.conversations) == sorted([UUID_A, UUID_B])
-    kept = {c.id: c.meta["rollout_path"] for c in out.conversations}
-    assert kept[UUID_A] == "/live/a.jsonl"          # canonical, not the first seen
-    assert out.threads[UUID_A].rollout_path == "/live/a.jsonl"
-    assert out.threads[UUID_B].rollout_path == "/live/b.jsonl"
-    assert src.threads[UUID_A].rollout_path == "/bak/a.jsonl"   # source untouched
-    assert len(src.conversations) == 3
-
-
-def test_collapse_corpus_leaves_the_spawn_edge_graph_bit_identical():
-    """The load-bearing composition claim: dedup groups BY thread id and never renames
-    or merges an id, so every SpawnEdge endpoint survives and the graph helpers answer
-    exactly as before."""
-    root, child, grandchild = "t-root", "t-child", "t-grand"
-    src = corpus.Corpus()
-    for tid in (root, child, grandchild):
-        src.add_thread(corpus.ThreadMeta(id=tid, rollout_path="/bak/%s.jsonl" % tid))
-    src.add_edge(corpus.SpawnEdge(root, child, "completed"))
-    src.add_edge(corpus.SpawnEdge(child, grandchild, "completed"))
-    # every thread was written to BOTH stores => duplicate conversations
-    for tid in (root, child, grandchild):
-        src.conversations.append(_conv(tid, "/bak/%s.jsonl" % tid))
-        src.conversations.append(_conv(tid, "/live/%s.jsonl" % tid))
-    copies = []
-    for tid in (root, child, grandchild):
-        copies.append(_copy(tid, "/live/%s.jsonl" % tid, dedup.STORE_LIVE, 9, 900))
-        copies.append(_copy(tid, "/bak/%s.jsonl" % tid, dedup.STORE_BACKUP, 9, 900))
-
-    sessions = dedup.consolidate(copies)
-    out = dedup.collapse_corpus(src, sessions)
-
-    assert len(sessions) == 3
-    assert len(src.conversations) == 6 and len(out.conversations) == 3
-    assert out.edges == src.edges
-    assert out.roots() == src.roots() == [root]
-    assert out.children_of(root) == [child]
-    assert out.children_of(child) == [grandchild]
-    assert out.fan_out(root) == src.fan_out(root) == 1
-    assert [out.depth(t) for t in (root, child, grandchild)] == [0, 1, 2]
-    assert [src.depth(t) for t in (root, child, grandchild)] == [0, 1, 2]
-
-
-def test_collapse_corpus_keeps_threads_and_conversations_dedup_never_saw():
-    """Non-deletion again: a thread/conversation with no PhysicalCopy record (e.g. a
-    Claude or ChatGPT conversation) passes through untouched, and a dangling spawn
-    parent still roots its subtree."""
-    src = corpus.Corpus()
-    src.add_thread(corpus.ThreadMeta(id="claude-1", rollout_path=""))
-    src.conversations.append(_conv("claude-1", ""))
-    src.conversations.append(ir.Conversation(id="no-meta", title="x", provider="chatgpt",
-                                             turns=[], created_at="", updated_at="",
-                                             account="", meta={}))
-    src.add_edge(corpus.SpawnEdge("ghost-parent", "claude-1"))
-
-    out = dedup.collapse_corpus(src, [])
-
-    assert set(out.threads) == {"claude-1"}
-    assert [c.id for c in out.conversations] == ["claude-1", "no-meta"]
-    assert out.roots() == ["ghost-parent"]
-    assert out.depth("claude-1") == 1
-
-
-def test_collapse_corpus_never_repoints_a_thread_from_a_blank_id_session():
-    """`consolidate` keeps every blank-id copy in its own path-keyed singleton, and
-    `collapse_corpus` used to undo that: it keyed `canonical_path` on `session_id`, so
-    EVERY blank-id session collapsed back onto the single key `""` (last one wins) and
-    then rewrote the `rollout_path` of any corpus thread whose own id is blank —
-    pointing a real thread at an unrelated session's file.
-
-    That thread is not hypothetical: `codex_rollout` derives `thread_id == ""` for a
-    rollout with no `session_meta` and no filename UUID, and `loaders` adds it
-    unconditionally. A blank id identifies nothing, so it must map onto nothing —
-    whitespace included, since `is_identified` strips."""
-    src = corpus.Corpus()
-    src.add_thread(corpus.ThreadMeta(id="", rollout_path="/orig/blank.jsonl"))
-    src.add_thread(corpus.ThreadMeta(id="   ", rollout_path="/orig/whitespace.jsonl"))
-    src.conversations.append(_conv("", "/orig/blank.jsonl"))
-    src.conversations.append(_conv("   ", "/orig/whitespace.jsonl"))
-    sessions = dedup.consolidate([_copy("", "/live/m1.jsonl", dedup.STORE_LIVE),
-                                  _copy("", "/live/m2.jsonl", dedup.STORE_LIVE),
-                                  _copy("  ", "/live/m3.jsonl", dedup.STORE_LIVE)])
-    assert len(sessions) == 3            # three singletons, correctly un-merged
-
-    out = dedup.collapse_corpus(src, sessions)
-
-    assert out.threads[""].rollout_path == "/orig/blank.jsonl"
-    assert out.threads["   "].rollout_path == "/orig/whitespace.jsonl"
-    assert [c.meta["rollout_path"] for c in out.conversations] == [
-        "/orig/blank.jsonl", "/orig/whitespace.jsonl"]
-
-
-def test_collapse_corpus_of_an_empty_corpus_is_empty():
-    out = dedup.collapse_corpus(corpus.Corpus(), [])
-    assert out.conversations == [] and out.threads == {} and out.edges == []
-
-
-def test_collapse_corpus_ignores_an_unidentified_session():
-    """A blank-id logical session has no thread id to map onto, so it changes nothing
-    in the graph — but it is still in the dedup view for the UI to surface."""
-    src = corpus.Corpus()
-    src.add_thread(corpus.ThreadMeta(id=UUID_A, rollout_path="/bak/a.jsonl"))
-    src.conversations.append(_conv(UUID_A, "/bak/a.jsonl"))
-    sessions = dedup.consolidate([_copy("", "/live/mystery.jsonl", dedup.STORE_LIVE)])
-
-    out = dedup.collapse_corpus(src, sessions)
-
-    assert set(out.threads) == {UUID_A}
-    assert out.threads[UUID_A].rollout_path == "/bak/a.jsonl"
-    assert len(out.conversations) == 1

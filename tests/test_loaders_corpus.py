@@ -998,10 +998,11 @@ def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, mon
     all. `holder != label` means same-source blanks were fine, so the loss is specifically
     CROSS-source.
 
-    The repo had already settled this question one module over: `dedup.py:339-345` excludes
-    blank ids from its own map because "an id that identifies nothing maps onto nothing", and
-    names codex_rollout's real blank-id case as the reason. This pins the same rule in the
-    ingest path.
+    The repo had already settled this question one module over: `dedup.py:38-44` keys a
+    blank-id copy by its PATH rather than merging the blanks together, because an id that
+    identifies nothing maps onto nothing. (That rule used to be spelled at `dedup.py:339-345`
+    inside `collapse_corpus`, which DECISION G-17 deleted as dead; the module docstring is
+    now where it lives.) This pins the same rule in the ingest path.
 
     REACHABILITY, stated honestly. The codex side genuinely produces `thread_id == ""`
     (`codex_rollout.py:296` falls through to `_id_from_path`, which returns "" when the

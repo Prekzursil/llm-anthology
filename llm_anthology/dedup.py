@@ -40,8 +40,8 @@ UNIDENTIFIED COPIES. The C# `Consolidate` DROPS copies whose SessionId is blank
 is a deletion from the view, and grouping the blanks TOGETHER would be the largest false
 merge available. Each blank-id copy instead becomes its own singleton keyed by its path,
 survives in the output, and reports `is_identified == False` so the UI can flag it. That
-holds all the way through `collapse_corpus`, which maps only IDENTIFIED sessions onto
-corpus threads — keying its map by a blank id would re-merge them in the last step.
+holds end to end: a consumer mapping sessions onto corpus threads MUST key that map by
+PATH for a blank id, because keying it by session_id re-merges every one of them at the end.
 
 CANONICAL-COPY CHOICE — deterministic, total, and never "first one found". Copies are
 ordered by this key and `copies[0]` becomes `canonical`:
@@ -61,7 +61,7 @@ the direct measure of completeness that mtime only proxies. Store rank still out
 so the authoritative live file is never demoted behind a stale mirror.
 
 That ordering has one honest cost: ACROSS stores a crash-truncated live copy still beats a
-complete backup, and `collapse_corpus` emits only the canonical, so the fuller copy leaves
+complete backup, and a consumer that reads only the canonical never sees the fuller copy in
 the rendered view. The copy is never lost (`duplicate_paths` keeps it), but "never hide one
 of the owner's conversations" means the loss of DETAIL cannot be silent either, so
 `LogicalSession.has_larger_copy` reports it instead of the choice being reversed.
@@ -76,11 +76,11 @@ resolves `$CODEX_HOME`, `~/.codex` or AppData, nothing opens a socket, and only 
 sizes and mtimes are recorded. Tests use synthetic fixtures.
 """
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Optional
 
-from llm_anthology import corpus
 from llm_anthology.adapters import codex_rollout
+
 
 # Store kinds (the C# `SessionStoreKind` enum). Only LIVE is privileged; the rest tie, so
 # an unrecognised kind degrades to "not live" rather than raising.
@@ -154,7 +154,7 @@ class LogicalSession:
         Store rank outranks size (key 1 beats key 2), which is right — the live store is
         authoritative and must never be demoted behind a stale mirror — but it means a
         crash-truncated live rollout can win over a complete backup of the same session.
-        `collapse_corpus` then emits only the canonical, so the fuller copy leaves the
+        A consumer that reads only the canonical then leaves the fuller copy out of the
         rendered view. Nothing is deleted (`duplicate_paths` still lists it), yet a
         conversation the owner can see in one file and not the other is exactly what
         this module promises never to hide, so the condition is REPORTED rather than
@@ -315,49 +315,3 @@ def load_sessions(conn):
     trusted — `consolidate` re-derives it, so the rule has exactly one implementation."""
     rows = conn.execute("SELECT %s FROM %s" % (",".join(_COPY_COLS), COPIES_TABLE))
     return consolidate([PhysicalCopy(*tuple(row)) for row in rows])
-
-
-# ------------------------------------------------------- composing with corpus.py
-
-def collapse_corpus(src, sessions):
-    """Project a `corpus.Corpus` through a dedup view -> a new Corpus.
-
-    The mapping: N physical copies of session X -> ONE `ThreadMeta` (`id` = X, with
-    `rollout_path` repointed at the canonical copy) and ONE `ir.Conversation` (the one
-    parsed from that canonical file, not merely the first ingested).
-
-    The spawn graph is UNAFFECTED, and that is the point: `SpawnEdge` endpoints are
-    thread ids, dedup groups BY thread id and never renames or fuses one, so `edges` is
-    copied verbatim and `roots` / `children_of` / `depth` / `fan_out` answer identically.
-    What dedup removes is only the duplicate `conversations` list entries and the
-    ingest-order-dependent `rollout_path` on a thread.
-
-    Nothing is dropped: a thread or conversation the dedup view never saw (a Claude or
-    ChatGPT conversation, or a blank-id session with no thread to map onto) passes
-    through untouched, and `src` itself is not mutated.
-    """
-    # Blank ids are EXCLUDED. `consolidate` keys them by path precisely so they can
-    # never merge; keying this map by session_id would collapse every one of them back
-    # onto `""` (last one wins) and then repoint any corpus thread whose own id is blank
-    # — and codex_rollout really does derive `thread_id == ""` for a rollout with no
-    # session_meta and no filename UUID. An id that identifies nothing maps onto nothing.
-    canonical_path = {s.session_id: s.canonical.file_path
-                      for s in sessions if s.is_identified}
-
-    threads = {}
-    for tid, meta in src.threads.items():
-        if tid in canonical_path:
-            meta = replace(meta, rollout_path=canonical_path[tid])
-        threads[tid] = meta
-
-    best, order = {}, []
-    for conv in src.conversations:
-        if conv.id not in best:
-            best[conv.id] = conv
-            order.append(conv.id)
-        want = canonical_path.get(conv.id)
-        if want is not None and conv.meta.get("rollout_path", "") == want:
-            best[conv.id] = conv
-
-    return corpus.Corpus(conversations=[best[cid] for cid in order],
-                         threads=threads, edges=list(src.edges))
