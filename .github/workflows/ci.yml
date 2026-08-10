@@ -223,6 +223,32 @@ jobs:
           cache: npm
           cache-dependency-path: cockpit/package-lock.json
 
+      # THE ENGINE IS A TEST DEPENDENCY OF THIS JOB, and it took a red CI to see it.
+      #
+      # Five cargo tests here spawn a REAL Python sidecar as a subprocess --
+      # e2e_roundtrip_real_python_sidecar, e2e_create_without_an_index...,
+      # e2e_discover_sources_without_an_index, e2e_timetravel_export_roundtrip...,
+      # and the AppContainer membrane test. This job installed node and rust and
+      # never installed the Python package they spawn, so they ran against
+      # whatever bare interpreter the runner ships.
+      #
+      # That was survivable only while the engine was pure stdlib. It stopped
+      # being true this batch: 07be166 put a top-level `import ijson` on the
+      # ingest path and 0fc4463 added `from . import archive`, whose archive.py
+      # imports zstandard. All five then died with ModuleNotFoundError on BOTH
+      # legs -- while every local run stayed green, because a developer machine
+      # has those wheels installed globally and CI does not.
+      #
+      # So the gap is older than the failure: those five tests have never once
+      # validated the engine's real dependency surface. Installing the package
+      # is what makes them mean what their names claim.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: install the engine the e2e sidecar tests spawn
+        working-directory: ${{ github.workspace }}
+        run: pip install -e .
+
       # Pinned rather than @stable: `clippy -D warnings` would turn every
       # unrelated PR red the day a new Rust release adds a lint. 1.91.0 is the
       # toolchain this code is developed against.
