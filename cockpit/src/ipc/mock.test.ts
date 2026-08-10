@@ -1899,7 +1899,14 @@ describe("metadata projections that need a row the fixture does not have", () =>
       // The annotation store is keyed by conversation id and does not police it, so an
       // annotation can outlive its conversation. `metadata.get` still reads it back; the
       // SEARCH view must not, or the panel lists a row nothing can open
-      // (`llm_anthology/metadata.py`'s join, mirrored at mock.ts:1468-1469).
+      // (`llm_anthology/metadata.py`'s join, mirrored at mock.ts:1562-1563).
+      //
+      // RE-ANCHORED, and it was drift rather than a wrong claim: this said `mock.ts:1468-1469`,
+      // which is `exportPlan` and has nothing to do with a metadata join — the real
+      // `// INNER JOIN: no indexed conversation, no row` line sits ~94 lines further down.
+      // Found by auditing what the G-17 deletion above shifted, which is the only reason it
+      // surfaced: `test_citation_anchors.py` scrapes `.py` citations only, so a rotten
+      // `mock.ts:<line>` anchor like this one is invisible to every gate in the repo.
       const ipc = createMockIpc();
       await ipc.metadataSet({ conversation_id: "ghost-conversation", tags: ["triage"] });
       expect((await ipc.metadataGet("ghost-conversation")).tags).toEqual(["triage"]);
