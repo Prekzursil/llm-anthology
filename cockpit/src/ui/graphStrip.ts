@@ -30,7 +30,7 @@
  * TWO LIMITS, STATED INLINE.
  *
  *  1. The pane's grid COLUMN is not narrowed. `#app` is
- *     `grid-template-columns: 300px 1fr 300px` (`styles.css:110`), so the middle column keeps
+ *     `grid-template-columns: 300px 1fr 300px` (`styles.css:111`), so the middle column keeps
  *     its 1fr share and the collapse is of the pane's CONTENT — canvas gone, strip in its
  *     place, background below. `styles.css` is outside this unit's file scope, so the rule that
  *     would finish the job is left to a follow-up; the pane carries
