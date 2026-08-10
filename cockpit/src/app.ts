@@ -11,6 +11,9 @@
 
 import { ipc } from "./ipc";
 import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
+// Direct from the wire contract: `./ipc` (the adapter selector) re-exports the DTOs the
+// app already used, and widening its surface is a change to a module outside this unit.
+import type { ExportMode } from "./ipc/types";
 import { isMoreId, moreParentId } from "./graph/capFanOut";
 import { buildView, loadAllRoots, loadForest, rootsStatus } from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
@@ -27,7 +30,7 @@ import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui
 import { DedupPanel } from "./ui/dedupPanel";
 import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
-import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
+import { asExportMode, ExportPanel, exportIpcFrom, renderView } from "./ui/exportPanel";
 import { GraphStrip, graphStripState } from "./ui/graphStrip";
 import { MaintenanceGate } from "./ui/maintenanceGate";
 import { MaintenanceShell } from "./ui/maintenanceShell";
@@ -724,20 +727,48 @@ export class CockpitApp {
   private mountExportPanel(): void {
     const container = document.getElementById("export-panel");
     if (container === null) return;
-    if (ipc.exportPlan === undefined || ipc.exportRun === undefined) {
+    // Adapted through `exportIpcFrom` rather than an inline literal: the forwarding is the
+    // part that can silently drop `mode`/`scrub`, and inline here it is unreachable by any
+    // test (see that function's note — a mutation reverting this left the suite GREEN).
+    const exportIpc = exportIpcFrom(ipc);
+    if (exportIpc === null) {
       container.textContent = "Export unavailable — engine not wired.";
       return;
     }
-    const exportIpc: ExportIpc = {
-      exportPlan: (dest) => ipc.exportPlan!(dest),
-      exportRun: (destPath) => ipc.exportRun!(destPath),
-    };
 
     const destInput = document.createElement("input");
     destInput.type = "text";
     destInput.className = "export-dest";
     destInput.placeholder = "Destination path…";
     destInput.autocomplete = "off";
+
+    // The G-6 projection chooser. FULL is first and therefore the default, which is the
+    // behaviour that changes nothing — an export mode must never silently become something
+    // other than the archive of record. The option text is deliberately modest about what
+    // shareable does: it drops the preview excerpt and rewrites cwd/rollout_path, and it does
+    // NOT strip titles or branch names, so calling it "anonymised" here would overpromise on
+    // the engine's behalf.
+    const modeSelect = document.createElement("select");
+    modeSelect.className = "export-mode";
+    modeSelect.setAttribute("aria-label", "Export mode");
+    for (const [value, text] of [
+      ["full", "Full — every field (archive of record)"],
+      ["shareable", "Shareable — drops preview, rewrites paths to ~"],
+    ] as const) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      modeSelect.append(option);
+    }
+
+    // The G-5 scrub opt-in. UNCHECKED by default: the default is WARN, because an archive of
+    // record must not be altered behind the owner's back. Checking it is the explicit ask.
+    const scrubWrap = document.createElement("label");
+    scrubWrap.className = "export-scrub";
+    const scrubBox = document.createElement("input");
+    scrubBox.type = "checkbox";
+    scrubBox.className = "export-scrub-box";
+    scrubWrap.append(scrubBox, document.createTextNode(" Replace credential shapes in the export"));
 
     const actions = document.createElement("div");
     actions.className = "export-actions";
@@ -757,10 +788,20 @@ export class CockpitApp {
     });
     output.textContent = renderView(panel.current).join("\n");
 
-    planBtn.addEventListener("click", () => void panel.plan(destInput.value || undefined));
-    runBtn.addEventListener("click", () => void panel.run(destInput.value));
+    // The chosen mode goes to BOTH calls. Planning in one mode and writing in another would
+    // show a preview and a credential scan measured against an artifact the user does not
+    // then receive — the preview is only meaningful if it describes the write it precedes.
+    const chosenMode = (): ExportMode => asExportMode(modeSelect.value);
+    planBtn.addEventListener(
+      "click",
+      () => void panel.plan(destInput.value || undefined, chosenMode()),
+    );
+    runBtn.addEventListener(
+      "click",
+      () => void panel.run(destInput.value, chosenMode(), scrubBox.checked),
+    );
 
-    container.append(destInput, actions, output);
+    container.append(destInput, modeSelect, scrubWrap, actions, output);
   }
 
   // -- view builders -----------------------------------------------------------

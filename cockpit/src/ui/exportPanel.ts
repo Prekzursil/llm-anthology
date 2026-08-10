@@ -22,6 +22,8 @@ import type {
   ChangedFields,
   ChangedValue,
   CorpusDiffDto,
+  CredentialScan,
+  ExportMode,
   ExportPlan,
   ExportResult,
   SpawnEdge,
@@ -53,8 +55,118 @@ export interface ExportRunResult extends ExportResult {
  * two-method fake and the mock/real client passes without the whole data surface.
  */
 export interface ExportIpc {
-  exportPlan(dest?: string): Promise<ExportPlan>;
-  exportRun(destPath: string): Promise<ExportRunResult>;
+  exportPlan(dest?: string, mode?: ExportMode): Promise<ExportPlan>;
+  exportRun(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<ExportRunResult>;
+}
+
+// ---------------------------------------------------------------------------
+// G-5 / G-6: the privacy plane
+// ---------------------------------------------------------------------------
+
+/**
+ * The credential-shape warning, render-ready.
+ *
+ * `coverageLimit` IS THE POINT and is unconditional. The scan matches credential SHAPES and
+ * is blind to personal and medical content, so an empty `findings` list is not a safety
+ * verdict — and a clean scan is precisely when a reader is most likely to read it as one.
+ * A payload nobody renders does not discharge that; the sentence has to reach the screen.
+ */
+export interface CredentialScanView {
+  /** One line per finding: shape, location, and the MASKED excerpt. Never the run itself. */
+  findings: string[];
+  /** The engine's coverage sentence, verbatim. Always present, findings or not. */
+  coverageLimit: string;
+  /** True when a scrub actually rewrote the bytes, as opposed to only warning. */
+  scrubbed: boolean;
+  /** A one-line summary of the findings count. */
+  headline: string;
+}
+
+/**
+ * What each mode ACTUALLY does today, in the words a user is shown.
+ *
+ * DELIBERATELY UNDERSOLD. `redact.shareable_thread` drops `preview` and relativizes `cwd` /
+ * `rollout_path` — and that is all. `title`, `git_branch` and `agent_nickname` pass through
+ * untouched, and a Codex title is the first line of the opening user message, so for a coding
+ * corpus the title FREQUENTLY IS A PATH. Calling this "anonymised" would be the UI telling a
+ * lie on the engine's behalf, and the person who believes it is the one about to hand the file
+ * to somebody else. Naming the gap is the honest option until the engine closes it.
+ */
+export function modeLabel(mode: ExportMode): string {
+  return mode === "shareable"
+    ? "shareable — drops the preview excerpt and rewrites cwd/rollout_path to ~. " +
+        "Note: title, git branch and agent nickname are NOT stripped, and a title is often a path."
+    : "full — the archive of record: every field, unchanged.";
+}
+
+/** The subset of the full IPC client this panel can be built from. Both methods optional. */
+export interface ExportCapableClient {
+  exportPlan?: (dest?: string, mode?: ExportMode) => Promise<ExportPlan>;
+  exportRun?: (destPath: string, mode?: ExportMode, scrub?: boolean) => Promise<ExportResult>;
+}
+
+/**
+ * Adapt a client into {@link ExportIpc}, or null when the engine does not offer the methods.
+ *
+ * EXTRACTED BECAUSE A MUTATION PROVED IT WAS NEEDED. Reverting `app.ts`'s wiring to
+ * `exportRun: (destPath) => ipc.exportRun!(destPath)` — the CF-17 defect exactly, one layer
+ * up, and the one that made the whole privacy plane unreachable — left the entire suite
+ * GREEN. `app.ts` has no tests and cannot get them in this environment, so any behaviour
+ * left inline there is behaviour nothing can catch. Moving the forwarding here puts the part
+ * that can silently drop a privacy parameter under test; what stays in `app.ts` is DOM
+ * plumbing, which this suite could not have checked either way.
+ */
+export function exportIpcFrom(client: ExportCapableClient): ExportIpc | null {
+  const { exportPlan, exportRun } = client;
+  if (exportPlan === undefined || exportRun === undefined) return null;
+  return {
+    exportPlan: (dest, mode) => exportPlan(dest, mode),
+    exportRun: (destPath, mode, scrub) => exportRun(destPath, mode, scrub),
+  };
+}
+
+/**
+ * A raw control value -> a mode, defaulting to the one that changes nothing.
+ *
+ * Exists as a function purely so `app.ts`'s one piece of wiring LOGIC has a test — the same
+ * reason `searchPresent.searchParams` exists, and for the same reason: `app.ts` cannot be
+ * unit-tested in this suite (constructing `CockpitApp` needs a canvas 2D context and a
+ * Worker, neither of which vitest's node environment nor jsdom provides), so logic left
+ * inline there is logic nothing exercises.
+ *
+ * ANYTHING UNRECOGNIZED IS `full`. A select that lost its options, a stale persisted value or
+ * a typo must not silently downgrade the archive of record into a lossy projection. Note this
+ * is the OPPOSITE of the engine's rule, deliberately: the engine answers -32602 on an
+ * unrecognized mode because a wire value it cannot parse is a caller bug worth surfacing,
+ * whereas this narrows a UI control that has no way to report one. Both choose the outcome
+ * that cannot silently produce the wrong artifact.
+ */
+export function asExportMode(value: string): ExportMode {
+  return value === "shareable" ? "shareable" : "full";
+}
+
+/** scan payload -> render-ready view. */
+export function deriveScan(scan: CredentialScan): CredentialScanView {
+  const findings = scan.findings.map(
+    (f) => `${f.shape} in ${f.scope} ${f.id} field ${f.field}: ${f.preview}`,
+  );
+  // The scrub state is disclosed in EVERY branch, including the empty one. "Scrub was on and
+  // matched nothing" and "scrub was off" are different facts about the artifact on disk, and
+  // a reader deciding whether to hand the file over needs to know which happened. Claiming
+  // "REPLACED" with zero findings would be the opposite error — nothing was replaced.
+  const headline =
+    findings.length === 0
+      ? scan.scrubbed
+        ? "No credential shapes found — scrub was ON, so nothing needed replacing."
+        : "No credential shapes found — read the coverage limit below before sharing."
+      : `${findings.length} credential shape${findings.length === 1 ? "" : "s"} found` +
+        (scan.scrubbed ? " and REPLACED in the written bytes." : " — warning only, bytes untouched.");
+  return { findings, coverageLimit: scan.coverage_limit, scrubbed: scan.scrubbed, headline };
+}
+
+/** The scan as display lines: headline, each finding, then the limit — always last, always there. */
+function renderScan(scan: CredentialScanView): string[] {
+  return [scan.headline, ...scan.findings, scan.coverageLimit];
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +179,10 @@ export interface ExportPreview {
   edgeCount: number;
   conversationCount: number;
   estBytes: number;
+  /** The projection this tally was measured against. */
+  mode: ExportMode;
+  /** The pre-write credential warning. Rendered whether or not it found anything. */
+  scan: CredentialScanView;
   /** `estBytes` as a human-readable label, e.g. "3.2 MB". */
   estBytesLabel: string;
   /** A one-line "N nodes · N edges · N conversations · ~size" digest. */
@@ -106,6 +222,8 @@ export type ExportVerdict =
       transcriptGate: boolean;
       writtenPath: string;
       headline: string;
+      /** Carried on success too — a clean write is still worth reading the limit against. */
+      scan: CredentialScanView;
     }
   | {
       status: "blocked";
@@ -120,6 +238,8 @@ export type ExportVerdict =
       missingTokens: string[];
       /** Total delta items across every category — a compact "N differences" badge. */
       totalChanges: number;
+      /** Carried on FAILURE too: a blocked export is when the user is about to retry. */
+      scan: CredentialScanView;
     };
 
 /** The panel's render-state: idle -> planning -> planned -> running -> done|error. */
@@ -164,6 +284,8 @@ export function derivePreview(plan: ExportPlan): ExportPreview {
     edgeCount: plan.edge_count,
     conversationCount: plan.conversation_count,
     estBytes: plan.est_bytes,
+    mode: plan.mode,
+    scan: deriveScan(plan.credential_scan),
     estBytesLabel,
     summary: `${plan.node_count} nodes · ${plan.edge_count} edges · ${plan.conversation_count} conversations · ~${estBytesLabel}`,
   };
@@ -179,6 +301,7 @@ export function deriveVerdict(result: ExportRunResult): ExportVerdict {
       transcriptGate: result.transcript_gate,
       writtenPath,
       headline: writtenPath !== "" ? `Export written to ${writtenPath}` : "Export written.",
+      scan: deriveScan(result.credential_scan),
     };
   }
 
@@ -209,6 +332,7 @@ export function deriveVerdict(result: ExportRunResult): ExportVerdict {
     changedNodes,
     missingTokens,
     totalChanges,
+    scan: deriveScan(result.credential_scan),
   };
 }
 
@@ -224,7 +348,11 @@ export function renderView(view: ExportView): string[] {
     case "planning":
       return ["Planning export…"];
     case "planned":
-      return [`Ready to export: ${view.preview.summary}`];
+      return [
+        `Ready to export: ${view.preview.summary}`,
+        `Mode: ${modeLabel(view.preview.mode)}`,
+        ...renderScan(view.preview.scan),
+      ];
     case "running":
       return ["Exporting…"];
     case "done":
@@ -264,12 +392,12 @@ export class ExportPanel {
   }
 
   /** Dry-run: fetch the plan and show the preview (no write). */
-  async plan(dest?: string): Promise<void> {
+  async plan(dest?: string, mode?: ExportMode): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.emit({ kind: "planning" });
     try {
-      const plan = await this.ipc.exportPlan(dest);
+      const plan = await this.ipc.exportPlan(dest, mode);
       this.preview = derivePreview(plan);
       this.emit({ kind: "planned", preview: this.preview });
     } catch (err) {
@@ -280,12 +408,12 @@ export class ExportPanel {
   }
 
   /** Commit: write the export to `destPath` and show the gate verdict. */
-  async run(destPath: string): Promise<void> {
+  async run(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.emit({ kind: "running", preview: this.preview });
     try {
-      const result = await this.ipc.exportRun(destPath);
+      const result = await this.ipc.exportRun(destPath, mode, scrub);
       this.emit({ kind: "done", preview: this.preview, verdict: deriveVerdict(result) });
     } catch (err) {
       this.emit({ kind: "error", stage: "run", message: errorMessage(err) });
@@ -338,7 +466,7 @@ function blockedHeadline(graphGate: boolean, transcriptGate: boolean): string {
 
 /** A verdict -> its plain-text lines. */
 function renderVerdict(verdict: ExportVerdict): string[] {
-  if (verdict.status === "ok") return [verdict.headline];
+  if (verdict.status === "ok") return [verdict.headline, ...renderScan(verdict.scan)];
 
   const lines = [
     verdict.headline,
@@ -366,7 +494,9 @@ function renderVerdict(verdict: ExportVerdict): string[] {
   if (verdict.totalChanges === 0) {
     lines.push("no structural or token differences reported");
   }
-  return lines;
+  // LAST, and unconditional. A blocked run is the moment the user is about to retry, so the
+  // warning has to travel with the rejection rather than only with a success.
+  return [...lines, ...renderScan(verdict.scan)];
 }
 
 function labelsOf(edges: EdgeDelta[]): string {

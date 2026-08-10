@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { CREDENTIAL_SHAPE_COVERAGE_LIMIT } from "../ipc/mock";
-import type { CredentialScan, ExportPlan } from "../ipc/types";
+import type { CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
 import {
+  asExportMode,
   derivePreview,
+  exportIpcFrom,
   deriveVerdict,
   ExportPanel,
   formatBytes,
+  modeLabel,
   renderView,
   type ExportIpc,
   type ExportRunResult,
@@ -110,6 +113,187 @@ function fakeIpc(over: Partial<ExportIpc> = {}): ExportIpc {
 }
 
 // ---------------------------------------------------------------------------
+// G-5 / G-6: the privacy plane, reachable from the panel
+// ---------------------------------------------------------------------------
+
+describe("the export privacy plane", () => {
+  const FINDING = {
+    shape: "api-key",
+    offset: 12,
+    preview: "sk-a… (34 chars)",
+    scope: "thread" as const,
+    id: "t-7",
+    field: "preview",
+  };
+
+  it("carries the mode and the scan onto the preview", () => {
+    const preview = derivePreview(planFixture({ mode: "shareable" }));
+    expect(preview.mode).toBe("shareable");
+    expect(preview.scan.coverageLimit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+  });
+
+  it("RENDERS the coverage limit even when there are ZERO findings", () => {
+    // The load-bearing case. An empty findings list is not a safety verdict, and the sentence
+    // is the only thing that says so. A clean scan is exactly when a reader is most likely to
+    // conclude "nothing to worry about", so this is where the limit matters most.
+    const lines = renderView({ kind: "planned", preview: derivePreview(planFixture()) });
+    expect(lines.join("\n")).toContain(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+    expect(lines.some((l) => /no credential shapes/i.test(l))).toBe(true);
+  });
+
+  it("lists each finding LOCATED and MASKED, never echoing the run", () => {
+    const preview = derivePreview(
+      planFixture({ credential_scan: scanFixture({ findings: [FINDING] }) }),
+    );
+    expect(preview.scan.findings).toEqual(["api-key in thread t-7 field preview: sk-a… (34 chars)"]);
+    // The whole point of the mask: a report is rendered, logged and pasted into bug threads,
+    // so a finding that echoed the secret to prove it found one would be the worst possible bug.
+    expect(preview.scan.findings.join()).not.toContain("sk-abcdefghijklmnop");
+    const lines = renderView({ kind: "planned", preview });
+    expect(lines.join("\n")).toContain("api-key in thread t-7");
+    expect(lines.join("\n")).toContain(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+  });
+
+  it("describes what shareable ACTUALLY strips, without overpromising", () => {
+    // The engine relativizes cwd/rollout_path and drops preview. It does NOT strip `title`,
+    // `git_branch` or `agent_nickname` — and a Codex title is `_first_line(first_user, 80)`,
+    // so for a coding corpus the title frequently IS a path. Labelling this "anonymised"
+    // would be a lie the UI tells on the engine's behalf.
+    const label = modeLabel("shareable");
+    expect(label).toMatch(/preview/i);
+    expect(label).toMatch(/~/);
+    expect(label).toMatch(/title/i); // names the gap rather than implying it is covered
+    expect(label).not.toMatch(/anonymi[sz]ed|safe to share|removes all/i);
+    expect(modeLabel("full")).toMatch(/every field|archive of record/i);
+  });
+
+  it("surfaces the scan on the verdict too, INCLUDING a blocked run", () => {
+    // Forwarded on failure deliberately: a blocked export is exactly when the user is about
+    // to retry, and dropping the warning there would make them retry blind.
+    const blocked = deriveVerdict(
+      runResult({ ok: false, graph_gate: false, credential_scan: scanFixture({ findings: [FINDING] }) }),
+    );
+    expect(blocked.scan.findings).toHaveLength(1);
+    const lines = renderView({ kind: "done", preview: null, verdict: blocked });
+    expect(lines.join("\n")).toContain(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+  });
+
+  it("distinguishes a scrub that REPLACED something from one that matched nothing", () => {
+    // The first draft of this case asserted /replaced/ on a scrub with ZERO findings, which
+    // was wrong: nothing was replaced, and saying so would be the opposite lie. Both facts
+    // matter to someone about to hand the file over, so both are asserted.
+    const nothingToDo = deriveVerdict(runResult({ credential_scan: scanFixture({ scrubbed: true }) }));
+    expect(nothingToDo.scan.scrubbed).toBe(true);
+    expect(nothingToDo.scan.headline).toMatch(/scrub was ON/i);
+    expect(nothingToDo.scan.headline).not.toMatch(/REPLACED/);
+
+    const replaced = deriveVerdict(
+      runResult({ credential_scan: scanFixture({ scrubbed: true, findings: [FINDING] }) }),
+    );
+    expect(replaced.scan.headline).toMatch(/REPLACED in the written bytes/);
+    expect(renderView({ kind: "done", preview: null, verdict: replaced }).join("\n"))
+      .toMatch(/REPLACED/);
+  });
+
+  it("ADAPTS a client into ExportIpc while preserving mode and scrub", async () => {
+    // This exists because a mutation proved it was needed. Reverting app.ts's wiring to
+    // `exportRun: (destPath) => ipc.exportRun!(destPath)` — the exact CF-17 defect, one layer
+    // up — left the whole suite GREEN, because app.ts has no tests and cannot get them here.
+    // The adapter shaping is the only part of that wiring with behaviour, so it moves into a
+    // function this suite can hold. What remains untested in app.ts is DOM plumbing.
+    const seen: unknown[] = [];
+    const client = {
+      exportPlan: async (dest?: string, mode?: ExportMode) => {
+        seen.push(["plan", dest, mode]);
+        return planFixture();
+      },
+      exportRun: async (destPath: string, mode?: ExportMode, scrub?: boolean) => {
+        seen.push(["run", destPath, mode, scrub]);
+        return runResult();
+      },
+    };
+    const adapted = exportIpcFrom(client);
+    expect(adapted).not.toBeNull();
+    await adapted!.exportPlan("/d", "shareable");
+    await adapted!.exportRun("/d", "shareable", true);
+    expect(seen).toEqual([
+      ["plan", "/d", "shareable"],
+      ["run", "/d", "shareable", true],
+    ]);
+  });
+
+  it("returns null when the engine does not offer the export methods", () => {
+    // app.ts paints "Export unavailable" on this; the decision is logic, so it is tested here
+    // rather than left to an `if` nothing exercises.
+    expect(exportIpcFrom({})).toBeNull();
+    expect(exportIpcFrom({ exportPlan: async () => planFixture() })).toBeNull();
+    expect(exportIpcFrom({ exportRun: async () => runResult() })).toBeNull();
+  });
+
+  it("narrows a raw select value to a mode, defaulting to the harmless one", () => {
+    // Exists as a function purely so app.ts's one piece of wiring LOGIC has a test — the same
+    // reason `searchPresent.searchParams` exists. `app.ts` itself cannot be unit-tested here
+    // (constructing CockpitApp needs a canvas 2D context and a Worker, and vitest runs on
+    // node), so the choice is between extracting this and leaving it unexercised.
+    expect(asExportMode("shareable")).toBe("shareable");
+    expect(asExportMode("full")).toBe("full");
+    // ANYTHING ELSE IS `full`. A select that lost its options, a stale value, or a typo must
+    // not silently downgrade the archive of record into a lossy projection — the safe default
+    // is the one that changes nothing about the bytes.
+    for (const junk of ["", "SHAREABLE", "share", "undefined", "null"]) {
+      expect(asExportMode(junk)).toBe("full");
+    }
+  });
+
+  it("FORWARDS the chosen mode to export.plan", async () => {
+    let seen: [string | undefined, string | undefined] = ["UNSET", "UNSET"];
+    const panel = new ExportPanel(
+      fakeIpc({
+        exportPlan: async (dest, mode) => {
+          seen = [dest, mode];
+          return planFixture({ mode: mode ?? "full" });
+        },
+      }),
+      () => {},
+    );
+    await panel.plan("/out/x.json", "shareable");
+    expect(seen).toEqual(["/out/x.json", "shareable"]);
+  });
+
+  it("FORWARDS mode and the scrub opt-in to export.run", async () => {
+    let seen: unknown[] = [];
+    const panel = new ExportPanel(
+      fakeIpc({
+        exportRun: async (destPath, mode, scrub) => {
+          seen = [destPath, mode, scrub];
+          return runResult({ written_path: destPath });
+        },
+      }),
+      () => {},
+    );
+    await panel.run("/out/x.json", "shareable", true);
+    expect(seen).toEqual(["/out/x.json", "shareable", true]);
+  });
+
+  it("defaults to WARN-ONLY: no scrub unless the caller opts in", async () => {
+    // G-5's rule. The archive must not be altered behind the owner's back, so the absence of
+    // a choice is "warn", never "quietly rewrite".
+    let seenScrub: unknown = "UNSET";
+    const panel = new ExportPanel(
+      fakeIpc({
+        exportRun: async (destPath, _mode, scrub) => {
+          seenScrub = scrub;
+          return runResult({ written_path: destPath });
+        },
+      }),
+      () => {},
+    );
+    await panel.run("/out/x.json");
+    expect(seenScrub).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatBytes
 // ---------------------------------------------------------------------------
 
@@ -145,6 +329,13 @@ describe("derivePreview", () => {
       edgeCount: 20,
       conversationCount: 15,
       estBytes: 3_400_000,
+      mode: "full",
+      scan: {
+        findings: [],
+        coverageLimit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+        scrubbed: false,
+        headline: "No credential shapes found — read the coverage limit below before sharing.",
+      },
       estBytesLabel: "3.2 MB",
       summary: "16 nodes · 20 edges · 15 conversations · ~3.2 MB",
     });
@@ -169,6 +360,12 @@ describe("deriveVerdict", () => {
       transcriptGate: true,
       writtenPath: "C:/out/export.json",
       headline: "Export written to C:/out/export.json",
+      scan: {
+        findings: [],
+        coverageLimit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+        scrubbed: false,
+        headline: "No credential shapes found — read the coverage limit below before sharing.",
+      },
     });
   });
 
@@ -194,6 +391,12 @@ describe("deriveVerdict", () => {
       changedNodes: [],
       missingTokens: [],
       totalChanges: 0,
+      scan: {
+        findings: [],
+        coverageLimit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+        scrubbed: false,
+        headline: "No credential shapes found — read the coverage limit below before sharing.",
+      },
     });
   });
 
@@ -261,10 +464,16 @@ describe("renderView", () => {
     expect(renderView({ kind: "running", preview: null })).toEqual(["Exporting…"]);
   });
 
-  it("renders the planned preview line", () => {
+  it("renders the planned preview line, the mode, and the scan", () => {
+    // The scan lines are NOT optional trailing decoration — the coverage limit is the
+    // load-bearing half of G-5, so it is asserted as part of the exact output rather than
+    // with a `toContain` that would still pass if it silently disappeared.
     const preview = derivePreview(planFixture());
     expect(renderView({ kind: "planned", preview })).toEqual([
       `Ready to export: ${preview.summary}`,
+      `Mode: ${modeLabel("full")}`,
+      "No credential shapes found — read the coverage limit below before sharing.",
+      CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     ]);
   });
 
@@ -277,6 +486,9 @@ describe("renderView", () => {
     }));
     expect(renderView({ kind: "done", preview: null, verdict })).toEqual([
       "Export written to /out/export.json",
+      // Carried on SUCCESS too: a clean write is still an artifact about to be handed over.
+      "No credential shapes found — read the coverage limit below before sharing.",
+      CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     ]);
   });
 
@@ -291,6 +503,9 @@ describe("renderView", () => {
       "-1 edges: x → y",
       "~2 changed: a1, z1",
       "missing 2 tokens: a, b",
+      // The warning travels with the REJECTION, which is the moment a retry is decided.
+      "No credential shapes found — read the coverage limit below before sharing.",
+      CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     ]);
   });
 
@@ -300,6 +515,9 @@ describe("renderView", () => {
       "Blocked: export did not complete",
       "gates: structural PASS · transcript PASS",
       "no structural or token differences reported",
+      // The warning travels with the REJECTION, which is the moment a retry is decided.
+      "No credential shapes found — read the coverage limit below before sharing.",
+      CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     ]);
   });
 
