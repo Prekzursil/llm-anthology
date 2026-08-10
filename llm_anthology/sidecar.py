@@ -103,15 +103,15 @@ Method status (all implemented; honest caveats inline)
                          gate-enforced by ``llm_anthology.export.export_with_gate``. This bite
                          exports the GRAPH only (the sidecar holds no rendered transcripts),
                          so ``transcript_gate`` is vacuously true.
-* ``search.query``     — FULL match/provider-filter/paging. ``snippet`` comes from the
-                         (sanitized) title — the FTS index is CONTENTLESS so no body
-                         span is retrievable — and ``score`` is POSITIONAL because
-                         FTS5 ``rank`` collapses to a constant under ``detail=none``
-                         (measured ``rank = -0.0`` for every row). Both are honest.
-                         Since ``rank`` carries no signal, results are ordered NEWEST
-                         FIRST with ``conversation_id`` breaking ties; that total order
-                         is what makes ``LIMIT``/``OFFSET`` paging partition the result
-                         set. ``score`` therefore ranks recency, not relevance.
+* ``search.query``     — FULL match / paging / D-3 facets. ``provider``, ``since`` and
+                         ``until`` narrow the set (dates are ``YYYY[-MM[-DD]]``, inclusive
+                         at whatever width is given); ``histogram`` asks for a
+                         hits-over-time roll-up of the WHOLE filtered set. ``snippet`` is
+                         the (sanitized) title — the FTS index is CONTENTLESS, so no body
+                         span is retrievable — and ``score`` stays POSITIONAL over a
+                         bm25-ordered page: G-4 gave ``rank`` a real signal, so the ORDER is
+                         relevance now, ``conversation_id`` breaking ties for the total
+                         order that makes ``LIMIT``/``OFFSET`` partition the result set.
 * ``thread.get``       — FULL metadata. ``rollout_path`` is withheld from the wire (a
                          local FS path) and surfaced only as ``has_rollout: bool``.
 * ``conversation.get`` — FULL re-parse from EVERY rollout leg the index recorded for the
@@ -1154,11 +1154,9 @@ class Sidecar:
         query = _req_str(params, "q")
         limit = _opt_int(params, "limit", 50)
         offset = _opt_int(params, "offset", 0)
-        provider = params.get("provider")
-        if provider is not None and not isinstance(provider, str):
-            raise RpcError(-32602, "provider must be a string")
+        filt, bucket = _search_filters(params), _opt_bucket(params)   # D-3, both validated
         start = time.perf_counter()
-        total, rows = self._run_search(query, limit, offset, provider)
+        total, rows = self._run_search(query, limit, offset, filt)
         hits = []
         for i, row in enumerate(rows):
             hit = {"conversation_id": row["conversation_id"],
@@ -1171,8 +1169,10 @@ class Sidecar:
             if ts is not None:
                 hit["ts_ms"] = ts
             hits.append(hit)
+        extra = _hits_over_time(self.conn, query, filt, bucket)  # {"histogram": [..]} or {}
         took_ms = int((time.perf_counter() - start) * 1000)
-        return {"hits": hits, "total": total, "took_ms": took_ms}
+        out = {"hits": hits, "total": total, "took_ms": took_ms}
+        return dict(out, **extra)
 
     def _thread_get(self, params):
         self._require_corpus()
@@ -1825,22 +1825,22 @@ class Sidecar:
             result["written_path"] = _clean(report["path"])
         return result
 
-    def _run_search(self, query, limit, offset, provider):
-        """Mirror corpus.search's contentless-FTS JOIN, adding the offset/provider/total
-        the cockpit needs (the library primitive offers only limit)."""
+    def _run_search(self, query, limit, offset, filt):
+        """Mirror corpus.search's contentless-FTS JOIN, adding the offset/total the cockpit
+        needs (the primitive offers only limit) plus the D-3 facets. `filt` is the validated
+        ``(provider, since, until)`` triple from `_search_filters`; the WHERE fragment comes
+        from ``corpus.search_filter_sql`` rather than being spelled again here, because two
+        copies of a filter policy drift silently and both still return a plausible page."""
         match = fts_match_expression(query)
         if not match:
             # No usable token — e.g. the user typed only punctuation or whitespace. An empty
             # MATCH is itself an FTS5 syntax error, so this must short-circuit rather than be
             # passed on. Zero results is the honest answer to a query with no terms.
             return 0, []
-        where = "conversations_fts MATCH ?"
-        args = [match]
-        if provider is not None:
-            where += " AND c.provider = ?"
-            args.append(provider)
-        frm = ("FROM conversations_fts JOIN conversations c "
-               "ON c.rowid = conversations_fts.rowid WHERE " + where)
+        clause, bound = corpus.search_filter_sql(*filt)
+        frm = ("FROM conversations_fts JOIN conversations c ON c.rowid = "
+               "conversations_fts.rowid WHERE conversations_fts MATCH ?" + clause)
+        args = [match] + bound
         total = self.conn.execute("SELECT COUNT(*) " + frm, args).fetchone()[0]
         # MOST RELEVANT FIRST, `conversation_id` breaking ties — a TOTAL order, which is what
         # makes LIMIT/OFFSET paging correct instead of lucky.
@@ -2143,6 +2143,109 @@ def main(argv=None, stdin=None, stdout=None):
         if conn is not None:             # release the index on EOF/shutdown
             conn.close()
     return 0
+
+
+# ------------------------------------------------ D-3 search facets (APPENDED, see below)
+#
+# WHY THESE THREE LIVE AT THE BOTTOM AND NOT BESIDE `_opt_int` / `_req_str`, WHERE A READER
+# WOULD LOOK FIRST. `cockpit/src/ipc/mock.ts` and `types.ts` document this module by citing
+# exact line numbers — roughly forty of them, reaching most of the way down the file — and
+# `tests/test_citation_anchors.py` pins every one against the line it names. (That table is
+# the authority for the current set; a number repeated here would just be a second copy free
+# to rot, which is the defect the table exists to catch.) Inserting a helper up with the
+# other `_opt_*` functions pushes all of those citations down, and the repair is then not
+# "re-anchor a test" — it is editing citation TEXT inside two cockpit files, which this work
+# unit does not own. So the new code is APPENDED, exactly as `corpus.py`'s schema-version
+# section is and for exactly the same reason, and `_search_query`/`_run_search` were rewritten
+# to the same line count they already had. Module globals resolve at CALL time, so the
+# position costs nothing at runtime.
+#
+# The honest cost of the constraint, stated rather than hidden: proximity. A reader looking
+# for the `since` validator beside the other param readers will not find it there. This
+# section header is the compensation, and it is a worse one than adjacency would have been.
+
+
+def _search_filters(params):
+    """The D-3 facet triple ``(provider, since, until)`` off the wire, VALIDATED -> -32602.
+
+    VALIDATED HERE, AT THE EDGE, and not lazily inside the query builder. `_run_search`
+    short-circuits on a query with no usable token, so a malformed ``since`` beside a query
+    of pure punctuation would have produced a cheerful zero-hit page instead of an error —
+    the same "looks like a true negative" failure `corpus.date_bound` exists to prevent, one
+    layer up.
+
+    ``corpus.date_bound`` is REUSED rather than restated, so the RPC and the library cannot
+    come to disagree about what a date is. Its ValueError is TRANSLATED to -32602 because
+    letting it escape as -32603 "internal error" would tell the UI the engine broke when the
+    truth is that the user typed a bad date; only -32602 lets the UI say which field.
+    """
+    provider = params.get("provider")
+    if provider is not None and not isinstance(provider, str):
+        raise RpcError(-32602, "provider must be a string")
+    bounds = []
+    for key in ("since", "until"):
+        if key not in params:
+            bounds.append(None)
+            continue
+        try:
+            bounds.append(corpus.date_bound(params[key], key))
+        except ValueError as e:
+            raise RpcError(-32602, str(e))
+    return (provider, bounds[0], bounds[1])
+
+
+def _opt_bucket(params):
+    """The optional ``histogram`` granularity -> a `corpus.search_histogram` bucket name, or
+    None when the caller did not ask for one.
+
+    ABSENT MEANS DO NOT COMPUTE IT, which is why this is a granularity STRING and not a
+    boolean with a default: the cockpit already calls ``search.query``, and an old caller
+    must pay neither a new response key nor a second SQL query. ``True`` is refused
+    explicitly rather than coerced — a flag-shaped value from a caller that guessed the API
+    has to fail loudly instead of silently selecting a granularity nobody chose.
+    """
+    if "histogram" not in params:
+        return None
+    value = params["histogram"]
+    if isinstance(value, str) and value in corpus.SEARCH_BUCKETS:
+        return value
+    raise RpcError(-32602, "histogram must be one of %s"
+                   % ", ".join(sorted(corpus.SEARCH_BUCKETS)))
+
+
+def _hits_over_time(conn, query, filt, bucket):
+    """``{"histogram": [{"bucket": key, "count": n}, ...]}``, or ``{}`` when no granularity
+    was asked for.
+
+    A DICT rather than a list-or-None so the caller MERGES it into the response instead of
+    branching on the wire shape. That is what keeps the pre-D-3 response exactly three keys:
+    absent means the key never appears at all.
+
+    DELIBERATELY NOT PAGE-SCOPED. It rolls up the whole filtered match set, not the ``limit``
+    rows this page returned, because its entire job is to tell the user where the OTHER pages
+    are. Hence its counts sum to ``total`` and not to ``len(hits)`` — an invariant
+    `test_the_histogram_counts_sum_to_the_total_it_is_drawn_beside` pins, because a roll-up
+    that disagreed with the result count would draw a March missing conversations the list
+    beside it can still open.
+
+    It re-derives the match expression rather than being handed `_run_search`'s. The two must
+    agree — a histogram over a different expression would be a different question — and
+    `fts_match_expression` is a pure tokenizer over one short string, so the honest choice
+    between a second call and widening `_run_search`'s return shape is the second call.
+
+    THE KEY IS `_clean`ed. It is a SLICE OF `created_at`, which an adapter copied out of a
+    source file, so it is other-process-influenceable text bound for a UI — the exact class
+    this module's privacy boundary covers. `dispatch` does not sanitize results globally
+    (every handler does it explicitly, which is how a new wire key gets missed), so a
+    zero-width space inside a corrupt timestamp reached the wire until this call was added.
+    """
+    if bucket is None:
+        return {}
+    match = fts_match_expression(query)
+    if not match:                   # the same short-circuit `_run_search` makes, same reason
+        return {"histogram": []}
+    return {"histogram": [{"bucket": _clean(key), "count": count} for key, count
+                          in corpus.search_histogram(conn, match, bucket, *filt)]}
 
 
 if __name__ == "__main__":       # pragma: no cover

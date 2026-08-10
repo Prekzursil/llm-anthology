@@ -515,7 +515,8 @@ _DIGITS = frozenset("0123456789")
 
 #: How many leading characters of `created_at` each histogram granularity groups on. A
 #: CLOSED vocabulary, because the width is interpolated into SQL: no caller string ever is.
-_BUCKET_WIDTHS = {"year": 4, "month": 7, "day": 10}
+#: PUBLIC so the RPC edge can validate a wire value against the same set the query uses.
+SEARCH_BUCKETS = {"year": 4, "month": 7, "day": 10}
 
 
 def _is_num(text, width, low, high):
@@ -529,8 +530,12 @@ def _is_num(text, width, low, high):
     return len(text) == width and set(text) <= _DIGITS and low <= int(text) <= high
 
 
-def _date_bound(value, name):
+def date_bound(value, name):
     """Validate one temporal bound and return it unchanged, or raise ValueError.
+
+    PUBLIC because the RPC edge validates a wire value BEFORE running anything (a malformed
+    bound beside a query of pure punctuation would otherwise short-circuit into a cheerful
+    zero-hit page), and it must apply this rule rather than a second one of its own.
 
     ACCEPTED: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`. Nothing else — not a full timestamp, not
     `2026-3`, not `2026/03/15`. The reason a near-miss must RAISE rather than be tolerated
@@ -583,7 +588,7 @@ def search_filter_sql(provider=None, since=None, until=None):
     if provider is not None:
         sql += " AND c.provider = ?"
         args.append(provider)
-    bounds = [(_date_bound(value, name), op) for name, value, op
+    bounds = [(date_bound(value, name), op) for name, value, op
               in (("since", since, ">="), ("until", until, "<=")) if value is not None]
     if bounds:
         sql += " AND c.created_at != ''"
@@ -606,10 +611,10 @@ def search_histogram(conn, query, bucket="month", provider=None, since=None, unt
     a bound is given — you cannot ask for March and be handed undated rows — but an
     UNBOUNDED histogram counts them, because then nothing was excluded.)
     """
-    width = _BUCKET_WIDTHS.get(bucket) if isinstance(bucket, str) else None
+    width = SEARCH_BUCKETS.get(bucket) if isinstance(bucket, str) else None
     if width is None:
         raise ValueError("bucket must be one of %s (got %r)"
-                         % (", ".join(sorted(_BUCKET_WIDTHS)), bucket))
+                         % (", ".join(sorted(SEARCH_BUCKETS)), bucket))
     clause, args = search_filter_sql(provider, since, until)
     key = "substr(c.created_at,1,%d)" % width
     return [(row[0], row[1]) for row in conn.execute(
