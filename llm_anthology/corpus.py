@@ -16,7 +16,7 @@ It also owns the ON-DISK contract the parallel build agents write into: INDEX_SC
 contentless FTS5 table over conversation records + threads + thread_spawn_edges + a
 conversation_rollouts leg table + a conversation_bodies archive + a resumable
 ingest_checkpoint table, WAL) and the thin row<->dataclass mapping (upsert_thread /
-add_conversation / search / set_checkpoint / rollout_legs / load_conversation_turns / ...).
+add_conversation / search / set_checkpoint / rollout_legs / load_conversation_body / ...).
 Defining that mapping ONCE, next to the dataclasses and the DDL, is what keeps the fan-out
 of ingest agents from drifting into N incompatible INSERTs.
 
@@ -890,12 +890,16 @@ def indexed_provider(conn, conversation_id):
 # wired. It is exactly the random-access-into-compressed-content primitive this needs, so
 # it is imported rather than a `zstandard.compress` call being sprinkled here.
 #
-# WHY ONE FRAME PER TURN. A frame is independently decompressible, so the framing IS the
-# access granularity. One frame per CONVERSATION would mean the largest real conversation
-# (18.0 M chars, measured) has to be inflated whole to read anything; one frame per LINE
-# would drown 122 MB of text in per-frame headers. Per-turn sits where the reader's own
-# unit of work sits. NOTE, stated plainly: no caller reads a single frame in isolation yet
-# — `load_conversation_turns` wants them all — so per-turn framing is a property of the
+# HOW THE FRAMES ARE SIZED. A frame is independently decompressible, so the framing IS the
+# access granularity — and it is also what decides whether the archive compresses at all.
+# One frame per CONVERSATION would mean the largest real conversation (18.0 M chars,
+# measured) has to be inflated whole to read anything. One frame per TURN was implemented
+# first and measured a 6-8x size MISTAKE, because zstd cannot carry statistics across an
+# independent frame and the mean turn is 494 bytes. `_FRAME_BUDGET` below carries the
+# numbers and the resulting choice: pack turns to 64 KiB.
+#
+# NOTE, stated plainly: no caller reads a single frame in isolation yet —
+# `load_conversation_body` wants them all — so the random-access half is a property of the
 # stored format rather than an exercised optimisation today. It costs nothing to have and
 # cannot be retrofitted without rewriting every archive, which is why it is decided now.
 
@@ -985,11 +989,62 @@ def _turn_from_record(record):
                 for b in record.get("blocks", ())])
 
 
+#: Target DECOMPRESSED size of one archive frame, in bytes of turn JSON.
+#:
+#: THIS NUMBER IS THE WHOLE SIZE OF THE PRODUCT, and it was measured rather than chosen. The
+#: first implementation put ONE TURN PER FRAME, which round-tripped perfectly and was a 6-8x
+#: size mistake: a zstd frame is compressed INDEPENDENTLY, so a 494-byte frame (the measured
+#: mean turn) gives the compressor nothing to learn from. On a 547 KB synthetic conversation:
+#:
+#:   one frame per turn                x1.60   (x1.62 even at zstd level 19 — the frames are
+#:                                              too small for the LEVEL to matter)
+#:   16 KiB frames                     x9.58
+#:   64 KiB frames                    x12.78   <- the knee
+#:  256 KiB frames                    x13.88
+#:   one frame per conversation       x14.41   (and no random access at all)
+#:
+#: At full corpus scale that was 101.3 MB of archive against roughly 13 MB. 64 KiB keeps
+#: essentially all of the ratio while bounding a random-access read at ~64 KiB of inflation
+#: instead of at a whole 18.0 M-char conversation, which is the trade the seekable format
+#: exists to make. `test_the_frame_budget_is_what_makes_the_archive_SMALL` asserts the ratio,
+#: so a change that shrinks frames back toward one-per-turn goes red instead of silently
+#: quadrupling every user's archive.
+_FRAME_BUDGET = 64 * 1024
+
+#: The in-frame record separator. Safe because `json.dumps` escapes a real newline to the two
+#: characters `\` `n` and can never emit a raw one, so no record can contain the delimiter —
+#: `test_a_turn_whose_TEXT_CONTAINS_A_NEWLINE_still_round_trips` pins that rather than
+#: assuming it.
+_RECORD_SEP = b"\n"
+
+
+def _frames(records):
+    """Pack per-turn JSON `records` into frames of at most `_FRAME_BUDGET` bytes.
+
+    Measured in BYTES, not characters: a budget counted in `len(str)` would let a CJK-heavy
+    transcript build frames three times the intended size, and the bound on random-access
+    inflation is the only thing the budget is for. A single record LARGER than the budget
+    still gets a frame to itself rather than being split — a turn is the smallest addressable
+    unit and splitting one would put half a JSON object in each half.
+    """
+    frames, current, size = [], [], 0
+    for record in records:
+        raw = record.encode("utf-8")
+        if current and size + len(raw) > _FRAME_BUDGET:
+            frames.append(_RECORD_SEP.join(current))
+            current, size = [], 0
+        current.append(raw)
+        size += len(raw) + len(_RECORD_SEP)
+    if current:
+        frames.append(_RECORD_SEP.join(current))
+    return frames
+
+
 def encode_turns(turns):
-    """`turns` -> a seekable-zstd archive, one frame per turn. Pure, so the encoding is
-    testable and measurable without a database."""
+    """`turns` -> a seekable-zstd archive, frames packed to `_FRAME_BUDGET`. Pure, so the
+    encoding is testable and measurable without a database."""
     return archive.encode_records(
-        json.dumps(_turn_record(t), **_JSON) for t in turns)
+        _frames(json.dumps(_turn_record(t), **_JSON) for t in turns))
 
 
 def set_conversation_body(conn, conversation_id, turns, meta=None):
@@ -1037,6 +1092,7 @@ def load_conversation_body(conn, conversation_id):
         (conversation_id,)).fetchone()
     if row is None:
         return None
-    turns = [_turn_from_record(json.loads(frame))
-             for frame in archive.SeekableReader(bytes(row[1]))]
+    turns = [_turn_from_record(json.loads(record))
+             for frame in archive.SeekableReader(bytes(row[1]))
+             for record in frame.split(_RECORD_SEP)]
     return turns, json.loads(row[0])

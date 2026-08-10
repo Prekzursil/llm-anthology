@@ -16,9 +16,11 @@ seekable-zstd archive per conversation, ONE FRAME PER TURN, each frame a JSON re
   * `llm_anthology.archive` is reused rather than a second compression path hand-rolled.
     It had zero importers and was nearly deleted as dead code; it is precisely the
     random-access-into-compressed-content primitive this needs.
-  * per-TURN frames, not one frame per conversation and not one frame per line: a frame is
-    independently decompressible, so turn N of an 18.0 M-char conversation (the real
-    corpus's largest) opens without inflating the other 17.9 M.
+  * BYTE-BUDGETED frames (`_FRAME_BUDGET`, 64 KiB of turn JSON), not one frame per turn and
+    not one frame per conversation. A frame is independently decompressible, so reading turn
+    N of an 18.0 M-char conversation inflates ~64 KiB rather than 18 MB — while the frame
+    stays large enough for zstd to actually compress. Per-turn framing was measured first and
+    was a 6-8x size mistake: see `test_the_frame_budget_is_what_makes_the_archive_SMALL`.
   * the frames hold the structured TURN, not the flat FTS body text. A flat body cannot
     reconstruct roles, uuids, timestamps, branch markers or typed blocks, so serving
     `conversation.get` from it would have replaced a missing transcript with a degraded
@@ -26,7 +28,6 @@ seekable-zstd archive per conversation, ONE FRAME PER TURN, each frame a JSON re
 
 PRIVACY: synthetic fixtures only. Every string here was invented for this file.
 """
-import json
 import sqlite3
 
 import pytest
@@ -120,46 +121,101 @@ def test_an_absent_meta_round_trips_as_an_empty_dict_not_None():
 
 # ---------------------------------------------------------------- storing a body
 
-def test_add_conversation_stores_the_turns_as_a_seekable_zstd_archive():
+def test_a_small_conversation_is_ONE_frame_and_a_large_one_is_MANY():
+    """The framing rule, from both ends: frames are filled to a byte budget, so a short
+    conversation is a single frame and a long one is chopped into bounded pieces."""
     conn = _open()
-    corpus.add_conversation(conn, _conv(turns=[_turn(text="one"), _turn(text="two")]))
-    row = conn.execute("SELECT * FROM conversation_bodies").fetchone()
-    assert row["conversation_id"] == "c1"
-    reader = archive.SeekableReader(row["archive"])
-    assert len(reader) == 2, "one frame per turn"
-    assert json.loads(reader.frame(0))["blocks"][0]["text"] == "one"
-    assert json.loads(reader.frame(1))["blocks"][0]["text"] == "two"
+    corpus.add_conversation(conn, _conv("small", turns=[_turn(text="one"), _turn(text="two")]))
+    corpus.add_conversation(conn, _conv("large", turns=[
+        _turn(text="filler line %d " % i * 200) for i in range(60)]))
+    small, large = (archive.SeekableReader(
+        conn.execute("SELECT archive FROM conversation_bodies WHERE conversation_id=?",
+                     (cid,)).fetchone()[0]) for cid in ("small", "large"))
+    assert len(small) == 1, "two tiny turns share one frame"
+    assert len(large) > 1, "a long conversation must be chopped, not stored as one frame"
+    for reader in (small, large):
+        for i in range(len(reader)):
+            assert reader._entries[i].decompressed_size <= corpus._FRAME_BUDGET * 2, (
+                "a frame may overshoot the budget only by one oversized turn")
+    assert [b.text for t in corpus.load_conversation_body(conn, "small")[0]
+            for b in t.blocks] == ["one", "two"]
 
 
-def test_a_single_turn_decompresses_INDEPENDENTLY_of_its_siblings():
+def test_a_FRAME_decompresses_INDEPENDENTLY_of_its_siblings():
     """The whole reason the seekable format is used rather than one zstd frame per
-    conversation: each frame is a complete, self-contained zstd frame, so turn N opens
-    without inflating turn N-1.
+    conversation: each frame is a complete, self-contained zstd frame, so the frame holding
+    turn N opens without inflating the rest of an 18 M-char transcript.
 
-    ASSERTED BY CORRUPTION, not by a size heuristic. The first draft of this test compared
-    compressed sizes and FAILED for a reason worth keeping: `"padding word " * 4000` is
-    52,103 bytes of text that zstd crushes to 113, so the "big" frame came out SMALLER than
-    the 105-byte needle frame and the size comparison proved nothing either way. Overwriting
-    the neighbours' bytes with garbage tests the property directly — if reading frame 1
-    touched frame 0 or 2 it could not possibly succeed.
+    ASSERTED BY CORRUPTION, not by a size heuristic. An earlier draft compared compressed
+    frame sizes and failed for a reason worth keeping: `"padding word " * 4000` is 52,103
+    bytes that zstd crushes to 113, so the "big" frame came out SMALLER than the tiny one and
+    the comparison proved nothing either way. Overwriting one frame's bytes with garbage tests
+    the property directly — if reading a later frame touched it, that read could not succeed.
     """
     conn = _open()
-    big = "padding word " * 4000
+    # each turn is well over the budget, so every turn lands in its own frame and the
+    # needle is reachable by index
+    big = "padding word " * 8000
     corpus.add_conversation(conn, _conv(turns=[
-        _turn(text=big), _turn(text="the needle"), _turn(text=big)]))
+        _turn(text=big), _turn(text=big + " the needle"), _turn(text=big)]))
     blob = bytearray(conn.execute(
         "SELECT archive FROM conversation_bodies").fetchone()[0])
     intact = archive.SeekableReader(bytes(blob))
-    assert len(intact) == 3
-    first, needle = intact._entries[0], intact._entries[1]
-    assert first.decompressed_size > 50000 and needle.decompressed_size < 500, (
-        "the frames must map to individual turns, not to arbitrary byte chunks")
+    assert len(intact) == 3, "a turn larger than the budget gets a frame to itself"
+    first = intact._entries[0]
     # scribble over frame 0 only; the seek table (and so every frame boundary) is untouched
     blob[0:first.compressed_size] = b"\xff" * first.compressed_size
     wounded = archive.SeekableReader(bytes(blob))
-    assert json.loads(wounded.frame(1))["blocks"][0]["text"] == "the needle"
+    assert "the needle" in wounded.frame(1).decode("utf-8")
     with pytest.raises(Exception):
         wounded.frame(0)
+
+
+def test_the_frame_budget_is_what_makes_the_archive_SMALL():
+    """THE MEASUREMENT THAT CHANGED THIS FORMAT, pinned so it cannot silently regress.
+
+    The first implementation put ONE TURN PER FRAME. It round-tripped perfectly and every
+    test above passed — and it was a 6-8x size mistake, because a zstd frame is compressed
+    INDEPENDENTLY and a 494-byte frame gives the compressor nothing to learn from. Measured on
+    a 547 KB synthetic conversation: one frame per turn compressed x1.60, one frame for the
+    whole conversation x14.41, and raising the zstd level barely moved the per-turn figure
+    (x1.60 -> x1.62 at level 19) because the frames were too small for the level to matter.
+    Byte-budgeted frames recover almost all of it — x9.58 at 16 KiB, x12.78 at 64 KiB, x13.88
+    at 256 KiB — so 64 KiB is the knee, and it bounds a random-access read at ~64 KiB instead
+    of at a whole 18 M-char conversation.
+
+    At full corpus scale that was the difference between an archive of 101.3 MB and one of
+    about 13 MB, i.e. between overshooting the G-4 size estimate and landing inside it.
+
+    This asserts the ratio, because that is the property that regresses: any change that
+    shrinks frames back toward one-per-turn will fail here rather than silently quadrupling
+    every user's archive.
+    """
+    conn = _open()
+    turns = [_turn(text="the assistant explained step %d of the plan in some detail " % i * 6)
+             for i in range(500)]
+    corpus.add_conversation(conn, _conv(turns=turns))
+    row = conn.execute(
+        "SELECT text_bytes, LENGTH(archive) AS blob FROM conversation_bodies").fetchone()
+    ratio = row["text_bytes"] / float(row["blob"])
+    assert ratio > 6.0, (
+        "compression collapsed to x%.2f — frames are too small again. Per-turn framing "
+        "measured x1.60 on comparable text; the budget exists to prevent exactly that."
+        % ratio)
+
+
+def test_a_turn_whose_TEXT_CONTAINS_A_NEWLINE_still_round_trips():
+    """The delimiter's safety, asserted rather than assumed. Records are joined with "\\n"
+    inside a frame, which is only sound because `json.dumps` escapes a real newline to the
+    two characters `\\` `n` and can never emit a raw one. If that ever stopped being true, a
+    transcript containing a blank line would silently split into two malformed turns — so the
+    case is tested with the most hostile text available: embedded newlines, a literal
+    backslash-n, and a JSON brace."""
+    conn = _open()
+    nasty = "first line\nsecond line\n\nafter a blank\nliteral \\n and a } brace"
+    corpus.add_conversation(conn, _conv(turns=[_turn(text=nasty), _turn(text="after")]))
+    turns = corpus.load_conversation_body(conn, "c1")[0]
+    assert [b.text for t in turns for b in t.blocks] == [nasty, "after"]
 
 
 def test_the_stored_body_round_trips_every_IR_FIELD_a_turn_carries():
