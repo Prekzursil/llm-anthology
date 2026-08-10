@@ -488,15 +488,135 @@ def set_conversation_rollouts(conn, conversation_id, paths):
 
 # -------------------------------------------------------------- read contract
 
-def search(conn, query, limit=50):
+def search(conn, query, limit=50, provider=None, since=None, until=None):
     """FTS MATCH -> up to `limit` conversation rows, best-ranked first. Returns the
-    retrievable columns (joined from `conversations`), NOT the indexed body."""
+    retrievable columns (joined from `conversations`), NOT the indexed body.
+
+    D-3 FACETS, ALL OPTIONAL AND ALL ADDITIVE. `provider` is an exact match on the column;
+    `since`/`until` are INCLUSIVE `YYYY`, `YYYY-MM` or `YYYY-MM-DD` bounds on `created_at`.
+    Omitting them all reproduces the pre-D-3 statement exactly — `search_filter_sql` returns
+    the empty string, so the query plan of an unfiltered search is untouched.
+
+    `created_at` and NOT `updated_at`, deliberately: `created_at` is the stamp
+    `search.query` already puts on the wire as `ts_ms`, so the facet and the timestamp the
+    user is reading agree. Filtering on a field no surface displays would leave a person
+    unable to tell why a row they can see is missing from their own date range."""
     cols = ",".join("c." + c for c in _CONV_COLS)
+    clause, args = search_filter_sql(provider, since, until)
     return conn.execute(
         "SELECT %s FROM conversations_fts "
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ? ORDER BY rank LIMIT ?" % cols,
-        (query, limit)).fetchall()
+        "WHERE conversations_fts MATCH ?%s ORDER BY rank LIMIT ?" % (cols, clause),
+        [query] + args + [limit]).fetchall()
+
+
+#: The ASCII digits, spelled out. See `_is_num` for why `str.isdigit` is not used.
+_DIGITS = frozenset("0123456789")
+
+#: How many leading characters of `created_at` each histogram granularity groups on. A
+#: CLOSED vocabulary, because the width is interpolated into SQL: no caller string ever is.
+_BUCKET_WIDTHS = {"year": 4, "month": 7, "day": 10}
+
+
+def _is_num(text, width, low, high):
+    """True when `text` is exactly `width` ASCII digits denoting a value in [low, high].
+
+    `str.isdigit` is deliberately NOT used. It answers True for non-ASCII digit characters
+    (Arabic-Indic `٢٠٢٦`, and every other Nd block), and `int()` then parses them happily —
+    so a bound would validate and yet be lexically incomparable to any prefix of an
+    ISO-8601 column, which fails as "you wrote nothing that month" rather than as an error.
+    """
+    return len(text) == width and set(text) <= _DIGITS and low <= int(text) <= high
+
+
+def _date_bound(value, name):
+    """Validate one temporal bound and return it unchanged, or raise ValueError.
+
+    ACCEPTED: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`. Nothing else — not a full timestamp, not
+    `2026-3`, not `2026/03/15`. The reason a near-miss must RAISE rather than be tolerated
+    is that the comparison below is a PREFIX comparison, so `2026-3` would test six
+    characters (`'2026-0' >= '2026-3'`) and match nothing at all. An empty result set is the
+    worst available answer to a typo: it is indistinguishable from a true negative.
+
+    A well-formed but non-existent day (`2026-02-30`) IS accepted, and that is a deliberate
+    non-problem rather than an oversight: as an inclusive prefix bound it behaves exactly as
+    `2026-02-29` would (it admits all of February and nothing in March), so no calendar
+    table is needed to keep it honest.
+    """
+    parts = value.split("-") if isinstance(value, str) else []
+    widths = ((4, 1, 9999), (2, 1, 12), (2, 1, 31))
+    if not (1 <= len(parts) <= 3
+            and all(_is_num(p, *widths[i]) for i, p in enumerate(parts))):
+        raise ValueError(
+            "%s must be YYYY, YYYY-MM or YYYY-MM-DD (got %r)" % (name, value))
+    return value
+
+
+def search_filter_sql(provider=None, since=None, until=None):
+    """The D-3 filter as an AND-ed WHERE fragment -> `(sql, args)`; `("", [])` when nothing
+    is filtered. Every value is BOUND, never interpolated; the only thing formatted into the
+    SQL is a prefix WIDTH derived from a validated bound.
+
+    ONE POLICY, NOT TWO. `search`, `search_histogram` and the sidecar's `_run_search` all
+    call this instead of spelling the clause each. Three copies of a filter would drift
+    silently — each side would still return a plausible page, they would simply stop being
+    the same page — and the caller most likely to diverge is the RPC, which is the only one
+    a user sees.
+
+    Assumes the caller aliased `conversations` as `c`, which all three call sites do.
+
+    WHY A PREFIX COMPARISON, NOT A PADDED TIMESTAMP. `created_at` is an ISO-8601 STRING and
+    the adapters disagree on its tail: `codex_rollout` writes `...Z`, `chatgpt` writes
+    `datetime.isoformat()` (`...+00:00`), Grok can carry nanoseconds, `codex.py` writes `""`.
+    So `created_at <= '2026-03-31'` silently drops every March-31 conversation, because
+    `'2026-03-31T23:59:59Z'` sorts after the bare date. Comparing `substr(created_at, 1, n)`
+    against an n-character bound is inclusive at whatever granularity the caller expressed —
+    `'2026-03'` covers the month, `'2026'` covers the year — and needs no calendar
+    arithmetic, so there is no 28-vs-31 table and no leap-year branch to get wrong.
+
+    AN UNDATED ROW IS EXCLUDED BY EITHER BOUND. `substr('', 1, 7)` is `''` and
+    `'' <= '2026-03'` is TRUE, so without the explicit non-empty requirement an `until`
+    filter would ADMIT exactly the rows a `since` filter rejects: the same facet, opposite
+    answers, no error anywhere. "In this range" must never quietly mean "or undated".
+    """
+    sql, args = "", []
+    if provider is not None:
+        sql += " AND c.provider = ?"
+        args.append(provider)
+    bounds = [(_date_bound(value, name), op) for name, value, op
+              in (("since", since, ">="), ("until", until, "<=")) if value is not None]
+    if bounds:
+        sql += " AND c.created_at != ''"
+    for bound, op in bounds:
+        sql += " AND substr(c.created_at,1,%d) %s ?" % (len(bound), op)
+        args.append(bound)
+    return sql, args
+
+
+def search_histogram(conn, query, bucket="month", provider=None, since=None, until=None):
+    """Hits over time for the SAME match and the SAME filters `search` applies ->
+    `[(bucket_key, count), ...]`, ascending by key. `bucket` is `year`, `month` or `day`.
+
+    THE COUNTS SUM TO THE MATCH COUNT. A conversation the ingest could not date buckets to
+    `""`, which sorts first, rather than being dropped. A roll-up whose total disagrees with
+    the result count is one that silently loses rows, and a UI drawing it beside the result
+    list would show a March missing conversations the list can still open. Reporting the
+    undated ones as their own bucket makes the gap visible instead of absent.
+    (Note the asymmetry, and it is intended: `search_filter_sql` EXCLUDES undated rows once
+    a bound is given — you cannot ask for March and be handed undated rows — but an
+    UNBOUNDED histogram counts them, because then nothing was excluded.)
+    """
+    width = _BUCKET_WIDTHS.get(bucket) if isinstance(bucket, str) else None
+    if width is None:
+        raise ValueError("bucket must be one of %s (got %r)"
+                         % (", ".join(sorted(_BUCKET_WIDTHS)), bucket))
+    clause, args = search_filter_sql(provider, since, until)
+    key = "substr(c.created_at,1,%d)" % width
+    return [(row[0], row[1]) for row in conn.execute(
+        "SELECT %s, COUNT(*) FROM conversations_fts "
+        "JOIN conversations c ON c.rowid = conversations_fts.rowid "
+        "WHERE conversations_fts MATCH ?%s GROUP BY %s ORDER BY %s"
+        % (key, clause, key, key), [query] + args)]
 
 
 def rollout_legs(conn, conversation_id):
