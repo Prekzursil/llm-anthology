@@ -438,6 +438,23 @@ def fts_match_expression(raw):
     is words, and today those same operators are mostly a way to crash it. Prefix search is
     kept, because ``foo*`` is a thing people genuinely type and FTS5 supports ``"foo"*``.
 
+    ONE PIECE OF SYNTAX IS NOW ADMITTED: a DOUBLE-QUOTED phrase (CF-13). ``"alpha bravo"``
+    matches those words adjacently; unquoted input is unchanged, still per-token and ANDed.
+    Quotes were chosen because they are the one search-box convention users already know, and
+    because admitting them costs nothing structurally — the terms inside still come from
+    `_tokenize`, so the no-input-reaches-the-parser property is exactly as total as before.
+    AND/OR/NOT/NEAR and parentheses stay out for the opposite reason: admitting THEM would
+    reopen the expression surface that made ``foo(`` and ``a OR OR b`` crash.
+
+    THIS IS SAFE ONLY BECAUSE detail=none IS UNREACHABLE, and that was verified by execution,
+    not by reading the schema comment that claims it: a ``detail=none`` index raises
+    ``fts5: phrase queries are not supported``, which is the very crash class this function
+    prevents. `corpus.SCHEMA_VERSION` is 2 and `corpus._ADDITIVE_FROM` is EMPTY, so a
+    version-1 (``detail=none``) index is refused by `corpus.open_index` with
+    `IndexRebuildRequired` instead of being opened — driven against a hand-built one, which
+    was refused. `test_a_detail_none_index_cannot_be_opened_at_all` pins it, because if that
+    ever stops being true every phrase emitted here becomes a crash.
+
     WHY EACH QUOTED TERM WAS SPLIT TO A SINGLE TOKEN. Quoting alone was not enough, and the
     first version of this function was wrong in a way that mattered. ``corpus.py`` built the
     index ``detail=none`` (a measured choice: p95 33ms over 2.2M records), and **detail=none
@@ -462,16 +479,57 @@ def fts_match_expression(raw):
     rather than passing on — an empty MATCH is itself a syntax error.
     """
     parts = []
-    for token in (raw or "").split():
-        # A trailing "*" is the user asking for a prefix match; it binds to the last term.
-        prefix = token.endswith("*")
-        terms = _tokenize(token)
-        if not terms:
+    for text, quoted, quoted_prefix in _split_quoted(raw or ""):
+        if quoted:
+            # A PHRASE: every term inside ONE pair of quotes, so FTS5 matches them
+            # adjacently. Still opaque to the expression parser — the terms come from
+            # `_tokenize`, so no character that could BE syntax survives into it.
+            terms = _tokenize(text)
+            if not terms:
+                continue                       # `""` — an empty phrase is a syntax error
+            parts.append('"%s"%s' % (" ".join(terms), "*" if quoted_prefix else ""))
             continue
-        for term in terms[:-1]:
-            parts.append('"%s"' % term)
-        parts.append('"%s"*' % terms[-1] if prefix else '"%s"' % terms[-1])
+        for token in text.split():
+            # A trailing "*" is the user asking for a prefix match; it binds to the last term.
+            prefix = token.endswith("*")
+            terms = _tokenize(token)
+            if not terms:
+                continue
+            for term in terms[:-1]:
+                parts.append('"%s"' % term)
+            parts.append('"%s"*' % terms[-1] if prefix else '"%s"' % terms[-1])
     return " ".join(parts)
+
+
+def _split_quoted(raw):
+    """`raw` -> [(text, is_quoted, prefix)] segments, splitting on double quotes.
+
+    AN UNTERMINATED QUOTE IS CLOSED FOR THE USER rather than refused. `"unclosed` is one of
+    the measured crashers, and admitting quote syntax must not re-admit it: half-typed input
+    is the NORMAL state of a search box, since the user is mid-keystroke between the opening
+    quote and the closing one. Refusing it would make the box flicker an error while someone
+    types the very syntax this function exists to accept.
+
+    A `*` immediately after a CLOSING quote is a prefix on the phrase's last token
+    (`"foo bar"*`, valid FTS5). A `*` anywhere else inside the quotes is just a separator,
+    like every other non-alphanumeric.
+    """
+    out, i, n = [], 0, len(raw)
+    while i < n:
+        opened = raw.find('"', i)
+        if opened < 0:
+            out.append((raw[i:], False, False))
+            break
+        if opened > i:
+            out.append((raw[i:opened], False, False))
+        closed = raw.find('"', opened + 1)
+        if closed < 0:
+            out.append((raw[opened + 1:], True, False))
+            break
+        prefix = closed + 1 < n and raw[closed + 1] == "*"
+        out.append((raw[opened + 1:closed], True, prefix))
+        i = closed + 2 if prefix else closed + 1
+    return out
 
 
 def _tokenize(text):

@@ -86,11 +86,107 @@ def test_ordinary_punctuated_words_do_not_raise_against_a_real_index(raw):
         conn.close()
 
 
-def test_a_quote_is_dropped_as_a_separator():
-    """A quote is not alphanumeric, so it is a token separator like any other punctuation —
-    there is nothing left to escape. (The earlier version doubled it into the phrase instead,
-    which produced exactly the unsupported-phrase crash above.)"""
+def test_a_SINGLE_token_quote_is_indistinguishable_from_an_unquoted_one():
+    """Unchanged output, but no longer for the original reason — worth restating rather than
+    leaving a stale explanation under a passing assertion.
+
+    This used to read "a quote is not alphanumeric, so it is a token separator like any other
+    punctuation". That is now FALSE: CF-13 made quotes significant, and `"hi"` is parsed as a
+    phrase. The result is identical only because a ONE-TERM phrase and a single quoted term
+    are the same string, so this case cannot tell the two designs apart —
+    `test_a_quoted_MULTI_token_string_becomes_one_phrase` is the one that can.
+    """
     assert sidecar.fts_match_expression('say "hi"') == '"say" "hi"'
+
+
+# ------------------------------------------------------- quoted phrases (CF-13)
+#
+# G-4 rebuilt the FTS table at `detail=full` and MEASURED phrase / NEAR / column-filter /
+# term-frequency bm25 all working at the SQL layer, all impossible before. None of it was
+# reachable from the search box: `fts_match_expression` split every token, so no user input
+# could arrive as syntax. The rebuild was unusable from the UI — an unwired seam, like CF-8.
+#
+# WHY A PHRASE IS SAFE NOW, verified by EXECUTION rather than by reading the comment that
+# says so: an index built at `detail=none` raises `fts5: phrase queries are not supported`,
+# and that is the crash `fts_match_expression` was written to prevent. It cannot be reached.
+# `SCHEMA_VERSION` is 2, `_ADDITIVE_FROM` is empty, so a version-1 (detail=none) index is
+# refused by `corpus.open_index` with `IndexRebuildRequired` instead of being opened — driven
+# directly against a hand-built detail=none file, which was refused. Every index the sidecar
+# can serve is therefore detail=full. `test_a_detail_none_index_cannot_be_opened_at_all`
+# pins that, because the whole safety of this feature rests on it.
+#
+# QUOTES ONLY. AND/OR/NOT/NEAR and parentheses stay unreachable, deliberately: quoting is
+# opaque to the FTS5 expression parser, so admitting phrases keeps the total no-input-reaches-
+# the-parser property, while admitting operators would reopen exactly the surface that made
+# `foo(` and `a OR OR b` crash. Phrases were the asked-for minimum and are the whole of what
+# a search box needs; operators would be a different, larger decision.
+
+def test_a_quoted_MULTI_token_string_becomes_one_phrase():
+    """The point of the feature. `file.py` unquoted is still two ANDed terms; QUOTED it is
+    the phrase, which is what a user typing quotes around a filename means."""
+    assert sidecar.fts_match_expression('"file.py"') == '"file py"'
+    assert sidecar.fts_match_expression("file.py") == '"file" "py"'
+
+
+def test_a_phrase_matches_ADJACENT_words_and_not_scattered_ones(index_conn=None):
+    """The behavioural difference, against a REAL index — an expression-shape assertion
+    alone would not show that FTS5 actually treats it as adjacency."""
+    conn = _index_with([("c-adjacent", "alpha bravo charlie"),
+                        ("c-scattered", "alpha zulu bravo")])
+    try:
+        srv = _server(conn)
+        both = {h["conversation_id"]
+                for h in srv.dispatch("search.query", {"q": "alpha bravo"})["hits"]}
+        assert both == {"c-adjacent", "c-scattered"}, both      # unquoted = AND, unchanged
+        only = [h["conversation_id"]
+                for h in srv.dispatch("search.query", {"q": '"alpha bravo"'})["hits"]]
+        assert only == ["c-adjacent"], only                     # quoted = adjacency
+    finally:
+        conn.close()
+
+
+def test_an_UNTERMINATED_quote_is_a_phrase_rather_than_a_crash():
+    """`"unclosed` is in CRASHERS. Admitting quote syntax must not re-admit that crash: the
+    remainder is closed for the user rather than refused or passed through."""
+    assert sidecar.fts_match_expression('"alpha bravo') == '"alpha bravo"'
+    assert sidecar.fts_match_expression('"unclosed') == '"unclosed"'
+
+
+def test_an_empty_or_punctuation_only_quote_contributes_nothing():
+    """`""` has no term, and an empty phrase is itself an FTS5 syntax error."""
+    assert sidecar.fts_match_expression('""') == ""
+    assert sidecar.fts_match_expression('"..."') == ""
+    assert sidecar.fts_match_expression('alpha ""') == '"alpha"'
+
+
+def test_a_prefix_after_a_CLOSING_quote_binds_to_the_phrase():
+    """`"foo bar"*` is valid FTS5 — the prefix applies to the phrase's last token."""
+    assert sidecar.fts_match_expression('"alpha brav"*') == '"alpha brav"*'
+
+
+def test_quoted_and_unquoted_terms_MIX_in_one_query():
+    """The common real input: a phrase plus a loose word."""
+    assert sidecar.fts_match_expression('"alpha bravo" charlie') == '"alpha bravo" "charlie"'
+    assert sidecar.fts_match_expression('charlie "alpha bravo"') == '"charlie" "alpha bravo"'
+
+
+def test_a_detail_none_index_cannot_be_opened_at_all(tmp_path):
+    """The premise the whole feature rests on, pinned by EXECUTION.
+
+    If a legacy `detail=none` index were reachable, every phrase this function now emits
+    would raise `fts5: phrase queries are not supported` — reinstating the exact crash class
+    `fts_match_expression` exists to prevent. It is not reachable, and this proves it against
+    a hand-built one rather than trusting the schema comment that asserts it.
+    """
+    legacy = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("CREATE TABLE conversations (rowid INTEGER PRIMARY KEY, conversation_id TEXT)")
+    conn.execute("CREATE VIRTUAL TABLE conversations_fts "
+                 "USING fts5(title, body, content='', detail=none)")
+    conn.commit()
+    conn.close()
+    with pytest.raises(corpus.IndexRebuildRequired):
+        corpus.open_index(str(legacy))
 
 
 def test_prefix_search_is_preserved():
