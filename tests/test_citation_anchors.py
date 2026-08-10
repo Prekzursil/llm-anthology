@@ -108,6 +108,37 @@ _EXTRA = re.compile(r",(\d+)(?:-(\d+))?")
 #: so the detector was hiding exactly the drift it exists to find.
 _SECONDARY = re.compile(r"`:(\d+)(?:-(\d+))?|,\s*:(\d+)(?:-(\d+))?")
 
+#: (label, end-of-line pattern, the ONLY next-line start that completes a real citation).
+#:
+#: `_citations` matches PER LINE (see the split below), so a citation a docstring has WRAPPED
+#: is invisible to it — and being invisible is strictly worse than being unpinned, because
+#: `test_every_engine_citation_is_pinned` can only demand a pin for a citation it parsed.
+#: Same structural defect as a `grep -c` that returned 0 for a quote real but line-wrapped.
+#:
+#: EACH SHAPE PAIRS ITS OWN COMPLETION, and that pairing is the whole correctness of this
+#: table. A loose version — any line ending in a word-plus-period, followed by any line
+#: starting with a digit — reported EIGHT wrapped citations, every one of them a numbered
+#: list item ("3. turn['branch'] is a git branch NAME"). Over-firing and under-firing are the
+#: same failure; requiring `^py:\d` rather than `^\d` is what separates them.
+_WRAP_JOINS = (
+    ("file.py: / NNN", re.compile(r"\.py:\s*$"), re.compile(r"^\d")),
+    ("file. / py:NNN", re.compile(r"\b\w+\.\s*$"), re.compile(r"^py:\d")),
+    ("file / .py:NNN", re.compile(r"\b[A-Za-z_]+\s*$"), re.compile(r"^\.py:\d")),
+    ("range NNN- / NNN", re.compile(r"\.py:\d+-\s*$"), re.compile(r"^\d")),
+    ("`: / NNN", re.compile(r"`:\s*$"), re.compile(r"^\d")),
+)
+
+
+def _wrapped_citations(text):
+    """-> [(label, lineno, joined text)] for citations split across a line break."""
+    found, lines = [], text.split("\n")
+    for i, line in enumerate(lines[:-1]):
+        nxt = lines[i + 1].strip()
+        for label, end, start in _WRAP_JOINS:
+            if end.search(line) and start.match(nxt):
+                found.append((label, i + 1, line.strip()[-40:] + " / " + nxt[:40]))
+    return found
+
 
 def _citations(text, engines=None):
     """-> (rows, problems). rows are (engine_basename, cited_line) pairs.
@@ -862,6 +893,71 @@ def test_the_unreadable_shape_detector_can_actually_fire():
     assert unreadable("outbound SynSent to 192.0.2.1:445 (SMB)") == [], "an IP:port is not a citation"
     assert unreadable("the agent-mail server on 127.0.0.1:8812") == []
     assert unreadable("see corpus.py:347 and mock.ts:1241") == [], "real filenames are readable"
+
+
+def test_no_citation_is_split_across_a_line_break():
+    """The scraper's OTHER blind spot: not an unreadable shape, an unreadable POSITION.
+
+    `test_no_citation_uses_a_shape_the_scraper_cannot_SEE` catches a citation whose SPELLING
+    `_PRIMARY` cannot parse. This catches one whose spelling is perfect but which a docstring
+    has WRAPPED across two lines, so `_citations` — which matches per line — never sees it at
+    all. Both produce an invisible citation; only the mechanism differs.
+
+    The prompt for this was a real `grep -c` returning 0 for a sentence that IS present in
+    `loaders.py`, wrapped across :581-582. A line-based matcher structurally cannot see text
+    a line break has divided, and every leg in this file is downstream of a line-based match.
+
+    SCANS EVERY ENGINE FILE, NOT `PY_SOURCES`, and the difference is the point. PY_SOURCES is
+    itself derived from what the scraper can SEE, so a file whose ONLY citation is wrapped
+    would be absent from it — invisible to `test_no_citation_carrying_engine_file_escapes_the
+    _sweep` as well. Scanning the tree directly is what stops the two holes from covering for
+    each other.
+
+    Currently ZERO instances; this is a latent fail-open hole in a fail-closed gate, closed
+    before it has cost anything rather than after.
+    """
+    offenders = []
+    paths = [p for p in sorted((REPO / "llm_anthology").rglob("*.py"))
+             if "__pycache__" not in p.parts]
+    paths += [p for p in TS_FILES.values()]
+    for path in paths:
+        for label, lineno, joined in _wrapped_citations(_read(path)):
+            offenders.append(
+                "%s:%d wraps a citation across the line break [%s]: %r — the scraper matches "
+                "per line, so nothing parses or verifies it. Re-flow the comment so the whole "
+                "`<file>.py:<line>` sits on ONE line."
+                % (path.relative_to(REPO).as_posix(), lineno, label, joined))
+    assert not offenders, "citations split across a line break:\n  " + "\n  ".join(offenders)
+
+
+def test_the_wrapped_citation_detector_can_actually_fire():
+    """Control for the test above, in BOTH directions — the rule this thread earned.
+
+    A negative result from a probe that cannot fire is worth nothing, and a probe that fires
+    on everything is worth less than nothing: the first version of this detector reported
+    eight wrapped citations that were all numbered list items, and I was one step from
+    reporting them. So this asserts the positive AND pins the exact near-misses that must
+    stay silent.
+    """
+    def wraps(*lines):
+        return [lab for lab, _n, _t in _wrapped_citations("\n".join(lines))]
+
+    # FIRES — every join shape, one at a time.
+    assert wraps("settled the same question in dedup.", "py:339-345 already") == ["file. / py:NNN"]
+    assert wraps("see llm_anthology/corpus.py:", "347 for the re-index") == ["file.py: / NNN"]
+    assert wraps("the rule lives in dedup", ".py:339 as stated") == ["file / .py:NNN"]
+    assert wraps("the producers at codex_rollout.py:343-", "347 both set it") == ["range NNN- / NNN"]
+    assert wraps("(`maintenance.py:645` ahead of `:", "669`)") == ["`: / NNN"]
+
+    # STAYS SILENT — the eight phantom findings were all this shape: a sentence ending in a
+    # word-plus-period followed by a numbered list item.
+    assert wraps("with a synthesized status block.", "3. turn['branch'] is a git branch NAME") == []
+    assert wraps("no checkpoint, no directory, no move.", "4. repo_file_citation parts carry") == []
+    # ...and ordinary prose that merely ends in a word, or merely starts with a digit.
+    assert wraps("the reader reported rollout", "unavailable for a file that exists") == []
+    assert wraps("measured over the real store", "2043 .zst and zero plain .jsonl") == []
+    # A citation that is NOT wrapped must not be reported as wrapped.
+    assert wraps("see corpus.py:347 for the re-index", "and dedup.py:88 for the map") == []
 
 
 def test_every_engine_citation_is_pinned():
