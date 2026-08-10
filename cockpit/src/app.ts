@@ -12,13 +12,7 @@
 import { ipc } from "./ipc";
 import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
 import { isMoreId, moreParentId } from "./graph/capFanOut";
-import {
-  buildView,
-  graphEmptyLabel,
-  loadAllRoots,
-  loadForest,
-  rootsStatus,
-} from "./graph/forest";
+import { buildView, loadAllRoots, loadForest, rootsStatus } from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
 import { diffToOverlay } from "./graph/diffOverlay";
 import { ElkLayoutEngine, LayoutTimeoutError } from "./graph/elkLayout";
@@ -34,6 +28,7 @@ import { DedupPanel } from "./ui/dedupPanel";
 import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
+import { GraphStrip, graphStripState } from "./ui/graphStrip";
 import { MaintenanceShell } from "./ui/maintenanceShell";
 import { MetadataPanel } from "./ui/metadataPanel";
 import { ReaderOverlay } from "./ui/reader";
@@ -45,10 +40,13 @@ import { Workspace } from "./ui/workspace";
 const ROOT_ROW_HEIGHT = 52;
 
 /*
- * The graph pane's empty-state text and the rule choosing between its two forms now live
- * in `graph/forest.ts` as `graphEmptyLabel`, next to the `complete` flag they depend on
- * and where vitest can reach them. It is still applied through the SAME `data-empty`
- * mechanism the virtualized lists use, so there is one rendering path, not two.
+ * The graph pane's empty state is DECISION D-4 and lives in `ui/graphStrip.ts`: when there is
+ * nothing to draw the pane collapses to a slim explanatory strip, and the canvas is hidden
+ * rather than left blank. That replaces the `data-empty` overlay this pane used to share with
+ * the virtualized lists — not because the mechanism was wrong for a list, but because it cannot
+ * express the case a permanent split layout (DECISION I-2) makes ordinary: a corpus imported
+ * from a plain export (DECISION G-1) has no spawn lineage at all, and the two-answer rule sent
+ * that user to re-open the corpus they had already opened. The lists keep `data-empty`.
  */
 
 /** A cleared canvas, for the transition out of a graph that no longer has any nodes. */
@@ -107,6 +105,8 @@ export class CockpitApp {
   private readonly healthEl = requireEl("health");
   private readonly statsEl = requireEl("stats");
   private readonly graphPaneEl = requireEl("graph-pane");
+  /** Collapses the pane to a slim explanatory strip when there is nothing to draw (D-4). */
+  private readonly graphStrip: GraphStrip;
   private readonly graphStatusEl = requireEl("graph-status");
   private readonly detailEl = requireEl("detail");
   private readonly aggregateBtn = requireEl<HTMLButtonElement>("btn-aggregate");
@@ -119,6 +119,23 @@ export class CockpitApp {
   private currentInput: (LayoutInput & { complete?: boolean }) | null = null;
   /** Whether {@link currentInput} is the WHOLE graph; drives which empty state shows. */
   private currentComplete = true;
+  /**
+   * `corpus.stats().conversations`, or null when there are no stats.
+   *
+   * The signal that separates the two blank panes a user can actually reach: an attached
+   * corpus holding conversations but no spawn lineage (the export case) from nothing attached
+   * at all. Null on a FAILED stats read as well as before the first one — the engine refuses
+   * every read until a corpus is attached, so from here the two are the same situation and
+   * "attach a corpus" is the right advice for both.
+   */
+  private conversationCount: number | null = null;
+  /**
+   * Nodes the last render drew, so the pane's state can be re-decided without re-rendering.
+   *
+   * Needed because one of the decision's inputs changes OUTSIDE a render: auto-discovery
+   * paints into this same pane after `reload()` has already finished.
+   */
+  private graphNodeCount = 0;
   private currentSelect: string | null = null;
   private readonly reader: ReaderOverlay;
   /** The annotations editor. Its subject is set from whichever search hit is selected. */
@@ -153,8 +170,12 @@ export class CockpitApp {
   private loaded = false;
 
   constructor() {
-    this.canvas = new SpawnTreeCanvas(requireEl<HTMLCanvasElement>("tree-canvas"));
+    const canvasEl = requireEl<HTMLCanvasElement>("tree-canvas");
+    this.canvas = new SpawnTreeCanvas(canvasEl);
     this.canvas.setSelectHandler((id) => void this.onNodeSelected(id));
+    // Built from the same element the renderer owns, because the collapse is a HIDE of that
+    // canvas — the pane's own background is not what read as broken, the empty canvas was.
+    this.graphStrip = new GraphStrip(this.graphPaneEl, canvasEl);
 
     this.rootsList = new VirtualList<ThreadNode>(requireEl("roots-list"), {
       itemHeight: ROOT_ROW_HEIGHT,
@@ -277,7 +298,12 @@ export class CockpitApp {
     // Scan ONLY when the restore left us with nothing. A returning user already has their
     // corpus back, and a scan they did not ask for would spend 1.8-7.5s walking their
     // Downloads folder to offer them something they are not looking for.
-    if (this.attachedIndex === null) await this.discovery?.scan();
+    if (this.attachedIndex === null) {
+      await this.discovery?.scan();
+      // The scan paints INTO the graph pane, so the strip's suppression has to be re-decided:
+      // the render above ran while `#discovery` was still empty.
+      this.refreshGraphPane();
+    }
   }
 
   /**
@@ -356,6 +382,10 @@ export class CockpitApp {
   private async loadStats(): Promise<void> {
     try {
       const s = await ipc.corpusStats();
+      // Recorded before anything is painted: `reload` awaits this alongside the other three
+      // loads and only then renders the forest, so the graph pane's empty state is always
+      // decided against THIS corpus's stats rather than the previous one's.
+      this.conversationCount = s.conversations;
       // The same call feeds the search filter, so its choices are the providers this corpus
       // ACTUALLY holds rather than every provider the app can ingest -- offering "gemini"
       // against a codex-only store is a filter that can only ever return nothing.
@@ -365,6 +395,10 @@ export class CockpitApp {
         .join(" · ");
       this.statsEl.textContent = `${s.conversations} conversations · ${s.threads} threads · ${s.edges} edges · ${providers}`;
     } catch (err) {
+      // Forget the previous corpus's count. Carrying it forward would let a failed stats read
+      // describe a pane as "no spawn lineage" on the strength of a number that no longer
+      // refers to anything.
+      this.conversationCount = null;
       this.statsEl.textContent = engineStatusText(err, "stats unavailable");
     }
   }
@@ -440,12 +474,16 @@ export class CockpitApp {
   }
 
   private async renderGraph(input: LayoutInput, selectId: string | null): Promise<void> {
+    // Decide the pane FIRST, and for a second reason beyond tidiness: when this render is the
+    // one that ends a collapse, the canvas has to have a real box before `setGraph` fits a
+    // graph to it. `fitToView` reads a size only the `ResizeObserver` refreshes
+    // (`graph/canvas.ts:175-182`), and the awaited ELK round-trip below is the gap in which
+    // that observer fires. Revealing after the fit would fit to a 0x0 viewport.
+    this.applyGraphPaneState(input.nodes.length);
     if (input.nodes.length === 0) {
-      // Nothing to lay out. Clear the canvas (a previous corpus may still be drawn on
-      // it) and hand the pane its empty state rather than running ELK over an empty
-      // graph, which yields a zero-size layout and leaves a dead black rectangle.
+      // Nothing to lay out. Clear the canvas (a previous corpus may still be drawn on it)
+      // rather than running ELK over an empty graph, which yields a zero-size layout.
       this.canvas.setGraph(EMPTY_GRAPH, false);
-      this.applyGraphEmptyState(0);
       this.graphStatusEl.textContent = "";
       return;
     }
@@ -454,7 +492,6 @@ export class CockpitApp {
       const laid = await this.engine.layout(buildElkGraph(input));
       const positioned = extractLayout(laid, input);
       this.canvas.setGraph(positioned);
-      this.applyGraphEmptyState(positioned.nodes.length);
       if (selectId !== null) this.canvas.select(selectId);
       const crossCount = positioned.edges.filter((e) => e.cross).length;
       // Say how many nodes are behind a "+N more". The graph becomes navigable by ceasing to
@@ -470,15 +507,44 @@ export class CockpitApp {
   }
 
   /**
-   * Reflect "the graph pane has nothing to draw" onto the pane as `data-empty="<label>"`,
-   * exactly as `VirtualList` does for the sidebar lists — same attribute, same
-   * `[data-empty]::after` CSS, and the same already-tested `emptyStateLabel` decision, so
-   * there is one empty-state mechanism in this app rather than two.
+   * Hand the pane its state (DECISION D-4): draw the canvas, or collapse to the strip.
+   *
+   * Every input is gathered here and the decision itself is `graphStripState`, which is pure
+   * and tested — this method exists only because three of the four inputs live on `this` and
+   * the fourth is a DOM read.
    */
-  private applyGraphEmptyState(nodeCount: number): void {
-    const label = graphEmptyLabel(nodeCount, this.currentComplete);
-    if (label === null) this.graphPaneEl.removeAttribute("data-empty");
-    else this.graphPaneEl.setAttribute("data-empty", label);
+  private applyGraphPaneState(nodeCount: number): void {
+    this.graphNodeCount = nodeCount;
+    this.graphStrip.apply(graphStripState({
+      nodeCount,
+      complete: this.currentComplete,
+      conversations: this.conversationCount,
+      discoveryShowing: this.discoveryShowing(),
+    }));
+  }
+
+  /**
+   * Whether auto-discovery is painting into this pane right now.
+   *
+   * A child-node count, which is the exact mirror of the `#discovery:not(:empty)` selector the
+   * CSS used for the same suppression (`styles.css:618`): `DiscoveryPanel` leaves the container
+   * genuinely EMPTY when it has nothing to show, and `index.html` declares it with no
+   * whitespace inside, so "has any child node" and ":not(:empty)" agree here.
+   */
+  private discoveryShowing(): boolean {
+    const el = document.getElementById("discovery");
+    return el !== null && el.childNodes.length > 0;
+  }
+
+  /**
+   * Re-decide the pane without re-rendering the graph.
+   *
+   * For the one input that changes outside a render: the first-run scan paints into this pane
+   * AFTER `reload()` has finished, so the suppression above was decided before there was
+   * anything to suppress it.
+   */
+  private refreshGraphPane(): void {
+    this.applyGraphPaneState(this.graphNodeCount);
   }
 
   private async onNodeSelected(id: string | null): Promise<void> {
