@@ -29,6 +29,7 @@ import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
 import { ExportPanel, renderView, type ExportIpc } from "./ui/exportPanel";
 import { GraphStrip, graphStripState } from "./ui/graphStrip";
+import { MaintenanceGate } from "./ui/maintenanceGate";
 import { MaintenanceShell } from "./ui/maintenanceShell";
 import { MetadataPanel } from "./ui/metadataPanel";
 import { ReaderOverlay } from "./ui/reader";
@@ -142,6 +143,15 @@ export class CockpitApp {
   private readonly metadata: MetadataPanel;
   /** Reveals the three panels that do not fit a 300px column. */
   private readonly workspace: Workspace;
+  /** The opt-in that admits the maintenance plane at all (DECISION G-11). */
+  private readonly maintenanceGate: MaintenanceGate;
+  /**
+   * The maintenance plane, or null until it has been revealed once.
+   *
+   * Held so a second reveal does not build a second copy on top of the first. Deliberately NOT
+   * built in the constructor: with the flag off there is no reveal, so there is no plane.
+   */
+  private maintenance: MaintenanceShell | null = null;
   /**
    * The conversation the annotations editor should be showing.
    *
@@ -230,9 +240,11 @@ export class CockpitApp {
     // conversation's transcript. The reader is a fixed overlay at a higher z-index, so it
     // opens OVER the workspace and closing it returns the user to their results.
     this.metadata.setOnPick((conversationId) => void this.reader.open(conversationId));
-    // Mounts itself into the container; nothing else holds a reference to it, and a local
-    // that only existed to be discarded would trip `noUnusedLocals`.
-    new MaintenanceShell(ipc, requireEl("maintenance-panel"));
+    // NOT built here. The maintenance plane is flag-gated OFF by default (DECISION G-11) and is
+    // constructed on its FIRST reveal instead — see `mountMaintenance`. With the flag off its
+    // button is hidden, so that reveal cannot happen and the plane is never instantiated at
+    // all: "nothing on the floor touches it" is then a fact about the object graph, not a
+    // promise about behaviour.
 
     this.workspace = new Workspace(
       requireEl("workspace"),
@@ -269,12 +281,30 @@ export class CockpitApp {
           button: requireEl<HTMLButtonElement>("btn-maintenance"),
           container: requireEl("maintenance-panel"),
           title: "Maintenance",
+          // Built on first reveal, which the flag gate controls (DECISION G-11).
+          onShow: (firstShow) => {
+            if (firstShow) this.mountMaintenance();
+          },
         },
       ],
       // The reader listens for Escape on `document` too, and it is the one on top. Without
       // this, one press would close the reader AND the panel it was opened from.
       () => this.reader.isOpen,
     );
+
+    // AFTER the workspace, deliberately: revoking the flag has to be able to close a pane that
+    // is currently open, and the gate's callback would otherwise fire against an unassigned
+    // `this.workspace`. (It never fires on construction — see `MaintenanceGate` — so this
+    // ordering is a belt on top of that, not the thing holding it up.)
+    this.maintenanceGate = new MaintenanceGate({
+      container: requireEl("workspace-nav"),
+      button: requireEl<HTMLButtonElement>("btn-maintenance"),
+      onChange: (enabled) => {
+        // Revoked while the plane was on screen. Hiding only the BUTTON would leave the whole
+        // destructive form live in the workspace region, which is the opposite of gating it.
+        if (!enabled && this.workspace.openPane === "maintenance") this.workspace.close();
+      },
+    });
 
     requireEl("btn-forest").addEventListener("click", () => void this.showForest());
     requireEl("btn-fit").addEventListener("click", () => this.canvas.fitToView());
@@ -323,6 +353,19 @@ export class CockpitApp {
       this.adoptCorpus(indexPath);
       void this.reload();
     });
+  }
+
+  /**
+   * Build the maintenance plane, once, on its first reveal (DECISION G-11).
+   *
+   * Guarded on the gate as well as on the null field, so a programmatic `show("maintenance")`
+   * cannot construct the plane while the flag is off. That is not the primary defence — the
+   * button is hidden, which is — but this is the one that holds if a later caller reaches past
+   * the button.
+   */
+  private mountMaintenance(): void {
+    if (this.maintenance !== null || !this.maintenanceGate.enabled) return;
+    this.maintenance = new MaintenanceShell(ipc, requireEl("maintenance-panel"));
   }
 
   /** Record an index attached outside the corpus bar, and make the top bar say so. */
