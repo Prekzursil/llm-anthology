@@ -292,7 +292,7 @@ def init_index(conn):
     wal = "PRAGMA journal_mode=WAL"  # EXECUTED at 294, after the version gate at 293
     check_schema_version(conn)  # REFUSES here, before ANY statement — see D-1 at EOF
     conn.execute(wal)
-    conn.executescript((INDEX_SCHEMA + _BODIES_SCHEMA) % {"fts_opts": _fts_opts()})
+    conn.executescript(_SCHEMA % {"fts_opts": _fts_opts()})
     stamp_schema_version(conn)
     return conn
 
@@ -392,6 +392,7 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
     if body is None:
         body = _conversation_body(conv)
     set_conversation_body(conn, conv.id, conv.turns, conv.meta)
+    set_conversation_model(conn, conv.id, conv.meta)          # D-5, at EOF
     values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
               conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path)
     existing = conn.execute(
@@ -1096,3 +1097,171 @@ def load_conversation_body(conn, conversation_id):
              for frame in archive.SeekableReader(bytes(row[1]))
              for record in frame.split(_RECORD_SEP)]
     return turns, json.loads(row[0])
+
+
+# ------------------------------------------ which MODEL answered, persisted (D-5)
+#
+# Appended for the reason the three blocks above are: this file's line numbers are cited BY
+# LINE from `sidecar.py:737,742`, `discover.py:285`, `claude_code.py:78`, `loaders.py:498`,
+# `mock.ts` and `types.ts`, and `tests/test_citation_anchors.py` turns a shifted anchor into
+# a red build. The single line this change adds ABOVE here sits inside `add_conversation`
+# (below every pinned anchor, the highest of which is 347), and `init_index` was edited in
+# place without changing its line count.
+#
+# THE PREMISE THIS UNIT WAS HANDED WAS STALE, AND SAYING SO IS PART OF THE CHANGE. It was
+# scoped as: the adapters capture `model_id` and it is THROWN AWAY, `conv.meta` is never
+# written, unrecoverable data loss. MEASURED on this tree BEFORE any code was written, with a
+# synthetic conversation on an in-memory index:
+#
+#     conversation_bodies.meta        -> {"model_id":"<synthetic>","cwd":"/tmp"}
+#     load_conversation_body(...)[1]  -> {"model_id": "<synthetic>", ...}
+#     json_extract(meta,'$.model_id') -> matches the row
+#
+# G-4's `set_conversation_body` (one line above the new call) already stores `conv.meta` as
+# compact JSON, so the fact round-trips and NOTHING IS UNRECOVERABLY LOST on a version-2
+# index. The four things that WERE wrong are narrower, and this table fixes each:
+#
+#   1. NO NAMED CONTRACT. `corpus.py` never spelled `model_id`; the fact existed only as an
+#      untyped key inside a blob the adapters own privately, so either adapter renaming its
+#      key would drop it with nothing going red. `MODEL_ID_KEY` is that name now, and
+#      `test_both_capturing_adapters_use_the_contracted_key` pins the two producers to it.
+#   2. NOT QUERYABLE WITHOUT A JSON DECODER. "Which conversations used model X" needed
+#      `json_extract` over every body row — it works (SQLite ships JSON1 here) but cannot be
+#      indexed, is part of no contract, and reaches into another unit's table.
+#   3. THE ONLY CONTRACTED READ PATH INFLATES THE WHOLE BODY. `load_conversation_body`
+#      decodes every frame of the archive to hand back `meta`, so reading one short string off
+#      the measured widest conversation (18.0 M chars) inflated all of it.
+#   4. THE FACT DIED WITH THE BODY. No body row (every pre-G-4 index, or a deleted one) meant
+#      no model either.
+#
+# WHY `SCHEMA_VERSION` IS NOT BUMPED, against the prediction written beside `_ADDITIVE_FROM`.
+# That note says the next additive change "should finally put 2 in here, in the same commit
+# that bumps `SCHEMA_VERSION` to 3". It is a prediction, not a correctness requirement, and
+# following it here would COST something for no gain: a bump makes the PREVIOUS build refuse
+# (`IndexTooNewError`) an index it could read perfectly, because a new empty-tolerant table is
+# not an incompatibility. The marker exists to detect shapes a build cannot safely open, and
+# every build can safely open this one — `IF NOT EXISTS` creates the table on any open and
+# "no row" already means "not recorded yet", which is the convention `rollout_legs` states at
+# `corpus.py:288-291` and which `conversation_rollouts` was added under. The residual is
+# stated rather than hidden: without a bump, an absent row cannot distinguish "this index
+# predates the table" from "the adapter captured no model", exactly as `rollout_legs` cannot.
+# Settling experiment if that distinction ever becomes load-bearing: bump to 3 with
+# `_ADDITIVE_FROM = {2}` (an in-place migration, no rebuild) and read the marker.
+
+#: The `ir.Conversation.meta` key both capturing adapters agreed on, named ONCE here so the
+#: spelling is a contract instead of a coincidence: `adapters/claude_code.py:698` (the model
+#: off the first assistant `message`) and `adapters/grok.py:556` (`current_model_id` off the
+#: session summary). Other adapters capture no model at all, which is why an absent key is
+#: the COMMON case and not an error.
+MODEL_ID_KEY = "model_id"
+
+#: `conversation_models` DDL, kept OUT of `INDEX_SCHEMA` for the append-only reason above.
+#: `init_index` concatenates every block before formatting, so the on-disk result is identical
+#: to having written it inline.
+#:
+#: A new TABLE, never a column on `conversations` — the rule `init_index` states. So it
+#: appears EMPTY the first time this build opens an index that predates it, and
+#: `conversation_model` answering None is what a reader treats as "not recorded yet".
+#:
+#: ONE ROW PER CONVERSATION (`conversation_id` PRIMARY KEY), because that is what the adapters
+#: actually capture: claude_code keeps the FIRST model it sees (`self.model_id or ...`) and
+#: grok reads a single `current_model_id`. Per-TURN attribution would need a different shape
+#: and belongs to the cost ledger, which D-5 explicitly DEFERRED — building it here on the
+#: guess that it will be wanted is how a table acquires columns nothing writes.
+#:
+#: NOT `threads.model_provider`, which is the VENDOR: measured 'openai' on 92.8% of real Codex
+#: rollouts and never a model name (see the field note at the top of this module). The two
+#: live in different tables so the next person cannot conflate them by accident.
+#:
+#: Contains no literal `%`: `init_index` runs `%`-formatting over the concatenation.
+_MODEL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_models (
+    conversation_id TEXT PRIMARY KEY,
+    model_id        TEXT NOT NULL DEFAULT ''
+);
+"""
+
+#: The whole on-disk schema, composed once. `init_index` interpolates `fts_opts` into it.
+#:
+#: A CONSTANT rather than the inline `INDEX_SCHEMA + _BODIES_SCHEMA` that used to sit in
+#: `init_index`: appending a third block there pushed that line past this file's width, and
+#: splitting it in two would have shifted `sqlite3.connect` (cited as `corpus.py:303`) and
+#: `add_conversation` (`corpus.py:347`, cited from `claude_code.py:78` and `loaders.py:498`).
+#: Module globals resolve at CALL time, so a constant defined below its use is harmless.
+_SCHEMA = INDEX_SCHEMA + _BODIES_SCHEMA + _MODEL_SCHEMA
+
+
+def _meta_model_id(meta):
+    """The model id `meta` reports, or "" when it reports none.
+
+    "" is returned for FOUR distinct situations that are all the same thing — absence:
+    no `meta` at all, no key, a blank/whitespace value, and a value that is not a string.
+    A non-string is dropped rather than `str()`-coerced: a model id is a name a provider
+    emitted, and manufacturing `"5"` or `"['x']"` out of a wrong-typed value would put a
+    string no provider ever sent into the one table whose entire purpose is fidelity. The
+    raw value is still in the archived `meta` for anyone diagnosing the adapter.
+    """
+    value = (meta or {}).get(MODEL_ID_KEY)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def set_conversation_model(conn, conversation_id, meta):
+    """Record the model `meta` reports for `conversation_id`. A no-op when it reports none.
+
+    TAKES THE WHOLE `meta` DICT, not a pre-extracted string, so which key holds the model is
+    known in ONE place — next to the table and the column lists. That is the same reason
+    `_CONV_COLS` and `indexed_provider` exist: a second private copy of column-or-key
+    knowledge somewhere else is exactly how it drifts.
+
+    MONOTONE, AND THIS IS THE ONE PLACE THIS MODULE'S WRITERS DELIBERATELY DISAGREE.
+    `set_conversation_rollouts` and `set_conversation_body` both REPLACE unconditionally,
+    because "the ingest is authoritative" — a leg the user deleted must disappear or the
+    reader is sent at a file the ingest no longer believes in. Applying that rule here would
+    be erasure dressed as authority: an absent `model_id` is not the claim "this conversation
+    had no model", it is the ADAPTER not having captured one (a partial re-parse, a truncated
+    first assistant record, a renamed upstream key). So a non-empty value REPLACES a non-empty
+    value, and an absent one leaves whatever is recorded alone. The table holds positive
+    knowledge only and can never lose a fact it once held.
+
+    The cost, stated rather than hidden: a model genuinely corrected TO nothing cannot be
+    unrecorded through this path. Not reachable by the real ingest — both capturing adapters
+    take the first model in an append-only log, so a re-parse yields the same value or none.
+    Settling experiment if it ever matters: an explicit `forget_conversation_model`, which
+    nothing has asked for.
+    """
+    model_id = _meta_model_id(meta)
+    if not model_id:
+        return
+    conn.execute("INSERT OR REPLACE INTO conversation_models"
+                 "(conversation_id, model_id) VALUES (?,?)", (conversation_id, model_id))
+
+
+def conversation_model(conn, conversation_id):
+    """The model recorded for `conversation_id`, or None when none is.
+
+    None is BOTH "this id is not in the index", "this index predates
+    `conversation_models`" and "the adapter captured no model" — the caller must read it as
+    "NOT RECORDED", never as "this conversation had no model". Same contract, and same three
+    way ambiguity, as `rollout_legs` documents at `corpus.py:288-291`.
+
+    Never "": nothing writes a blank, so the answer is a non-empty name or None and a caller
+    does not have to tell the two apart.
+
+    ONE STATEMENT AGAINST ONE TABLE. The pre-existing route to this fact was
+    `load_conversation_body`, which inflates every frame of the archive to hand back `meta`;
+    this reads a short string and touches no body at all, which is also why the model now
+    survives a body that is missing.
+
+    Indexed POSITIONALLY: several callers hand in a bare connection with no row_factory, so
+    `row["model_id"]` would raise on a plain tuple.
+
+    NO PRODUCTION CALLER IN THIS COMMIT, stated plainly. D-5 was split under the EVPI gate:
+    persisting the fact is urgent because an un-persisted one is gone, and the ANALYSIS on
+    top (cost ledger, model-reliance reporting) is DEFERRED. Wiring a `conversation.model`
+    RPC and a cockpit surface is a separate unit that owns `sidecar.py`; this one owns the
+    write contract so that unit has something true to read.
+    """
+    row = conn.execute(
+        "SELECT model_id FROM conversation_models WHERE conversation_id=?",
+        (conversation_id,)).fetchone()
+    return None if row is None else row[0]

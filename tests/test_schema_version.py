@@ -97,6 +97,12 @@ def _premarker_index(path):
     conn.executescript(
         "DROP TABLE schema_meta;\n"
         "DROP TABLE conversation_bodies;\n"
+        # D-5's additive table postdates version 1 too, so a faithful version-1 index has
+        # none. Dropping it changes no assertion here — the refusal fires on the absent
+        # MARKER, before any table is read — but a fixture whose docstring promises "IT
+        # REALLY IS THE OLD SHAPE" while carrying a table the old shape lacks is the quiet
+        # dishonesty that same docstring was written to end.
+        "DROP TABLE conversation_models;\n"
         "DROP TABLE conversations_fts;\n"
         "CREATE VIRTUAL TABLE conversations_fts USING fts5("
         "title, body, content='', detail=none);")
