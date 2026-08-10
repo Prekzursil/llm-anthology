@@ -214,7 +214,7 @@ export class GraphStrip {
     this.strip.className = "graph-strip";
     this.strip.setAttribute("role", "status");
     this.strip.setAttribute("aria-live", "polite");
-    this.strip.hidden = true;
+    setHidden(this.strip, true);
     for (const [prop, value] of STRIP_STYLE) this.strip.style.setProperty(prop, value);
     this.canvas.before(this.strip);
   }
@@ -222,19 +222,47 @@ export class GraphStrip {
   /**
    * Apply a decided state.
    *
-   * `hidden` on the canvas rather than `display:none` through CSSOM: it is the same effect,
-   * it also takes the element out of the accessibility tree (the canvas carries
-   * `role="img"` and a label that would otherwise announce a graph that is not there), and it
-   * is one attribute a probe can read.
+   * Both elements are hidden through {@link setHidden}, which is where the cascade trap that
+   * makes a plain `hidden` insufficient is written down.
    */
   apply(state: GraphStripState): void {
     const collapsed = state.mode === "strip";
-    this.canvas.hidden = collapsed;
+    setHidden(this.canvas, collapsed);
     if (collapsed) this.pane.dataset.graphStrip = state.reason;
     else delete this.pane.dataset.graphStrip;
     // An empty live region is announced by nothing and rendered as a 0-height band; the
     // suppressed case has to leave no trace at all rather than an empty bordered strip.
     this.strip.textContent = state.text;
-    this.strip.hidden = state.text === "";
+    setHidden(this.strip, state.text === "");
   }
+}
+
+/**
+ * Hide or show `el` in a way that survives an author `display` rule.
+ *
+ * `hidden` ALONE DOES NOT HIDE AN ELEMENT THAT AN AUTHOR RULE GIVES A `display`. The
+ * `[hidden] { display: none }` that gives the attribute its effect lives in the UA stylesheet,
+ * and author origin beats UA origin regardless of specificity. `#tree-canvas { display: block }`
+ * (`styles.css:445-452`) is exactly such a rule, so the collapse silently did nothing until
+ * this existed — and `styles.css` already carries EIGHT explicit `[hidden]` rules
+ * (`#reader[hidden]`, `#workspace[hidden]`, `.workspace-pane[hidden]`, …) because every element
+ * with an author `display` has needed the same repair. The strip is hidden this way too, even
+ * though nothing styles `.graph-strip` today, because the follow-up this module asks for is a
+ * rule for exactly that class.
+ *
+ * Both halves are kept: the ATTRIBUTE is what removes the element from the accessibility tree
+ * (the canvas carries `role="img"` and a label naming a spawn-tree graph, `index.html:111`) and
+ * is what a headless probe can read; the inline DECLARATION is what actually stops it painting.
+ *
+ * On show the property is REMOVED, never set to `block`: writing the stylesheet's current choice
+ * into an inline declaration would freeze it, and a later CSS change would silently not apply.
+ *
+ * Neither happy-dom nor jsdom does the cascade, so no unit test can observe the override itself.
+ * `graphStrip.dom.test.ts` pins the declaration; the experiment that would settle the rendering
+ * is a screenshot from `cockpit/tools/` against the real webview.
+ */
+function setHidden(el: HTMLElement, hidden: boolean): void {
+  el.hidden = hidden;
+  if (hidden) el.style.setProperty("display", "none");
+  else el.style.removeProperty("display");
 }

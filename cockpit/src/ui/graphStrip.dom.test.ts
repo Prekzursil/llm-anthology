@@ -154,6 +154,34 @@ describe("GraphStrip.apply — the collapse", () => {
     expect(shell.pane.dataset.graphStrip).toBe("no-lineage");
   });
 
+  it("ALSO sets display:none inline, because `hidden` alone cannot hide this canvas", () => {
+    // The trap this codebase has already hit eight times: `#tree-canvas { display: block }`
+    // (`styles.css:445-452`) is an AUTHOR rule, and the `[hidden] { display: none }` that makes
+    // the attribute work lives in the UA stylesheet — author origin wins, so `hidden` alone
+    // leaves the canvas painted. That is exactly why `styles.css` already carries eight
+    // explicit `[hidden]` rules (`#reader[hidden]`, `#workspace[hidden]`,
+    // `.workspace-pane[hidden]`, …), one per element that has an author `display`.
+    //
+    // Neither happy-dom nor jsdom does the cascade, so no DOM test can OBSERVE the override;
+    // this asserts the inline declaration instead, which beats any author rule and is the one
+    // thing that makes the collapse real. `styles.css` is outside this unit's file scope, so
+    // the stylesheet rule that would let this line go is left to a follow-up.
+    const shell = mount();
+    shell.strip.apply(state());
+    expect(shell.canvas.style.getPropertyValue("display")).toBe("none");
+  });
+
+  it("REMOVES the inline display when the graph comes back, not set it to block", () => {
+    // Removed rather than overwritten: writing `block` would freeze the stylesheet's current
+    // choice into an inline declaration nothing can override, so a later CSS change to the
+    // canvas's display would silently not apply.
+    const shell = mount();
+    shell.strip.apply(state());
+    shell.strip.apply(state({ nodeCount: 3 }));
+    expect(shell.canvas.style.getPropertyValue("display")).toBe("");
+    expect(shell.canvas.getAttribute("style") ?? "").not.toContain("display");
+  });
+
   it("reports each reason on the pane, so four blank panes are told apart", () => {
     const shell = mount();
     const cases: Array<[Partial<Parameters<typeof state>[0]>, string]> = [
@@ -190,6 +218,19 @@ describe("GraphStrip.apply — the collapse", () => {
 });
 
 describe("GraphStrip.apply — auto-discovery suppression", () => {
+  it("hides the STRIP the same double way, so styling `.graph-strip` cannot un-hide it", () => {
+    // The follow-up this module asks for is a `.graph-strip` rule in `styles.css`. The moment
+    // that rule sets a `display` — `flex` for alignment is the obvious one — `hidden` alone
+    // stops hiding this element, and the suppressed case grows an empty bordered band. Same
+    // author-beats-UA cascade as the canvas, pre-empted rather than waited for.
+    const shell = mount();
+    shell.strip.apply(state({ discoveryShowing: true }));
+    expect(shell.el()?.style.getPropertyValue("display")).toBe("none");
+
+    shell.strip.apply(state());
+    expect(shell.el()?.style.getPropertyValue("display")).toBe("");
+  });
+
   it("leaves the canvas collapsed but shows NO strip while discovery is on screen", () => {
     // An empty bordered band saying nothing is worse than no band: it is the same visual
     // noise the suppression exists to remove.
