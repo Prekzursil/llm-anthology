@@ -868,7 +868,7 @@ class Sidecar:
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
     # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
     # (loaders.py:461), and `ingest_exports` accepts one too. True now, and narrower:
-    # NEITHER worker call passes one (sidecar.py:1085, :1088), a call-site gap and not an
+    # NEITHER worker call passes one (sidecar.py:1107, :1110), a call-site gap and not an
     # architectural one — TWO of them since the export half was wired, so a cancel means
     # threading it through both; doing only the first would leave the export ingest
     # uncancellable while the UI claimed otherwise. What still holds: the phase BEFORE it,
@@ -959,7 +959,7 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1015) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1037) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
         LIVE Codex store (codex_state.py:127-130), and an automated probe really did read

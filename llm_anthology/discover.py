@@ -429,7 +429,7 @@ def _reject_nonlocal(path):
 
     A crafted ``\\\\host\\share`` target coerces an outbound SMB/NTLM authentication —
     the Windows hash-leak class — so it is refused rather than stat'ed. Mirrors
-    ``sidecar._reject_nonlocal_path`` (sidecar.py:512).
+    ``sidecar._reject_nonlocal_path`` (sidecar.py:609).
     """
     if path.replace("/", "\\").startswith("\\\\"):
         raise ValueError("root must be a local path, not a UNC/network path: %s" % path)

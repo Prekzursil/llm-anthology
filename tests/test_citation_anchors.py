@@ -478,9 +478,9 @@ PY_PINS = [
     ("sidecar.py", "index.py", 171, "if progress is not None", "the only cooperative abort point in the stack"),
     ("sidecar.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
     ("sidecar.py", "loaders.py", 461, "progress=progress", "...and DOES forward it — the old premise is dead"),
-    ("sidecar.py", "sidecar.py", 1085, "loaders.load_corpus(", "the worker call that passes none"),
-    ("sidecar.py", "sidecar.py", 1088, "loaders.ingest_exports(", "the SECOND uncancellable call site, added when the export half was wired"),
-    ("sidecar.py", "sidecar.py", 1015, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
+    ("sidecar.py", "sidecar.py", 1107, "loaders.load_corpus(", "the worker call that passes none"),
+    ("sidecar.py", "sidecar.py", 1110, "loaders.ingest_exports(", "the SECOND uncancellable call site, added when the export half was wired"),
+    ("sidecar.py", "sidecar.py", 1037, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
     ("sidecar.py", "cli.py", 168, "checked = [args.src, args.chatgpt_projects]",
      "the CLI existence-check the export guard ports, harvest deliberately excluded"),
     ("sidecar.py", "index.py", 168, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
@@ -514,7 +514,7 @@ PY_PINS = [
     ("discover.py", "gemini.py", 1, 'Google Takeout "Gemini Apps"', "the Takeout activity shape"),
     ("discover.py", "gemini.py", 8, "probed from the real transcript.json", "its probed schema"),
     ("discover.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "the same home resolution discovery uses"),
-    ("discover.py", "sidecar.py", 512, "def _reject_nonlocal_path", "the path refusal this mirrors"),
+    ("discover.py", "sidecar.py", 609, "def _reject_nonlocal_path", "the path refusal this mirrors"),
     ("discover.py", "codex_state.py", 11, "READ-ONLY + IMMUTABLE", "why the probe opens mode=ro&immutable=1"),
 
     # ------------------------------------------------------------------------ cli.py (4)
@@ -536,7 +536,7 @@ PY_PINS = [
     ("claude_code.py", "grok.py", 626, "def _read_subagents", "grok has the PARENT read `subagents/`"),
     ("claude_code.py", "claude.py", 175, "def _active_path", "the DAG walk this deliberately does NOT do"),
     ("claude_code.py", "grok.py", 632, "glob.escape", "the percent/bracket-bearing slug hazard"),
-    ("claude_code.py", "sidecar.py", 1739, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
+    ("claude_code.py", "sidecar.py", 1891, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
     ("claude_code.py", "render_html.py", 191, 'if b.type == "media"', "the renderer needs a LOCAL relative path"),
     ("claude_code.py", "render_html.py", 163, "body = content if isinstance(content, str)", "a result is JSON-dumped"),
     ("claude_code.py", "claude.py", 238, 'for item in (m.get("content")', "the claude.ai block vocabulary this matches"),
@@ -560,8 +560,8 @@ PY_PINS = [
     # `corpus.py` documents WHO cites it, so half of these are BACK-references — a citation
     # pointing at another file's citation. They rot in both directions at once and nothing
     # was watching them: `sidecar.py:737,742` was stale at BOTH sites when this was added.
-    ("corpus.py", "sidecar.py", 749, "check_same_thread=True (corpus.py:303)", "a back-ref: who cites corpus by line"),
-    ("corpus.py", "sidecar.py", 754, "WAL (corpus.py:292)", "the other sidecar back-ref"),
+    ("corpus.py", "sidecar.py", 858, "check_same_thread=True (corpus.py:303)", "a back-ref: who cites corpus by line"),
+    ("corpus.py", "sidecar.py", 863, "WAL (corpus.py:292)", "the other sidecar back-ref"),
     ("corpus.py", "discover.py", 285, "# corpus.py:179,197", "discover's schema citation"),
     ("corpus.py", "claude_code.py", 78, "`corpus.py:347` (`add_conversation`)", "the adapter's add_conversation citation"),
     ("corpus.py", "loaders.py", 498, "(corpus.py:347-360)", "loaders' re-index citation"),
@@ -575,7 +575,7 @@ PY_PINS = [
     # ------------------------------------------------------------------------ grok.py (3)
     ("grok.py", "codex_rollout.py", 156, 'ir.Block("thinking"', "what codex does with a reasoning summary"),
     ("grok.py", "render_html.py", 148, 'if b.type == "thinking"', "a thinking block renders in a collapsed <details>"),
-    ("grok.py", "sidecar.py", 1739, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
+    ("grok.py", "sidecar.py", 1891, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
 ]
 
 #: Secondary anchors in the engine that belong to a NON-`.py` primary written on an EARLIER

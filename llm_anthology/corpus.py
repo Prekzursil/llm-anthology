@@ -736,7 +736,7 @@ def _fts_opts():
 #
 # WHY THIS SECTION SITS AT THE END OF THE MODULE, below the code that calls it. Module
 # globals resolve at CALL time, so the position is harmless — and it is deliberate:
-# `corpus.py` line numbers are cited BY LINE from other modules (`sidecar.py:749,754`,
+# `corpus.py` line numbers are cited BY LINE from other modules (`sidecar.py:858,863`,
 # `discover.py:285`, `claude_code.py:78`, `cockpit/src/ipc/types.ts`) and pinned by
 # `tests/test_citation_anchors.py`, so inserting lines higher up silently rots citations
 # in files this change does not own. Append-only is the honest way to grow this file.
@@ -1255,7 +1255,7 @@ def load_conversation_body(conn, conversation_id):
 # ------------------------------------------ which MODEL answered, persisted (D-5)
 #
 # Appended for the reason the three blocks above are: this file's line numbers are cited BY
-# LINE from `sidecar.py:749,754`, `discover.py:285`, `claude_code.py:78`, `loaders.py:498`,
+# LINE from `sidecar.py:858,863`, `discover.py:285`, `claude_code.py:78`, `loaders.py:498`,
 # `mock.ts` and `types.ts`, and `tests/test_citation_anchors.py` turns a shifted anchor into
 # a red build. The single line this change adds ABOVE here sits inside `add_conversation`
 # (below every pinned anchor, the highest of which is 347), and `init_index` was edited in
