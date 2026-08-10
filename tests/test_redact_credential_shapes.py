@@ -229,6 +229,95 @@ def test_shareable_thread_keeps_structure_titles_and_repo_branch():
     assert (out.agent_role, out.agent_nickname) == ("impl", "brisk-heron")
 
 
+def test_a_TITLE_that_is_a_path_is_relativized_like_any_other_path():
+    """CF-23. `title` and `git_branch` passed through VERBATIM while `cwd` beside them was
+    correctly relativized, so a shareable artifact could carry the OS username in a field
+    nobody was checking.
+
+    NOT A CORNER CASE. A Codex title is `_first_line(first_user, 80)` — the user's opening
+    message — so in a coding corpus the title FREQUENTLY IS A PATH. A reviewer put exactly
+    this shape into a SHAREABLE export next to a correctly-relativized `"cwd": "~"`.
+
+    THIS DOES NOT REVERSE THE G-6 TRADE. The owner accepted publishing content-derived
+    titles and repo/branch names; they did not accept publishing their username. Applying
+    the home prefix and keeps the field, so the accepted trade survives intact and only the
+    part nobody agreed to goes.
+
+    THE PRESCRIBED FIX WOULD NOT HAVE CLOSED IT, which is why this uses a different
+    function. `relativize_home` rewrites only a string that IS a home-rooted path; MEASURED,
+    it returns `see C:/Users/someone/notes.md` untouched, because the value does not start
+    at the root. Applying it to `title` would have looked like a fix, shipped green, and left
+    the reviewer's exact probe leaking — while making the honest UI warning beside it read as
+    over-cautious. `scrub_home_mentions` substitutes the home root wherever it appears.
+    """
+    meta = _full_thread()
+    meta.title = r"see C:\Users\someone\notes.md"
+    meta.git_branch = r"wip/C:\Users\someone\scratch"
+    out = redact.shareable_thread(meta, home=r"C:\Users\someone")
+    assert out.title == r"see ~\notes.md", out.title
+    assert "someone" not in out.title
+    assert "someone" not in out.git_branch
+
+
+def test_a_title_that_IS_a_bare_home_path_is_scrubbed_too():
+    """The whole-string case the prescribed fix WOULD have covered, kept so the new helper
+    is not weaker than the one it was chosen over."""
+    meta = _full_thread()
+    meta.title = r"C:\Users\someone\notes.md"
+    out = redact.shareable_thread(meta, home=r"C:\Users\someone")
+    assert "someone" not in out.title
+    assert out.title == r"~\notes.md", out.title
+
+
+def test_BOTH_separator_spellings_are_scrubbed():
+    """Windows paths reach this field either way — a title typed with forward slashes must
+    not sail through because the home root was spelled with backslashes."""
+    meta = _full_thread()
+    meta.title = "open C:/Users/someone/src and C:\\Users\\someone\\docs"
+    out = redact.shareable_thread(meta, home=r"C:\Users\someone")
+    assert "someone" not in out.title, out.title
+
+
+def test_the_scrub_leaves_text_with_no_home_mention_BYTE_IDENTICAL():
+    """The conservatism guarantee. A redaction that quietly rewrites ordinary prose is its
+    own defect, and this is the assertion that stops the helper growing heuristics."""
+    for text in ["Refactor the parser", "fix D:/work/client-x/repo", "", "~/already"]:
+        assert redact.scrub_home_mentions(text, home=r"C:\Users\someone") == text
+
+
+def test_the_scrub_tolerates_a_non_string():
+    assert redact.scrub_home_mentions(None, home=r"C:\Users\someone") == ""
+
+
+def test_an_empty_home_disables_the_scrub_rather_than_mangling_everything():
+    """Same guard `relativize_home` carries: with no root to match, substituting would be a
+    lie rather than a redaction."""
+    assert redact.scrub_home_mentions("anything at all", home="") == "anything at all"
+
+
+def test_an_ORDINARY_title_and_branch_are_returned_UNCHANGED():
+    """The other half, and the reason this is safe: a value containing no home mention comes
+    back byte-identical. So the accepted G-6 trade is untouched for the common case — this
+    must not quietly start mangling ordinary prose titles."""
+    out = redact.shareable_thread(_full_thread(), home=r"C:\Users\someone")
+    assert out.title == "Refactor the parser"
+    assert out.git_branch == "feature/x"
+
+
+def test_the_agent_NICKNAME_is_deliberately_left_alone():
+    """`brisk-heron` is fine, but a nickname can be `someone@desktop` — a BARE USERNAME, not
+    a path, so `relativize_home` cannot help it and would return it verbatim anyway.
+
+    Left untouched ON PURPOSE and pinned so the omission reads as a decision rather than an
+    oversight. Dropping or hashing it is a product call about what a shareable export owes
+    the reader, and that belongs to the owner, not to this fix.
+    """
+    meta = _full_thread()
+    meta.agent_nickname = "someone@desktop"
+    out = redact.shareable_thread(meta, home=r"C:\Users\someone")
+    assert out.agent_nickname == "someone@desktop"
+
+
 def test_shareable_thread_is_pure():
     meta = _full_thread()
     before = (meta.preview, meta.cwd, meta.rollout_path)

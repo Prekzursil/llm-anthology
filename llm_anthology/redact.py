@@ -347,6 +347,47 @@ def relativize_home(path, home=None):
     return path
 
 
+def scrub_home_mentions(text, home=None):
+    """Replace every MENTION of the home directory inside free text with ``~``.
+
+    SEPARATE FROM :func:`relativize_home` ON PURPOSE, and the difference is the whole reason
+    this exists. `relativize_home` answers "is this string a path under home?" — it rewrites
+    only when the WHOLE value is home-rooted, and returns anything else verbatim. That is
+    exactly right for `cwd` and `rollout_path`, which ARE paths, and changing it would change
+    them, so it is left alone.
+
+    A `title` is not a path. It is `_first_line(first_user, 80)` for the Codex adapter — the
+    user's opening sentence — so the realistic leak is a path EMBEDDED in prose:
+    ``see C:/Users/<name>/notes.md``. MEASURED: `relativize_home` returns that untouched,
+    because it does not start at the home root. Applying it to `title` would therefore have
+    looked like a fix while leaving the demonstrated case leaking, which is worse than not
+    fixing it — the honest UI warning next to this would have been weakened on false evidence.
+
+    CONSERVATIVE BY CONSTRUCTION. It substitutes the home root and nothing else: no
+    username-guessing, no heuristics about what "looks personal". Both separator spellings are
+    matched, case-insensitively, because Windows paths reach here either way. A string
+    containing no home mention is returned byte-identical, so an ordinary prose title is
+    untouched — pinned by a test, since silently mangling titles would be its own defect.
+
+    KNOWN RESIDUAL, stated rather than footnoted: a path OUTSIDE home
+    (``D:/work/client-x``) still passes, exactly as `relativize_home` lets it, and a BARE
+    username (``someone@desktop`` in `agent_nickname`) is not a path at all so nothing here
+    can help it. Both are the owner's call, not this function's.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+    root = (os.path.expanduser("~") if home is None else home).rstrip("/\\")
+    if not root:
+        return text
+    out = text
+    for spelling in {root.replace("\\", "/"), root.replace("/", "\\")}:
+        idx = out.lower().find(spelling.lower())
+        while idx != -1:
+            out = out[:idx] + "~" + out[idx + len(spelling):]
+            idx = out.lower().find(spelling.lower(), idx + 1)
+    return out
+
+
 #: Every ThreadMeta field name, spelled out so :func:`shareable_thread` cannot silently
 #: pass through a field added later. A test asserts this equals ThreadMeta's real field
 #: set, so adding a field turns that test red and forces a keep / drop / relativize call.
@@ -380,12 +421,12 @@ def shareable_thread(meta, home=None):
     """
     return ThreadMeta(
         id=meta.id,
-        title=meta.title,
+        title=scrub_home_mentions(meta.title, home=home),
         model_provider=meta.model_provider,
         tokens_used=meta.tokens_used,
         created_at_ms=meta.created_at_ms,
         updated_at_ms=meta.updated_at_ms,
-        git_branch=meta.git_branch,
+        git_branch=scrub_home_mentions(meta.git_branch, home=home),
         cwd=relativize_home(meta.cwd, home=home),
         agent_role=meta.agent_role,
         agent_nickname=meta.agent_nickname,
