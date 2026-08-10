@@ -758,7 +758,7 @@ class Sidecar:
     # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
     # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
-    # (loaders.py:461). True now, and narrower: the worker (sidecar.py:945) passes none, a
+    # (loaders.py:461). True now, and narrower: the worker (sidecar.py:957) passes none, a
     # call-site gap, not an architectural one. What still holds: the phase BEFORE it,
     # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
     # longest phase would be a lie, and killing the thread is unsafe in CPython. What
@@ -847,7 +847,7 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:890) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:902) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
         LIVE Codex store (codex_state.py:127-130), and an automated probe really did read

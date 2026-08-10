@@ -364,10 +364,20 @@ QUARANTINE = []
 # only from inside the engine. Merging the maps would make that test red for a false reason.
 
 #: The engine files that CARRY citations. A file with none does not belong here.
+#:
+#: HAND-MAINTAINED, AND THAT WAS A HOLE. Every engine test below iterates THIS dict, so a
+#: citation-carrying file missing from it is not "unpinned" — it is invisible: no anchor
+#: check, no pin requirement, no scrape. Measured 2026-08-10: `corpus.py` acquired NINETEEN
+#: citations after the first sweep and was verified by nothing, and two of them
+#: (`sidecar.py:737,742`, written twice as a back-reference) were already stale.
+#: `test_no_citation_carrying_engine_file_escapes_the_sweep` now derives the set from the
+#: tree and fails if this dict disagrees, so the next new source cannot slip through.
 PY_SOURCES = {
     "sidecar.py": REPO / "llm_anthology" / "sidecar.py",
     "discover.py": REPO / "llm_anthology" / "discover.py",
     "cli.py": REPO / "llm_anthology" / "cli.py",
+    "corpus.py": REPO / "llm_anthology" / "corpus.py",
+    "loaders.py": REPO / "llm_anthology" / "loaders.py",
     "claude_code.py": REPO / "llm_anthology" / "adapters" / "claude_code.py",
     "grok.py": REPO / "llm_anthology" / "adapters" / "grok.py",
 }
@@ -384,6 +394,7 @@ PY_TARGETS = {
     "codex_rollout.py": REPO / "llm_anthology" / "adapters" / "codex_rollout.py",
     "codex_state.py": REPO / "llm_anthology" / "adapters" / "codex_state.py",
     "corpus.py": REPO / "llm_anthology" / "corpus.py",
+    "dedup.py": REPO / "llm_anthology" / "dedup.py",
     "discover.py": REPO / "llm_anthology" / "discover.py",
     "gemini.py": REPO / "llm_anthology" / "adapters" / "gemini.py",
     "grok.py": REPO / "llm_anthology" / "adapters" / "grok.py",
@@ -407,8 +418,8 @@ PY_PINS = [
     ("sidecar.py", "index.py", 171, "if progress is not None", "the only cooperative abort point in the stack"),
     ("sidecar.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
     ("sidecar.py", "loaders.py", 461, "progress=progress", "...and DOES forward it — the old premise is dead"),
-    ("sidecar.py", "sidecar.py", 945, "loaders.load_corpus(", "the worker call that passes none"),
-    ("sidecar.py", "sidecar.py", 890, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
+    ("sidecar.py", "sidecar.py", 957, "loaders.load_corpus(", "the worker call that passes none"),
+    ("sidecar.py", "sidecar.py", 902, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
     ("sidecar.py", "index.py", 168, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
     ("sidecar.py", "codex_state.py", 127, "def _db_path", "the LIVE Codex store fallback"),
     ("sidecar.py", "codex_rollout.py", 425, "glob.glob(pattern", "ingest_sessions globs, so a typo'd root is silent"),
@@ -427,7 +438,7 @@ PY_PINS = [
     ("discover.py", "corpus.py", 197, "CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts", "its FTS half"),
     ("discover.py", "codex_state.py", 45, '_DB_NAME = "state_5.sqlite"', "the state-DB marker filename"),
     ("discover.py", "codex_rollout.py", 1, "Codex CLI session rollout logs", "the rollout store shape"),
-    ("discover.py", "sidecar.py", 246, '"claude-code": (claude_code', "the reparser that makes the finding openable"),
+    ("discover.py", "sidecar.py", 258, '"claude-code": (claude_code', "the reparser that makes the finding openable"),
     ("discover.py", "claude_code.py", 1, "Claude Code transcripts", "the adapter that makes this store openable"),
     ("discover.py", "grok.py", 1, "Grok Build session store", "the Grok store shape"),
     ("discover.py", "chatgpt.py", 1, "ChatGPT native export", "the ChatGPT export shape"),
@@ -440,7 +451,7 @@ PY_PINS = [
     ("discover.py", "gemini.py", 1, 'Google Takeout "Gemini Apps"', "the Takeout activity shape"),
     ("discover.py", "gemini.py", 8, "probed from the real transcript.json", "its probed schema"),
     ("discover.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "the same home resolution discovery uses"),
-    ("discover.py", "sidecar.py", 500, "def _reject_nonlocal_path", "the path refusal this mirrors"),
+    ("discover.py", "sidecar.py", 512, "def _reject_nonlocal_path", "the path refusal this mirrors"),
     ("discover.py", "codex_state.py", 11, "READ-ONLY + IMMUTABLE", "why the probe opens mode=ro&immutable=1"),
 
     # ------------------------------------------------------------------------ cli.py (4)
@@ -462,7 +473,7 @@ PY_PINS = [
     ("claude_code.py", "grok.py", 626, "def _read_subagents", "grok has the PARENT read `subagents/`"),
     ("claude_code.py", "claude.py", 175, "def _active_path", "the DAG walk this deliberately does NOT do"),
     ("claude_code.py", "grok.py", 632, "glob.escape", "the percent/bracket-bearing slug hazard"),
-    ("claude_code.py", "sidecar.py", 1665, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
+    ("claude_code.py", "sidecar.py", 1739, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
     ("claude_code.py", "render_html.py", 191, 'if b.type == "media"', "the renderer needs a LOCAL relative path"),
     ("claude_code.py", "render_html.py", 163, "body = content if isinstance(content, str)", "a result is JSON-dumped"),
     ("claude_code.py", "claude.py", 238, 'for item in (m.get("content")', "the claude.ai block vocabulary this matches"),
@@ -470,10 +481,38 @@ PY_PINS = [
     ("claude_code.py", "codex_rollout.py", 31, "THE DEVELOPER ENVELOPE", "the shape codex_rollout drops"),
     ("claude_code.py", "grok.py", 516, "if not parent or not child", "half an edge is never emitted"),
 
+    # ---------------------------------------------------------------------- loaders.py (7)
+    # Pinned but NOT authored here: `loaders.py` is owned by another unit. Two of its nine
+    # anchors are broken and are recorded in PY_KNOWN_BROKEN instead of being fixed, because
+    # fixing them means editing a file outside this sweep's scope.
+    ("loaders.py", "corpus.py", 347, "def add_conversation", "the re-index that replaced the early-return"),
+    ("loaders.py", "codex_rollout.py", 296, "tid = _s(ms.get(", "how a Codex thread id is derived"),
+    ("loaders.py", "codex_rollout.py", 274, 'ir.Turn("human"', "a human turn carrying the provider item id"),
+    ("loaders.py", "codex_rollout.py", 283, 'ir.Turn("assistant"', "the assistant turn opened with the first id"),
+    ("loaders.py", "grok.py", 311, "def want", "grok never sets a turn uuid at all"),
+    ("loaders.py", "codex_rollout.py", 96, "convenience alias of the node id", "thread.id is present by construction"),
+    ("loaders.py", "codex_rollout.py", 103, "def thread_id", "the alias property itself"),
+
+    # ----------------------------------------------------------------------- corpus.py (11)
+    # `corpus.py` documents WHO cites it, so half of these are BACK-references — a citation
+    # pointing at another file's citation. They rot in both directions at once and nothing
+    # was watching them: `sidecar.py:737,742` was stale at BOTH sites when this was added.
+    ("corpus.py", "sidecar.py", 749, "check_same_thread=True (corpus.py:303)", "a back-ref: who cites corpus by line"),
+    ("corpus.py", "sidecar.py", 754, "WAL (corpus.py:292)", "the other sidecar back-ref"),
+    ("corpus.py", "discover.py", 285, "# corpus.py:179,197", "discover's schema citation"),
+    ("corpus.py", "claude_code.py", 78, "`corpus.py:347` (`add_conversation`)", "the adapter's add_conversation citation"),
+    ("corpus.py", "loaders.py", 498, "(corpus.py:347-360)", "loaders' re-index citation"),
+    ("corpus.py", "corpus.py", 288, "`conversation_rollouts` appears", "why a new TABLE is a no-op and a COLUMN is not"),
+    ("corpus.py", "corpus.py", 292, 'wal = "PRAGMA journal_mode=WAL"', "the WAL pragma whose line others cite"),
+    ("corpus.py", "corpus.py", 303, "conn = sqlite3.connect(path)", "the connect whose line others cite"),
+    ("corpus.py", "corpus.py", 347, "def add_conversation", "the function whose line others cite"),
+    ("corpus.py", "claude_code.py", 698, '"model_id": self.model_id', "one of the two model_id producers"),
+    ("corpus.py", "grok.py", 556, '"model_id": _s(summary.get("current_model_id"))', "the other model_id producer"),
+
     # ------------------------------------------------------------------------ grok.py (3)
     ("grok.py", "codex_rollout.py", 156, 'ir.Block("thinking"', "what codex does with a reasoning summary"),
     ("grok.py", "render_html.py", 148, 'if b.type == "thinking"', "a thinking block renders in a collapsed <details>"),
-    ("grok.py", "sidecar.py", 1665, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
+    ("grok.py", "sidecar.py", 1739, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
 ]
 
 #: Secondary anchors in the engine that belong to a NON-`.py` primary written on an EARLIER
@@ -514,6 +553,34 @@ PY_ORPHAN_SECONDARIES = {
     ("claude_code.py", "`:120-122"),
     ("claude_code.py", "`:102"),
 }
+
+#: (source, target, cited line, token it SHOULD have landed on, why it is not fixed here).
+#:
+#: Anchors that are BROKEN and belong to a file this sweep may not edit. Recording them beats
+#: both alternatives: pinning them normally ships a red build for a defect the sweep cannot
+#: close, and omitting them re-opens the exact hole
+#: `test_no_citation_carrying_engine_file_escapes_the_sweep` exists to shut.
+#:
+#: SELF-RETIRING. `test_a_known_broken_anchor_is_still_broken` asserts each is STILL wrong, so
+#: the day the owning unit fixes one, this file goes red and says "move it to PY_PINS". A
+#: waiver that cannot expire is how a defect becomes permanent.
+PY_KNOWN_BROKEN = [
+    (
+        "loaders.py", "dedup.py", 339, None,
+        "TARGET-GONE, the only one in the sweep, and cited TWICE (loaders.py:520 and :582) "
+        "for the rule that 'nothing maps onto nothing'. dedup.py is 317 lines, so :339-345 "
+        "cannot resolve at any offset. A grep for the rule's wording finds nothing in "
+        "dedup.py either, so the cited passage looks DELETED rather than moved — which means "
+        "the claim now rests on a source that may no longer state it. Cannot be re-anchored "
+        "without deciding what the rule's real home is; that is the loaders.py owner's call.",
+    ),
+    (
+        "loaders.py", "claude_code.py", 263, "uuid",
+        "ANCHOR-DRIFTED. Cited from loaders.py:409 for the two adapters agreeing on the SHAPE "
+        "of a turn `uuid` vs `rollout_path`; :263-277 is now the `_int`/`_bump`/`_first_line` "
+        "counter helpers, which say nothing about either. Fixing it means editing loaders.py.",
+    ),
+]
 
 #: Claims found FALSE — not mis-anchored, but contradicted by the code they cite — and
 #: rewritten in place. Recorded so the correction is not silently re-reverted. Unlike
@@ -785,6 +852,9 @@ def test_every_engine_citation_is_pinned():
     is to red-build somebody else's in-flight edit is how a useful check gets disabled.
     """
     pinned = {(s, t, c) for s, t, c, _tok, _a in PY_PINS}
+    # A known-broken anchor still counts as ACCOUNTED FOR — it is recorded, with a reason and
+    # an expiry test, which is the whole difference between a waiver and a blind spot.
+    pinned |= {(s, t, c) for s, t, c, _tok, _w in PY_KNOWN_BROKEN}
     unpinned, problems, exercised, cited = [], [], set(), set()
     for name, path in PY_SOURCES.items():
         rows, probs = _citations(_read(path), engines=PY_TARGETS)
@@ -832,6 +902,56 @@ def test_every_engine_citation_is_pinned():
         "it is gone (delete the entry) — a waiver nothing spends is decoration, and the next "
         "reader will trust it as evidence the anchor was checked." % ", ".join(spent)
     )
+
+
+def test_a_known_broken_anchor_is_still_broken():
+    """Expire the waivers. Each PY_KNOWN_BROKEN row must STILL be wrong.
+
+    A waiver that survives its own defect is worse than no waiver: it reads as a considered
+    decision while silently excusing a line that someone already fixed. So the moment an
+    anchor starts landing, this goes red and asks for the row to be promoted into PY_PINS.
+    """
+    problems = []
+    for src, target, cited, token, why in PY_KNOWN_BROKEN:
+        assert why.strip(), "%s -> %s:%d has no stated reason" % (src, target, cited)
+        lines = _read(PY_TARGETS[target]).split("\n")
+        if cited > len(lines):
+            continue                                    # still past EOF: still broken
+        actual = lines[cited - 1]
+        if token is not None and token not in actual:
+            continue                                    # still landing on the wrong thing
+        problems.append(
+            "%s -> %s:%d now RESOLVES (%r). It was waived as broken because:\n      %s\n"
+            "      Move it into PY_PINS with a real token, and delete this row."
+            % (src, target, cited, actual.strip(), why)
+        )
+    assert not problems, "a known-broken anchor was fixed:\n  " + "\n  ".join(problems)
+
+
+def test_no_citation_carrying_engine_file_escapes_the_sweep():
+    """DERIVE the source set from the tree; a hand-maintained list cannot fail closed.
+
+    Every other engine test iterates PY_SOURCES, so omission is not a weaker check — it is NO
+    check. `corpus.py` proved it: nineteen citations, two of them already stale, verified by
+    nothing, because nobody added it to the dict. This walks `llm_anthology/**/*.py` and
+    requires that anything carrying a `<file>.py:<line>` citation is declared.
+
+    Deliberately asymmetric. A file listed in PY_SOURCES that no longer cites anything is
+    caught by `test_the_engine_scrape_is_not_silently_empty`; this leg catches the opposite
+    and more dangerous direction, a file nothing is watching.
+    """
+    undeclared = []
+    for path in sorted((REPO / "llm_anthology").rglob("*.py")):
+        if "__pycache__" in path.parts or path.name == "__init__.py":
+            continue
+        rows, _problems = _citations(path.read_text(encoding="utf-8"), engines=PY_TARGETS)
+        if rows and path.name not in PY_SOURCES:
+            undeclared.append(
+                "%s carries %d engine citation(s) but is not in PY_SOURCES, so NOTHING "
+                "verifies them — add it (and its PY_PINS rows)"
+                % (path.relative_to(REPO).as_posix(), len(rows))
+            )
+    assert not undeclared, "citation sources escaping the sweep:\n  " + "\n  ".join(undeclared)
 
 
 def test_the_engine_scrape_is_not_silently_empty():

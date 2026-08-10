@@ -166,7 +166,7 @@ from datetime import datetime
 from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
-#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1665` surfaces it to
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1739` surfaces it to
 #: the UI as `provider`. It matches `discover.py:318`'s StoreSpec label so the panel and
 #: the ingest name one store the same way, and it is deliberately NOT "claude" —
 #: `adapters/claude.py` owns that for the claude.ai account export, which is a different

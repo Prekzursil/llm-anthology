@@ -314,7 +314,7 @@ PROVIDERS = (
 
     # Claude Code writes one .jsonl transcript per session under ~/.claude/projects/<slug>/.
     # This finding IS openable: `adapters/claude_code.py:1-6` reads that shape and
-    # `sidecar.py:246` wires it in. (Said "no adapter reads it yet" until that adapter landed.)
+    # `sidecar.py:258` wires it in. (Said "no adapter reads it yet" until that adapter landed.)
     StoreSpec(provider="claude-code", root="claude_home", subdir="projects",
               item_patterns=("*.jsonl",), item_depth=2, report="subdir",
               dir_counter="project_dirs"),
@@ -429,7 +429,7 @@ def _reject_nonlocal(path):
 
     A crafted ``\\\\host\\share`` target coerces an outbound SMB/NTLM authentication —
     the Windows hash-leak class — so it is refused rather than stat'ed. Mirrors
-    ``sidecar._reject_nonlocal_path`` (sidecar.py:500).
+    ``sidecar._reject_nonlocal_path`` (sidecar.py:512).
     """
     if path.replace("/", "\\").startswith("\\\\"):
         raise ValueError("root must be a local path, not a UNC/network path: %s" % path)
