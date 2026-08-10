@@ -495,6 +495,69 @@ def test_the_ingest_holds_only_one_conversation_at_a_time(tmp_path, monkeypatch)
         "number means this route accumulates the export" % (held,))
 
 
+def test_the_streamed_reader_produces_THE_SAME_IR_as_the_whole_file_reader(tmp_path):
+    """THE FIDELITY GATE for G-7, and the reason it exists as an equality rather than a
+    handful of spot checks.
+
+    Streaming swapped `json.load` for `ijson`, and the two are NOT interchangeable at the
+    value level: ijson returns every non-integer as a `decimal.Decimal` unless told
+    otherwise. MEASURED before this gate existed — a ChatGPT export whose records carry
+    `create_time: 1700000000.0` indexed with created_at AND updated_at EMPTY, because
+    `chatgpt._ts_top` tests `isinstance(v, (int, float))` and a Decimal is neither, so
+    every numeric timestamp fell through to the string coercion and became "". Zero errors,
+    exit 0, a corpus with no dates in it. The turn timestamps went the same way, and
+    `_fallback_tip`'s newest-leaf comparison silently scored every candidate -1.0.
+
+    A spot check on one field would have missed the others. Requiring the streamed IR to
+    EQUAL the whole-file IR — dataclass equality, so every turn, block, timestamp and meta
+    dict — closes the whole class, including whatever the next parser difference turns out
+    to be.
+    """
+    # `dated` says whether that adapter emits a conversation date at all. codex is False on
+    # purpose: `codex.parse_conversation` hardcodes created_at/updated_at to "" because the
+    # task export carries no timestamps, so a date assertion there would pass vacuously.
+    exports = {
+        "chatgpt": ([_chatgpt_conv("c-1", "alpha"), _chatgpt_conv("c-2", "bravo")], True),
+        "claude": ([_claude_conv("cl-1", "alpha"), _claude_conv("cl-2", "bravo")], True),
+        "codex": ([_codex_thread("t-1", "alpha"), _codex_thread("t-2", "bravo")], False),
+    }
+    for provider, (doc, dated) in exports.items():
+        src = _write(str(tmp_path / (provider + ".json")), doc)
+        streamed = [conv for conv, err in
+                    loaders._streamed_conversations(provider, src) if conv is not None]
+        adapt = loaders._EXPORT_ADAPTERS[provider]
+        whole = [adapt(raw) for raw in loaders._load_json(src)]
+        assert streamed == whole, provider
+        # ...and the field the Decimal defect actually destroyed, asserted by name so a
+        # future reader knows what the equality above is protecting, and only where the
+        # adapter has a date to lose.
+        assert bool(all(c.created_at for c in whole)) is dated, (
+            "%s: the `dated` expectation is stale, so the date leg below proves nothing"
+            % provider)
+        assert [c.created_at for c in streamed] == [c.created_at for c in whole], provider
+
+
+def test_a_numeric_timestamp_survives_the_stream_into_the_index(tmp_path):
+    """The same defect at the far end of the pipe: an indexed row must carry its dates."""
+    src = _write(str(tmp_path / "conversations.json"), [_chatgpt_conv("ts-1", "alpha")])
+    idx = str(tmp_path / "corpus.sqlite")
+
+    loaders.ingest_exports(idx, [("chatgpt", src, "")])
+
+    conn = corpus.open_index(idx)
+    try:
+        conn.row_factory = None
+        created, updated = conn.execute(
+            "SELECT created_at, updated_at FROM conversations "
+            "WHERE conversation_id='ts-1'").fetchone()
+    finally:
+        conn.close()
+    assert created.startswith("2023-11-") and updated.startswith("2023-11-"), (
+        "created_at/updated_at came back %r/%r — a Decimal from the streaming parser "
+        "falls through chatgpt._ts_top's isinstance check and blanks the date"
+        % (created, updated))
+
+
 # ------------------------------------------------------- fail-closed reporting
 
 def test_a_named_export_that_resolves_to_NO_FILE_is_an_error_not_a_silent_success(

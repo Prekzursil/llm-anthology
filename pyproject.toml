@@ -56,12 +56,18 @@ classifiers = [
 # deliberate, approved trade against writing an incremental JSON parser by hand.
 #
 # Capped BELOW 4 as cheap insurance, but the reason is NOT markdown-it-py's: ijson's
-# surface here is `items(fh, "item")` and `basic_parse(fh)`, so a major that moved either
-# would raise on the first call and go red in CI — a LOUD failure, not the silent
-# user-facing output change an unbounded renderer major produces. That is also why it is
-# deliberately NOT added to `MUST_BE_CAPPED` in tests/test_dependency_rails.py: that gate
+# surface here is `items(fh, "item", use_float=True)` and `basic_parse(fh)`, so a major that
+# moved either would raise on the first call and go red in CI — a LOUD failure, not the
+# silent user-facing output change an unbounded renderer major produces. That is also why it
+# is deliberately NOT added to `MUST_BE_CAPPED` in tests/test_dependency_rails.py: that gate
 # is scoped to dependencies whose output IS the rendered product and whose drift is
-# invisible. The floor is 3.1 — `items`/`basic_parse` predate it — and 3.4+ declares
+# invisible.
+#
+# The FLOOR is 3.1 because that is where `use_float` landed, and `use_float=True` is
+# load-bearing rather than cosmetic: without it ijson returns every non-integer as a
+# `decimal.Decimal`, which measurably emptied every ChatGPT timestamp in the index and
+# changed which active path the adapter picked (see the note on `loaders._export_records`).
+# Verified at 3.1 on BOTH the pure-python and yajl2_c backends. 3.4+ declares
 # `requires-python >=3.9`, which matches this project's floor, with cp39 wheels published
 # for every CI leg (manylinux x86_64, macOS, Windows), so no leg has to compile it.
 dependencies = ["markdown-it-py>=2.2,<5", "zstandard>=0.22", "ijson>=3.1,<4"]

@@ -1002,10 +1002,26 @@ def _export_records(path):
     A top-level array is streamed item by item, so peak memory is one record rather than
     one export. Anything else is a single document — a harvested conversation, a Claude
     design chat — and is small by construction, so it is read whole.
+
+    `use_float=True` IS NOT OPTIONAL, and it is the one place `ijson` and `json` are not
+    interchangeable. ijson returns every non-integer as a `decimal.Decimal` by default,
+    and MEASURED against the whole-file reader that silently emptied every ChatGPT date: a
+    record carrying `create_time: 1700000000.0` indexed with created_at AND updated_at
+    blank, because `chatgpt._ts_top` tests `isinstance(v, (int, float))`, a Decimal is
+    neither, and the value fell through to the string coercion. Turn timestamps went the
+    same way and `_fallback_tip`'s newest-leaf comparison scored every candidate -1.0 — a
+    DIFFERENT ACTIVE PATH from the one the render loaders produce for the same file. Zero
+    errors, exit 0, a corpus with no dates in it. It is also what the `ijson>=3.1` floor in
+    pyproject.toml is for: the option landed in 3.1 (verified there on both the pure-python
+    and yajl2_c backends).
+
+    `test_the_streamed_reader_produces_THE_SAME_IR_as_the_whole_file_reader` is the gate
+    that keeps the two readers equal, per provider, by dataclass equality rather than by a
+    spot check — a spot check on the date would have missed the active-path divergence.
     """
     if _top_level_is_array(path):
         with open(path, "rb") as fh:
-            for item in ijson.items(fh, "item"):
+            for item in ijson.items(fh, "item", use_float=True):
                 yield item
     else:
         yield _load_json(path)
