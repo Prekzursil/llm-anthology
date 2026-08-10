@@ -741,3 +741,35 @@ def stamp_schema_version(conn):
     conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
                  (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)))
     conn.commit()
+
+
+# ------------------------------------------------- who already holds an id (G-1)
+#
+# Appended for the same reason the D-1 block above is appended: this file's line numbers
+# are cited BY LINE from `sidecar.py`, `discover.py`, `claude_code.py`, `mock.ts` and
+# `types.ts`, and `tests/test_citation_anchors.py` turns a shifted anchor into a red
+# build. Growing the module at the end is what keeps a new fact from silently rotting
+# citations in files the change does not own.
+
+def indexed_provider(conn, conversation_id):
+    """The `provider` already recorded for `conversation_id`, or None when the index holds
+    no such conversation.
+
+    WHY A READER EXISTS FOR EXACTLY THIS ONE COLUMN. `add_conversation` is idempotent BY
+    ID and — since it began re-indexing rather than early-returning — OVERWRITES. That is
+    right for a session that GREW, and wrong for two DIFFERENT sources claiming one id:
+    the second write silently replaces the first, no error, no count change, nothing to
+    notice. `loaders._admit` refuses that collision for THREAD ids and reports both
+    sources; the export ingest needs the same refusal for CONVERSATION ids, and the
+    incumbent's provider is the one fact it needs to make it.
+
+    Here rather than as a raw SELECT in `loaders`, because this module owns the
+    row<->dataclass mapping and the column list ONCE — a second private query somewhere
+    else is exactly how column knowledge drifts (the reason `_CONV_COLS` exists).
+
+    Indexed POSITIONALLY: several callers hand in a bare connection with no row_factory,
+    so `row["provider"]` would raise on a plain tuple.
+    """
+    row = conn.execute("SELECT provider FROM conversations WHERE conversation_id=?",
+                       (conversation_id,)).fetchone()
+    return None if row is None else row[0]

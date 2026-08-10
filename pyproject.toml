@@ -46,7 +46,25 @@ classifiers = [
 # three of the four legs and break cross-rail parity: markdown-it-py 4.0.0's release
 # notes put it at upstream Markdown-It v14.1.0, which is the line js/package.json pins
 # at 14.3.0, while 3.x ports the 13.x line.
-dependencies = ["markdown-it-py>=2.2,<5", "zstandard>=0.22"]
+#
+# ijson is REQUIRED for the same class of reason zstandard is: without it a real user's
+# real export is unusable. DECISION G-7 — the export ingest streams the TOP-LEVEL ARRAY of
+# a conversations.json instead of `json.load`-ing it, because a whole-file load was
+# measured at x3.69 memory amplification and the owner's own ChatGPT export is ~728 MB,
+# i.e. ~2.7 GB of peak heap for one import on a laptop. Streaming makes peak memory
+# conversation-sized. Adding a third dependency to a two-dependency project was a
+# deliberate, approved trade against writing an incremental JSON parser by hand.
+#
+# Capped BELOW 4 as cheap insurance, but the reason is NOT markdown-it-py's: ijson's
+# surface here is `items(fh, "item")` and `basic_parse(fh)`, so a major that moved either
+# would raise on the first call and go red in CI — a LOUD failure, not the silent
+# user-facing output change an unbounded renderer major produces. That is also why it is
+# deliberately NOT added to `MUST_BE_CAPPED` in tests/test_dependency_rails.py: that gate
+# is scoped to dependencies whose output IS the rendered product and whose drift is
+# invisible. The floor is 3.1 — `items`/`basic_parse` predate it — and 3.4+ declares
+# `requires-python >=3.9`, which matches this project's floor, with cp39 wheels published
+# for every CI leg (manylinux x86_64, macOS, Windows), so no leg has to compile it.
+dependencies = ["markdown-it-py>=2.2,<5", "zstandard>=0.22", "ijson>=3.1,<4"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4"]

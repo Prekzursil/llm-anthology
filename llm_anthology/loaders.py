@@ -792,3 +792,442 @@ def _persist_graph(conn, result):
         do(lambda c=conv: corpus.set_conversation_rollouts(
             conn, c.id, c.meta["rollout_paths"]))
     do(conn.commit)
+
+
+# =========================================================== export -> corpus (G-1)
+#
+# THE DEFECT THIS CLOSES. Everything above this line reads a LIVE SESSION STORE; the four
+# loaders at the TOP of the file read a DOWNLOADED EXPORT and had exactly one caller each
+# — a render subcommand that writes HTML and Markdown. So the two halves never met: there
+# was no route at all from an export file into the SQLite corpus the desktop app opens,
+# and "import my ChatGPT export" was not a thing the product could do. DECISION G-1
+# promotes those four adapters from render-only second-class to FIRST-CLASS corpus
+# inputs, and `ingest_exports` below is that route.
+#
+# WHY THIS SECTION IS APPENDED AT THE END OF THE FILE, its imports included. Nine
+# `loaders.py` line numbers are cited BY LINE from `sidecar.py`, `discover.py` and
+# `cli.py` — lines 46, 64, 336, 394, 452, 454, 461, 463 and 788 — and
+# `tests/test_citation_anchors.py` makes a shifted anchor a red build, in files this unit
+# does not own and so could not repair. Appending leaves every anchor where it is, and
+# nothing above this line moved. `corpus.py` states the same rule for
+# the same reason at the end of its own module: append-only is the honest way to grow a
+# file whose lines are cited elsewhere. Module globals resolve at CALL time, so an import
+# down here binds before any function below it runs.
+#
+# WHY THIS IS A SECOND ENTRY POINT AND NOT A `load_corpus` PARAMETER. `load_corpus`
+# accumulates every conversation it ingests in `Corpus.conversations` and hands the whole
+# list to `index.build_index`, whose `IndexSource.records` is a materialised list it takes
+# `len()` of. Both are export-SIZED, and DECISION G-7 exists precisely to stop that: the
+# owner's ChatGPT export is ~728 MB and a whole-file `json.load` was measured at x3.69
+# memory amplification, i.e. ~2.7 GB of peak heap for one import. Streaming has to write
+# each conversation and drop it, which no accumulating contract can express. So exports
+# get their own chunked, checkpointed writer here, against the SAME index, the SAME
+# `corpus.add_conversation` write contract and the SAME error/exit-code discipline.
+#
+# WHAT AN IMPORTED EXPORT DELIBERATELY DOES NOT PRODUCE: spawn-graph nodes or edges. An
+# export format carries no parent/child session relationship — only a live agent store
+# does — so an honest ingest contributes ZERO of both, and fabricating either would draw a
+# tree the source data does not contain.
+import hashlib  # noqa: E402 -- see the placement note above
+import ijson  # noqa: E402
+
+#: The EXPORT providers, in the order the CLI lists their flags. Every one is an adapter
+#: that already existed and is NOT rewritten here; this section only routes it.
+EXPORT_PROVIDERS = ("chatgpt", "claude", "codex", "gemini")
+
+#: Export providers whose `provider` label a SESSION-STORE re-parser already owns, so the
+#: export FILE must never be stored in `conversations.rollout_path`.
+#:
+#: `codex` names two different things: a Codex ROLLOUT (JSONL, one session per file, read
+#: by `codex_rollout.parse_rollout_file`) and a Codex TASK EXPORT (a JSON array of
+#: threads). `sidecar._REPARSERS` dispatches on that label alone, so a stored export path
+#: would hand `codex.json` to the rollout parser. MEASURED: that returns a doc with ZERO
+#: turns plus a `line is not a JSON object` parse error — the reader would show an EMPTY
+#: transcript for a conversation search can match, which is the wrong-reader failure the
+#: sidecar's own docstring records for Claude Code. An empty path yields the honest
+#: "rollout unavailable" stub instead, and the file is still recorded as the
+#: conversation's single rollout LEG.
+#:
+#: `test_the_provider_labels_an_export_produces_agree_with_the_readers_the_app_wires`
+#: checks this set against `sidecar._REPARSERS` in BOTH directions, so wiring a reader for
+#: `chatgpt` (or adding a fifth export provider) goes red instead of mis-reading a file.
+EXPORT_PATH_COLLIDES_WITH_A_READER = frozenset({"codex"})
+
+#: Providers that accept a SECOND path, and what that path IS. Anything else with a second
+#: path is refused rather than ignored: a flag that is accepted and does nothing is the
+#: exact failure `load_gemini`'s harvest guard above exists for.
+_EXPORT_SECOND_PATH = {
+    "chatgpt": "a second export file whose conversations join the same dedup pool "
+               "(the render path's --projects)",
+    "gemini": "the web-app harvest that upgrades grouping from the provisional heuristic",
+}
+
+#: Bytes per read while fingerprinting an export. The point is only that it is bounded.
+_HASH_BLOCK = 1 << 20
+
+
+def _export_spec(spec):
+    """Normalise one caller spec to `(provider, path, second_path)`.
+
+    A 2-tuple is accepted so a caller with no second path need not spell an empty one.
+    """
+    provider, path, second = (tuple(spec) + ("",))[:3]
+    return provider, path, second
+
+
+def _export_error(provider, path, stage, message):
+    """One ingest error, shaped like every other entry in this module's error lists and
+    tagged with its `source` the way `_ingest_docs` tags a session store's."""
+    return {"source": provider, "file": os.path.basename(path), "stage": stage,
+            "error": message}
+
+
+def file_hash(path, block=_HASH_BLOCK):
+    """SHA-256 of a file's bytes, read in bounded blocks.
+
+    Byte-identical to `index.hash_content(open(path, "rb").read())` — a digest does not
+    care how it was fed — but it never holds the file, which is the whole point for a
+    728 MB export. Hashing costs one sequential read; PARSING costs far more, so paying it
+    to skip an unchanged file is the cheap side of the trade.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(block), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def export_files(provider, path, second_path=""):
+    """One CLI argument -> the export FILES it stands for, `[]` when it names none.
+
+    `[]` is what makes a typo'd source loud: `ingest_exports` turns it into a `resolve`
+    error rather than a successful ingest of nothing, which is the failure shape this tree
+    has been bitten by repeatedly (a glob that matches nothing, reported as success).
+
+    A path to one FILE is honoured as-is for every provider — a renamed export, one
+    extracted shard, a Takeout transcript. A DIRECTORY resolves per provider, and the
+    rules are the ones the render loaders already use:
+
+      * chatgpt — `_chatgpt_files`, reused rather than copied: a real export ships the
+        corpus sharded as `conversations-000.json ... -NNN.json` (17 shards / 1613
+        conversations measured) and a directory must contribute every one.
+      * claude  — the actual export filename first, `design_chats/*.json` beside it, and
+        any `*.json` only as a fallback. A real export directory also holds users.json,
+        memories.json, projects/ and reflections/, none of which are conversations; the
+        adapter wraps each as one EMPTY conversation, which is how a real corpus once
+        gained ~30 junk entries.
+      * codex   — any `*.json`, since a task export has no fixed filename.
+      * gemini  — a FILE only. `load_gemini` reads the transcript directly and does no
+        globbing, so a directory genuinely stands for nothing here.
+
+    The claude/codex rules are a SECOND copy of logic that `load_claude` and `load_codex`
+    hold inline, because extracting theirs would move the lines two other files cite.
+    `test_the_export_file_resolver_reads_exactly_what_the_render_loaders_read` is the
+    drift gate: it records which paths each render loader actually opens and requires this
+    to match, so the copies cannot diverge in silence.
+    """
+    files = _resolve_export_files(provider, path)
+    if second_path and provider == "chatgpt":
+        # The projects export is a second file in the SAME pool, exactly as
+        # `load_chatgpt` treats it. Gemini's second path is a grouping hint, not a
+        # corpus, so it is NOT resolved here.
+        files = files + _resolve_export_files(provider, second_path)
+    return files
+
+
+def _resolve_export_files(provider, path):
+    if os.path.isfile(path):
+        return [path]
+    if provider == "chatgpt":
+        return _chatgpt_files(path)
+    if provider == "claude":
+        files = sorted(glob.glob(os.path.join(path, "**", "conversations.json"),
+                                 recursive=True))
+        files += sorted(glob.glob(os.path.join(path, "**", "design_chats", "*.json"),
+                                  recursive=True))
+        return files or sorted(glob.glob(os.path.join(path, "**", "*.json"),
+                                         recursive=True))
+    if provider == "codex":
+        return sorted(glob.glob(os.path.join(path, "**", "*.json"), recursive=True))
+    return []
+
+
+def _top_level_is_array(path):
+    """Is this export a top-level JSON ARRAY (streamable) or a single document?
+
+    Read from the FIRST parse event rather than by sniffing a byte, so encoding and
+    leading whitespace are the parser's problem. An empty or truncated file raises here,
+    which the caller records as a `parse` error — the same outcome `json.load` gives it.
+    """
+    with open(path, "rb") as fh:
+        event, _value = next(ijson.basic_parse(fh))
+    return event == "start_array"
+
+
+def _export_records(path):
+    """Yield the RAW records of one export file.
+
+    A top-level array is streamed item by item, so peak memory is one record rather than
+    one export. Anything else is a single document — a harvested conversation, a Claude
+    design chat — and is small by construction, so it is read whole.
+    """
+    if _top_level_is_array(path):
+        with open(path, "rb") as fh:
+            for item in ijson.items(fh, "item"):
+                yield item
+    else:
+        yield _load_json(path)
+
+
+def _chatgpt_record(raw):
+    return chatgpt.parse_conversation(raw)
+
+
+def _codex_record(raw):
+    return codex.parse_conversation(raw)
+
+
+def _claude_record(raw):
+    """The same branch `load_claude` makes, and for the same measured reason: a design
+    chat is a DIFFERENT shape (`messages` + a content dict), and feeding one through
+    `parse_conversation` yields a silently EMPTY conversation."""
+    if claude.is_design_chat(raw):
+        return claude.parse_design_chat(raw)
+    return claude.parse_conversation(raw)
+
+
+#: provider -> the adapter call for ONE record. Held as wrappers rather than as bound
+#: functions so the call stays LATE-bound, the same reason `load_corpus`'s `todo` table
+#: holds adapter MODULES.
+_EXPORT_ADAPTERS = {"chatgpt": _chatgpt_record, "claude": _claude_record,
+                    "codex": _codex_record}
+
+
+def _spec_error(provider, second_path):
+    """The message refusing a malformed spec, or None when it is usable."""
+    if provider not in EXPORT_PROVIDERS:
+        return ("unknown export provider %r; expected one of %s"
+                % (provider, ", ".join(EXPORT_PROVIDERS)))
+    if second_path and provider not in _EXPORT_SECOND_PATH:
+        return ("the %s export takes no second path, so %r would be silently ignored"
+                % (provider, second_path))
+    return None
+
+
+def _streamed_conversations(provider, path):
+    """Yield `(conversation, error)` for each record of a STREAMED export.
+
+    `(None, None)` for a record that is not a dict — `parse_export` skips those and so
+    does this — and `(None, error)` when the adapter raised for one record, because the
+    render loaders collect rather than raise and one bad record must not cost the file.
+    """
+    adapt = _EXPORT_ADAPTERS[provider]
+    for raw in _export_records(path):
+        if not isinstance(raw, dict):
+            yield None, None
+            continue
+        try:
+            conv = adapt(raw)
+        except Exception as exc:            # noqa: BLE001 - collected, never raised
+            yield None, _export_error(provider, path, "adapt", repr(exc))
+            continue
+        yield conv, None
+
+
+def _gemini_conversations(path, second_path):
+    """Gemini's stream, plus the grouping mode it used -> (pairs, errors, mode).
+
+    NOT streamed, and it cannot be: Takeout's activity log carries no conversation id, so
+    `load_gemini` derives conversation boundaries from the WHOLE record list (a web-app
+    harvest join, or the labelled provisional time-gap heuristic). Peak memory is
+    transcript-sized for this provider alone. Its `errors` — including the harvest-named-
+    but-absent report, which is the only signal that grouping was DOWNGRADED — are carried
+    through so a provisional corpus can never look like ground truth.
+    """
+    convs, errors, extra = load_gemini(path, second_path or None)
+    return ([(conv, None) for conv in convs],
+            [dict(err, source="gemini") for err in errors],
+            extra.get("grouping_mode", ""))
+
+
+def _admit_export_conversation(conn, conv, provider, path, seen, report):
+    """Write ONE parsed export conversation into the index, or refuse it. -> error list.
+
+    THREE REFUSALS, each mirroring one this module already makes for session stores:
+
+      * NO ID. `conversations.conversation_id` is UNIQUE, so two id-less records would
+        overwrite each other on disk — the half of the id-less-session defect that
+        `_admit` fills a synthetic `unidentified:<basename>` in for. That fix keys on the
+        session's own FILE; an export keeps many conversations in one file, so there is
+        nothing to key on and the record is named rather than silently merged.
+      * ALREADY SEEN in this source. A conversation repeated across shards is rendered
+        ONCE, exactly as `load_chatgpt` dedupes by id, and the repeat is COUNTED so a
+        shard full of duplicates is visible rather than invisible.
+      * ALREADY HELD BY ANOTHER PROVIDER. `corpus.add_conversation` overwrites by id, so
+        an export record colliding with a session conversation would replace it in
+        silence. Refused and named on both sides, exactly as `_admit` refuses a
+        cross-source THREAD id. A repeat from the SAME provider is not refused — that is
+        a re-ingest, and overwriting is what makes a grown source searchable.
+
+    RESIDUAL, stated rather than hidden: the collision check compares PROVIDERS, so a
+    Codex task-export id equal to a Codex ROLLOUT thread id is indistinguishable from a
+    re-ingest and would overwrite. Both adapters really do stamp the label `codex` (see
+    `codex.parse_conversation` and `codex_rollout`'s assembler). Settling experiment:
+    record the ingest ROUTE per conversation, which needs a new column and therefore a
+    schema migration.
+    """
+    if not conv.id:
+        return [_export_error(provider, path, "identity",
+                              "a record carries no conversation id, so it cannot be "
+                              "indexed: conversations.conversation_id is UNIQUE and two "
+                              "id-less records would overwrite each other")]
+    if conv.id in seen:
+        report["duplicates"] += 1
+        return []
+    held = corpus.indexed_provider(conn, conv.id)
+    if held is not None and held != provider:
+        return [_export_error(provider, path, "conversation-id-collision",
+                              "conversation id %r is already held by %s; this %s record "
+                              "was NOT indexed" % (conv.id, held, provider))]
+    seen.add(conv.id)
+    # `thread_id` is EMPTY because an export declares no thread — see the graph note at
+    # the top of this section. `rollout_path` is empty only where a session-store reader
+    # owns the same provider label; the file is recorded as the single rollout LEG either
+    # way, which is provenance the reader never dispatches on (a one-entry leg list falls
+    # through to the column).
+    stored = "" if provider in EXPORT_PATH_COLLIDES_WITH_A_READER else path
+    index._retry(lambda: corpus.add_conversation(conn, conv, thread_id="",
+                                                 rollout_path=stored))
+    index._retry(lambda: corpus.set_conversation_rollouts(conn, conv.id, [path]))
+    report["conversations"] += 1
+    return []
+
+
+def _ingest_export_file(conn, provider, path, second_path, seen, chunk_size, progress):
+    """Stream ONE export file into the index -> (report, errors).
+
+    CHUNKED AND RESUMABLE on the same contract `index.build_index` offers, because a
+    728 MB export cannot afford to restart from record zero: after every `chunk_size`
+    records the ingest_checkpoint is advanced and the transaction committed, so an
+    interrupted run resumes at the last committed batch. The offset counts records
+    CONSUMED from the file, and the content hash is what decides whether resuming is even
+    valid — an edited export is re-read from record 0, where `add_conversation` makes the
+    unchanged records no-ops and re-indexes the changed ones.
+
+    A FILE THAT ERRORED IS NEVER CHECKPOINTED PAST THE FAILURE, and that is deliberate.
+    Advancing it would make the SECOND run report zero errors and exit zero while the
+    export is still broken — a silent success, the outcome this whole path is built to
+    refuse. So the writes are always committed (nothing already read is thrown away) and
+    the checkpoint stops moving the moment anything goes wrong, which costs a re-parse of
+    a broken export and keeps its errors reported run after run.
+
+    THE `try` IS DELIBERATELY NARROW — it wraps advancing the stream and nothing else. A
+    whole-loop `try` would swallow an exception raised by the CALLER's `progress`
+    callback and re-file it as a `parse` error against the export, which is both a lie
+    about the file and a cancel the caller cannot perform.
+    """
+    report = {"provider": provider, "file": os.path.basename(path),
+              "conversations": 0, "duplicates": 0}
+    errors = []
+    if provider == "gemini":
+        pairs, errors, mode = _gemini_conversations(path, second_path)
+        report["grouping_mode"] = mode
+        stream = iter(pairs)
+    else:
+        stream = _streamed_conversations(provider, path)
+
+    content_hash = file_hash(path)
+    ckpt = corpus.get_checkpoint(conn, path)
+    start = ckpt[0] if ckpt is not None and ckpt[1] == content_hash else 0
+    consumed, pending = 0, 0
+
+    def commit():
+        if not errors:
+            index._retry(lambda: corpus.set_checkpoint(conn, path, consumed,
+                                                       content_hash))
+        index._retry(conn.commit)
+        if progress is not None:
+            progress(path, consumed)
+
+    while True:
+        try:
+            conv, err = next(stream)
+        except StopIteration:
+            break
+        except Exception as exc:            # noqa: BLE001 - collected, never raised
+            errors.append(_export_error(provider, path, "parse", repr(exc)))
+            break
+        consumed += 1
+        if consumed <= start:               # already committed by an earlier run
+            continue
+        pending += 1
+        if err is not None:
+            errors.append(err)
+        elif conv is not None:
+            errors.extend(_admit_export_conversation(conn, conv, provider, path, seen,
+                                                     report))
+        if pending >= chunk_size:
+            commit()
+            pending = 0
+    if pending:
+        commit()
+    return report, errors
+
+
+def ingest_exports(index_path, specs, progress=None, chunk_size=None):
+    """Ingest DOWNLOADED provider exports into the corpus index at `index_path`.
+
+    THE ROUTE DECISION G-1 ADDS. `specs` is a sequence of `(provider, path, second_path)`
+    — one per source the caller NAMED — where `provider` is one of `EXPORT_PROVIDERS`,
+    `path` is an export file or an export directory, and `second_path` is that provider's
+    optional companion (`_EXPORT_SECOND_PATH`). Nothing is ever defaulted and no path is
+    ever guessed: an omitted source is not read, exactly as `load_corpus` refuses to
+    default `grok_root` or `claude_root`, and for the same reason — the owner's real
+    exports hold private material and reading one has to be something the caller asked
+    for by name.
+
+    Returns `(files, errors)`.
+
+      * `files` is one report per export FILE actually read, in ingest order:
+        `{provider, file, conversations, duplicates}` plus `grouping_mode` for gemini.
+        PER FILE and not per source, because that is what makes a dead shard visible — a
+        17-shard export that silently contributed 16 is the failure mode a single total
+        cannot show.
+      * `errors` is the flat log every other loader here produces, each entry tagged with
+        its `source`. A NAMED source that resolved to no file at all is an error, not an
+        empty success.
+
+    Callers should treat a non-empty `errors` as a partial ingest and say so: `cli.py`
+    exits 3, the same code and the same rule the session ingest already uses.
+
+    IDEMPOTENT and interruptible, per file — see `_ingest_export_file`. Safe to run
+    against an index `load_corpus` has already written, and safe to run again.
+    """
+    chunk_size = index.DEFAULT_CHUNK_SIZE if chunk_size is None else chunk_size
+    files, errors = [], []
+    conn = corpus.open_index(index_path)
+    try:
+        for provider, path, second_path in [_export_spec(spec) for spec in specs]:
+            refusal = _spec_error(provider, second_path)
+            if refusal is not None:
+                errors.append(_export_error(provider, path, "spec", refusal))
+                continue
+            resolved = export_files(provider, path, second_path)
+            if not resolved:
+                errors.append(_export_error(
+                    provider, path, "resolve",
+                    "no %s export file found at %s — a named source that resolves to "
+                    "nothing is an error, not an empty success" % (provider, path)))
+                continue
+            # ONE dedup pool per source, so a conversation repeated across shards (or
+            # between the main export and its projects file) is indexed once.
+            seen = set()
+            for resolved_path in resolved:
+                report, file_errors = _ingest_export_file(
+                    conn, provider, resolved_path, second_path, seen, chunk_size,
+                    progress)
+                files.append(report)
+                errors.extend(file_errors)
+    finally:
+        conn.close()
+    return files, errors
