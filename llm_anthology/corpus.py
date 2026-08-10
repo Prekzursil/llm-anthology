@@ -14,17 +14,17 @@ module ADDS that layer without touching ir.py:
 
 It also owns the ON-DISK contract the parallel build agents write into: INDEX_SCHEMA (a
 contentless FTS5 table over conversation records + threads + thread_spawn_edges + a
-conversation_rollouts leg table + a resumable ingest_checkpoint table, WAL) and the thin
-row<->dataclass mapping (upsert_thread / upsert_edge / add_conversation / search /
-set_checkpoint / get_checkpoint / set_conversation_rollouts / rollout_legs / load_corpus).
+conversation_rollouts leg table + a conversation_bodies archive + a resumable
+ingest_checkpoint table, WAL) and the thin row<->dataclass mapping (upsert_thread /
+add_conversation / search / set_checkpoint / rollout_legs / load_conversation_turns / ...).
 Defining that mapping ONCE, next to the dataclasses and the DDL, is what keeps the fan-out
 of ingest agents from drifting into N incompatible INSERTs.
 
 Phase-0 MEASURED facts this contract is built around (ground truth, not guesses):
-  * corpus = 2,249,530 records over 13,711 files — the FTS index is sized for millions,
-    so it is contentless (content='') with detail=none: the pair measured at p95 33ms,
-    ~6x under budget. The searchable text lives only in the inverted index; the
-    displayable columns live in a plain `conversations` table joined by rowid.
+  * corpus = 2,249,530 records over 13,711 files — the FTS index is sized for millions
+    and is contentless (content=''), so the searchable text lives only in the inverted
+    index while the displayable columns live in a plain `conversations` table joined by
+    rowid. `detail` is FULL (G-4); the bodies themselves live in `conversation_bodies`.
   * the LIVE state DB has updated_at_ms but a legacy canonical copy does NOT, so
     ThreadMeta.updated_at_ms is OPTIONAL and its column is NULLABLE — a schema-tolerant
     adapter leaves it None rather than inventing a value.
@@ -190,15 +190,15 @@ CREATE TABLE IF NOT EXISTS conversations (
     rollout_path    TEXT NOT NULL DEFAULT ''
 );
 
--- Contentless (content='') FTS5 over the searchable text of each conversation.
--- detail=none drops per-column/position data; the pair was measured at p95 33ms over
--- the 2.2M-record corpus, ~6x under the 200ms budget. Nothing is stored here to
--- retrieve — a MATCH yields rowids that join back to `conversations` for display.
+-- Contentless (content='') FTS5 over the searchable text of each conversation. `detail`
+-- is FULL: under the old `detail=none` a phrase query, NEAR, a column filter and any
+-- bm25 carrying a term-frequency signal were all impossible — `_fts_opts` at EOF holds
+-- the measurement and the index-size price. A MATCH yields rowids joined to that table.
 CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
     title,
     body,
     content='',
-    detail=none%(delete_opt)s
+    detail=full%(fts_opts)s
 );
 
 -- One row per Codex rollout thread (the spawn-graph nodes). updated_at_ms is
@@ -292,7 +292,7 @@ def init_index(conn):
     wal = "PRAGMA journal_mode=WAL"  # EXECUTED at 294, after the version gate at 293
     check_schema_version(conn)  # REFUSES here, before ANY statement — see D-1 at EOF
     conn.execute(wal)
-    conn.executescript(INDEX_SCHEMA % {"delete_opt": _delete_opt()})
+    conn.executescript((INDEX_SCHEMA + _BODIES_SCHEMA) % {"fts_opts": _fts_opts()})
     stamp_schema_version(conn)
     return conn
 
@@ -375,9 +375,23 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
 
     `body` defaults to the title plus every block's text; pass an explicit body to index a
     sanitized or truncated form instead.
+
+    IT ALSO STORES THE TRANSCRIPT (G-4). `set_conversation_body` writes `conv.turns` into
+    `conversation_bodies` as a seekable-zstd archive, which is what makes the index an
+    ARCHIVE rather than a set of pointers into files the user may move or delete. It runs
+    FIRST, and unconditionally, for two reasons: it must also fill in a body for a row that
+    already exists without one (the state of every conversation the moment a pre-G-4 index
+    is rebuilt), and it must not be skipped by either early return below — the legacy
+    `stored == values` no-op reached one of them.
+
+    The FTS `body` and the stored archive are DIFFERENT facts and are deliberately not
+    derived from each other: `body` is searchable text a caller may sanitize or truncate,
+    the archive is the structured turns as parsed. Keeping them separate is what lets the
+    index hold a redacted search surface over a faithful transcript.
     """
     if body is None:
         body = _conversation_body(conv)
+    set_conversation_body(conn, conv.id, conv.turns)
     values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
               conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path)
     existing = conn.execute(
@@ -545,11 +559,37 @@ def _conversation_body(conv):
     return "\n".join(p for p in parts if p)
 
 
-def _delete_opt():
-    """The `contentless_delete=1` clause `INDEX_SCHEMA` interpolates, or "" on a SQLite
-    too old to support it. A function only so `init_index` fits on one line per step: the
-    version gate has to run before the WAL pragma (see below), and every line above this
-    point in the file is cited BY LINE from elsewhere in the tree."""
+def _fts_opts():
+    """The trailing FTS5 options `INDEX_SCHEMA` interpolates: `contentless_delete=1`, or ""
+    on a SQLite too old to support it. A function only so `init_index` fits on one line per
+    step: the version gate has to run before the WAL pragma (see below), and every line
+    above this point in the file is cited BY LINE from elsewhere in the tree.
+
+    WHY `detail` IS NO LONGER `none`, and what it cost (G-4). The old pair was chosen on a
+    real measurement — p95 33 ms over 2.2M records, ~6x under a 200 ms budget — but that
+    measured SPEED, which was never the problem. Measured here on SQLite 3.50.4, over 200
+    synthetic docs where the query term is rare enough for bm25's IDF to stay positive:
+
+      | shape          | phrase | NEAR | `col:` | distinct bm25 scores |
+      |----------------|--------|------|--------|----------------------|
+      | detail=none    | raises | raises | raises | 1 of 3 (all -0.0)  |
+      | detail=column  | raises | raises | ok     | 1 of 3 (all -0.0)  |
+      | detail=full    | ok     | ok   | ok     | 3 of 3, tf-ordered   |
+
+    So `detail=column` is not a middle ground: it buys the column filter and leaves ranking
+    just as degenerate. Under `full`, a doc holding the term 8 times outranks one holding it
+    once, and a long doc holding it once ranks last — term frequency AND length
+    normalisation are both live, which is what "relevance" has to mean.
+
+    THE PRICE, measured the same way: 4,000 docs of identical text indexed both ways came to
+    163,840 bytes at `detail=none` and 413,696 at `detail=full` — **2.52x** the index, which
+    is the cost of storing positions. That is the trade this option records.
+
+    `contentless_delete=1` lets a contentless table retract a rowid's postings, which is what
+    makes re-indexing a GROWN session possible. It landed in SQLite 3.43 and is measured
+    working alongside `detail=full` (and `detail=none`, and `detail=column`) on 3.50.4. On an
+    older build it is simply omitted and `add_conversation` falls back to re-inserting under
+    a fresh rowid — correct, but the stale posting is orphaned rather than reclaimed."""
     return ",\n    contentless_delete=1" if _CONTENTLESS_DELETE else ""
 
 
@@ -773,3 +813,165 @@ def indexed_provider(conn, conversation_id):
     row = conn.execute("SELECT provider FROM conversations WHERE conversation_id=?",
                        (conversation_id,)).fetchone()
     return None if row is None else row[0]
+
+
+# ------------------------------------- the corpus is an ARCHIVE, not an index (G-4)
+#
+# Appended, and the IMPORTS are appended with it, for the reason the two blocks above are:
+# `corpus.py` line numbers are cited BY LINE from `sidecar.py`, `discover.py`,
+# `claude_code.py`, `mock.ts` and `types.ts`, and `tests/test_citation_anchors.py` turns a
+# shifted anchor into a red build. Three of those anchors sit at lines 179, 197 and 303, so
+# adding an `import` at the top of the module — the ordinary place for one — would rot
+# citations in four files this change does not own and may not edit. Module-level imports
+# are legal anywhere and resolve before any function here runs, so the honest cost of
+# append-only is this comment rather than a silent breakage elsewhere.
+#
+# WHAT WAS WRONG. `conversations` held METADATA ONLY and the FTS is contentless, so no
+# conversation TEXT was stored anywhere in the index. `sidecar._conversation_get` re-parsed
+# the transcript out of `rollout_path` on every single read and degraded to
+# `available:false` / "rollout unavailable" when the file was gone. Move, compact or delete
+# the sources and every conversation in a 122 MB corpus became a stub. G-1 makes the
+# archive the guaranteed product, so that was a contradiction at the foundation — and it
+# had never surfaced only because 400/400 sampled paths on the owner's live store still
+# existed.
+#
+# WHY `llm_anthology.archive` RATHER THAN A SECOND CODEC. It is a seekable-zstd
+# implementation — per-record frames plus a seek table in a trailing skippable frame — and
+# it had ZERO importers, having been written for a rollout re-encoding that was never
+# wired. It is exactly the random-access-into-compressed-content primitive this needs, so
+# it is imported rather than a `zstandard.compress` call being sprinkled here.
+#
+# WHY ONE FRAME PER TURN. A frame is independently decompressible, so the framing IS the
+# access granularity. One frame per CONVERSATION would mean the largest real conversation
+# (18.0 M chars, measured) has to be inflated whole to read anything; one frame per LINE
+# would drown 122 MB of text in per-frame headers. Per-turn sits where the reader's own
+# unit of work sits. NOTE, stated plainly: no caller reads a single frame in isolation yet
+# — `load_conversation_turns` wants them all — so per-turn framing is a property of the
+# stored format rather than an exercised optimisation today. It costs nothing to have and
+# cannot be retrofitted without rewriting every archive, which is why it is decided now.
+
+import json                                                              # noqa: E402
+from . import archive, ir                                                # noqa: E402
+
+#: `conversation_bodies` DDL, kept OUT of `INDEX_SCHEMA` for the same append-only reason
+#: this whole section is down here: `INDEX_SCHEMA` ends above line 292, and growing it
+#: would shift `PRAGMA journal_mode=WAL` (cited as `corpus.py:292`) and `sqlite3.connect`
+#: (`corpus.py:303`). `init_index` concatenates the two before formatting, so the on-disk
+#: result is identical to having written it inline.
+#:
+#: A new TABLE, never a column on `conversations` — the rule `init_index` states. It
+#: therefore appears EMPTY the first time this build opens an index that predates it, and
+#: `load_conversation_turns` answering None is what the reader treats as "fall back".
+#:
+#: `text_bytes` is the decompressed size of the archive. It duplicates something the seek
+#: table already knows, deliberately: it is the one size fact a person auditing the file in
+#: any sqlite browser can read WITHOUT a zstd decoder, which matters for a format whose
+#: whole claim is self-containment. `test_text_bytes_equals_the_archives_own_decompressed_size`
+#: stops the two drifting apart.
+#:
+#: Contains no literal `%`: `init_index` runs `%`-formatting over the concatenation.
+_BODIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_bodies (
+    conversation_id TEXT PRIMARY KEY,
+    text_bytes      INTEGER NOT NULL DEFAULT 0,
+    archive         BLOB NOT NULL
+);
+"""
+
+#: Compact JSON: this is machine-read only, and at 122 MB of corpus the separators are not
+#: free. `ensure_ascii=False` keeps real UTF-8 in the frame instead of tripling the cost of
+#: every non-ASCII character — agentic transcripts are full of box drawing and CJK.
+_JSON = {"separators": (",", ":"), "ensure_ascii": False}
+
+
+def _block_record(block):
+    """One ir.Block as a plain dict.
+
+    `data` and `citations` pass through as-is rather than being copied or coerced. They are
+    already required to be JSON-serializable by a contract that predates this code:
+    `sidecar._serialize_block` puts both on the JSON-RPC wire, so an adapter that put a
+    non-serializable value in either would already have crashed the reader.
+    """
+    return {"type": block.type, "text": block.text,
+            "data": block.data, "citations": block.citations}
+
+
+def _turn_record(turn):
+    """One ir.Turn as the JSON payload of one archive frame.
+
+    Field names match the dataclass rather than being shortened. The frame is compressed,
+    so repeated keys cost almost nothing, and a reader debugging a corrupt archive gets
+    something legible out of it.
+
+    `branch` is written only when it is set, because it is `Optional[dict]` and `None` is
+    its meaningful default — the same rule `sidecar._serialize_turn` follows.
+    """
+    record = {"role": turn.role, "uuid": turn.uuid, "timestamp": turn.timestamp,
+              "blocks": [_block_record(b) for b in turn.blocks]}
+    if turn.branch is not None:
+        record["branch"] = turn.branch
+    return record
+
+
+def _turn_from_record(record):
+    """One decoded frame back into an ir.Turn. `.get` per field so a frame written by an
+    older/leaner encoder still constructs, which is the same schema-tolerance `ThreadMeta`
+    is built with."""
+    return ir.Turn(
+        role=record.get("role", ""),
+        uuid=record.get("uuid", ""),
+        timestamp=record.get("timestamp", ""),
+        branch=record.get("branch"),
+        blocks=[ir.Block(type=b.get("type", "unknown"), text=b.get("text", ""),
+                         data=b.get("data") or {}, citations=b.get("citations") or [])
+                for b in record.get("blocks", ())])
+
+
+def encode_turns(turns):
+    """`turns` -> a seekable-zstd archive, one frame per turn. Pure, so the encoding is
+    testable and measurable without a database."""
+    return archive.encode_records(
+        json.dumps(_turn_record(t), **_JSON) for t in turns)
+
+
+def set_conversation_body(conn, conversation_id, turns):
+    """Store `turns` as the archived body of `conversation_id`, replacing any previous one.
+
+    REPLACES rather than appends, because the ingest is authoritative — the same rule
+    `set_conversation_rollouts` follows. A session that GREW must read back grown, and a
+    session re-parsed from a repaired source must read back repaired.
+
+    Unconditional rather than compare-first. The only cheap fingerprint available is the
+    stored `text_bytes`, and an edit that keeps the length identical is exactly the case
+    `add_conversation` already learned not to trust: it compared a column tuple and silently
+    skipped re-indexing when "alpha" became "bravo". Re-writing a body that did not change
+    costs one BLOB write on a path that is already parsing a transcript.
+    """
+    blob = encode_turns(turns)
+    conn.execute(
+        "INSERT OR REPLACE INTO conversation_bodies(conversation_id, text_bytes, archive) "
+        "VALUES (?,?,?)",
+        (conversation_id, archive.SeekableReader(blob).decompressed_size,
+         sqlite3.Binary(blob)))
+
+
+def load_conversation_turns(conn, conversation_id):
+    """The archived turns of `conversation_id`, or None when no body is stored.
+
+    None vs `[]` IS THE WHOLE CONTRACT and the caller must not conflate them:
+
+      * `[]` — a body IS stored and the conversation genuinely has no turns.
+      * None — nothing is stored. Either the id is not in the index, or the index predates
+        `conversation_bodies` (every index built before G-4). ONLY this answer may fall
+        back to re-parsing the source file.
+
+    Collapsing the two would make a legitimately-empty conversation re-open its rollout on
+    every read, which is the behaviour this table exists to end.
+    """
+    row = conn.execute(
+        "SELECT archive FROM conversation_bodies WHERE conversation_id=?",
+        (conversation_id,)).fetchone()
+    if row is None:
+        return None
+    return [_turn_from_record(json.loads(frame))
+            for frame in archive.SeekableReader(bytes(row[0]))]
