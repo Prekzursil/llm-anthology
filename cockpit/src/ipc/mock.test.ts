@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createMockIpc,
+  CREDENTIAL_SHAPE_COVERAGE_LIMIT,
   MockGraph,
   mockIpc,
   MOCK_DEDUP_SESSIONS,
@@ -13,6 +14,7 @@ import {
 // `@types/node` to satisfy one test would let APP code typecheck references to
 // `process`/`Buffer` that do not exist in the Tauri webview.
 import SIDECAR_PY from "../../../llm_anthology/sidecar.py?raw";
+import REDACT_PY from "../../../llm_anthology/redact.py?raw";
 
 import {
   RPC_BUILD_IN_PROGRESS,
@@ -613,10 +615,111 @@ describe("export.plan / export.run", () => {
     const plan = await mockIpc.exportPlan();
     expect(plan.node_count).toBe(FOREST_NODE_IDS.length); // incl. dangling parent
     expect(plan.edge_count).toBe(MOCK_EDGES.length);
-    expect(plan.conversation_count).toBe(MOCK_THREADS.length);
+    // ZERO, not MOCK_THREADS.length. This bite bundles no transcripts, so a run writes no
+    // conversations; the engine returns 0 and the mock must not claim otherwise. The old
+    // assertion counted rows that nothing exports.
+    expect(plan.conversation_count).toBe(0);
+    // est_bytes is the SERIALIZED GRAPH, not a content sum. It used to assert equality with
+    // corpus.stats bytes — the Σ(char_count) quantity the engine explicitly rejected because
+    // it overstates a run by counting transcripts that never leave the index. Asserting the
+    // two are DIFFERENT is the point: if they ever coincide again, the mock has drifted back.
     const stats = await mockIpc.corpusStats();
-    expect(plan.est_bytes).toBe(stats.bytes); // content-byte estimate
     expect(plan.est_bytes).toBeGreaterThan(0);
+    expect(plan.est_bytes).not.toBe(stats.bytes);
+  });
+
+  it("carries the ENGINE's coverage sentence byte-for-byte, not a copy that drifted", () => {
+    // WHY THIS IS NOT `toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT)`. Every other assertion in this
+    // block compares the mock against the mock's own exported constant, which is a
+    // tautology for the TEXT: reword the constant and both sides move together. Measured —
+    // a mutation that gutted the sentence left this suite GREEN. The only non-circular
+    // check is against the engine's source, so that is what this reads.
+    const m = /CREDENTIAL_SHAPE_COVERAGE_LIMIT = \(([\s\S]*?)\n\)/.exec(REDACT_PY as string);
+    expect(m).not.toBeNull(); // control: a parse failure must fail, not silently pass
+    const engineText = [...(m as RegExpExecArray)[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+      .map((s) => s[1])
+      .join("");
+    expect(engineText.length).toBeGreaterThan(200); // control: the parse found real prose
+    expect(CREDENTIAL_SHAPE_COVERAGE_LIMIT).toBe(engineText);
+  });
+
+  it("defaults to full mode and carries the unconditional coverage limit", async () => {
+    const plan = await mockIpc.exportPlan();
+    expect(plan.mode).toBe("full"); // absent mode means full, the projection that changes nothing
+    // The load-bearing assertion: coverage_limit is present WITH ZERO FINDINGS. An empty
+    // findings list is not a safety verdict, and the sentence is what says so.
+    expect(plan.credential_scan.findings).toEqual([]);
+    expect(plan.credential_scan.coverage_limit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+    expect(plan.credential_scan.coverage_limit).not.toBe("");
+    expect(plan.credential_scan.scrubbed).toBe(false); // a dry run changes nothing, by definition
+  });
+
+  it("measures est_bytes on the projection the MODE would write, not on the full graph", async () => {
+    const full = await mockIpc.exportPlan(undefined, "full");
+    const shareable = await mockIpc.exportPlan(undefined, "shareable");
+    expect(full.mode).toBe("full");
+    expect(shareable.mode).toBe("shareable");
+    // Dropping `preview` is a real reduction, so a shareable preview must not be quoted at
+    // the archive-of-record's size. This is the whole reason the estimate takes a mode.
+    expect(shareable.est_bytes).toBeLessThan(full.est_bytes);
+    expect(shareable.node_count).toBe(full.node_count); // a projection, not a filter
+  });
+
+  it("scans the PROJECTED graph, so a shareable export loses a preview-borne finding", async () => {
+    const leaky = [
+      {
+        id: "t-leak",
+        title: "harmless title",
+        provider: "claude",
+        created_at_ms: 1,
+        cwd: "C:/Users/someone/proj",
+        preview: "here is the key sk-abcdefghijklmnop0123456789 do not share",
+      },
+    ];
+    const ipc = createMockIpc(leaky, []);
+    const full = await ipc.exportPlan(undefined, "full");
+    expect(full.credential_scan.findings).toHaveLength(1);
+    const [hit] = full.credential_scan.findings;
+    expect(hit.scope).toBe("thread");
+    expect(hit.id).toBe("t-leak");
+    expect(hit.field).toBe("preview");
+    expect(hit.shape).toBe("api-key");
+    // MASKED: first four characters and a length, never the run itself.
+    expect(hit.preview).toMatch(/^sk-a… \(\d+ chars\)$/);
+    expect(hit.preview).not.toContain("abcdefghijklmnop");
+
+    // SHAREABLE drops `preview` outright, so the finding is genuinely gone from the artifact
+    // — not filtered from the report. That is the projection doing privacy work.
+    const shareable = await ipc.exportPlan(undefined, "shareable");
+    expect(shareable.credential_scan.findings).toEqual([]);
+    // ...and the coverage sentence still travels, which is exactly when it matters most.
+    expect(shareable.credential_scan.coverage_limit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+  });
+
+  it("relativizes a home-anchored cwd in shareable mode", async () => {
+    // NO `preview` on this row, deliberately. That isolates the cwd: preview-dropping is
+    // already covered above, so with it absent the ONLY difference between the two
+    // projections is the path, and a size delta can only have come from relativizing it.
+    const rows = [
+      {
+        id: "t1",
+        title: "t",
+        provider: "claude",
+        created_at_ms: 1,
+        cwd: "C:/Users/a-long-operating-system-username/projects/anthology",
+      },
+    ];
+    const ipc = createMockIpc(rows, []);
+    const full = await ipc.exportPlan(undefined, "full");
+    const shareable = await ipc.exportPlan(undefined, "shareable");
+    expect(shareable.est_bytes).toBeLessThan(full.est_bytes);
+    // WHAT THIS CANNOT SEE, stated rather than implied: ExportPlan carries counts and a
+    // size, not the projected nodes, so the relativized STRING is not on this wire and no
+    // assertion here can read it. The byte delta is the only observable the plan offers.
+    // A direct check belongs where the projected node is visible — which, for the engine,
+    // is `redact.shareable_thread`'s own tests.
+    const unprojected = JSON.stringify(await ipc.exportPlan(undefined, "full"));
+    expect(unprojected).not.toContain("a-long-operating-system-username");
   });
 
   it("runs the export and passes both fidelity gates for a valid dest", async () => {
@@ -625,6 +728,17 @@ describe("export.plan / export.run", () => {
     expect(run.written_path).toBe("/tmp/llm-anthology-export.json");
     expect(run.graph_gate).toBe(true);
     expect(run.transcript_gate).toBe(true);
+    expect(run.mode).toBe("full");
+    expect(run.credential_scan.coverage_limit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+    expect(run.credential_scan.scrubbed).toBe(false);
+  });
+
+  it("echoes the requested mode and the scrub opt-in", async () => {
+    const run = await mockIpc.exportRun("/tmp/x.json", "shareable", true);
+    expect(run.mode).toBe("shareable");
+    // `scrubbed` reports what actually happened to the bytes, so the reader can tell a
+    // warning-only run from one that rewrote the artifact.
+    expect(run.credential_scan.scrubbed).toBe(true);
   });
 
   it("refuses a blank dest: not ok, no written_path, gates still pass", async () => {
@@ -633,6 +747,10 @@ describe("export.plan / export.run", () => {
     expect(run.written_path).toBeUndefined();
     expect(run.graph_gate).toBe(true);
     expect(run.transcript_gate).toBe(true);
+    // FORWARDED ON FAILURE. A blocked export is exactly when the user is about to retry,
+    // and dropping the warning there would make them retry blind.
+    expect(run.credential_scan.coverage_limit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+    expect(run.mode).toBe("full");
   });
 });
 
@@ -1870,7 +1988,15 @@ describe("projections over a sparse thread row", () => {
       bytes: 0,
       providers: { claude: 1 },
     });
-    expect((await createMockIpc(SPARSE, []).exportPlan()).est_bytes).toBe(0);
+    // NOT zero any more, and that is the correction rather than a regression. est_bytes is
+    // the serialized GRAPH, so a corpus with one node and no turns still has a node to
+    // serialize. What this case actually guards is the original intent — a row with no
+    // char_count/turn_count must not poison the arithmetic — so assert a finite positive
+    // number rather than the 0 the old content-sum model produced.
+    const sparsePlan = await createMockIpc(SPARSE, []).exportPlan();
+    expect(sparsePlan.est_bytes).toBeGreaterThan(0);
+    expect(Number.isFinite(sparsePlan.est_bytes)).toBe(true);
+    expect(sparsePlan.conversation_count).toBe(0);
   });
 
   it("conversation.get falls back to the birth date and the title as body text", async () => {

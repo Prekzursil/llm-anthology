@@ -31,6 +31,7 @@ import type {
   DedupScanResult,
   DedupSession,
   DiscoveryResult,
+  ExportMode,
   ExportPlan,
   ExportResult,
   GraphSnapshot,
@@ -145,13 +146,30 @@ export const realIpc: IpcClient = {
     if (asOfB !== undefined) params.as_of_b = asOfB;
     return cmd<CorpusDiffDto>("graph_diff", params);
   },
-  exportPlan(_dest?: string): Promise<ExportPlan> {
-    // `export.plan` is a dry run over the loaded corpus and takes no params (the
-    // sidecar ignores any dest); the optional arg is kept for contract parity.
-    return cmd<ExportPlan>("export_plan");
+  exportPlan(_dest?: string, mode?: ExportMode): Promise<ExportPlan> {
+    // `export.plan` is a dry run over the loaded corpus; the sidecar ignores any dest, so
+    // `_dest` is kept for caller parity and deliberately not forwarded.
+    //
+    // `mode` IS forwarded, and omitting it is not the same as sending a default. An earlier
+    // version of this adapter said export.plan "takes no params" and sent none, which was
+    // true when written and became false when the G-6 mode landed. The cost of that was not
+    // a stale comment: it made the shareable projection UNREACHABLE from the shipped app,
+    // because this is the production adapter and mock.ts is only the browser preview. Send
+    // the key ONLY when the caller named a mode — the engine treats ABSENT as "full", and
+    // an explicit `undefined`/`""` is a -32602 rather than a default (sidecar.py:1125).
+    const params: Record<string, unknown> = {};
+    if (mode !== undefined) params.mode = mode;
+    return cmd<ExportPlan>("export_plan", params);
   },
-  exportRun(destPath: string): Promise<ExportResult> {
-    return cmd<ExportResult>("export_run", { dest_path: destPath });
+  exportRun(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<ExportResult> {
+    // Same absent-vs-empty rule for both privacy params: omit the key entirely rather than
+    // sending a falsy placeholder. `scrub` must be a REAL boolean or the engine answers
+    // -32602 instead of guessing at truthiness (sidecar.py:1143) — the difference between
+    // the two values is whether the artifact gets modified, so a guess is not acceptable.
+    const params: Record<string, unknown> = { dest_path: destPath };
+    if (mode !== undefined) params.mode = mode;
+    if (scrub !== undefined) params.scrub = scrub;
+    return cmd<ExportResult>("export_run", params);
   },
 
   // -- annotations / dedup / maintenance ------------------------------------------

@@ -68,6 +68,11 @@ ENGINES = {
     "research.py": REPO / "llm_anthology" / "research.py",
     "corpus.py": REPO / "llm_anthology" / "corpus.py",
     "codex_rollout.py": REPO / "llm_anthology" / "adapters" / "codex_rollout.py",
+    # Added by the G-5/G-6 export-wire change. The IPC sources document the credential
+    # scan and the mode projection, and BOTH live here rather than in sidecar.py — so
+    # without these two entries every one of those anchors would be a silent pass.
+    "export.py": REPO / "llm_anthology" / "export.py",
+    "redact.py": REPO / "llm_anthology" / "redact.py",
     "test_sidecar_maintenance.py": REPO / "tests" / "test_sidecar_maintenance.py",
     "test_sidecar_metadata.py": REPO / "tests" / "test_sidecar_metadata.py",
     "test_sidecar_dedup.py": REPO / "tests" / "test_sidecar_dedup.py",
@@ -228,82 +233,82 @@ PINS = [
     ("types.ts", "metadata.py", 529, "def tag_counts", "the case-collapsing tag facet"),
 
     # --------------------------------------------------------------------- sidecar.py (65)
-    ("mock.ts", "sidecar.py", 299, "JSON-RPC error envelope", "the {code, message} envelope"),
+    ("mock.ts", "sidecar.py", 311, "JSON-RPC error envelope", "the {code, message} envelope"),
     # These five arrived in mock.ts AFTER the engine-side sweep, from a concurrent change
     # outside it. They are listed here rather than left alone because an unpinned citation
     # is the state this file exists to refuse — `test_every_citation_is_pinned` went red on
     # them, which is the gate working, not a defect.
-    ("mock.ts", "sidecar.py", 781, '_reject_nonlocal_path(index_path', "the index_path guard the mock reproduces"),
-    ("mock.ts", "sidecar.py", 834, "Returns immediately", "the build reply means ACCEPTED, not finished"),
-    ("mock.ts", "sidecar.py", 869, "if not sessions_root and not grok_root", "at least one source root must be named"),
-    ("mock.ts", "sidecar.py", 878, '(sessions_root, "sessions_root")', "each named root refused if UNC or relative"),
-    ("mock.ts", "sidecar.py", 1009, "if snapshot is None", "no job yet is a state, not an error"),
-    ("mock.ts", "sidecar.py", 1014, 'requested is not None and requested != snapshot["job_id"]', "a stale job_id is refused, not answered"),
-    ("mock.ts", "sidecar.py", 1018, '"sessions_root": _clean(snapshot["sessions_root"])', "build_status reports the root the job started with"),
+    ("mock.ts", "sidecar.py", 793, '_reject_nonlocal_path(index_path', "the index_path guard the mock reproduces"),
+    ("mock.ts", "sidecar.py", 846, "Returns immediately", "the build reply means ACCEPTED, not finished"),
+    ("mock.ts", "sidecar.py", 881, "if not sessions_root and not grok_root", "at least one source root must be named"),
+    ("mock.ts", "sidecar.py", 890, '(sessions_root, "sessions_root")', "each named root refused if UNC or relative"),
+    ("mock.ts", "sidecar.py", 1021, "if snapshot is None", "no job yet is a state, not an error"),
+    ("mock.ts", "sidecar.py", 1026, 'requested is not None and requested != snapshot["job_id"]', "a stale job_id is refused, not answered"),
+    ("mock.ts", "sidecar.py", 1030, '"sessions_root": _clean(snapshot["sessions_root"])', "build_status reports the root the job started with"),
     # The corrected `corpus.build` params note, formerly the QUARANTINE row below. The two
     # anchors are the whole correction: 856 shows the param IS `_opt_str`, 858 shows what
     # the engine actually refuses (neither root named) — which is not "codex_home missing".
-    ("types.ts", "sidecar.py", 866, 'sessions_root = _opt_str(params, "sessions_root")', "every corpus.build param is optional"),
-    ("types.ts", "sidecar.py", 869, "if not sessions_root and not grok_root", "the only refusal: NEITHER root named"),
-    ("mock.ts", "sidecar.py", 1013, '"state": "idle"', "idle before any build, rather than erroring"),
-    ("mock.ts", "sidecar.py", 587, "self.research_backend", "the MockBackend fallback"),
-    ("mock.ts", "sidecar.py", 1366, "Partial update: an OMITTED field", "the metadata.set tri-state"),
-    ("mock.ts", "sidecar.py", 1460, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
-    ("mock.ts", "sidecar.py", 1587, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
-    ("mock.ts", "sidecar.py", 1621, "result.executed and result.manifest_path", "only an applied run is recorded"),
-    ("types.ts", "sidecar.py", 790, '"index_path": _clean(index_path)', "corpus.create returns {index_path, created}"),
-    ("types.ts", "sidecar.py", 306, "def _clean", "the hidden-unicode strip, via _sanitize_tree"),
-    ("types.ts", "sidecar.py", 834, "Returns immediately", "the build reply means ACCEPTED, not finished"),
-    ("types.ts", "sidecar.py", 990, "def _corpus_build_status", "the poll-safe status surface"),
-    ("types.ts", "sidecar.py", 622, '"research.synthesize"', "the research methods exist on the engine"),
-    ("types.ts", "sidecar.py", 587, "self.research_backend", "the MockBackend fallback"),
-    ("types.ts", "sidecar.py", 1317, "research.extract_entities(views, self.research_backend)", "extraction routes through the same backend"),
-    ("types.ts", "sidecar.py", 1350, "return {", "the annotation DTO"),  # weak
-    ("types.ts", "sidecar.py", 1338, "the absorbed csm annotation layer", "annotations are local-only by design"),
-    ("types.ts", "sidecar.py", 1359, "Un-annotated reads back as an EMPTY", "is_empty rather than an error"),
-    ("types.ts", "sidecar.py", 1365, "def _metadata_set", "the metadata.set surface"),
-    ("types.ts", "sidecar.py", 1366, "Partial update: an OMITTED field", "the tri-state is the whole point"),
-    ("types.ts", "sidecar.py", 1372, "if tags is not None and not isinstance", "a non-list tags is -32602"),
-    ("types.ts", "sidecar.py", 1396, "def _metadata_search", "the metadata.search surface"),
-    ("types.ts", "sidecar.py", 1398, "With neither filter the result is empty", "a blank query dumps nothing"),
-    ("types.ts", "sidecar.py", 1408, "return [", "the search row DTO"),  # weak
-    ("types.ts", "sidecar.py", 1428, '{"tag": _clean(tag)', "one entry of the tag facet"),
-    ("types.ts", "sidecar.py", 1431, "Codex physical copies -> one logical session", "dedup is a view, never a delete"),
-    ("types.ts", "sidecar.py", 1434, "The paths it returns are LOCAL filesystem paths", "display-sensitive, absent from MetadataView"),
-    ("types.ts", "sidecar.py", 1447, "return {", "the DedupSession DTO"),  # weak
-    ("types.ts", "sidecar.py", 1473, "return {", "the dedup.scan result"),  # weak
-    ("types.ts", "sidecar.py", 1488, "the ONLY destructive surface", "why the client never sends a preview back"),
-    ("types.ts", "sidecar.py", 1504, '"session_id": copy.session_id', "one session file inside a plan"),
-    ("types.ts", "sidecar.py", 1505, "copy.store_kind.value", "a real enum serialized via .value"),
-    ("types.ts", "sidecar.py", 1508, "def _preview_dto", "the plan preview DTO"),
-    ("types.ts", "sidecar.py", 1516, '"blocked": [{"target"', "a refused target and its reason"),
-    ("types.ts", "sidecar.py", 1518, '"warnings": [{"severity"', "the warning DTO"),
-    ("types.ts", "sidecar.py", 1520, '"plan": [{"session_id"', "the planned moves"),
-    ("types.ts", "sidecar.py", 1529, "return {", "the execute/restore result"),  # weak
-    ("types.ts", "sidecar.py", 1551, "def _maintenance_plan", "maintenance.plan is pure"),
-    ("types.ts", "sidecar.py", 1561, '(("store_root", store_root)', "both roots refused if UNC or relative"),
-    ("types.ts", "sidecar.py", 1567, '_req_str(params, "action")', "an unknown action is -32602"),
-    ("types.ts", "sidecar.py", 1575, "raw_targets, list) or not raw_targets", "targets must be a non-empty array"),
-    ("types.ts", "sidecar.py", 1577, "targets = []", "how the edge builds each target"),  # weak
-    ("types.ts", "sidecar.py", 1581, 'item.get("file_path")', "file_path is required per target"),
-    ("types.ts", "sidecar.py", 1585, 'item.get("session_id"', "session_id defaults to empty"),
-    ("types.ts", "sidecar.py", 1587, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
-    ("types.ts", "sidecar.py", 1588, 'item.get("size_bytes", 0) or 0', "size_bytes defaults to 0"),
-    ("types.ts", "sidecar.py", 1600, "def _maintenance_execute", "the execute surface"),
-    ("types.ts", "sidecar.py", 1618, "Consumed only once the engine ACCEPTED it", "a refused confirmation is correctable"),
-    ("types.ts", "sidecar.py", 1625, "def _maintenance_restore", "the restore surface"),
-    ("types.ts", "sidecar.py", 1630, "_reject_nonlocal_path(manifest_path", "manifest_path refused if UNC or relative"),
-    ("types.ts", "sidecar.py", 1460, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
-    ("types.ts", "sidecar.py", 299, "JSON-RPC error envelope", "the {code, message} envelope"),
-    ("types.ts", "sidecar.py", 684, "params must be an object", "-32602, wrong params"),
-    ("types.ts", "sidecar.py", 677, "Internal error", "-32603, an unhandled engine fault"),
-    ("types.ts", "sidecar.py", 252, "CORPUS_NOT_INDEXED", "-32000, no corpus attached"),
-    ("types.ts", "sidecar.py", 253, "THREAD_NOT_FOUND", "-32001"),
-    ("types.ts", "sidecar.py", 254, "DB_BUSY", "-32002, sqlite lock/busy"),
-    ("types.ts", "sidecar.py", 255, "the safety model REFUSED", "the maintenance-refused code"),
-    ("types.ts", "sidecar.py", 259, "A second corpus.build while one is still running", "the build-in-progress code"),
-    ("types.ts", "sidecar.py", 262, "cannot run against THIS engine", "the build-unavailable code"),
-    ("types.ts", "sidecar.py", 265, "where a file already exists", "the corpus-exists code"),
+    ("types.ts", "sidecar.py", 878, 'sessions_root = _opt_str(params, "sessions_root")', "every corpus.build param is optional"),
+    ("types.ts", "sidecar.py", 881, "if not sessions_root and not grok_root", "the only refusal: NEITHER root named"),
+    ("mock.ts", "sidecar.py", 1025, '"state": "idle"', "idle before any build, rather than erroring"),
+    ("mock.ts", "sidecar.py", 599, "self.research_backend", "the MockBackend fallback"),
+    ("mock.ts", "sidecar.py", 1440, "Partial update: an OMITTED field", "the metadata.set tri-state"),
+    ("mock.ts", "sidecar.py", 1534, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
+    ("mock.ts", "sidecar.py", 1661, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
+    ("mock.ts", "sidecar.py", 1695, "result.executed and result.manifest_path", "only an applied run is recorded"),
+    ("types.ts", "sidecar.py", 802, '"index_path": _clean(index_path)', "corpus.create returns {index_path, created}"),
+    ("types.ts", "sidecar.py", 318, "def _clean", "the hidden-unicode strip, via _sanitize_tree"),
+    ("types.ts", "sidecar.py", 846, "Returns immediately", "the build reply means ACCEPTED, not finished"),
+    ("types.ts", "sidecar.py", 1002, "def _corpus_build_status", "the poll-safe status surface"),
+    ("types.ts", "sidecar.py", 634, '"research.synthesize"', "the research methods exist on the engine"),
+    ("types.ts", "sidecar.py", 599, "self.research_backend", "the MockBackend fallback"),
+    ("types.ts", "sidecar.py", 1391, "research.extract_entities(views, self.research_backend)", "extraction routes through the same backend"),
+    ("types.ts", "sidecar.py", 1424, "return {", "the annotation DTO"),  # weak
+    ("types.ts", "sidecar.py", 1412, "the absorbed csm annotation layer", "annotations are local-only by design"),
+    ("types.ts", "sidecar.py", 1433, "Un-annotated reads back as an EMPTY", "is_empty rather than an error"),
+    ("types.ts", "sidecar.py", 1439, "def _metadata_set", "the metadata.set surface"),
+    ("types.ts", "sidecar.py", 1440, "Partial update: an OMITTED field", "the tri-state is the whole point"),
+    ("types.ts", "sidecar.py", 1446, "if tags is not None and not isinstance", "a non-list tags is -32602"),
+    ("types.ts", "sidecar.py", 1470, "def _metadata_search", "the metadata.search surface"),
+    ("types.ts", "sidecar.py", 1472, "With neither filter the result is empty", "a blank query dumps nothing"),
+    ("types.ts", "sidecar.py", 1482, "return [", "the search row DTO"),  # weak
+    ("types.ts", "sidecar.py", 1502, '{"tag": _clean(tag)', "one entry of the tag facet"),
+    ("types.ts", "sidecar.py", 1505, "Codex physical copies -> one logical session", "dedup is a view, never a delete"),
+    ("types.ts", "sidecar.py", 1508, "The paths it returns are LOCAL filesystem paths", "display-sensitive, absent from MetadataView"),
+    ("types.ts", "sidecar.py", 1521, "return {", "the DedupSession DTO"),  # weak
+    ("types.ts", "sidecar.py", 1547, "return {", "the dedup.scan result"),  # weak
+    ("types.ts", "sidecar.py", 1562, "the ONLY destructive surface", "why the client never sends a preview back"),
+    ("types.ts", "sidecar.py", 1578, '"session_id": copy.session_id', "one session file inside a plan"),
+    ("types.ts", "sidecar.py", 1579, "copy.store_kind.value", "a real enum serialized via .value"),
+    ("types.ts", "sidecar.py", 1582, "def _preview_dto", "the plan preview DTO"),
+    ("types.ts", "sidecar.py", 1590, '"blocked": [{"target"', "a refused target and its reason"),
+    ("types.ts", "sidecar.py", 1592, '"warnings": [{"severity"', "the warning DTO"),
+    ("types.ts", "sidecar.py", 1594, '"plan": [{"session_id"', "the planned moves"),
+    ("types.ts", "sidecar.py", 1603, "return {", "the execute/restore result"),  # weak
+    ("types.ts", "sidecar.py", 1625, "def _maintenance_plan", "maintenance.plan is pure"),
+    ("types.ts", "sidecar.py", 1635, '(("store_root", store_root)', "both roots refused if UNC or relative"),
+    ("types.ts", "sidecar.py", 1641, '_req_str(params, "action")', "an unknown action is -32602"),
+    ("types.ts", "sidecar.py", 1649, "raw_targets, list) or not raw_targets", "targets must be a non-empty array"),
+    ("types.ts", "sidecar.py", 1651, "targets = []", "how the edge builds each target"),  # weak
+    ("types.ts", "sidecar.py", 1655, 'item.get("file_path")', "file_path is required per target"),
+    ("types.ts", "sidecar.py", 1659, 'item.get("session_id"', "session_id defaults to empty"),
+    ("types.ts", "sidecar.py", 1661, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
+    ("types.ts", "sidecar.py", 1662, 'item.get("size_bytes", 0) or 0', "size_bytes defaults to 0"),
+    ("types.ts", "sidecar.py", 1674, "def _maintenance_execute", "the execute surface"),
+    ("types.ts", "sidecar.py", 1692, "Consumed only once the engine ACCEPTED it", "a refused confirmation is correctable"),
+    ("types.ts", "sidecar.py", 1699, "def _maintenance_restore", "the restore surface"),
+    ("types.ts", "sidecar.py", 1704, "_reject_nonlocal_path(manifest_path", "manifest_path refused if UNC or relative"),
+    ("types.ts", "sidecar.py", 1534, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
+    ("types.ts", "sidecar.py", 311, "JSON-RPC error envelope", "the {code, message} envelope"),
+    ("types.ts", "sidecar.py", 696, "params must be an object", "-32602, wrong params"),
+    ("types.ts", "sidecar.py", 689, "Internal error", "-32603, an unhandled engine fault"),
+    ("types.ts", "sidecar.py", 264, "CORPUS_NOT_INDEXED", "-32000, no corpus attached"),
+    ("types.ts", "sidecar.py", 265, "THREAD_NOT_FOUND", "-32001"),
+    ("types.ts", "sidecar.py", 266, "DB_BUSY", "-32002, sqlite lock/busy"),
+    ("types.ts", "sidecar.py", 267, "the safety model REFUSED", "the maintenance-refused code"),
+    ("types.ts", "sidecar.py", 271, "A second corpus.build while one is still running", "the build-in-progress code"),
+    ("types.ts", "sidecar.py", 274, "cannot run against THIS engine", "the build-unavailable code"),
+    ("types.ts", "sidecar.py", 277, "where a file already exists", "the corpus-exists code"),
 
     # ------------------------------------------------- test_sidecar_maintenance.py (8)
     ("mock.ts", "test_sidecar_maintenance.py", 103, "def test_a_parent_traversal_root_is_caught_by_the_ENGINE", "traversal is the engine's refusal, not the edge's"),
@@ -329,7 +334,31 @@ PINS = [
     ("mock.ts", "test_sidecar_dedup.py", 101, "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error", "a missing home is empty, not an error"),
     ("mock.ts", "test_sidecar_dedup.py", 170, "def test_dedup_sessions_is_empty_before_any_scan", "no scan yet -> empty"),
     ("types.ts", "test_sidecar_dedup.py", 101, "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error", "a missing home is empty, not an error"),
-]
+
+    # ------------------------------------------------- the G-5/G-6 export wire (18)
+    # Added with the change that made `mode` and `credential_scan` REQUIRED on the two
+    # export DTOs. Two of these name files ENGINES did not list until now: the scan
+    # and the projection live in export.py/redact.py, not sidecar.py, so before this
+    # the IPC sources could not cite their own load-bearing evidence without a
+    # silent pass.
+    ("mock.ts", "sidecar.py", 1154, "def _export_plan", "the dry-run surface the mock mirrors"),
+    ("mock.ts", "export.py", 114, "_TEXT_NODE_FIELDS", "the field set a node scan covers"),
+    ("mock.ts", "export.py", 232, "def _project_shareable", "project BEFORE tallying and scanning"),
+    ("mock.ts", "export.py", 248, "def _sorted_findings", "scope/id/field/offset, so a report is diffable"),
+    ("mock.ts", "export.py", 255, "def _located", "what turns a bare alarm into a finding"),
+    ("mock.ts", "export.py", 276, "def _credential_scan", "the findings/coverage_limit/scrubbed block"),
+    ("mock.ts", "export.py", 286, "def scan_for_export", "a dry run scans without writing, so scrubbed is False"),
+    ("mock.ts", "redact.py", 203, "CREDENTIAL_SHAPE_COVERAGE_LIMIT", "the sentence copied verbatim into the mock"),
+    ("mock.ts", "redact.py", 249, "def _mask", "first 4 chars + length, never the run itself"),
+    ("types.ts", "sidecar.py", 1125, "def _export_mode", "absent means full; empty and null are -32602"),
+    ("types.ts", "sidecar.py", 1143, "def _export_scrub", "a real bool or -32602, never a truthiness guess"),
+    ("types.ts", "sidecar.py", 1154, "def _export_plan", "the pre-write warning surface"),
+    ("types.ts", "sidecar.py", 1887, "def _project_export_run", "the ExportResult DTO, scan forwarded on failure"),
+    ("types.ts", "export.py", 103, "EXPORT_MODES", "the mode vocabulary the union mirrors"),
+    ("types.ts", "export.py", 255, "def _located", "why a finding carries scope/id/field/offset"),
+    ("types.ts", "export.py", 276, "def _credential_scan", "the CredentialScan shape"),
+    ("types.ts", "redact.py", 203, "CREDENTIAL_SHAPE_COVERAGE_LIMIT", "coverage_limit is unconditional"),
+    ("types.ts", "redact.py", 280, "def scan_credential_shapes", "the shape/offset/preview finding keys"),]
 
 #: (ts file, engine file, cited line, the FALSE sentence, why it is not simply re-anchored).
 #:

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { ExportPlan } from "../ipc/types";
+import { CREDENTIAL_SHAPE_COVERAGE_LIMIT } from "../ipc/mock";
+import type { CredentialScan, ExportPlan } from "../ipc/types";
 import {
   derivePreview,
   deriveVerdict,
@@ -16,13 +17,53 @@ import {
 // fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * The G-5 scan every export result now carries. `coverage_limit` is imported rather than
+ * retyped: it is the field that stops "no findings" reading as "safe to share", and a
+ * fixture that invented its own wording would be the one place this suite could quietly
+ * disagree with the wire it is standing in for.
+ */
+function scanFixture(over: Partial<CredentialScan> = {}): CredentialScan {
+  return {
+    findings: [],
+    coverage_limit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+    scrubbed: false,
+    ...over,
+  };
+}
+
 function planFixture(over: Partial<ExportPlan> = {}): ExportPlan {
-  return { node_count: 16, edge_count: 20, conversation_count: 15, est_bytes: 3_400_000, ...over };
+  return {
+    node_count: 16,
+    edge_count: 20,
+    conversation_count: 15,
+    est_bytes: 3_400_000,
+    mode: "full",
+    credential_scan: scanFixture(),
+    ...over,
+  };
+}
+
+/**
+ * A run result with the privacy fields filled in. They are REQUIRED on the wire but
+ * orthogonal to what most cases below assert — a verdict is derived from the gates, not
+ * from `mode`/`credential_scan` — so defaulting them here keeps each case about its own
+ * subject instead of restating six fields to test two.
+ */
+function runResult(over: Partial<ExportRunResult> = {}): ExportRunResult {
+  return {
+    ok: true,
+    graph_gate: true,
+    transcript_gate: true,
+    mode: "full",
+    credential_scan: scanFixture(),
+    ...over,
+  };
 }
 
 /** A blocked run-result carrying the full round-trip delta + a missing-token shortfall. */
 function blockedFull(): ExportRunResult {
-  return {
+  return runResult({
     ok: false,
     graph_gate: false,
     transcript_gate: false,
@@ -42,7 +83,7 @@ function blockedFull(): ExportRunResult {
       },
     },
     missing_tokens: ["b", "a"],
-  };
+  });
 }
 
 /** A minimal deferred so a still-pending IPC call can be held open mid-test. */
@@ -57,12 +98,13 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function fakeIpc(over: Partial<ExportIpc> = {}): ExportIpc {
   return {
     exportPlan: async () => planFixture(),
-    exportRun: async (): Promise<ExportRunResult> => ({
-      ok: true,
-      graph_gate: true,
-      transcript_gate: true,
-      written_path: "/out/export.json",
-    }),
+    exportRun: async (): Promise<ExportRunResult> =>
+      runResult({
+        ok: true,
+        graph_gate: true,
+        transcript_gate: true,
+        written_path: "/out/export.json",
+      }),
     ...over,
   };
 }
@@ -115,12 +157,12 @@ describe("derivePreview", () => {
 
 describe("deriveVerdict", () => {
   it("reports a written path on a successful export", () => {
-    const verdict = deriveVerdict({
+    const verdict = deriveVerdict(runResult({
       ok: true,
       graph_gate: true,
       transcript_gate: true,
       written_path: "C:/out/export.json",
-    });
+    }));
     expect(verdict).toEqual({
       status: "ok",
       graphGate: true,
@@ -131,7 +173,7 @@ describe("deriveVerdict", () => {
   });
 
   it("falls back to a generic headline when ok but no path is echoed", () => {
-    const verdict = deriveVerdict({ ok: true, graph_gate: true, transcript_gate: true });
+    const verdict = deriveVerdict(runResult({ ok: true, graph_gate: true, transcript_gate: true }));
     expect(verdict.status).toBe("ok");
     if (verdict.status !== "ok") throw new Error("unreachable");
     expect(verdict.writtenPath).toBe("");
@@ -139,7 +181,7 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks on the structural gate with no diff detail (lean wire)", () => {
-    const verdict = deriveVerdict({ ok: false, graph_gate: false, transcript_gate: true });
+    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: false, transcript_gate: true }));
     expect(verdict).toEqual({
       status: "blocked",
       graphGate: false,
@@ -156,12 +198,12 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks on the transcript gate and surfaces the sorted missing tokens", () => {
-    const verdict = deriveVerdict({
+    const verdict = deriveVerdict(runResult({
       ok: false,
       graph_gate: true,
       transcript_gate: false,
       missing_tokens: ["zeta", "alpha", "alpha"],
-    });
+    }));
     expect(verdict.status).toBe("blocked");
     if (verdict.status !== "blocked") throw new Error("unreachable");
     expect(verdict.headline).toBe("Blocked: transcript fidelity gate failed");
@@ -198,7 +240,7 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks with an honest headline when neither gate names the failure", () => {
-    const verdict = deriveVerdict({ ok: false, graph_gate: true, transcript_gate: true });
+    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: true, transcript_gate: true }));
     expect(verdict.status).toBe("blocked");
     if (verdict.status !== "blocked") throw new Error("unreachable");
     expect(verdict.headline).toBe("Blocked: export did not complete");
@@ -227,12 +269,12 @@ describe("renderView", () => {
   });
 
   it("renders an ok verdict as a single headline", () => {
-    const verdict = deriveVerdict({
+    const verdict = deriveVerdict(runResult({
       ok: true,
       graph_gate: true,
       transcript_gate: true,
       written_path: "/out/export.json",
-    });
+    }));
     expect(renderView({ kind: "done", preview: null, verdict })).toEqual([
       "Export written to /out/export.json",
     ]);
@@ -253,7 +295,7 @@ describe("renderView", () => {
   });
 
   it("renders a clean-but-blocked verdict with a no-difference note and PASS gates", () => {
-    const verdict = deriveVerdict({ ok: false, graph_gate: true, transcript_gate: true });
+    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: true, transcript_gate: true }));
     expect(renderView({ kind: "done", preview: null, verdict })).toEqual([
       "Blocked: export did not complete",
       "gates: structural PASS · transcript PASS",
@@ -352,7 +394,7 @@ describe("ExportPanel", () => {
       fakeIpc({
         exportRun: async (dest) => {
           seenPath = dest;
-          return { ok: true, graph_gate: true, transcript_gate: true, written_path: dest };
+          return runResult({ ok: true, graph_gate: true, transcript_gate: true, written_path: dest });
         },
       }),
       (v) => views.push(v),
@@ -447,7 +489,9 @@ describe("ExportPanel", () => {
     expect(calls).toBe(1);
     expect(views.map((v) => v.kind)).toEqual(["running"]);
 
-    gate.resolve({ ok: true, graph_gate: true, transcript_gate: true, written_path: "/out/export.json" });
+    gate.resolve(
+      runResult({ ok: true, graph_gate: true, transcript_gate: true, written_path: "/out/export.json" }),
+    );
     await first;
     expect(views.map((v) => v.kind)).toEqual(["running", "done"]);
   });

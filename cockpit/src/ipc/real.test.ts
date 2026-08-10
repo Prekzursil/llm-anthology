@@ -193,7 +193,9 @@ const BINDINGS: Record<string, Binding> = {
   exportPlan: {
     rpc: "export.plan",
     // The `dest` argument is accepted for contract parity and deliberately NOT forwarded —
-    // `export.plan` is a dry run over the loaded corpus and takes no params.
+    // the engine's `_export_plan` ignores any destination. It does NOT follow that the RPC
+    // takes no params: it takes `mode`, which this baseline case simply does not name. See
+    // the forwarding cases in "the optional-parameter omissions".
     call: () => realIpc.exportPlan!("C:\\ignored"),
     args: { params: {} },
   },
@@ -473,6 +475,39 @@ describe("the optional-parameter omissions", () => {
     invokeMock.mockClear();
     await realIpc.metadataSearch();
     expect(paramsOf()).toEqual({});
+  });
+
+  // The G-5/G-6 privacy params. These matter more than the omissions above, because the
+  // failure they guard was not a -32602 — it was SILENCE. This adapter sent no `mode` at
+  // all, so the shareable projection was unreachable from the shipped app while the mock
+  // preview and the engine both supported it. Nothing was red: the citation gate does not
+  // pin real.ts, and `cmd<ExportPlan>()` is an unchecked cast, so tsc could not see it
+  // either. Two independent detectors, both structurally blind to this file.
+  it("omits mode entirely when no projection is named, so the engine defaults to full", async () => {
+    await realIpc.exportPlan!("C:\\ignored");
+    // `dest` is still not forwarded — the engine ignores it — and `mode` is absent rather
+    // than sent as "" or null, either of which is a -32602 by deliberate design.
+    expect(paramsOf()).toEqual({});
+  });
+
+  it("FORWARDS mode on export.plan when the caller names one", async () => {
+    await realIpc.exportPlan!(undefined, "shareable");
+    expect(paramsOf()).toEqual({ mode: "shareable" });
+  });
+
+  it("omits BOTH privacy params on export.run when neither is named", async () => {
+    await realIpc.exportRun!("C:\\out.json");
+    expect(paramsOf()).toEqual({ dest_path: "C:\\out.json" });
+  });
+
+  it("FORWARDS mode and scrub on export.run, including scrub=false explicitly", async () => {
+    await realIpc.exportRun!("C:\\out.json", "shareable", true);
+    expect(paramsOf()).toEqual({ dest_path: "C:\\out.json", mode: "shareable", scrub: true });
+    invokeMock.mockClear();
+    // scrub=false is a REAL choice, not an absence: the caller asked to be warned without
+    // the bytes being rewritten. Sending it proves the adapter distinguishes the two.
+    await realIpc.exportRun!("C:\\out.json", "full", false);
+    expect(paramsOf()).toEqual({ dest_path: "C:\\out.json", mode: "full", scrub: false });
   });
 });
 
