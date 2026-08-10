@@ -16,7 +16,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createMockIpc } from "../ipc/mock";
-import type { OpenCorpusResult } from "../ipc/types";
+import type { AppInfo, AppLocations, OpenCorpusResult } from "../ipc/types";
 import {
   basenameOf,
   corpusLabel,
@@ -27,6 +27,7 @@ import {
   openFailureMessage,
   restoreFailureMessage,
   type CorpusBarView,
+  type CorpusIpc,
   type CorpusStore,
   type WebStorageLike,
 } from "./corpusBar";
@@ -488,5 +489,120 @@ describe("CorpusBarController against the real mock adapter", () => {
     expect(mock.openedIndex).toBeNull();
     expect((await mock.graphRoots()).length).toBeGreaterThan(0);
     expect((await mock.healthPing()).corpus_ready).toBe(true);
+  });
+});
+
+describe("CF-1: where the default corpus index lives", () => {
+  // The Rust `app_info` command resolves the DECISION G-10 app-data locations against the
+  // REAL environment on every call, and until this change nothing on the TypeScript side
+  // read the answer — the resolution, its remote-drive rejection and its five paths were
+  // all dead below the Tauri boundary. A first-run user saw "No corpus open" and a file
+  // picker, with no indication of where the app keeps its own index.
+  //
+  // Surfaced through the EXISTING label tooltip rather than new markup: `index.html` is
+  // outside this change, and while nothing is attached that tooltip is empty anyway, so
+  // nothing is displaced. It is a hint, not an action — the bar does NOT auto-attach a
+  // file the user never picked.
+  const LOCATIONS: AppLocations = {
+    data_dir: "C:\\Users\\u\\AppData\\Local\\Cockpit",
+    index_path: "C:\\Users\\u\\AppData\\Local\\Cockpit\\corpus.sqlite",
+    logs_dir: "C:\\Users\\u\\AppData\\Local\\Cockpit\\logs",
+    cache_dir: "C:\\Users\\u\\AppData\\Local\\Cockpit\\cache",
+    exports_dir: "C:\\Users\\u\\AppData\\Local\\Cockpit\\exports",
+    grant_roots: ["C:\\Users\\u\\AppData\\Local\\Cockpit"],
+  };
+
+  function info(over: Partial<AppInfo> = {}): AppInfo {
+    return {
+      name: "Cockpit",
+      version: "0.0.0",
+      engine: "not-wired",
+      locations: LOCATIONS,
+      locations_error: null,
+      diagnostics: null,
+      ...over,
+    };
+  }
+
+  function barWith(appInfo?: () => Promise<AppInfo>, remembered: string | null = null) {
+    const views: CorpusBarView[] = [];
+    const store: CorpusStore = { read: () => remembered, write: () => {}, clear: () => {} };
+    const ipc: CorpusIpc = {
+      // `{ok, index}` — NOT `{index_path}`, which is `corpus.create`'s shape. The first
+      // draft used the wrong one; because vitest does not typecheck, the fake resolved,
+      // `result.ok` came back undefined, and `attach` took its FAILURE path. Two tests
+      // then failed for a reason that had nothing to do with what they were testing.
+      openCorpus: async (indexPath: string): Promise<OpenCorpusResult> => ({
+        ok: true,
+        index: indexPath,
+      }),
+      ...(appInfo === undefined ? {} : { appInfo }),
+    };
+    return {
+      views,
+      controller: new CorpusBarController(ipc, store, (v) => views.push(v), () => {}),
+    };
+  }
+
+  it("tells a first-run user the default index path, in the label tooltip", async () => {
+    const { controller } = barWith(async () => info());
+    await controller.restore();
+    expect(controller.current.label).toBe(NO_CORPUS_LABEL);
+    expect(controller.current.title).toContain(LOCATIONS.index_path);
+    // A hint, not an attach: nothing was opened and nothing was remembered.
+    expect(controller.current.path).toBeNull();
+    expect(controller.current.error).toBe("");
+  });
+
+  it("yields the tooltip to the REAL path once a corpus is attached", async () => {
+    // Ordering matters and is why this is asserted separately: the hint is only useful
+    // while nothing is open, and leaving it in place afterwards would make the tooltip
+    // name a path the app is not using.
+    const { controller } = barWith(async () => info());
+    await controller.restore();
+    await controller.open("D:\\picked.sqlite");
+    expect(controller.current.title).toBe("D:\\picked.sqlite");
+    expect(controller.current.title).not.toContain(LOCATIONS.index_path);
+  });
+
+  it("stays silent when resolution FAILED, rather than showing the reason as an error", async () => {
+    // `locations_error` is a real branch — a stripped environment with no %USERPROFILE%
+    // resolves to nothing (`lib.rs:26-29`). That is not something the reader can act on,
+    // and it must not paint the failure line, which is reserved for a failed OPEN.
+    const { controller } = barWith(async () =>
+      info({ locations: null, locations_error: "no %USERPROFILE% in this environment" }),
+    );
+    await controller.restore();
+    expect(controller.current.title).toBe("");
+    expect(controller.current.error).toBe("");
+  });
+
+  it("survives an appInfo that REJECTS, and one that is not implemented at all", async () => {
+    // Two distinct degradations, both fail-open. The rejection is the runtime case; the
+    // absent method is the type-level one — `appInfo` is optional on `CorpusIpc`, so every
+    // existing caller and every narrowed fake keeps compiling.
+    const rejecting = barWith(async () => {
+      throw new Error("backend gone");
+    });
+    await rejecting.controller.restore();
+    expect(rejecting.controller.current.title).toBe("");
+    expect(rejecting.controller.current.error).toBe("");
+
+    const absent = barWith(undefined);
+    await absent.controller.restore();
+    expect(absent.controller.current.title).toBe("");
+  });
+
+  it("does not consult appInfo when there IS a remembered corpus to restore", async () => {
+    // The hint exists for the empty case only, so the boot path of a returning user must
+    // not pay for a command whose answer it would discard.
+    const calls: number[] = [];
+    const { controller } = barWith(async () => {
+      calls.push(1);
+      return info();
+    }, "D:\\remembered.sqlite");
+    await controller.restore();
+    expect(controller.current.path).toBe("D:\\remembered.sqlite");
+    expect(calls).toEqual([]);
   });
 });

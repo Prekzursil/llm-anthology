@@ -2276,3 +2276,36 @@ describe("graph.at over a duplicated edge", () => {
     expect(diff.added_edges).toEqual([{ parent: "p", child: "c" }]);
   });
 });
+
+describe("appInfo (CF-1: the app-data locations nothing was reading)", () => {
+  it("answers the five DECISION G-10 paths, with the error slot explicitly null", async () => {
+    // The Rust side ALWAYS sends both `locations` and `locations_error` and exactly one is
+    // null (`lib.rs:26-29`), so a consumer branches on shape rather than on a missing key.
+    // The mock has to model that or the branch a real failure takes is never exercised.
+    const info = await createMockIpc().appInfo();
+    expect(info.locations_error).toBeNull();
+    const loc = info.locations;
+    if (loc === null) throw new Error("the mock must resolve");
+    expect(Object.keys(loc).sort()).toEqual([
+      "cache_dir",
+      "data_dir",
+      "exports_dir",
+      "grant_roots",
+      "index_path",
+      "logs_dir",
+    ]);
+    // `index_path` is the one CF-1 actually consumes, so it is the one asserted concretely:
+    // it must sit UNDER `data_dir`, which is what makes a single grant root sufficient.
+    expect(loc.index_path.startsWith(loc.data_dir)).toBe(true);
+    expect(loc.index_path).not.toBe(loc.data_dir);
+    expect(loc.grant_roots.length).toBeGreaterThan(0);
+  });
+
+  it("names itself and reports the engine as not-wired, like a bare launch", async () => {
+    const info = await createMockIpc().appInfo();
+    expect(info.name).toBe("Cockpit");
+    expect(info.version).not.toBe("");
+    // A bare launch has no sidecar until a corpus is opened (`lib.rs:14-16`).
+    expect(info.engine).toBe("not-wired");
+  });
+});

@@ -469,6 +469,56 @@ export interface DiscoveryFinding {
 }
 
 /**
+ * The DECISION G-10 app-data locations, resolved against the real OS environment by
+ * `AppLocations::to_json` (`cockpit/src-tauri/src/lib.rs:440-453`).
+ *
+ * All five are DEFAULTS, not requirements — the user can attach any index they like, and
+ * `index_path` is only where the app would put one of its own. Every path is a plain
+ * string here because it crossed the wire through `to_string_lossy`.
+ *
+ * `grant_roots` is the MINIMAL set of directory roots the AppContainer membrane would have
+ * to be granted, which is why it is a separate field rather than something a caller
+ * derives: the derivation lives in Rust and a second implementation here could drift from
+ * it silently.
+ */
+export interface AppLocations {
+  data_dir: string;
+  /** The DEFAULT corpus index. A default, not a requirement. */
+  index_path: string;
+  logs_dir: string;
+  cache_dir: string;
+  /** Default destination for `export.run` artifacts. */
+  exports_dir: string;
+  grant_roots: string[];
+}
+
+/**
+ * `app_info` — static per-install metadata, answered by Rust with NO engine round trip and
+ * NO corpus attached (`cockpit/src-tauri/src/lib.rs:48-62`). That is what makes it callable
+ * on the boot path, before anything has been opened.
+ *
+ * MODEL THE WIRE EXACTLY: `locations` and `locations_error` are BOTH always present and
+ * exactly one is null (`lib.rs:26-29`), so a consumer branches on shape rather than on a
+ * missing key. Resolution genuinely can fail — a stripped environment with no
+ * `%USERPROFILE%` / `$HOME` — and a caller that assumed `locations` was always there would
+ * be writing the crash it was meant to prevent.
+ *
+ * `diagnostics` is deliberately left `unknown`. It is the DECISION G-8 "Copy diagnostics"
+ * payload and nothing in this change reads a single field of it; typing it here would be
+ * inventing a contract that no caller exercises, which is the same unwired-shape problem
+ * this type exists to fix. Whoever wires the diagnostics surface owns that shape.
+ */
+export interface AppInfo {
+  name: string;
+  version: string;
+  /** "not-wired" until a corpus is opened — a bare launch has no sidecar. */
+  engine: string;
+  locations: AppLocations | null;
+  locations_error: string | null;
+  diagnostics: unknown;
+}
+
+/**
  * What one scan cost and whether it saw everything (`discover.ScanStats`,
  * `llm_anthology/discover.py:189-202`).
  *
@@ -1067,6 +1117,14 @@ export interface IpcClient {
    * has succeeded once, so this is the app's entry point rather than an optional extra.
    */
   openCorpus(indexPath: string): Promise<OpenCorpusResult>;
+
+  /**
+   * Static per-install metadata, including the DECISION G-10 default app-data locations.
+   * REQUIRED, and needs no corpus: this is the one call that answers before anything is
+   * attached, which is precisely when the corpus bar needs to say where the default index
+   * would live. It was registered in Rust and bound by nothing until CF-1.
+   */
+  appInfo(): Promise<AppInfo>;
 
   // -- first-run auto-discovery + ingest -----------------------------------------
   // REQUIRED, unlike the optional Phase-3 block below. These are the only route a fresh

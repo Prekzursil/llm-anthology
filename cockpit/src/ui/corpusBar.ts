@@ -19,7 +19,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { isTauriRuntime } from "../ipc";
-import type { OpenCorpusResult } from "../ipc/types";
+import type { AppInfo, OpenCorpusResult } from "../ipc/types";
 
 // ---------------------------------------------------------------------------
 // constants
@@ -237,9 +237,25 @@ export function localCorpusStore(key: string = CORPUS_STORAGE_KEY): CorpusStore 
 // headless controller
 // ---------------------------------------------------------------------------
 
-/** The one IPC method the bar needs, narrowed from `IpcClient` (interface segregation). */
+/** The IPC surface the bar needs, narrowed from `IpcClient` (interface segregation). */
 export interface CorpusIpc {
   openCorpus(indexPath: string): Promise<OpenCorpusResult>;
+  /**
+   * OPTIONAL, unlike `openCorpus`, and the asymmetry is deliberate. The bar cannot do its
+   * job without attaching a corpus, but it works perfectly well without knowing where the
+   * DEFAULT index would live — that is a hint, not a dependency. Keeping it optional also
+   * means every existing narrowed fake still satisfies this interface.
+   */
+  appInfo?: () => Promise<AppInfo>;
+}
+
+/**
+ * The tooltip shown on the label while NOTHING is attached: where the app would put an
+ * index of its own. `index_path` is a DEFAULT, never a requirement, so the wording must
+ * not read as an instruction to open that specific file.
+ */
+export function defaultIndexHint(indexPath: string): string {
+  return `No corpus is open. This app keeps its own index at ${indexPath} by default.`;
 }
 
 /** The bar's render-state, emitted on every transition. */
@@ -312,8 +328,40 @@ export class CorpusBarController {
    */
   async restore(): Promise<void> {
     const remembered = this.store.read();
-    if (remembered === null || remembered.trim() === "") return;
+    if (remembered === null || remembered.trim() === "") {
+      await this.hintDefaultIndex();
+      return;
+    }
     await this.attach(remembered, true);
+  }
+
+  /**
+   * CF-1. With nothing remembered, say where the app keeps its own index instead of
+   * showing a bare "No corpus open" and a picker. `app_info` resolves the DECISION G-10
+   * locations against the real environment and, until this call existed, nothing on this
+   * side of the Tauri boundary read the answer.
+   *
+   * FAIL-OPEN AT EVERY STEP, because none of them is worth a visible failure: the method
+   * may be absent (a narrowed fake, or the mock before this shipped), the call may reject,
+   * and resolution itself may legitimately fail — a stripped environment with no
+   * `%USERPROFILE%` returns `locations_error` (`lib.rs:26-29`). A missing hint costs the
+   * user nothing; an error line about a path they never asked about costs them attention,
+   * and that line is reserved for a failed OPEN.
+   *
+   * Only reached when nothing is remembered, so a returning user does not pay for it.
+   */
+  private async hintDefaultIndex(): Promise<void> {
+    const ask = this.ipc.appInfo;
+    if (ask === undefined) return;
+    let indexPath: string;
+    try {
+      const resolved = (await ask.call(this.ipc)).locations?.index_path;
+      if (resolved === undefined || resolved.trim() === "") return;
+      indexPath = resolved;
+    } catch {
+      return;
+    }
+    this.emit({ ...this.view, title: defaultIndexHint(indexPath) });
   }
 
   private async attach(indexPath: string, remembered: boolean): Promise<void> {

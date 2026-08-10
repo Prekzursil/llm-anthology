@@ -21,6 +21,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   Annotation,
+  AppInfo,
   BuildHandle,
   BuildParams,
   BuildStatus,
@@ -75,6 +76,16 @@ export const realIpc: IpcClient = {
    */
   openCorpus(indexPath: string): Promise<OpenCorpusResult> {
     return invoke<OpenCorpusResult>("open_corpus", { indexPath });
+  },
+
+  /**
+   * `app_info` is LOCAL Rust state, not an engine forward: no sidecar, no `{ params }`
+   * wrapper, and no corpus required (`src-tauri/src/lib.rs:48-62`). Answering before
+   * anything is attached is the whole point — it is how the corpus bar knows where the
+   * default index would live on a first run.
+   */
+  appInfo(): Promise<AppInfo> {
+    return invoke<AppInfo>("app_info");
   },
 
   /**

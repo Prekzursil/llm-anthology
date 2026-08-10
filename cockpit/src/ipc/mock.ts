@@ -25,6 +25,7 @@ import {
 } from "./types";
 import type {
   Annotation,
+  AppInfo,
   BuildHandle,
   BuildParams,
   BuildStatus,
@@ -1579,6 +1580,38 @@ export function createMockIpc(
         indexed_conversations: Math.min(buildJob.polls, MOCK_BUILD_POLLS) * 400,
         errors: [],
         ...(running ? {} : { finished_ms: T0 + 30_000 }),
+      };
+    },
+
+    /**
+     * The DECISION G-10 locations, SYNTHETIC. The mock deliberately does not try to guess
+     * the host's real app-data folder: it runs under node in tests and in a browser tab in
+     * dev, neither of which can resolve what the Tauri build would, and a plausible-looking
+     * wrong path is worse than an obviously synthetic one.
+     *
+     * What it DOES model faithfully is the SHAPE the consumer branches on — both keys
+     * present, exactly one null, `index_path` nested under `data_dir`, and `grant_roots`
+     * minimal (`lib.rs:421-437`: the one root covers all three write targets here, so the
+     * de-duplication collapses them to it).
+     */
+    async appInfo(): Promise<AppInfo> {
+      const dataDir = "C:\\Users\\mock\\AppData\\Local\\LLM Anthology";
+      return {
+        name: "Cockpit",
+        version: "mock-0.1.0",
+        // A bare launch has no sidecar until a corpus is opened (`lib.rs:14-16`), and this
+        // command never spawns one, so it reports the same thing the real one does.
+        engine: "not-wired",
+        locations: {
+          data_dir: dataDir,
+          index_path: `${dataDir}\\anthology.sqlite`,
+          logs_dir: `${dataDir}\\logs`,
+          cache_dir: `${dataDir}\\cache`,
+          exports_dir: `${dataDir}\\exports`,
+          grant_roots: [dataDir],
+        },
+        locations_error: null,
+        diagnostics: null,
       };
     },
 

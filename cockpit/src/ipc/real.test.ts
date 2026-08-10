@@ -11,13 +11,13 @@
  * WHAT THIS ADDS OVER `index.test.ts`. That file already asserts the RPC -> command rule for
  * the ELEVEN metadata/dedup/maintenance bindings. Three things were still unasserted:
  *
- *   1. the other EIGHTEEN methods — names, `{ params }` wrapping, and the by-name exceptions;
+ *   1. the other NINETEEN methods — names, `{ params }` wrapping, and the by-name exceptions;
  *   2. whether a command real.ts invokes is REGISTERED in Rust at all. `lib.rs:232` says
  *      "`invoke_handler` is equally invisible": a perfectly rule-abiding name that nobody
  *      added to `generate_handler!` fails exactly like a typo. Nothing checked that;
  *   3. that results pass through unreshaped and rejections propagate.
  *
- * HOW THE NAMES ARE CHECKED WITHOUT CIRCULARITY. Transcribing 29 command names out of
+ * HOW THE NAMES ARE CHECKED WITHOUT CIRCULARITY. Transcribing 30 command names out of
  * `real.ts` into a table would faithfully reproduce a typo and call it verified. So instead
  * each row carries the RPC method the ENGINE dispatches (`llm_anthology/sidecar.py`'s handler
  * map) and the expected command is DERIVED from it by the pinned rule `a.b` -> `a_b`; and,
@@ -96,7 +96,7 @@ type MaintenanceTargetLike = { file_path: string };
  * loudly instead of quietly going uncovered, which is the whole reason this is a table.
  */
 const BINDINGS: Record<string, Binding> = {
-  // -- lifecycle: the two by-name commands and the no-argument one -------------------
+  // -- lifecycle: the two by-name commands and the two no-argument ones ---------------
   openCorpus: {
     // Spawns the sidecar rather than forwarding an RPC (`lib.rs:78-86`), so no rpc name.
     rpc: null,
@@ -111,6 +111,17 @@ const BINDINGS: Record<string, Binding> = {
     exception: "create_corpus",
     call: () => realIpc.createCorpus("C:\\new.sqlite"),
     args: { indexPath: "C:\\new.sqlite" },
+  },
+  appInfo: {
+    // LOCAL Rust state, not an engine forward: `app_info` reads the process environment
+    // and answers without a sidecar (`lib.rs:48-62`), which is the whole reason it can be
+    // called before any corpus is attached.
+    rpc: null,
+    exception: "app_info",
+    call: () => realIpc.appInfo(),
+    // No parameters on the Rust signature, so no second argument — same contract as
+    // `discover_sources` below.
+    args: undefined,
   },
   discoverSources: {
     rpc: "sources.discover",
@@ -317,8 +328,8 @@ describe("real adapter binding table", () => {
     expect(Object.keys(BINDINGS).sort()).toEqual(methodsOf(realIpc));
   });
 
-  it("covers all 29 bindings", () => {
-    expect(Object.keys(BINDINGS)).toHaveLength(29);
+  it("covers all 30 bindings", () => {
+    expect(Object.keys(BINDINGS)).toHaveLength(30);
   });
 
   // -- DECISION G-17 ----------------------------------------------------------------
@@ -357,16 +368,22 @@ describe("every method invokes the command Rust registers", () => {
       await binding.call();
       used.push(invokeMock.mock.calls[0][0]);
     }
-    expect(used).toHaveLength(29);
+    expect(used).toHaveLength(30);
     const unregistered = used.filter((command) => !registered.includes(command));
     expect(unregistered).toEqual([]);
   });
 
-  it("pins the three registered commands the adapter never calls", async () => {
+  it("pins the two registered commands the adapter never calls", async () => {
     // Pinned deliberately rather than left to drift. If a future command is registered and
     // never bound, this says so instead of the omission being invisible.
     //
-    //   * `app_info` — local Rust state (`lib.rs:17-21`) with no place on the data surface.
+    // WAS THREE. `app_info` came off this list in CF-1: it resolves the DECISION G-10
+    // app-data locations against the real environment, and nothing on the TypeScript side
+    // had ever read them, so the whole resolution was dead below the Tauri boundary. The
+    // old note here said it had "no place on the data surface" — that was the reasoning
+    // that kept it dead, and it was wrong: the corpus bar has to tell a first-run user
+    // where the default index lives, and this command is the only thing that knows.
+    //
     //   * `graph_children`, `graph_ancestors` — DECISION G-17 removed the two IPC methods
     //     for having no caller, but the COMMANDS stay registered because the engine still
     //     serves `graph.children` / `graph.ancestors`, and the Rust
@@ -382,7 +399,7 @@ describe("every method invokes the command Rust registers", () => {
       used.add(invokeMock.mock.calls[0][0]);
     }
     const unused = rustRegisteredCommands().filter((command) => !used.has(command));
-    expect(unused.sort()).toEqual(["app_info", "graph_ancestors", "graph_children"]);
+    expect(unused.sort()).toEqual(["graph_ancestors", "graph_children"]);
   });
 });
 
@@ -405,7 +422,7 @@ describe("per-method command name and arguments", () => {
 });
 
 describe("the naming rule, and its two verified exceptions", () => {
-  it("derives 26 of the 29 command names from the RPC method by the rule", () => {
+  it("derives 26 of the 30 command names from the RPC method by the rule", () => {
     const byRule = Object.values(BINDINGS).filter((b) => b.exception === undefined);
     expect(byRule).toHaveLength(26);
     for (const binding of byRule) {
@@ -417,11 +434,14 @@ describe("the naming rule, and its two verified exceptions", () => {
     }
   });
 
-  it("pins the three departures from the rule, so none of them is silent", () => {
-    // `open_corpus` forwards no RPC; the other two INVERT the rule's word order, verified in
-    // the Rust source. A future "tidy-up" that renamed either Rust command to match the rule
-    // would break the shipped app, and it breaks here first.
+  it("pins the four departures from the rule, so none of them is silent", () => {
+    // `open_corpus` and `app_info` forward no RPC at all, so the rule has nothing to derive
+    // FROM and they can only be pinned literally; the other two INVERT the rule's word order,
+    // verified in the Rust source. A future "tidy-up" that renamed either Rust command to
+    // match the rule would break the shipped app, and it breaks here first.
     expect(BINDINGS.openCorpus.rpc).toBeNull();
+    expect(BINDINGS.appInfo.rpc).toBeNull();
+    expect(BINDINGS.appInfo.exception).toBe("app_info");
     expect(BINDINGS.createCorpus.exception).toBe("create_corpus");
     expect(ruleCommand(BINDINGS.createCorpus.rpc as string)).toBe("corpus_create");
     expect(BINDINGS.discoverSources.exception).toBe("discover_sources");
