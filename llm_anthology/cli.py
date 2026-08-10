@@ -265,9 +265,11 @@ def _build_index(args):
     # reads nothing and the counts below print zeros, which is the same disclose-either-way
     # rule STATE_GRAPH_MERGED follows. Silence would be indistinguishable from a flag that
     # was accepted and ignored.
-    export_files, export_errors = loaders.ingest_exports(out, specs)
+    # NOT named `export_files`: that is a public function in `loaders`, and a local of the
+    # same name reads as a call site when it is a result.
+    export_report, export_errors = loaders.ingest_exports(out, specs)
     errors = errors + export_errors
-    for row in export_files:
+    for row in export_report:
         # PER FILE, because that is what makes a dead shard visible: a 17-shard export that
         # silently contributed 16 is exactly what a single total cannot show.
         line = ("EXPORT_INGEST provider=%(provider)s file=%(file)s "
@@ -277,7 +279,7 @@ def _build_index(args):
             # corpus whose boundaries were INFERRED must not read like ground truth.
             line += " grouping_mode=" + row["grouping_mode"]
         print(line)
-    print("EXPORT_CONVERSATIONS", sum(row["conversations"] for row in export_files))
+    print("EXPORT_CONVERSATIONS", sum(row["conversations"] for row in export_report))
 
     conn = corpus.open_index(out)
     try:
