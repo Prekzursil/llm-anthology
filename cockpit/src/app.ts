@@ -13,7 +13,7 @@ import { ipc } from "./ipc";
 import type { SearchHit, ThreadMeta, ThreadNode } from "./ipc";
 // Direct from the wire contract: `./ipc` (the adapter selector) re-exports the DTOs the
 // app already used, and widening its surface is a change to a module outside this unit.
-import type { ExportMode } from "./ipc/types";
+import type { CorpusStats, ExportMode, HealthInfo } from "./ipc/types";
 import { isMoreId, moreParentId } from "./graph/capFanOut";
 import { buildView, loadAllRoots, loadForest, rootsStatus } from "./graph/forest";
 import { SpawnTreeCanvas } from "./graph/canvas";
@@ -28,6 +28,7 @@ import {
 import { knownProviders, providerTint } from "./graph/palette";
 import { CorpusBar, corpusLabel, localCorpusStore, type CorpusStore } from "./ui/corpusBar";
 import { DedupPanel } from "./ui/dedupPanel";
+import { mountDiagnosticsButton, systemClipboardWrite } from "./ui/diagnostics";
 import { DiscoveryPanel } from "./ui/discoveryPanel";
 import { engineErrorText, engineStatusText } from "./ui/errors";
 import { asExportMode, ExportPanel, exportIpcFrom, renderView } from "./ui/exportPanel";
@@ -108,6 +109,18 @@ export class CockpitApp {
 
   private readonly healthEl = requireEl("health");
   private readonly statsEl = requireEl("stats");
+
+  /**
+   * The last successful `health` / `stats` answers, RETAINED rather than only painted.
+   *
+   * `loadHealth` and `loadStats` used to reduce each answer straight to a string, so the
+   * numbers existed only as topbar text and the diagnostics bundle had nothing to report.
+   * Both are set back to null when their load FAILS, following `conversationCount`'s
+   * precedent immediately below: carrying a previous corpus's numbers forward would put
+   * figures in a bug report that no longer describe anything the reporter is looking at.
+   */
+  private lastHealth: HealthInfo | null = null;
+  private lastStats: CorpusStats | null = null;
   private readonly graphPaneEl = requireEl("graph-pane");
   /** Collapses the pane to a slim explanatory strip when there is nothing to draw (D-4). */
   private readonly graphStrip: GraphStrip;
@@ -237,6 +250,27 @@ export class CockpitApp {
     // The three panels that had no import and no container until now. Constructed HERE
     // rather than in a `mount…` helper because the fields are readonly and TypeScript only
     // permits assigning those from the constructor itself.
+    // CF-19. DECISION G-8's in-app half: one button that puts a filed-able bundle on the
+    // clipboard. `mountDiagnosticsButton` existed, fully tested, with ZERO production callers.
+    //
+    // The dep is `ipc.appInfo`, NOT a raw Tauri `invoke`. That distinction is the reason this
+    // sat unmounted: the old `invoke: (command) => …` shape could only be satisfied by the raw
+    // boundary, and reaching past `ipc` re-creates the failure `ipc/index.ts:5-16` records —
+    // a hardcoded real-IPC path that rendered every pane dead outside the Tauri webview.
+    //
+    // `snapshot` is a CLOSURE, not a captured value: it is called at click time, so a bundle
+    // filed after attaching a corpus reports that corpus rather than the empty state the app
+    // booted into.
+    mountDiagnosticsButton(requireEl("topbar"), {
+      appInfo: () => ipc.appInfo(),
+      snapshot: () => ({
+        health: this.lastHealth,
+        stats: this.lastStats,
+        indexPath: this.attachedIndex,
+      }),
+      copy: systemClipboardWrite,
+    });
+
     const dedup = new DedupPanel(ipc, requireEl("dedup-panel"));
     this.metadata = new MetadataPanel(ipc, requireEl("metadata-panel"));
     // The other direction of the same seam: picking an annotation result opens that
@@ -414,6 +448,7 @@ export class CockpitApp {
   private async loadHealth(): Promise<void> {
     try {
       const h = await ipc.healthPing();
+      this.lastHealth = h;
       this.healthEl.textContent = h.corpus_ready
         ? `engine ${h.engine_version} · IR ${h.ir_version}`
         : "engine idle";
@@ -421,6 +456,7 @@ export class CockpitApp {
       // The not-attached case is the app's INITIAL STATE, not a fault, and the CorpusBar
       // already reports it — so this must not render the engine's internal
       // "call open_corpus first" text here as well.
+      this.lastHealth = null;
       this.healthEl.textContent = engineStatusText(err, "engine unavailable");
     }
   }
@@ -428,6 +464,7 @@ export class CockpitApp {
   private async loadStats(): Promise<void> {
     try {
       const s = await ipc.corpusStats();
+      this.lastStats = s;
       // Recorded before anything is painted: `reload` awaits this alongside the other three
       // loads and only then renders the forest, so the graph pane's empty state is always
       // decided against THIS corpus's stats rather than the previous one's.
@@ -445,6 +482,7 @@ export class CockpitApp {
       // describe a pane as "no spawn lineage" on the strength of a number that no longer
       // refers to anything.
       this.conversationCount = null;
+      this.lastStats = null;
       this.statsEl.textContent = engineStatusText(err, "stats unavailable");
     }
   }

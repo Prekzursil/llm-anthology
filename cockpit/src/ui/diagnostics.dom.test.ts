@@ -23,7 +23,7 @@ import {
 
 function deps(copy: DiagnosticsDeps["copy"]): DiagnosticsDeps {
   return {
-    invoke: vi.fn(async () => ({ version: "0.1.0", diagnostics: { engine_stderr: "" } })),
+    appInfo: vi.fn(async () => ({ version: "0.1.0", diagnostics: { engine_stderr: "" } })),
     snapshot: () => ({ health: null, stats: null, indexPath: null }),
     copy,
   };

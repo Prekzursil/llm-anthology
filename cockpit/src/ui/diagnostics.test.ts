@@ -15,7 +15,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import type { CorpusStats, HealthInfo } from "../ipc/types";
+import type { AppInfo, CorpusStats, HealthInfo } from "../ipc/types";
 import {
   BUNDLE_HEADER,
   BUNDLE_PRIVACY_NOTE,
@@ -227,7 +227,7 @@ describe("readEngineDiagnostics", () => {
 
 function deps(overrides: Partial<DiagnosticsDeps> = {}): DiagnosticsDeps {
   return {
-    invoke: vi.fn(async () => ({ version: "0.1.0", diagnostics: DIAGNOSTICS })),
+    appInfo: vi.fn(async () => ({ version: "0.1.0", diagnostics: DIAGNOSTICS })),
     snapshot: () => ({ health: HEALTH, stats: STATS, indexPath: "C:\\Users\\tester\\a.sqlite" }),
     copy: vi.fn<ClipboardWrite>(async () => undefined),
     ...overrides,
@@ -271,7 +271,7 @@ describe("DiagnosticsController", () => {
     const controller = new DiagnosticsController(
       deps({
         copy,
-        invoke: vi.fn(async () => {
+        appInfo: vi.fn(async () => {
           throw new Error("command app_info not found");
         }),
       }),
@@ -331,5 +331,69 @@ describe("systemClipboardWrite", () => {
     // The node runner has no `navigator.clipboard`, and neither does a browser preview over
     // plain HTTP. `Cannot read properties of undefined` tells a reporter nothing.
     await expect(systemClipboardWrite("x")).rejects.toThrow("no clipboard API");
+  });
+});
+
+describe("CF-19: the dep is the CLIENT method, not a general-purpose invoke", () => {
+  // This is the change that made the button mountable, so it is asserted rather than left
+  // to the type system. `DiagnosticsDeps` used to take `invoke: (command: string) =>
+  // Promise<unknown>` and `copyBundle` called it with the single literal `"app_info"`. A
+  // general-purpose invoke can only be satisfied honestly by a RAW Tauri `invoke`, and
+  // handing the app one bypasses the runtime adapter selection in `ipc/index.ts:5-16` —
+  // the abstraction that exists because a hardcoded real-IPC path once made every pane
+  // render dead in a plain browser. So the wide shape was the blocker, and narrowing it to
+  // the capability actually used is what removed it.
+
+  it("asks for app info with NO command string, so no raw invoke can satisfy it", async () => {
+    const appInfo = vi.fn(async () => ({ version: "9.9.9", diagnostics: DIAGNOSTICS }));
+    const copy = vi.fn<ClipboardWrite>(async () => undefined);
+    await new DiagnosticsController(deps({ appInfo, copy }), () => undefined).copyBundle();
+
+    expect(appInfo).toHaveBeenCalledTimes(1);
+    // ZERO arguments is the load-bearing part. While the dep took a command name, the only
+    // thing that could be passed here was a string the callee had to dispatch on, and the
+    // one implementation that dispatches on it is the raw Tauri boundary.
+    expect(appInfo.mock.calls[0]).toEqual([]);
+    // And the answer is genuinely consumed, so this cannot pass on a stub that is called
+    // and ignored.
+    expect(copy.mock.calls[0][0] as unknown as string).toContain("app version: 9.9.9");
+  });
+
+  it("accepts the real IpcClient.appInfo return shape without a cast at the call site", async () => {
+    // The point of the narrowing: `ipc.appInfo()` resolves `AppInfo`, and that value must
+    // drop straight into this dep. If it did not, `app.ts` would need an adapter, and an
+    // adapter around a one-command invoke is the shim this change exists to avoid.
+    const copy = vi.fn<ClipboardWrite>(async () => undefined);
+    const fromClient: AppInfo = {
+      name: "Cockpit",
+      version: "from-client",
+      engine: "not-wired",
+      locations: null,
+      locations_error: "resolution failed",
+      diagnostics: DIAGNOSTICS,
+    };
+    await new DiagnosticsController(
+      deps({ appInfo: async () => fromClient, copy }),
+      () => undefined,
+    ).copyBundle();
+    const copied = copy.mock.calls[0][0] as unknown as string;
+    expect(copied).toContain("app version: from-client");
+    // The diagnostics payload rode along on the SAME answer, which is why one call is enough.
+    expect(copied).toContain("KeyError: <redacted 9 chars>");
+  });
+
+  it("keeps distrusting the payload shape, because the adapter never validated it", async () => {
+    // `real.ts` does `invoke<AppInfo>("app_info")` — an UNCHECKED cast over whatever Tauri
+    // returns. So a typed dep would be claiming a guarantee nothing enforces, and the
+    // defensive reads in `copyBundle` are live code rather than dead branches. Garbage in
+    // must still produce a filed-able bundle.
+    const copy = vi.fn<ClipboardWrite>(async () => undefined);
+    await new DiagnosticsController(
+      deps({ appInfo: async () => "not an object at all", copy }),
+      () => undefined,
+    ).copyBundle();
+    const copied = copy.mock.calls[0][0] as unknown as string;
+    expect(copied).toContain("app version: (unknown)");
+    expect(copied).toContain("1234 conversations"); // the UI numbers still survive
   });
 });

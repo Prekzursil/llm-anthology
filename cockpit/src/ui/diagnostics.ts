@@ -264,14 +264,31 @@ export const COPIED_MESSAGE = "Diagnostics copied — paste it into your bug rep
 /** Shown when the clipboard refuses. The bundle is kept so the UI can still show it. */
 export const COPY_FAILED_PREFIX = "Could not reach the clipboard";
 
-export type InvokeLike = (command: string) => Promise<unknown>;
+/**
+ * Fetch the app's own status. `IpcClient.appInfo` satisfies this directly.
+ *
+ * WAS `invoke: (command: string) => Promise<unknown>`, and that width is exactly what kept
+ * this component unmounted (CF-19). Only one call site ever existed and it always passed the
+ * single literal `"app_info"` — so the command parameter bought nothing, while the SHAPE
+ * could only be satisfied honestly by a raw Tauri `invoke`. Handing the app one of those
+ * bypasses the runtime adapter selection in `ipc/index.ts:5-16`, which exists because a
+ * hardcoded real-IPC path once made every pane render dead in a plain browser. Narrowing the
+ * dep to the capability actually used removed the blocker instead of shimming around it.
+ *
+ * RESOLVES `unknown`, DELIBERATELY, even though the client is typed. `real.ts` does
+ * `invoke<AppInfo>("app_info")` — an UNCHECKED cast over whatever Tauri hands back — so the
+ * static type is a claim nothing enforces. The defensive reads in {@link
+ * DiagnosticsController.copyBundle} are live code, not dead branches, and typing this
+ * `Promise<AppInfo>` would quietly assert a guarantee this module is right not to trust.
+ */
+export type AppInfoLike = () => Promise<unknown>;
 export type ClipboardWrite = (text: string) => Promise<void>;
 
 /** The live numbers the UI already holds. Read at CLICK time, never cached. */
 export type EngineSnapshot = () => Pick<BundleInput, "health" | "stats" | "indexPath">;
 
 export interface DiagnosticsDeps {
-  invoke: InvokeLike;
+  appInfo: AppInfoLike;
   snapshot: EngineSnapshot;
   copy: ClipboardWrite;
 }
@@ -302,7 +319,7 @@ export class DiagnosticsController {
     let appVersion: string | null = null;
     let diagnostics: EngineDiagnostics | null = null;
     try {
-      const info = await this.deps.invoke("app_info");
+      const info = await this.deps.appInfo();
       diagnostics = readEngineDiagnostics(info);
       if (typeof info === "object" && info !== null) {
         const version = (info as Record<string, unknown>)["version"];
@@ -369,13 +386,18 @@ export const BUTTON_LABEL = "Copy diagnostics";
  * The button plus its status line. Text is written with `textContent`, never `innerHTML`, so
  * an engine error string in the bundle can never inject markup.
  *
- * WIRING, stated plainly because it is NOT done yet: nothing in the app constructs this. The
- * shell that owns the topbar is `src/app.ts` and the container is `index.html`, both outside
- * this work unit's declared file scope, so the one line that makes the button visible —
- * `mountDiagnosticsButton(requireEl("topbar"), { invoke, snapshot, copy })` — has to be added
- * by whoever owns those files. Until it is, the ON-DISK half of DECISION G-8 still works
- * with no UI at all: the Rust parent writes `<logs_dir>/engine-stderr.log` unconditionally,
- * and `.github/ISSUE_TEMPLATE/bug_report.yml` tells a reporter where to find it.
+ * WIRED as of CF-19: `src/app.ts` mounts this into `index.html`'s `<header id="topbar">`.
+ * This paragraph previously said the opposite — "nothing in the app constructs this" — and
+ * named the blocking line as `mountDiagnosticsButton(requireEl("topbar"), { invoke, snapshot,
+ * copy })`. Both halves are now stale: the mount exists, and the dep is `appInfo`, not
+ * `invoke`. Updated in the SAME change that made it false, because a comment describing an
+ * absent wire is indistinguishable from a comment describing a present one until someone
+ * reads the code, and by then it has already misled them.
+ *
+ * The ON-DISK half of DECISION G-8 never depended on this and still does not: the Rust parent
+ * writes `<logs_dir>/engine-stderr.log` unconditionally and
+ * `.github/ISSUE_TEMPLATE/bug_report.yml` tells a reporter where to find it. That is why this
+ * button was low-stakes to leave unmounted, and why it is a button rather than a panel.
  */
 export class DiagnosticsButton {
   private readonly controller: DiagnosticsController;
