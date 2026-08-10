@@ -217,9 +217,14 @@ jobs:
       # Mutate ONE IR value, then require BOTH detectors to report it -- the staleness diff
       # AND the suite that consumes the fixture. Then restore, and re-assert clean.
       #
-      # Verified in an isolated clone at 22722aa before this file was committed, all three
-      # states: clean -> diff 0 / vitest 14 passed; mutated -> diff 1 / vitest 1 failed;
-      # mutation made a deliberate no-op -> this step itself exits 1 on the first detector.
+      # Verified in an isolated clone at 22722aa before this file was committed, three states:
+      #   clean            -> git diff exit 0, vitest 14 passed
+      #   one IR mutated   -> git diff exit 1, vitest 1 failed / 13 passed
+      #   control-for-the-control -> exit 1 on the first detector, with its message
+      # The third was run as this step's shell logic with ONE line changed (the mutation
+      # rewritten to assign the value back unchanged), not as the committed step verbatim --
+      # the committed step cannot no-op on purpose. It is what proves the control is not
+      # itself green-by-construction.
       - name: negative control - prove the drift gate can actually fail
         shell: bash
         run: |
