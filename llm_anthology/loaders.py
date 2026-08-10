@@ -517,7 +517,7 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     # `session_meta` and no UUID in its filename (`codex_rollout.py:296` ->
     # `_id_from_path`), so the blank is a real input, not a defensive hypothetical.
     #
-    # `dedup.py:339-345` settled the same question for its own map and states the rule this
+    # `dedup.py:38-44` settled the same question for its own map and states the rule this
     # follows: "an id that identifies nothing maps onto nothing."
     #
     # SKIPPED rather than keyed by path. `claimed_by` has exactly one reader — the check
@@ -579,7 +579,7 @@ def _turn_key(turn):
     `payload["id"]` into `Turn.uuid`. Roughly a third of real rollout items carry no such
     id, and `grok.py:311` never sets one at all, so a uuid-only key would treat every
     id-less turn as unique and re-append the whole replayed prefix. An id that identifies
-    nothing maps onto nothing (the rule `dedup.py:339-345` and `_admit` already follow),
+    nothing maps onto nothing (the rule `dedup.py:38-44` and `_admit` already follow),
     so those fall back to their own content: role, stamp and block text.
     """
     if turn.uuid:

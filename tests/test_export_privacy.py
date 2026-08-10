@@ -149,7 +149,12 @@ def test_shareable_mode_keeps_structure_titles_and_repo_branch(tmp_path):
     assert node.git_branch == "feature/x"
     assert (node.tokens_used, node.created_at_ms, node.updated_at_ms) == (17, 1000, 2000)
     assert (node.model_provider, node.adapter) == ("openai", "codex")
-    assert (node.agent_role, node.agent_nickname) == ("impl", "brisk-heron")
+    assert node.agent_role == "impl"
+    # The NICKNAME is now dropped — see the CF-18 batch decision recorded in
+    # `redact.shareable_thread`. Asserted here as "" rather than deleted from the test,
+    # because this test exists to make a change to the trade VISIBLE, and silently removing
+    # the field it used to guard would be the exact opposite.
+    assert node.agent_nickname == ""
     assert sorted(reparsed.threads) == ["t1", "t2"]               # structure intact
     assert [(e.parent_thread_id, e.child_thread_id) for e in reparsed.edges] == \
         [("t1", "t2")]
@@ -168,7 +173,7 @@ def test_shareable_artifact_round_trips_to_exactly_what_was_written(tmp_path):
     assert export.serialize_graph(export.parse_graph(serialized)) == serialized
 
 
-def test_shareable_differs_from_full_in_exactly_the_three_projected_fields(tmp_path):
+def test_shareable_differs_from_full_in_exactly_the_projected_fields(tmp_path):
     full = tmp_path / "full.json"
     share = tmp_path / "share.json"
     export.export_with_gate(_rich(), full, root=tmp_path)
@@ -178,7 +183,12 @@ def test_shareable_differs_from_full_in_exactly_the_three_projected_fields(tmp_p
     assert d.added_nodes == [] and d.removed_nodes == []
     assert d.added_edges == [] and d.removed_edges == []
     assert set(d.changed_nodes) == {"t1"}
-    assert set(d.changed_nodes["t1"]) == {"preview", "cwd", "rollout_path"}
+    # FOUR now, not three: `agent_nickname` joined the projection. This by-construction
+    # set is the point of the test — a projection that starts touching a fifth field has to
+    # come through here, so the count is deliberately spelled out rather than relaxed.
+    # `title` and `git_branch` are absent because THIS fixture carries no home path in
+    # them; they are scrubbed, and `test_a_TITLE_that_is_a_path...` covers that.
+    assert set(d.changed_nodes["t1"]) == {"preview", "cwd", "rollout_path", "agent_nickname"}
 
 
 def test_shareable_mode_defaults_home_to_the_process_home(tmp_path):

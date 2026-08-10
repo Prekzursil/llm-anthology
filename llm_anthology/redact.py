@@ -411,13 +411,32 @@ def shareable_thread(meta, home=None):
         someone else. Dropped, not truncated: a shorter excerpt is the same leak.
       * ``cwd`` and ``rollout_path`` are relativized to ``~`` (see
         :func:`relativize_home`) — absolute local paths carry the OS username.
-      * structure (``id``, timestamps, ``tokens_used``), ``title``, ``model_provider``,
-        ``adapter``, ``agent_role``/``agent_nickname`` and ``git_branch`` are KEPT.
+      * ``title`` and ``git_branch`` are MODIFIED, not kept verbatim: every mention of the
+        home directory inside them is substituted (see :func:`scrub_home_mentions`). They
+        were listed as KEPT alongside genuinely verbatim fields, which was defensible under
+        this list's own taxonomy and still misleading — a reader checking which fields could
+        carry a username would have stopped at the wrong bullet.
+      * ``agent_nickname`` is DROPPED. It is the one remaining field that can carry the OS
+        username outright (``<name>@desktop``), and being a bare username rather than a path
+        it is beyond anything :func:`scrub_home_mentions` can reach. ``agent_role`` is kept
+        and carries the useful signal — which agent this was — without the identity.
+      * structure (``id``, timestamps, ``tokens_used``), ``model_provider``, ``adapter`` and
+        ``agent_role`` are KEPT verbatim.
 
     ACCEPTED RESIDUAL, inline and deliberate: ``title`` is derived from raw content for
     the Codex adapter (see this module's cloud-projection docstring above), and repo /
     branch names are kept because the owner explicitly accepted that trade. "Shareable"
     therefore means MEASURABLY LESS LEAKY, not safe — the mode still hands over titles.
+    A path OUTSIDE the home directory (``D:/work/client-x``) also still passes: it carries
+    no username, but it can carry a client name.
+
+    THE NICKNAME DROP IS AN ORCHESTRATOR DECISION, recorded as theirs rather than inferred
+    here. An earlier pass left the field untouched and PINNED that as deliberate, on the
+    grounds that dropping or hashing an identity field is a product call. It was then made:
+    the owner accepted publishing content-derived titles and repo/branch names and never
+    accepted publishing their username, so a SHAREABLE projection that carries it is the
+    defect. Reversible in one line — restore ``agent_nickname=meta.agent_nickname`` — if the
+    owner would rather keep it.
     """
     return ThreadMeta(
         id=meta.id,
@@ -429,7 +448,9 @@ def shareable_thread(meta, home=None):
         git_branch=scrub_home_mentions(meta.git_branch, home=home),
         cwd=relativize_home(meta.cwd, home=home),
         agent_role=meta.agent_role,
-        agent_nickname=meta.agent_nickname,
+        # DROPPED, not scrubbed: `<name>@desktop` is a bare username, so no path treatment
+        # reaches it. `agent_role` above keeps the useful signal without the identity.
+        agent_nickname="",
         preview="",
         rollout_path=relativize_home(meta.rollout_path, home=home),
         adapter=meta.adapter,

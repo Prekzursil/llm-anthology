@@ -226,7 +226,11 @@ def test_shareable_thread_keeps_structure_titles_and_repo_branch():
     assert out.git_branch == "feature/x"
     assert (out.model_provider, out.adapter) == ("openai", "codex")
     assert (out.tokens_used, out.created_at_ms, out.updated_at_ms) == (17, 1000, 2000)
-    assert (out.agent_role, out.agent_nickname) == ("impl", "brisk-heron")
+    # `agent_role` stays; the NICKNAME no longer does. Kept as an assertion rather than
+    # deleted: this test's whole job is to make a change to the accepted trade visible, so
+    # dropping the field it used to guard would defeat it at the moment it mattered.
+    assert out.agent_role == "impl"
+    assert out.agent_nickname == ""
 
 
 def test_a_TITLE_that_is_a_path_is_relativized_like_any_other_path():
@@ -304,18 +308,43 @@ def test_an_ORDINARY_title_and_branch_are_returned_UNCHANGED():
     assert out.git_branch == "feature/x"
 
 
-def test_the_agent_NICKNAME_is_deliberately_left_alone():
-    """`brisk-heron` is fine, but a nickname can be `someone@desktop` — a BARE USERNAME, not
-    a path, so `relativize_home` cannot help it and would return it verbatim anyway.
+def test_the_agent_NICKNAME_is_DROPPED_in_shareable_mode():
+    """The last live username leak, and the reason it needed a DECISION rather than a scrub.
 
-    Left untouched ON PURPOSE and pinned so the omission reads as a decision rather than an
-    oversight. Dropping or hashing it is a product call about what a shareable export owes
-    the reader, and that belongs to the owner, not to this fix.
+    A nickname can be `someone@desktop` — a BARE USERNAME, not a path — so
+    `scrub_home_mentions` cannot reach it and `relativize_home` would return it verbatim.
+    No amount of path treatment helps; the only options are keep, hash, or drop.
+
+    THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE, and that is recorded rather than quietly
+    inverted. An earlier pass left the field alone and pinned the omission as deliberate, on
+    the correct grounds that dropping an identity field is a product call and not a bug fix.
+    The orchestrator then made that call: the owner accepted content-derived titles and
+    repo/branch names, never their username, so a SHAREABLE projection carrying it is the
+    defect. `agent_role` keeps the useful signal without the identity.
     """
     meta = _full_thread()
     meta.agent_nickname = "someone@desktop"
     out = redact.shareable_thread(meta, home=r"C:\Users\someone")
-    assert out.agent_nickname == "someone@desktop"
+    assert out.agent_nickname == ""
+    assert out.agent_role == "impl", "the ROLE survives; only the identity goes"
+
+
+def test_an_innocuous_nickname_is_dropped_TOO():
+    """Not content-sniffed. `brisk-heron` carries no username, but a projection that keeps
+    the field when it *looks* harmless is one bad heuristic away from publishing the one
+    that is not. The field is absent in shareable mode, unconditionally."""
+    out = redact.shareable_thread(_full_thread(), home=r"C:\Users\someone")
+    assert out.agent_nickname == ""
+
+
+def test_FULL_mode_still_carries_the_nickname():
+    """The drop is SHAREABLE-only. A full export is the owner's own archive and must not
+    quietly lose a field — this is the control that stops the fix over-reaching."""
+    meta = _full_thread()
+    meta.agent_nickname = "someone@desktop"
+    assert meta.agent_nickname == "someone@desktop"      # untouched by the projection
+    redact.shareable_thread(meta, home=r"C:\Users\someone")
+    assert meta.agent_nickname == "someone@desktop", "shareable_thread must stay pure"
 
 
 def test_shareable_thread_is_pure():

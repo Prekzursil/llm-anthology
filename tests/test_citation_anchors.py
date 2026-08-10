@@ -554,6 +554,8 @@ PY_PINS = [
     # anchors are broken and are recorded in PY_KNOWN_BROKEN instead of being fixed, because
     # fixing them means editing a file outside this sweep's scope.
     ("loaders.py", "corpus.py", 347, "def add_conversation", "the re-index that replaced the early-return"),
+    ("loaders.py", "dedup.py", 38, "UNIDENTIFIED COPIES",
+     "CF-18: the blank-id rule, re-pointed at the block that SURVIVED cf371fe"),
     ("loaders.py", "codex_rollout.py", 296, "tid = _s(ms.get(", "how a Codex thread id is derived"),
     ("loaders.py", "codex_rollout.py", 274, 'ir.Turn("human"', "a human turn carrying the provider item id"),
     ("loaders.py", "codex_rollout.py", 283, 'ir.Turn("assistant"', "the assistant turn opened with the first id"),
@@ -633,25 +635,6 @@ PY_ORPHAN_SECONDARIES = {
 #: the day the owning unit fixes one, this file goes red and says "move it to PY_PINS". A
 #: waiver that cannot expire is how a defect becomes permanent.
 PY_KNOWN_BROKEN = [
-    (
-        "loaders.py", "dedup.py", 339, None,
-        "TARGET-GONE, the only one in the sweep, and cited TWICE (loaders.py:520 and :582) "
-        "for the rule that 'nothing maps onto nothing'. dedup.py is 317 lines, so :339-345 "
-        "cannot resolve at any offset. CAUSE CONFIRMED, no longer a hypothesis: "
-        "`git show cf371fe^:llm_anthology/dedup.py` is 363 lines and its :339-345 is exactly "
-        "the 'Blank ids are EXCLUDED' passage — including the sentence 'An id that identifies "
-        "nothing maps onto nothing', which loaders.py:582 quotes VERBATIM. So the citation "
-        "was precise when written and cf371fe deleted its target: "
-        "'refactor(engine): dedup could scan but the collapse it fed had no caller'. "
-        "THE GENERAL LESSON, worth more than this instance: 'no production callers' is not "
-        "'nothing depends on it'. That removal correctly checked callers and never checked "
-        "CITATIONS — a docstring citing dead code is a dependency no caller sweep and no test "
-        "will surface. The RULE loaders.py follows is still right; only its stated "
-        "justification is gone, so this needs a judgement about where the reasoning should "
-        "now live (inlined at the two citing sites, or relocated into what remains of "
-        "dedup.py) rather than a re-anchor. Owned by the orchestrator whose wave removed it, "
-        "NOT by a loaders.py owner — an earlier version of this note misattributed it.",
-    ),
     (
         "loaders.py", "claude_code.py", 263, "uuid",
         "ANCHOR-DRIFTED. Cited from loaders.py:409 for the two adapters agreeing on the SHAPE "
@@ -1054,7 +1037,6 @@ def test_every_engine_citation_is_pinned():
 #: broken anchor could be waived into silence and the suite would stay green. A waiver list
 #: that grows unattended is how a gate stops gating.
 PY_KNOWN_BROKEN_EXPECTED = {
-    ("loaders.py", "dedup.py", 339),
     ("loaders.py", "claude_code.py", 263),
 }
 
@@ -1109,6 +1091,91 @@ def test_a_known_broken_anchor_is_still_broken():
             % (src, target, cited, actual.strip(), why)
         )
     assert not problems, "a known-broken anchor was fixed:\n  " + "\n  ".join(problems)
+
+
+# ===================================================== `lib.rs` citations (CF-24)
+#
+# The gate reads `.py` citations only, by its own docstring. `cockpit/src-tauri/src/lib.rs`
+# is cited 39 times from 14 files across `llm_anthology/` and `cockpit/src/`, and it reached
+# 1982 lines tonight — a fast-moving target that nothing watches.
+#
+# THE ROT IS NOT HYPOTHETICAL, IT HAS ALREADY HAPPENED. Measured:
+#   * `cockpit/src/ui/corpusBar.test.ts:107` cites `lib.rs:61` and quotes it as
+#     `format!("no corpus index at {index_path}")`. Line 61 is `})`.
+#   * `cockpit/src/ipc/real.test.ts:30` and `:110` cite `lib.rs:102-108` for `create_corpus`.
+#     Line 102 is a bare `///`.
+#   * 5 of the 39 anchors land on a structurally EMPTY line (`}`, `})`, `};`, `///`). That is
+#     a FLOOR on the drift, not the total — an anchor on real code can still be semantically
+#     wrong, as `lib.rs:61` demonstrates.
+#
+# WHY THIS PINS A COUNT AND NOT 39 TOKEN ROWS. Pinning them would require asserting that
+# today's anchors are CORRECT, and they measurably are not. A row saying `lib.rs:61` must
+# contain `})` would encode the drift as the expected state and turn the gate into a
+# guarantee that the wrong thing stays wrong — the "green gate that lies" failure, which is
+# strictly worse than the red one it replaces. Verifying 39 claims spans 13 files owned by
+# another unit and is not a one-pass job.
+#
+# So this guards the DIRECTION that matters: the inventory cannot GROW silently. A new
+# `lib.rs` citation, or a new file that starts citing one, fails here and has to be added
+# deliberately — at which point the adder can pin it properly. Shrinking is allowed only by
+# editing the number, so a fix is also visible. Same fail-closed shape as
+# `test_no_citation_carrying_engine_file_escapes_the_sweep`, applied to a language the
+# scraper cannot read.
+
+#: Files carrying `lib.rs:<line>` citations -> how many each carries TODAY.
+#: NOT an assertion that they are correct — several are known wrong (see above). It is a
+#: budget: adding one is a deliberate act, and fixing one means lowering a number.
+RS_CITATION_INVENTORY = {
+    "cockpit/src/graph/forest.test.ts": 1, "cockpit/src/graph/forest.ts": 2,
+    "cockpit/src/ipc/index.test.ts": 1, "cockpit/src/ipc/mock.test.ts": 3,
+    "cockpit/src/ipc/mock.ts": 2, "cockpit/src/ipc/real.test.ts": 7,
+    "cockpit/src/ipc/real.ts": 3, "cockpit/src/ipc/types.ts": 7,
+    "cockpit/src/ui/corpusBar.dom.test.ts": 1, "cockpit/src/ui/corpusBar.test.ts": 5,
+    "cockpit/src/ui/corpusBar.ts": 4, "cockpit/src/ui/discoveryPanel.test.ts": 1,
+    "cockpit/src/ui/discoveryPanel.ts": 1, "llm_anthology/sidecar.py": 1,
+}
+
+_RS_CITATION = re.compile(r"lib\.rs:(\d+)")
+
+
+def _rs_citation_census():
+    """-> {posix path: count} for every `lib.rs:<line>` citation in the scanned tree."""
+    out = {}
+    for sub in ("llm_anthology", "cockpit/src"):
+        for path in sorted((REPO / sub).rglob("*")):
+            if path.suffix not in (".py", ".ts") or "node_modules" in path.parts:
+                continue
+            hits = _RS_CITATION.findall(path.read_text(encoding="utf-8"))
+            if hits:
+                out[path.relative_to(REPO).as_posix()] = len(hits)
+    return out
+
+
+def test_no_new_lib_rs_citation_is_added_unwatched():
+    """The inventory may SHRINK by a deliberate edit; it may not grow by accident."""
+    actual = _rs_citation_census()
+    added = {f: n for f, n in actual.items()
+             if n > RS_CITATION_INVENTORY.get(f, 0)}
+    assert not added, (
+        "new `lib.rs:<line>` citation(s) in %s. lib.rs is ~1982 lines and moving, and "
+        "NOTHING re-anchors these — 5 of the existing 39 already land on a bare `}` or "
+        "`///`. Pin the new one properly or do not add it: raise the count here only with "
+        "the anchor verified against the line it names." % sorted(added))
+    gone = {f: RS_CITATION_INVENTORY[f] for f, n in
+            ((f, actual.get(f, 0)) for f in RS_CITATION_INVENTORY)
+            if n < RS_CITATION_INVENTORY[f]}
+    assert not gone, (
+        "citation(s) removed from %s without lowering RS_CITATION_INVENTORY. A stale budget "
+        "is the decoration hazard every other retirement leg here guards against — it would "
+        "silently re-admit the same number of unverified citations later." % sorted(gone))
+
+
+def test_the_lib_rs_census_can_actually_see_a_citation():
+    """Control. A census that matched nothing would make the budget above vacuously green,
+    which is the shape this file exists to refuse."""
+    assert sum(_rs_citation_census().values()) == sum(RS_CITATION_INVENTORY.values()) > 0
+    assert _RS_CITATION.findall("see lib.rs:61 and lib.rs:102-108") == ["61", "102"]
+    assert _RS_CITATION.findall("no citation here") == []
 
 
 def test_no_citation_carrying_engine_file_escapes_the_sweep():
