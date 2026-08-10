@@ -123,5 +123,5 @@ than an error, which is the class most worth knowing about.
   there would have produced a correctly-named package containing an engine that
   announces the previous version.
 
-[Unreleased]: https://github.com/Prekzursil/ai-sessions-render/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Prekzursil/ai-sessions-render/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Prekzursil/llm-anthology/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Prekzursil/llm-anthology/releases/tag/v0.1.0

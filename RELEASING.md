@@ -47,11 +47,11 @@ enter **exactly**:
 |---|---|
 | PyPI Project Name | `llm-anthology` |
 | Owner | `Prekzursil` |
-| Repository name | `ai-sessions-render` |
+| Repository name | `llm-anthology` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
-> **The Repository field is the GitHub repo, `ai-sessions-render` — not the package
+> **The Repository field is the GitHub repo, `llm-anthology` — not the package
 > name.** An earlier comment in `release.yml` said `Repository: llm-anthology`, which is
 > the package name and would not have matched. Following it would have failed the first
 > publish with an OIDC claim error that looks like a permissions problem.
@@ -81,7 +81,7 @@ So the first release needs a token, and only the first:
 3. Fire the release (Part 2). The `npm` job detects the secret and uses it; the log says
    `auth: NPM_TOKEN`.
 4. **Afterwards**, on <https://www.npmjs.com/package/llm-anthology/access>, configure the
-   trusted publisher: repository `Prekzursil/ai-sessions-render`, workflow file
+   trusted publisher: repository `Prekzursil/llm-anthology`, workflow file
    `release.yml` (the filename, including `.yml`, case-sensitive and exact). Leave the
    Environment field **blank** — the `npm` job deliberately declares no `environment:`,
    and a mismatch here is rejected.

@@ -139,13 +139,13 @@ the one that matches what you want.
 > tag, so the two package-manager commands below do not resolve *yet* and there is no
 > installer to download. Until then, use **[From source](#from-source)**. The release
 > runbook is
-> [RELEASING.md](https://github.com/Prekzursil/ai-sessions-render/blob/main/RELEASING.md);
+> [RELEASING.md](https://github.com/Prekzursil/llm-anthology/blob/main/RELEASING.md);
 > delete this note when 0.1.0 ships.
 
 ### The desktop app — Windows
 
 This is the product. Download `LLM Anthology_<version>_x64-setup.exe` from the
-[latest release](https://github.com/Prekzursil/ai-sessions-render/releases/latest) and run
+[latest release](https://github.com/Prekzursil/llm-anthology/releases/latest) and run
 it.
 
 It is **self-contained**: the installer carries a relocatable CPython
@@ -159,7 +159,7 @@ Two things to know before you click:
 - **Windows only for now.** `bundle.targets` is `["nsis"]` and the bundled interpreter is
   a Windows build. The engine and CLI below are cross-platform; the desktop app is not
   yet.
-  [RELEASING.md](https://github.com/Prekzursil/ai-sessions-render/blob/main/RELEASING.md)
+  [RELEASING.md](https://github.com/Prekzursil/llm-anthology/blob/main/RELEASING.md)
   records what adding macOS/Linux would take.
 - **It is not code-signed.** SmartScreen will warn on download and first run until the
   binary earns reputation. Verify the `.sha256` if that matters to you.
@@ -199,8 +199,8 @@ Requires **Node ≥ 20**.
 ### From source
 
 ```bash
-git clone https://github.com/Prekzursil/ai-sessions-render
-cd ai-sessions-render
+git clone https://github.com/Prekzursil/llm-anthology
+cd llm-anthology
 pip install -e ".[dev]"
 python -m pytest
 ```
@@ -311,7 +311,7 @@ The engine gate is a hard **100% line *and* branch** requirement (`--cov-fail-un
 
 LLM Anthology is the union of two of this author's earlier projects:
 
-- **ai-sessions-render** (`aisr`) — the Python engine: adapters, IR, renderers, sanitizer, fidelity gate. Renamed to `llm_anthology`; the old package name is retired.
+- **`llm_anthology`** — the Python engine: adapters, IR, renderers, sanitizer, fidelity gate. The repo, the PyPI package, the npm package and the CLI now all say the same thing; the earlier `ai-sessions-render` / `aisr` names are retired.
 - **codex-session-manager** — a C#/.NET WPF app for managing Codex session history. **Retired.** It shared zero code with this stack, so its three unique capabilities — the metadata layer, gated maintenance, and Codex dedup — were re-implemented here against the C# tests as the behavioural spec, rather than merged.
 
 "Anthology" because that is what this is: a curated collection of everything you and your agents have written.

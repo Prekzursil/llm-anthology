@@ -329,20 +329,17 @@ bd close <id>         # Complete work
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
 
-> ### ACTIVE EXCEPTION to the push rule above — read before pushing
+> ### The push exception has EXPIRED — the normal rule applies again
 >
-> The beads block is a generic template and it currently contradicts a deliberate decision
-> about THIS repo. As of 2026-08-07 there are **38 commits on `main` that are intentionally
-> unpushed**, and that is not stranded work.
+> Between 2026-08-07 and 2026-08-08 this file carried an exception holding 38 commits back
+> from `main`, because no CI job entered `cockpit/` or `src-tauri/` and pushing would have made
+> the work visible without making it validated. That exception was written to expire on its own
+> terms: *"Once the cockpit CI job is merged and green, this exception expires."*
 >
-> **Why:** no CI job enters `cockpit/` or `src-tauri/`, so 365 vitest tests, 18 cargo tests,
-> the typecheck and the Tauri build have never run in CI. Pushing before that job exists makes
-> the work *visible* without making it *validated*. The agreed sequence is: add the cockpit CI
-> job on a windows + linux matrix FIRST (Phase 1d), then push (Phase 1e), so every commit lands
-> checked.
+> It has. The `cockpit` job exists (`.github/workflows/ci.yml:171`, windows + linux matrix,
+> blocking) and CI on `main` is green. The held commits were pushed. `git status` is clean and
+> level with `origin/main`.
 >
-> **Precedence:** the owner's explicit in-session decision outranks a template rule. Do not
-> auto-push this repo to satisfy the block above. Once the cockpit CI job is merged and green,
-> this exception expires and the normal rule resumes — delete this note then.
->
-> Full reasoning and the rest of the plan: `.scratch/maturation/OPEN-ITEMS.md` (gitignored).
+> So: **push normally.** No repo-specific carve-out is in force. This paragraph is kept only so
+> a future reader who finds the exception quoted in an old transcript or memory note can see it
+> was retired deliberately rather than lost.

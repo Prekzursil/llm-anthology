@@ -365,7 +365,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Get-Content -LiteralPath "$env:RUNNER_TEMP/installer-path.txt").Trim()
-          $dest = 'C:\aisr-smoke'
+          $dest = 'C:\anthology-smoke'
           Write-Host "installing $exe -> $dest"
           $p = Start-Process -FilePath $exe -ArgumentList '/S', "/D=$dest" -Wait -PassThru
           Write-Host "installer exit code: $($p.ExitCode)"

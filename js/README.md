@@ -2,7 +2,7 @@
 
 **Turn your ChatGPT / Claude / Gemini data exports into browser-faithful HTML and clean, portable Markdown — entirely offline. No network. No egress.**
 
-This is the JS/TypeScript port of [`llm-anthology`](https://github.com/Prekzursil/ai-sessions-render) (also published to PyPI as a Python package). It is a faithful port, not a reimplementation: its output is validated **byte-for-byte** against the Python rail.
+This is the JS/TypeScript port of [`llm-anthology`](https://github.com/Prekzursil/llm-anthology) (also published to PyPI as a Python package). It is a faithful port, not a reimplementation: its output is validated **byte-for-byte** against the Python rail.
 
 ## Install
 

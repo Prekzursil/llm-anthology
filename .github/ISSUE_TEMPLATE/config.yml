@@ -16,7 +16,7 @@ contact_links:
   # become the leak channel. Private vulnerability reporting is enabled on this repository
   # (SECURITY.md, "How to report — preferred").
   - name: A privacy leak, or anything security-shaped
-    url: https://github.com/Prekzursil/ai-sessions-render/security/advisories/new
+    url: https://github.com/Prekzursil/llm-anthology/security/advisories/new
     about: >
       Report it PRIVATELY, not here. That includes finding conversation content in a
       diagnostics bundle, a crash file, or an export — do not paste the evidence into a
