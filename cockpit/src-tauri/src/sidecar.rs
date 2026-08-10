@@ -2381,12 +2381,30 @@ mod tests {
         let index_str = index_path.to_str().expect("index path is UTF-8");
 
         // (1) REAL sidecar INSIDE the AppContainer: stdio + corpus read must work.
-        //     `-S` keeps the engine off site.py / site-packages entirely.
+        //
+        //     NO `-S` HERE ANY MORE, and the reason is the whole point of this test.
+        //     `-S` disables `site`, so `site-packages` never joins `sys.path` — it was a
+        //     PROXY for the premise "the sidecar is pure stdlib + llm_anthology". That
+        //     premise held until `07be166` put a top-level `import ijson` on the ingest path
+        //     and `0fc4463` added `from . import archive` (whose `archive.py` imports
+        //     `zstandard`). With `-S` still set, this test could only ever assert that an
+        //     engine which no longer exists still runs, and NO amount of icacls granting
+        //     could fix it — measured: `python -S -c "...site-packages in sys.path"` is
+        //     False, so the interpreter never looks there regardless of permissions.
+        //
+        //     What this test is FOR is unchanged: the AppContainer must block egress while
+        //     permitting stdio and a corpus read. Dropping `-S` restores that question and
+        //     hands the enforcement to `grant_engine_wheels`, which grants exactly the two
+        //     third-party packages the engine reaches and nothing else — so the membrane
+        //     stays a meaningful assertion instead of becoming a blanket site-packages grant.
+        //
+        //     Production never passed `-S` (see `spawn_platform`) and spawns with
+        //     `SpawnOpts::job_only()`, so nothing here changes the shipped app.
         {
             let opts = SpawnOpts { membrane: Membrane::AppContainer, kill_on_job_close: true };
             let mut sc = spawn_hardened(
                 "python",
-                &["-S", "-m", "llm_anthology.sidecar", "--index", index_str],
+                &["-m", "llm_anthology.sidecar", "--index", index_str],
                 &opts,
             )
             .expect("spawn the real sidecar inside a regular AppContainer");
@@ -2467,6 +2485,14 @@ mod tests {
     #[cfg(windows)]
     fn grant_stdlib_read(sid: &str, python_home: &std::path::Path) {
         use super::hardened_spawn::grant_read;
+        // The engine's third-party wheels are granted BEFORE the fast path, deliberately.
+        // The sentinel below is `python.exe`, which a PRIOR run already granted — so an
+        // early return here would skip the wheel grant forever on any machine that had run
+        // this test once, and the fix would be dead code that looks correct. It cost one
+        // red build to learn that; the grant is two directories, so doing it unconditionally
+        // is cheaper than a second sentinel that can drift out of step with ENGINE_WHEELS.
+        grant_engine_wheels(sid, &python_home.join("Lib").join("site-packages"));
+
         // Fast path: grants persist for the FIXED container SID, so if a prior run
         // (or a production installer) already granted the interpreter, skip the slow
         // ~8k-file re-walk. `python.exe` is the sentinel.
@@ -2484,11 +2510,61 @@ mod tests {
         if let Ok(entries) = std::fs::read_dir(&lib) {
             for e in entries.flatten() {
                 if e.file_name() == std::ffi::OsStr::new("site-packages") {
+                    grant_engine_wheels(sid, &e.path());
                     continue;
                 }
                 if e.path().is_dir() {
                     grant_read(sid, &e.path().to_string_lossy(), true);
                 }
+            }
+        }
+    }
+
+    /// The third-party packages the ENGINE'S IMPORT GRAPH reaches, and nothing else.
+    ///
+    /// WHY THIS EXISTS AT ALL. This helper's whole premise used to be "the sidecar is pure
+    /// stdlib + llm_anthology", which is why `site-packages` was skipped outright — granting
+    /// ~120k files would make the membrane meaningless as a statement about what the engine
+    /// may read. That premise was TRUE and is no longer: `07be166` put a top-level
+    /// `import ijson` on the ingest path and `0fc4463` added `from . import archive`, whose
+    /// `archive.py` does a top-level `import zstandard`. Both are now reachable from
+    /// `import llm_anthology.sidecar`, so a stdlib-only grant makes the engine unloadable.
+    ///
+    /// The narrow grant is the honest fix. The membrane exists to block EGRESS, not to block
+    /// dependencies — nothing here opens a network path, and naming two packages keeps the
+    /// grant a meaningful assertion instead of a blanket one.
+    ///
+    /// FAIL-CLOSED BY CONSTRUCTION: this list is not the source of truth for what the engine
+    /// needs — the membrane test is. If a future commit adds a third-party import the engine
+    /// reaches at module scope, that test goes RED with a `ModuleNotFoundError` naming the
+    /// package, and whoever added it decides deliberately whether it belongs in a sandboxed
+    /// engine. That is the same failure that surfaced ijson and zstandard, and it is why the
+    /// list should never be widened to a wildcard to make a red build go away.
+    #[cfg(windows)]
+    const ENGINE_WHEELS: &[&str] = &["ijson", "zstandard"];
+
+    /// Grant read on just {@link ENGINE_WHEELS} inside `site-packages`.
+    ///
+    /// Prefix-matched because a wheel ships more than its import name: `zstandard` carries a
+    /// native `backend_c` extension and `ijson` its `backends/` tree, and both sit under
+    /// directories whose names begin with the package name. Matching the prefix takes the
+    /// package and its siblings without taking the ~120k-file remainder.
+    #[cfg(windows)]
+    fn grant_engine_wheels(sid: &str, site_packages: &std::path::Path) {
+        use super::hardened_spawn::grant_read;
+        let Ok(entries) = std::fs::read_dir(site_packages) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if !ENGINE_WHEELS.iter().any(|w| name.starts_with(w)) {
+                continue;
+            }
+            if e.path().is_dir() {
+                grant_read(sid, &e.path().to_string_lossy(), true);
+            } else {
+                grant_read(sid, &e.path().to_string_lossy(), false);
             }
         }
     }
