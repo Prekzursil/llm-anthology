@@ -489,6 +489,16 @@ struct SinkState {
 /// an app's life — the managed one plus the throwaway index-less ones behind
 /// `create_corpus` / `discover_sources` — and a first-run DISCOVERY failure is exactly the
 /// report this exists to serve. A per-client buffer would die with the throwaway.
+///
+/// THE COST OF THAT CHOICE, stated because it is real: the line-assembly buffer is shared, so
+/// if two engines write to stderr at the SAME moment their bytes interleave and the resulting
+/// lines are garbled. UNVERIFIED how often that happens in practice — the throwaway engines
+/// are short-lived and the UI drives them one command at a time, so the window is small; the
+/// settling experiment is to run `discover_sources` and a `corpus.build` concurrently with
+/// both engines failing. It is accepted rather than fixed because the failure direction is
+/// SAFE: a garbled line matches nothing on the allowlist and is redacted whole, so
+/// interleaving costs evidence, never privacy. A per-engine assembly buffer feeding one
+/// shared ring is the fix if it ever bites.
 pub struct Diagnostics {
     paths: PathScrubber,
     state: Mutex<SinkState>,
