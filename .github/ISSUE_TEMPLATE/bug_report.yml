@@ -1,0 +1,110 @@
+name: Bug report
+description: Something in LLM Anthology did not work — an import that failed, a crash, a wrong result.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before you paste anything
+
+        **This app is offline by design and your conversations are private.** Nothing in this
+        form asks for conversation content, and you should not paste any. The one thing that
+        genuinely helps is the **diagnostics bundle**, which is built specifically so it
+        cannot carry conversation text:
+
+        * every engine stderr line is matched against a structural allowlist — a traceback
+          header, a `File "...", line N` frame, and an exception TYPE survive; everything
+          else, including every exception MESSAGE, is replaced with `<redacted N chars>`;
+        * your home directory is rewritten to `~` and your username to `<user>`, so the
+          bundle does not identify you either.
+
+        Two ways to get it:
+
+        1. In the app, use **Copy diagnostics** and paste the result below.
+        2. If the app will not start, attach the crash file instead. It is the same
+           allowlisted, home-relativized text, written continuously to a fixed location:
+
+           * Windows: `%LOCALAPPDATA%\LLM Anthology\logs\engine-stderr.log`
+             (and `engine-stderr.prev.log` — the run BEFORE this one, which is the one you
+             want after a crash-then-restart)
+           * Linux: `~/.local/share/llm-anthology/logs/engine-stderr.log`
+
+           Each file is capped at 256 KiB and there are never more than two of them, so
+           there is nothing to clean up and nothing unbounded on your disk.
+
+        Read the file before you attach it if you want to see exactly what it contains — it
+        is plain text and that is deliberate.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >
+        What you did, what you expected, what you got. Describe the SHAPE of the data if it
+        matters ("a ChatGPT export with 4 shards", "a Codex session with a resumed thread")
+        rather than pasting the data itself.
+      placeholder: |
+        1. Opened a corpus at ...
+        2. Pressed Import and chose my ChatGPT export folder
+        3. The import stopped at 40% and the panel showed ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics bundle
+      description: >
+        Paste the output of Copy diagnostics, or the contents of engine-stderr.log /
+        engine-stderr.prev.log. This is the field that makes a report actionable — with six
+        providers across eight adapter modules over formats we do not control, the frame list
+        and the exception type are usually the whole answer.
+      render: text
+      placeholder: |
+        LLM Anthology diagnostics
+        app version: 0.1.0
+        platform: windows x86_64 (windows)
+        ...
+        --- engine stderr (last 64 KiB, allowlisted) ---
+        Traceback (most recent call last):
+          File "~\AppData\Local\LLM Anthology\engine\Lib\site-packages\llm_anthology\adapters\chatgpt.py", line 214, in _walk
+        <redacted 41 chars>
+        KeyError: <redacted 9 chars>
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: >
+        Only needed if you could not produce a bundle — it already carries this. The
+        installer filename has it, or use Help / the status line.
+      placeholder: "0.1.0"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Other / not sure
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: >
+            I have not pasted conversation content into this issue. (If you did by accident,
+            edit the issue — GitHub keeps an edit history, so also say so and we will treat
+            it as a disclosure rather than pretend the edit removed it.)
+          required: true

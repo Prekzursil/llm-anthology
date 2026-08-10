@@ -27,6 +27,24 @@ use sidecar::SidecarClient;
 /// consumer branches on shape rather than on a missing key. Resolution can genuinely fail
 /// — a stripped environment with no `%USERPROFILE%` / `$HOME` — and when it does the status
 /// line must still answer, degraded and saying why, rather than take the app down with it.
+///
+/// DECISION G-8 rides here too, and for the SAME reason G-10's locations do — stated again
+/// because it is the second time the constraint has decided a design, so it is evidently
+/// load-bearing rather than incidental. `diagnostics` is the "Copy diagnostics" payload:
+/// versions, platform, and the retained engine-stderr ring plus its crash-file pointers
+/// (`sidecar::Diagnostics::bundle`). It is NOT a new `#[tauri::command]`, because
+/// `cockpit/src/ipc/real.test.ts:363-384` asserts the EXACT set of registered commands the
+/// TypeScript adapter never calls — currently `["app_info", "graph_ancestors",
+/// "graph_children"]` — and both that test and the adapter it checks are outside this work
+/// unit's file scope. Registering a fourth unbound command turns that suite red in a file
+/// this unit may not edit; extending an already-unbound command does not.
+///
+/// It stays CHEAP despite being live: `bundle` is a mutex lock, a string join, and at most
+/// one 64 KiB read of the previous run's crash file. No engine round trip and no `State`
+/// parameter, so `app_info`'s signature — and every existing caller of it — is unchanged.
+/// The engine-side numbers a bug report also wants (index stats) are deliberately absent:
+/// the UI already holds them from `corpus_stats`, and fetching them here would put an RPC
+/// on the boot path.
 #[tauri::command]
 fn app_info() -> Value {
     let (locations, locations_error) = match app_locations() {
@@ -39,6 +57,7 @@ fn app_info() -> Value {
         "engine": "not-wired",
         "locations": locations,
         "locations_error": locations_error,
+        "diagnostics": sidecar::diagnostics().bundle(),
     })
 }
 
@@ -1454,6 +1473,50 @@ mod tests {
             info["version"].as_str().is_some_and(|v| !v.is_empty()),
             "version must be a non-empty string, got {:?}",
             info["version"]
+        );
+    }
+
+    /// DECISION G-8: `app_info` is the PRODUCTION CALLER of the diagnostics bundle.
+    ///
+    /// Without this the whole ring/crash-file surface is code with no route to a user — the
+    /// exact "built but unreachable" failure this codebase has already shipped once. So the
+    /// assertion is on `app_info()`, the registered command, not on `Diagnostics::bundle()`
+    /// directly: calling the inner function would prove the payload exists while the wiring
+    /// stayed absent.
+    ///
+    /// Shape only. The CONTENT is proven in `sidecar.rs` (retention, the bound, the privacy
+    /// allowlist, the crash-file cap and rotation), and asserting a stderr line here would
+    /// need this test to feed a process-wide sink other tests in the same binary also write
+    /// to.
+    #[test]
+    fn app_info_carries_a_diagnostics_bundle_a_bug_report_can_use() {
+        let info = app_info();
+        let diagnostics = &info["diagnostics"];
+        assert_eq!(
+            diagnostics["platform"]["os"],
+            serde_json::json!(std::env::consts::OS),
+            "a report is useless without the platform: {diagnostics}"
+        );
+        assert!(
+            diagnostics["engine_stderr"].is_string(),
+            "the retained stderr must ALWAYS be a string the UI can paste — empty when the \
+             engine has said nothing, never absent: {diagnostics}"
+        );
+        assert!(
+            diagnostics["engine_stderr_cap_bytes"].as_u64().is_some(),
+            "the bundle must state its own truncation limit, so a reader knows whether they \
+             are looking at everything: {diagnostics}"
+        );
+        // `crash_file` is null under `cfg(test)` on purpose (running the suite must not
+        // rotate the developer's real log) — so the assertion is that the KEY is present and
+        // a consumer can branch on shape, exactly as `locations`/`locations_error` do.
+        assert!(
+            diagnostics.get("crash_file").is_some(),
+            "crash_file must be present-and-null rather than missing: {diagnostics}"
+        );
+        assert!(
+            diagnostics.get("previous_run").is_some(),
+            "previous_run must be present-and-null rather than missing: {diagnostics}"
         );
     }
 

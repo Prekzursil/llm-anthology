@@ -25,7 +25,9 @@
 //! * stderr is DRAINED, never merely held ([`drain_stderr`]). An undrained pipe blocks
 //!   the child once the small OS buffer fills, and since the parent is meanwhile blocked
 //!   reading stdout — holding the engine mutex, with no timeout on the path — one flood
-//!   wedges the app permanently.
+//!   wedges the app permanently. The drained bytes are no longer THROWN AWAY: they land in
+//!   a bounded, privacy-scrubbed ring plus a capped crash file ([`Diagnostics`], DECISION
+//!   G-8), because a traceback is the only artifact that explains why an adapter failed.
 //! * a response line is BOUNDED ([`MAX_RESPONSE_LINE_BYTES`]). `read_line` grows without
 //!   limit, and response size is governed by session-file content the engine does not cap.
 //!
@@ -33,8 +35,10 @@
 //! request and simply never answers blocks its caller forever. Adding one means a reader
 //! thread or an async runtime — a redesign of this module, not an edit to it.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
@@ -56,6 +60,587 @@ use serde_json::{json, Value};
 /// because the engine imposes none. Tune it here if a real corpus ever trips it — the
 /// error names the ceiling explicitly so such a report is unambiguous.
 const MAX_RESPONSE_LINE_BYTES: u64 = 256 * 1024 * 1024;
+
+// -- DECISION G-8: engine stderr is EVIDENCE, and it is kept in the PARENT --------------
+//
+// THE MEASURED PROBLEM. `drain_stderr` used to read the child's stderr into an 8 KiB
+// throwaway array and drop every byte on the floor. Draining is mandatory (an undrained
+// pipe deadlocks the child — see `drain_stderr`), but discarding is a separate decision,
+// and it was the wrong one: a Python traceback is the ONLY artifact that explains why an
+// adapter failed, and with six providers across eight adapter modules over formats this
+// project does not control, an adapter meeting an unknown shape is the steady state rather
+// than the edge case. The engine has no logging of its own either, so the traceback was
+// the entire evidence surface and it was destroyed by design.
+//
+// TWO SURFACES, and the owner asked for BOTH knowingly:
+//
+//   1. A bounded in-memory RING ([`STDERR_RING_BYTES`]) in the parent. It lives in the
+//      parent on purpose: the dominant failure is the ENGINE dying, and a buffer inside the
+//      engine dies with it. Keeps the LAST N bytes, because what happened immediately
+//      before a failure is what explains it.
+//   2. A size-capped CRASH FILE on disk ([`CRASH_FILE_MAX_BYTES`]), for the case the ring
+//      cannot survive: the SHELL itself dying. Keeps the FIRST N bytes of a run, which is
+//      the deliberate complement of the ring — the first traceback names the root cause
+//      while later output is usually cascade noise, so between the two surfaces a reporter
+//      has both ends of the run.
+//
+// THE PRIVACY CONTRACT, which is what makes an on-disk surface acceptable at all. This
+// corpus holds private conversations, and a traceback carries absolute paths (so, the
+// username) and often the very data value that caused the failure. So NOTHING is retained
+// raw. Every line is scrubbed ONCE, at ingest, before it reaches either surface, by an
+// ALLOWLIST of structural shapes ([`scrub_line`]):
+//
+//   * the fixed traceback scaffolding lines, verbatim;
+//   * a `File "<path>", line N, in <name>` frame, with the path home-relativized. A frame
+//     path is always a SOURCE file — CPython builds it from `code.co_filename` — so it
+//     cannot be a data path;
+//   * an exception line reduced to its TYPE (`KeyError: <redacted 9 chars>`). The MESSAGE
+//     is always redacted, and that is the deliberate cost of this design: `KeyError:
+//     'mapping'` would have named the missing field, which is real debugging value, but the
+//     same slot is where a parser puts the offending VALUE. Type + frame list is what
+//     survives, and it is enough to locate the failure.
+//   * ANYTHING else — including the source-echo line under a frame and any free-text
+//     print — becomes `<redacted N chars>`. The echo is engine source and would have been
+//     safe, but keeping it needs cross-line state, and stateless is what makes the scrubber
+//     provable (and idempotent, which the previous-run file re-read relies on).
+//
+// So the residual leak surface is: an exception TYPE name, engine source paths with `~` in
+// place of the home directory, and line numbers. UNVERIFIED that no adapter can put a
+// conversation token into an exception TYPE name (a dynamically-constructed exception class
+// named from data would do it); the settling experiment is `grep -rn "type(.*Error"
+// llm_anthology/` plus a check that no adapter calls `type()` to build an exception class.
+// Nothing in the tests below asserts that, because it is a property of the engine rather
+// than of this module.
+
+/// Scrubbed engine-stderr bytes the PARENT retains in memory.
+///
+/// 64 KiB is roughly a dozen full tracebacks after scrubbing, which is well past the point
+/// where more output stops adding information — a cascade repeats itself. It is a JUDGEMENT
+/// and not a measured optimum; the number that matters is that it is BOUNDED, because the
+/// producer is a child process this code does not control.
+const STDERR_RING_BYTES: usize = 64 * 1024;
+
+/// Hard ceiling on ONE generation of the on-disk crash file.
+///
+/// The whole on-disk policy, stated in one place because the owner accepted this surface
+/// deliberately and it should not have to be reverse-engineered: ONE fixed file per run at
+/// `<logs_dir>/engine-stderr.log`, capped at 256 KiB, written already-scrubbed; at app start
+/// the previous run's file is renamed to `engine-stderr.prev.log` and a fresh one begins, so
+/// there are EXACTLY TWO generations and never more. Worst case on disk is therefore
+/// 512 KiB, forever, with no rotation scheme to go wrong and nothing to prune. Deleting the
+/// app's data folder removes both. The previous generation exists because the crash case is
+/// specifically "the app died and the user restarted it" — truncating on start would destroy
+/// the evidence at exactly the moment it was about to be read.
+const CRASH_FILE_MAX_BYTES: usize = 256 * 1024;
+
+/// Ceiling on an UNTERMINATED stderr line held in the line-assembly buffer.
+///
+/// Same class of hazard as [`MAX_RESPONSE_LINE_BYTES`]: a child that writes forever without
+/// a `\n` would grow this buffer without limit. At the ceiling the partial line is flushed
+/// as though it had ended, which the allowlist then almost certainly redacts — the safe
+/// direction.
+const MAX_PENDING_LINE_BYTES: usize = 8 * 1024;
+
+/// The current run's crash file, inside the app's logs directory.
+const CRASH_FILE_NAME: &str = "engine-stderr.log";
+
+/// The PREVIOUS run's crash file — see [`CRASH_FILE_MAX_BYTES`] for why exactly two.
+const CRASH_FILE_PREV_NAME: &str = "engine-stderr.prev.log";
+
+/// Traceback scaffolding that is a FIXED string and therefore carries no data.
+const TRACEBACK_HEADERS: [&str; 3] = [
+    "Traceback (most recent call last):",
+    "During handling of the above exception, another exception occurred:",
+    "The above exception was the direct cause of the following exception:",
+];
+
+/// Suffixes an exception CLASS name must end in for its line to be recognised.
+///
+/// Without this the matcher accepted any capitalised dotted word before a colon, which a
+/// conversation line like `Amoxicillin: 500mg` satisfies — the exact leak this unit exists
+/// to prevent. Every Python exception name ends in one of these (`KeyError`,
+/// `sqlite3.OperationalError`, `KeyboardInterrupt`, `SystemExit`, `GeneratorExit`,
+/// `StopIteration`, `BaseExceptionGroup`, `DeprecationWarning`), so the cost of the
+/// tightening is nil and the failure direction is "redact something that was safe".
+const EXCEPTION_SUFFIXES: [&str; 8] = [
+    "Error",
+    "Exception",
+    "Warning",
+    "Exit",
+    "Interrupt",
+    "StopIteration",
+    "StopAsyncIteration",
+    "ExceptionGroup",
+];
+
+/// What replaces a line the allowlist does not recognise. The COUNT is kept because "how
+/// much was dropped" is itself diagnostic, and a count cannot carry content.
+fn redaction_marker(chars: usize) -> String {
+    format!("<redacted {chars} chars>")
+}
+
+/// True for a line this module already produced.
+///
+/// Load-bearing for IDEMPOTENCE, not cosmetic: the previous run's crash file is read back
+/// and re-scrubbed on its way into a bundle, so without this a marker would be re-wrapped
+/// into a marker about a marker on every pass.
+fn is_redaction_marker(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("<redacted ") else {
+        return false;
+    };
+    let Some(digits) = rest.strip_suffix(" chars>") else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Split a leading run of ASCII digits off `s`, or `None` if there is not at least one.
+fn split_digits(s: &str) -> Option<(&str, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (end > 0).then(|| s.split_at(end))
+}
+
+/// Rewrite a traceback FRAME line with its path home-relativized, or `None` if the line is
+/// not one.
+///
+/// Rebuilt from its parsed parts rather than patched in place, so a line that merely
+/// resembles a frame cannot smuggle a tail through. The `, in <name>` tail is a
+/// `code.co_name` — `<module>`, `<lambda>`, `<listcomp>` are all real — so it is accepted
+/// only as an identifier-shaped token of sane length and dropped otherwise.
+fn scrub_frame(line: &str, paths: &PathScrubber) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let after = rest.strip_prefix("File \"")?;
+    let close = after.rfind('"')?;
+    let (path, tail) = (&after[..close], &after[close + 1..]);
+    let (number, tail) = split_digits(tail.strip_prefix(", line ")?)?;
+    let name = match tail.strip_prefix(", in ") {
+        None if tail.is_empty() => String::new(),
+        None => return None,
+        Some(name)
+            if !name.is_empty()
+                && name.len() <= 120
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '<' | '>')) =>
+        {
+            format!(", in {name}")
+        }
+        // A tail that is not identifier-shaped is dropped, not carried.
+        Some(_) => String::new(),
+    };
+    Some(format!(
+        "{indent}File \"{}\", line {number}{name}",
+        paths.apply(path)
+    ))
+}
+
+/// Reduce an exception line to `Type: <redacted N chars>`, or `None` if it is not one.
+fn scrub_exception(line: &str) -> Option<String> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let (head, message) = line.split_once(':')?;
+    if head.is_empty() || head.len() > 80 {
+        return None;
+    }
+    if !head
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+    {
+        return None;
+    }
+    let last = head.rsplit('.').next().unwrap_or(head);
+    if !last.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    if !EXCEPTION_SUFFIXES.iter().any(|s| last.ends_with(s)) {
+        return None;
+    }
+    let message = message.trim();
+    Some(if message.is_empty() {
+        format!("{head}:")
+    } else if is_redaction_marker(message) {
+        // ALREADY scrubbed. Measured by `scrubbing_an_already_scrubbed_line_changes_nothing`
+        // before this arm existed: `KeyError: 'mapping'` scrubbed to
+        // `KeyError: <redacted 9 chars>`, and scrubbing THAT produced
+        // `KeyError: <redacted 18 chars>` — a marker describing a marker, growing on every
+        // pass. The previous run's crash file is read back and re-scrubbed on its way into
+        // a bundle, so that is a live path, not a hypothetical.
+        format!("{head}: {message}")
+    } else {
+        format!("{head}: {}", redaction_marker(message.chars().count()))
+    })
+}
+
+/// The ALLOWLIST. One stderr line in, one retention-safe line out.
+///
+/// Stateless by design — every decision is a property of the line itself — which is what
+/// makes it idempotent and testable without reconstructing a stream.
+fn scrub_line(line: &str, paths: &PathScrubber) -> String {
+    let line = line.trim_end();
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if TRACEBACK_HEADERS.contains(&trimmed) || is_redaction_marker(trimmed) {
+        return line.to_string();
+    }
+    if let Some(frame) = scrub_frame(line, paths) {
+        return frame;
+    }
+    if let Some(exception) = scrub_exception(line) {
+        return exception;
+    }
+    redaction_marker(line.chars().count())
+}
+
+/// Case-insensitive substring replacement.
+///
+/// Windows paths are case-insensitive and the spelling comes from whoever set the
+/// environment variable, so `c:\users\tester` must scrub identically to `C:\Users\Tester`.
+/// Byte indices from the lowercased mirror are valid in the original because
+/// `to_ascii_lowercase` maps only `A-Z`, leaving byte length and char boundaries intact.
+fn replace_ignore_ascii_case(haystack: &str, needle: &str, with: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let hay = haystack.to_ascii_lowercase();
+    let pin = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(haystack.len());
+    let mut cursor = 0usize;
+    while let Some(hit) = hay[cursor..].find(&pin) {
+        let at = cursor + hit;
+        out.push_str(&haystack[cursor..at]);
+        out.push_str(with);
+        cursor = at + needle.len();
+    }
+    out.push_str(&haystack[cursor..]);
+    out
+}
+
+/// The final path segment of `path`, for either separator.
+fn last_path_segment(path: &str) -> Option<&str> {
+    let trimmed = path.trim().trim_end_matches(['\\', '/']);
+    let cut = trimmed.rfind(['\\', '/']).map_or(0, |i| i + 1);
+    let segment = &trimmed[cut..];
+    (!segment.is_empty()).then_some(segment)
+}
+
+/// Home-path relativization: `C:\Users\tester\...` -> `~\...`, and the bare username ->
+/// `<user>`.
+///
+/// This is the same rule the shareable graph export applies for the same reason — the
+/// engine reduces a stored `rollout_path` to a basename precisely because "it embeds the
+/// owner's username" (`llm_anthology/sidecar.py:543`). A diagnostics bundle is a SHARED
+/// artifact, so without this the support channel becomes the identification channel.
+///
+/// Both are INJECTED rather than read from the environment here, matching
+/// `base_dirs_with`'s contract in `lib.rs`: the rule is then testable without depending on
+/// whose machine ran the test.
+pub(crate) struct PathScrubber {
+    /// Every spelling of the home directory, longest first so the fullest match wins.
+    needles: Vec<String>,
+    user: Option<String>,
+}
+
+impl PathScrubber {
+    pub(crate) fn new(home: Option<&str>, user: Option<&str>) -> Self {
+        let mut needles: Vec<String> = Vec::new();
+        if let Some(home) = home.map(str::trim).filter(|h| h.len() >= 3) {
+            let home = home.trim_end_matches(['\\', '/']);
+            // Both separator spellings, because a Python traceback on Windows prints
+            // whichever one the import machinery happened to build the path with.
+            for spelling in [
+                home.to_string(),
+                home.replace('\\', "/"),
+                home.replace('/', "\\"),
+            ] {
+                if spelling.len() >= 3 && !needles.contains(&spelling) {
+                    needles.push(spelling);
+                }
+            }
+            needles.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        }
+        // A username shorter than 3 characters is dropped rather than replaced: a 1-2
+        // character needle matches inside ordinary words and would corrupt every line it
+        // touched, which is worse than leaving a short name in.
+        let user = user
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+            .or_else(|| home.and_then(last_path_segment).map(str::to_string))
+            .filter(|u| u.len() >= 3);
+        Self { needles, user }
+    }
+
+    /// Build from the real environment. `USERPROFILE`/`HOME` and `USERNAME`/`USER` cover
+    /// both platforms this crate is compiled for.
+    pub(crate) fn from_env(var: impl Fn(&str) -> Option<String>) -> Self {
+        let present = |name: &str| {
+            var(name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let home = present("USERPROFILE").or_else(|| present("HOME"));
+        let user = present("USERNAME").or_else(|| present("USER"));
+        Self::new(home.as_deref(), user.as_deref())
+    }
+
+    pub(crate) fn apply(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for needle in &self.needles {
+            out = replace_ignore_ascii_case(&out, needle, "~");
+        }
+        match &self.user {
+            Some(user) => replace_ignore_ascii_case(&out, user, "<user>"),
+            None => out,
+        }
+    }
+}
+
+/// The on-disk half. An UNBUFFERED [`std::fs::File`], deliberately: the whole point is that
+/// the bytes are already on disk when the process dies, so a `BufWriter` would defeat it.
+struct CrashLog {
+    file: std::fs::File,
+    path: PathBuf,
+    written: usize,
+    cap: usize,
+}
+
+impl CrashLog {
+    /// Append one already-scrubbed line, KEEP-FIRST: once `cap` is reached nothing more is
+    /// written. See [`CRASH_FILE_MAX_BYTES`] for why first rather than last.
+    fn append(&mut self, line: &str) {
+        if self.written >= self.cap {
+            return;
+        }
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        bytes.truncate(self.cap - self.written);
+        if self.file.write_all(&bytes).is_ok() {
+            self.written += bytes.len();
+        } else {
+            // A write failure (full disk, revoked ACL) stops the attempt for the rest of
+            // the run rather than retrying once per line for the life of the app.
+            self.written = self.cap;
+        }
+    }
+}
+
+/// Open this run's crash file, rotating the previous run's to `.prev.log`.
+///
+/// Returns `None` on any filesystem refusal — diagnostics are a convenience and must never
+/// be the reason the app fails to start.
+fn open_crash_log(dir: &Path) -> Option<CrashLog> {
+    std::fs::create_dir_all(dir).ok()?;
+    let path = dir.join(CRASH_FILE_NAME);
+    if path.is_file() {
+        // Best-effort: if the rename fails the previous generation is simply lost, which is
+        // strictly better than refusing to record the current one.
+        let _ = std::fs::rename(&path, dir.join(CRASH_FILE_PREV_NAME));
+    }
+    let file = std::fs::File::create(&path).ok()?;
+    Some(CrashLog {
+        file,
+        path,
+        written: 0,
+        cap: CRASH_FILE_MAX_BYTES,
+    })
+}
+
+/// Read at most `max_bytes` from the END of `path`, re-scrubbed, plus the file's real size.
+///
+/// The file was written scrubbed, so this pass is belt-and-braces — and it is safe to run
+/// because [`scrub_line`] is idempotent (see [`is_redaction_marker`]).
+fn read_tail_scrubbed(path: &Path, max_bytes: usize, paths: &PathScrubber) -> (String, u64) {
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let Ok(bytes) = std::fs::read(path) else {
+        return (String::new(), size);
+    };
+    let start = bytes.len().saturating_sub(max_bytes);
+    let text = String::from_utf8_lossy(&bytes[start..]);
+    let scrubbed: Vec<String> = text.lines().map(|l| scrub_line(l, paths)).collect();
+    (scrubbed.join("\n"), size)
+}
+
+#[derive(Default)]
+struct SinkState {
+    /// The partial line assembled across chunk boundaries, bounded by
+    /// [`MAX_PENDING_LINE_BYTES`].
+    pending: Vec<u8>,
+    /// Scrubbed lines, KEEP-LAST, bounded by [`STDERR_RING_BYTES`].
+    lines: VecDeque<String>,
+    ring_bytes: usize,
+    crash: Option<CrashLog>,
+}
+
+/// The process-wide stderr sink: the ring, the crash file, and the scrubber that guards
+/// both.
+///
+/// PROCESS-WIDE rather than per-client on purpose. Three separate engines are spawned over
+/// an app's life — the managed one plus the throwaway index-less ones behind
+/// `create_corpus` / `discover_sources` — and a first-run DISCOVERY failure is exactly the
+/// report this exists to serve. A per-client buffer would die with the throwaway.
+pub struct Diagnostics {
+    paths: PathScrubber,
+    state: Mutex<SinkState>,
+}
+
+impl Diagnostics {
+    fn new(paths: PathScrubber, crash: Option<CrashLog>) -> Self {
+        Self {
+            paths,
+            state: Mutex::new(SinkState {
+                crash,
+                ..SinkState::default()
+            }),
+        }
+    }
+
+    /// A panicking writer must not silently end diagnostics for the rest of the run, so the
+    /// poison is recovered rather than propagated. There is no invariant a partial write
+    /// could have broken: every field is independently consistent.
+    fn lock(&self) -> std::sync::MutexGuard<'_, SinkState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Feed raw child stderr. Splits into lines, scrubs ONCE, then fans out to both
+    /// surfaces — so neither the ring nor the file ever holds an unscrubbed byte.
+    fn ingest(&self, chunk: &[u8]) {
+        let mut state = self.lock();
+        for &byte in chunk {
+            match byte {
+                b'\n' => {
+                    let line = std::mem::take(&mut state.pending);
+                    self.emit(&mut state, &line);
+                }
+                b'\r' => {}
+                _ => {
+                    state.pending.push(byte);
+                    if state.pending.len() >= MAX_PENDING_LINE_BYTES {
+                        let line = std::mem::take(&mut state.pending);
+                        self.emit(&mut state, &line);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flush a trailing line the child never terminated (it died mid-write, which is the
+    /// interesting case).
+    fn finish(&self) {
+        let mut state = self.lock();
+        if !state.pending.is_empty() {
+            let line = std::mem::take(&mut state.pending);
+            self.emit(&mut state, &line);
+        }
+    }
+
+    fn emit(&self, state: &mut SinkState, raw: &[u8]) {
+        let scrubbed = scrub_line(&String::from_utf8_lossy(raw), &self.paths);
+        if let Some(log) = state.crash.as_mut() {
+            log.append(&scrubbed);
+        }
+        state.ring_bytes += scrubbed.len() + 1;
+        state.lines.push_back(scrubbed);
+        // `len() > 1` keeps the ring non-empty even if one line alone exceeds the budget,
+        // so the most recent line is always readable.
+        while state.ring_bytes > STDERR_RING_BYTES && state.lines.len() > 1 {
+            if let Some(front) = state.lines.pop_front() {
+                state.ring_bytes -= front.len() + 1;
+            }
+        }
+    }
+
+    /// The retained stderr tail, as text.
+    pub fn snapshot(&self) -> String {
+        let state = self.lock();
+        state
+            .lines
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
+    /// Everything the parent process knows that a bug report needs, minus the engine-side
+    /// numbers (index stats) the UI already holds.
+    pub fn bundle(&self) -> Value {
+        // Two SEQUENTIAL locks, never nested: `snapshot` takes the lock itself and a
+        // `Mutex` is not reentrant, so calling it from inside the block below would
+        // deadlock the caller. A line arriving between the two is of no consequence to a
+        // diagnostics read.
+        let stderr = self.snapshot();
+        let (crash_path, crash_bytes) = {
+            let state = self.lock();
+            match state.crash.as_ref() {
+                Some(log) => (Some(log.path.clone()), log.written),
+                None => (None, 0),
+            }
+        };
+        let previous = match crash_path.as_ref().and_then(|p| p.parent()) {
+            Some(dir) => {
+                let prev = dir.join(CRASH_FILE_PREV_NAME);
+                let (tail, bytes) = read_tail_scrubbed(&prev, STDERR_RING_BYTES, &self.paths);
+                json!({
+                    "path": self.paths.apply(&prev.to_string_lossy()),
+                    "bytes": bytes,
+                    "tail": tail,
+                })
+            }
+            None => Value::Null,
+        };
+        json!({
+            "platform": {
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "family": std::env::consts::FAMILY,
+            },
+            "engine_stderr": stderr,
+            "engine_stderr_cap_bytes": STDERR_RING_BYTES,
+            "crash_file": match crash_path {
+                Some(path) => json!({
+                    "path": self.paths.apply(&path.to_string_lossy()),
+                    "bytes": crash_bytes,
+                    "cap_bytes": CRASH_FILE_MAX_BYTES,
+                }),
+                None => Value::Null,
+            },
+            "previous_run": previous,
+        })
+    }
+}
+
+/// The one sink for this process. See [`Diagnostics`] for why it is process-wide.
+static DIAGNOSTICS: OnceLock<Arc<Diagnostics>> = OnceLock::new();
+
+/// The process-wide sink, created on first use.
+///
+/// The crash file is deliberately NOT opened under `cfg(test)`: `cargo test` spawns real
+/// engines, and rotating the developer's REAL `%LOCALAPPDATA%\LLM Anthology\logs` as a side
+/// effect of running the suite is not something a test may do. The file logic is covered
+/// directly against a temp directory instead (`the_crash_file_is_capped_and_keeps_the_first_bytes`,
+/// `a_second_run_rotates_the_crash_file_to_exactly_one_previous_generation`). What is
+/// therefore UNVERIFIED is only the JOIN — that the shipped app really opens a file under
+/// `AppLocations::logs_dir`; the settling experiment is to run the installed app with a
+/// deliberately broken engine and check that `engine-stderr.log` appears there.
+pub fn diagnostics() -> &'static Arc<Diagnostics> {
+    DIAGNOSTICS.get_or_init(|| {
+        let crash = if cfg!(test) {
+            None
+        } else {
+            crate::app_locations()
+                .ok()
+                .and_then(|locations| open_crash_log(&locations.logs_dir))
+        };
+        Arc::new(Diagnostics::new(
+            PathScrubber::from_env(|name| std::env::var(name).ok()),
+            crash,
+        ))
+    })
+}
 
 // Windows-only: the raw `CreateProcessW` hardening (KILL_ON_JOB_CLOSE Job Object
 // reap + AppContainer network membrane + CREATE_NO_WINDOW) that backs
@@ -183,14 +768,23 @@ fn jsonrpc_roundtrip_bounded(
 /// a full traceback to stderr through `threading.excepthook`. A couple of tracebacks clear
 /// 8 KiB. Nothing in the engine's own code has to be wrong for this to fire.
 ///
-/// Bytes are discarded, which is exactly what happened to them before (the handle was held
-/// and never read); the only new property is that the child can always make progress.
-fn drain_stderr<R: Read + Send + 'static>(mut stderr: R) {
+/// Bytes are RETAINED now rather than discarded — see the DECISION G-8 block above. Draining
+/// and keeping are separate concerns and this function does both: the drain is what keeps the
+/// child able to make progress, the sink is what keeps the traceback that explains a failure.
+/// Nothing about the deadlock property changes, because the read loop is unchanged.
+fn drain_stderr<R: Read + Send + 'static>(mut stderr: R, sink: Arc<Diagnostics>) {
     std::thread::spawn(move || {
-        let mut sink = [0u8; 8192];
+        let mut buf = [0u8; 8192];
         // Stop on EOF (child gone) or on any read error — either way the pipe can no
         // longer block the child, which is the whole purpose.
-        while matches!(stderr.read(&mut sink), Ok(n) if n > 0) {}
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sink.ingest(&buf[..n]),
+            }
+        }
+        // The child is gone; flush whatever it was mid-way through writing when it died.
+        sink.finish();
     });
 }
 
@@ -300,7 +894,7 @@ impl SidecarClient {
         // The drainer thread now OWNS the parent end of stderr: it keeps the handle
         // alive exactly as the old `_stderr` field did, and additionally keeps the pipe
         // from ever filling. See `drain_stderr` for why holding it un-read deadlocks.
-        drain_stderr(stderr);
+        drain_stderr(stderr, Arc::clone(diagnostics()));
         Ok(Self {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
@@ -337,7 +931,7 @@ impl SidecarClient {
             .stderr
             .take()
             .ok_or_else(|| "sidecar stderr was not piped".to_string())?;
-        drain_stderr(stderr);
+        drain_stderr(stderr, Arc::clone(diagnostics()));
         Ok(Self {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
@@ -367,9 +961,509 @@ impl Drop for SidecarClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_stderr, engine_python_in, jsonrpc_roundtrip, jsonrpc_roundtrip_bounded};
+    use super::{
+        diagnostics, drain_stderr, engine_python_in, jsonrpc_roundtrip,
+        jsonrpc_roundtrip_bounded, open_crash_log, scrub_line, CrashLog, Diagnostics,
+        PathScrubber, CRASH_FILE_MAX_BYTES, CRASH_FILE_NAME, CRASH_FILE_PREV_NAME,
+        MAX_PENDING_LINE_BYTES, STDERR_RING_BYTES,
+    };
     use serde_json::{json, Value};
     use std::io::Cursor;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    // === DECISION G-8: engine stderr is EVIDENCE, kept in the parent =================
+
+    /// Distinctive tokens standing in for the private material this corpus really holds.
+    ///
+    /// SYNTHETIC — invented for this test, never read from any corpus. Shaped like the
+    /// medical/pharmaceutical content the owner's archive contains, because that is the
+    /// material a leak would expose, and a canary that does not resemble the real risk
+    /// tests the wrong thing.
+    const CANARY_TOKENS: [&str; 3] = ["Amoxicillin", "clavulanate", "SYNTHETIC-CANARY-9f3a"];
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir()
+            .join(format!("llm_anthology_diag_{tag}_{}_{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the scratch dir");
+        dir
+    }
+
+    /// An in-memory sink with no scrubbing needles and no crash file — for the tests whose
+    /// subject is the RING, not the filesystem or the relativization.
+    fn ring_only() -> Diagnostics {
+        Diagnostics::new(PathScrubber::new(None, None), None)
+    }
+
+    /// RETENTION **and** BOUND, both states, because either alone is a different bug.
+    ///
+    /// Before this unit `drain_stderr` read stderr into a throwaway array, so the retention
+    /// half is the whole feature. The bound half is what keeps the fix from becoming the
+    /// next defect: the producer is a child process this code does not control, and an
+    /// unbounded buffer fed by an untrusted producer is the same allocation hazard
+    /// `MAX_RESPONSE_LINE_BYTES` exists for.
+    #[test]
+    fn stderr_is_retained_in_a_bounded_ring_instead_of_being_discarded() {
+        let sink = ring_only();
+
+        // RETAINED: the structural shape of a traceback survives.
+        sink.ingest(b"Traceback (most recent call last):\nValueError: boom\n");
+        let kept = sink.snapshot();
+        assert!(
+            kept.contains("Traceback (most recent call last):"),
+            "the traceback header must survive: {kept:?}"
+        );
+        assert!(
+            kept.contains("ValueError: <redacted 4 chars>"),
+            "the exception TYPE must survive and its message must not: {kept:?}"
+        );
+
+        // BOUNDED: ~180 KiB of retained text into a 64 KiB ring. Frame lines are used
+        // because they carry a distinguishable payload through the allowlist — an exception
+        // message would be redacted to the same marker on every line and could not tell the
+        // oldest from the newest.
+        for i in 0..4096 {
+            sink.ingest(format!("  File \"/src/mod_{i}.py\", line {i}, in fn_{i}\n").as_bytes());
+        }
+        let kept = sink.snapshot();
+        assert!(
+            kept.len() <= STDERR_RING_BYTES,
+            "the ring must stay under its {STDERR_RING_BYTES}-byte cap, got {}",
+            kept.len()
+        );
+        assert!(
+            kept.contains("mod_4095.py"),
+            "keep-LAST: what happened just before the failure is what explains it: {}",
+            &kept[kept.len().saturating_sub(200)..]
+        );
+        assert!(
+            !kept.contains("mod_0.py"),
+            "the oldest line must have been evicted, not merely joined by newer ones"
+        );
+        assert!(
+            !kept.contains("Traceback (most recent call last):"),
+            "eviction must reach the very first line too"
+        );
+    }
+
+    /// THE PRIVACY GATE. Synthetic conversation content driven through a real-shaped failure
+    /// must reach NEITHER surface — not the in-memory ring, not the file on disk.
+    ///
+    /// This is the test the unit exists to pass. A traceback carries the offending VALUE in
+    /// its exception message, the surrounding source line, and whatever the failing code
+    /// printed; all three are populated here with the canary. Without the allowlist the
+    /// support channel becomes the leak channel — worse than the one two sibling units just
+    /// closed, because a bug report is voluntarily pasted into a public issue tracker.
+    ///
+    /// DETECTOR CONTROL FIRST: the canary is asserted PRESENT in the input, and the
+    /// structural parts are asserted PRESENT in the output. A scrubber that ate everything
+    /// would pass a leak-only assertion while destroying the feature.
+    #[test]
+    fn synthetic_conversation_content_never_reaches_either_diagnostics_surface() {
+        let dir = scratch_dir("privacy");
+        let log = open_crash_log(&dir).expect("open the crash file");
+        let sink = Diagnostics::new(
+            PathScrubber::new(Some(r"C:\Users\tester"), Some("tester")),
+            Some(log),
+        );
+
+        // A traceback of the shape `llm_anthology`'s adapters really produce, with the canary in
+        // (a) the source echo, (b) the exception message, (c) a bare print.
+        let stderr = concat!(
+            "Traceback (most recent call last):\n",
+            "  File \"C:\\Users\\tester\\AppData\\Local\\LLM Anthology\\engine\\Lib\\llm_anthology\\adapters\\chatgpt.py\", line 214, in _walk\n",
+            "    raise KeyError(node[\"Amoxicillin and clavulanate 875mg\"])\n",
+            "KeyError: 'Amoxicillin and clavulanate 875mg / SYNTHETIC-CANARY-9f3a'\n",
+            "patient reported clavulanate side effects on 2026-03-02\n",
+        );
+        for token in CANARY_TOKENS {
+            assert!(
+                stderr.contains(token),
+                "detector control: the input must actually carry {token:?}, or this test \
+                 cannot fail"
+            );
+        }
+        sink.ingest(stderr.as_bytes());
+        sink.finish();
+
+        let kept = sink.snapshot();
+        let on_disk = std::fs::read_to_string(dir.join(CRASH_FILE_NAME)).expect("read crash file");
+
+        // 1. The structural evidence SURVIVES — otherwise the scrubber is just a delete.
+        assert!(
+            kept.contains("Traceback (most recent call last):"),
+            "{kept:?}"
+        );
+        assert!(
+            kept.contains(
+                "File \"~\\AppData\\Local\\LLM Anthology\\engine\\Lib\\llm_anthology\\adapters\\chatgpt.py\", line 214, in _walk"
+            ),
+            "the frame must survive WITH its home relativized: {kept:?}"
+        );
+        assert!(
+            kept.contains("KeyError: <redacted"),
+            "the exception TYPE is the diagnostic value and must survive: {kept:?}"
+        );
+        assert!(
+            on_disk.contains("KeyError: <redacted"),
+            "the on-disk surface carries the same evidence: {on_disk:?}"
+        );
+
+        // 2. NOTHING of the conversation survives, on either surface.
+        for token in CANARY_TOKENS {
+            assert!(
+                !kept.contains(token),
+                "{token:?} leaked into the in-memory bundle: {kept:?}"
+            );
+            assert!(
+                !on_disk.contains(token),
+                "{token:?} leaked onto disk: {on_disk:?}"
+            );
+        }
+        // 3. Nor does the username, which identifies the reporter even without content.
+        for surface in [&kept, &on_disk] {
+            assert!(
+                !surface.contains("tester"),
+                "the username must be relativized away: {surface:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Home-path relativization — the same rule the shareable export applies, for the same
+    /// reason.
+    ///
+    /// Both separator spellings and case-insensitively, because Windows paths are
+    /// case-insensitive and a Python traceback prints whichever separator the import
+    /// machinery built the path with. The two NEGATIVE arms matter as much: with no home
+    /// known nothing may be invented, and a 2-character needle must be refused outright
+    /// rather than replacing fragments of ordinary words.
+    #[test]
+    fn home_paths_and_the_username_are_relativized_before_anything_is_retained() {
+        // The username is DERIVED from the home directory when not supplied separately.
+        let paths = PathScrubber::new(Some(r"C:\Users\tester"), None);
+        let out = scrub_line(r#"  File "c:/Users/Tester/app/x.py", line 3, in f"#, &paths);
+        assert_eq!(out, r#"  File "~/app/x.py", line 3, in f"#, "got {out:?}");
+        assert_eq!(
+            paths.apply("hello tester"),
+            "hello <user>",
+            "a bare username identifies the reporter even outside a path"
+        );
+
+        let unknown = PathScrubber::new(None, None);
+        assert_eq!(
+            unknown.apply(r"C:\Users\tester\x"),
+            r"C:\Users\tester\x",
+            "with no home known, nothing may be invented"
+        );
+
+        let tiny = PathScrubber::new(Some("C:"), Some("ab"));
+        assert_eq!(
+            tiny.apply("C: is a drive and ab is a syllable"),
+            "C: is a drive and ab is a syllable",
+            "a 1-2 character needle matches inside ordinary words and must be refused"
+        );
+    }
+
+    /// Scrubbing is IDEMPOTENT, which the previous-run file re-read depends on: that file is
+    /// already scrubbed, and it is scrubbed again on its way into a bundle.
+    #[test]
+    fn scrubbing_an_already_scrubbed_line_changes_nothing() {
+        let paths = PathScrubber::new(Some(r"C:\Users\tester"), Some("tester"));
+        for line in [
+            "Traceback (most recent call last):",
+            r#"  File "C:\Users\tester\app\adapters\grok.py", line 9, in load"#,
+            "KeyError: 'mapping'",
+            "PermissionError:",
+            "some free text nobody allowlisted",
+            "",
+            "   ",
+        ] {
+            let once = scrub_line(line, &paths);
+            let twice = scrub_line(&once, &paths);
+            assert_eq!(once, twice, "not idempotent for {line:?}");
+        }
+    }
+
+    /// A capitalised word before a colon is NOT an exception line.
+    ///
+    /// Regression pin on a real hole in the first draft: the matcher accepted any
+    /// capitalised dotted token, which `Amoxicillin: 500mg` satisfies — so a single line of
+    /// conversation would have walked straight through the allowlist. The suffix list
+    /// ([`super::EXCEPTION_SUFFIXES`]) is what closed it.
+    #[test]
+    fn a_capitalised_word_before_a_colon_is_not_mistaken_for_an_exception() {
+        let paths = PathScrubber::new(None, None);
+        for leak in [
+            "Amoxicillin: 500mg twice daily",
+            "Diagnosis: nothing to see here",
+            "Patient: anonymous",
+        ] {
+            let out = scrub_line(leak, &paths);
+            assert!(
+                out.starts_with("<redacted "),
+                "{leak:?} must be redacted whole, got {out:?}"
+            );
+        }
+        // Real exception names still pass, including dotted and non-`Error` ones.
+        for real in [
+            "KeyError: 'mapping'",
+            "sqlite3.OperationalError: database is locked",
+            "KeyboardInterrupt: ",
+            "SystemExit: 1",
+            "DeprecationWarning: stop it",
+        ] {
+            let out = scrub_line(real, &paths);
+            assert!(
+                !out.starts_with("<redacted "),
+                "{real:?} is a real exception line and must keep its type, got {out:?}"
+            );
+        }
+    }
+
+    /// An UNTERMINATED line cannot grow the assembly buffer without bound.
+    #[test]
+    fn an_unterminated_stderr_line_cannot_grow_the_buffer_without_bound() {
+        let sink = ring_only();
+        // Four ceilings' worth of bytes and not one newline.
+        sink.ingest(&vec![b'z'; MAX_PENDING_LINE_BYTES * 4]);
+        assert!(
+            sink.lock().pending.len() < MAX_PENDING_LINE_BYTES,
+            "the buffer must FLUSH at the ceiling rather than hoard the whole stream"
+        );
+        let kept = sink.snapshot();
+        assert_eq!(
+            kept.lines().count(),
+            4,
+            "one flushed line per ceiling-worth of bytes: {kept:?}"
+        );
+        assert!(
+            kept.starts_with("<redacted 8192 chars>"),
+            "a forced flush is not allowlisted, so it is redacted: {kept:?}"
+        );
+    }
+
+    /// The crash file is HARD-capped and KEEPS-FIRST, and the ring keeps-last — the two
+    /// surfaces are deliberate complements, not redundant copies.
+    ///
+    /// Driven with a tiny cap on purpose: proving the production 256 KiB would mean writing
+    /// 256 KiB in CI, exactly as `a_response_line_over_the_ceiling_is_refused_not_allocated`
+    /// drives its own ceiling small.
+    #[test]
+    fn the_crash_file_is_capped_and_keeps_the_first_bytes() {
+        let dir = scratch_dir("cap");
+        let path = dir.join(CRASH_FILE_NAME);
+        let log = CrashLog {
+            file: std::fs::File::create(&path).expect("create the crash file"),
+            path: path.clone(),
+            written: 0,
+            cap: 64,
+        };
+        let sink = Diagnostics::new(PathScrubber::new(None, None), Some(log));
+
+        sink.ingest(b"  File \"/a.py\", line 1, in first\n");
+        for i in 0..200 {
+            sink.ingest(format!("  File \"/b.py\", line {i}, in later\n").as_bytes());
+        }
+
+        let on_disk = std::fs::read_to_string(&path).expect("read the crash file");
+        assert_eq!(
+            on_disk.len(),
+            64,
+            "the cap is a HARD ceiling, not a target: {on_disk:?}"
+        );
+        assert!(
+            on_disk.starts_with("  File \"/a.py\", line 1, in first\n"),
+            "keep-FIRST: the first traceback names the root cause: {on_disk:?}"
+        );
+        assert!(
+            !on_disk.contains("line 199"),
+            "past the cap nothing more may be written: {on_disk:?}"
+        );
+        assert!(
+            sink.snapshot().contains("line 199, in later"),
+            "the RING meanwhile keeps the last lines — that complement is the design"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// EXACTLY TWO generations on disk, ever.
+    ///
+    /// The previous generation is not tidiness: the crash case is "the app died and the user
+    /// restarted it", so truncating on start would destroy the evidence at the moment it was
+    /// about to be read. A third run must DISCARD the oldest rather than accumulate — an
+    /// unbounded rotation scheme on a user's disk is the failure being avoided.
+    #[test]
+    fn a_second_run_rotates_the_crash_file_to_exactly_one_previous_generation() {
+        let dir = scratch_dir("rotate");
+        for run in 1..=2 {
+            let mut log = open_crash_log(&dir).expect("open the crash file");
+            log.append(&format!("  File \"/run{run}.py\", line {run}, in only"));
+        }
+
+        let current = std::fs::read_to_string(dir.join(CRASH_FILE_NAME)).expect("current");
+        let previous = std::fs::read_to_string(dir.join(CRASH_FILE_PREV_NAME)).expect("previous");
+        assert!(current.contains("/run2.py"), "got {current:?}");
+        assert!(
+            previous.contains("/run1.py"),
+            "the run BEFORE the restart is the one worth keeping: {previous:?}"
+        );
+
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("list the logs dir")
+            .map(|e| {
+                e.expect("dir entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![CRASH_FILE_NAME.to_string(), CRASH_FILE_PREV_NAME.to_string()],
+            "two files and no more"
+        );
+
+        let mut third = open_crash_log(&dir).expect("third run");
+        third.append("  File \"/run3.py\", line 3, in only");
+        let previous = std::fs::read_to_string(dir.join(CRASH_FILE_PREV_NAME)).expect("previous");
+        assert!(
+            previous.contains("/run2.py") && !previous.contains("/run1.py"),
+            "the oldest generation must be discarded, not kept: {previous:?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("list").count(),
+            2,
+            "still exactly two"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bundle the UI copies: platform, both caps, both crash generations — and every
+    /// path in it relativized, because a bundle is a SHARED artifact by definition.
+    #[test]
+    fn the_bundle_names_the_platform_the_caps_and_both_crash_generations() {
+        let dir = scratch_dir("bundle");
+        {
+            let mut previous = open_crash_log(&dir).expect("first run");
+            previous.append("PermissionError:");
+        }
+        let log = open_crash_log(&dir).expect("second run");
+        // Home is pointed AT the scratch dir so the relativization assertion below is
+        // deterministic on both CI legs rather than depending on the real profile.
+        let sink = Diagnostics::new(
+            PathScrubber::new(dir.to_str(), Some("tester")),
+            Some(log),
+        );
+        sink.ingest(b"RuntimeError: boom\n");
+
+        let bundle = sink.bundle();
+        assert_eq!(bundle["platform"]["os"], json!(std::env::consts::OS));
+        assert_eq!(bundle["platform"]["arch"], json!(std::env::consts::ARCH));
+        assert!(
+            bundle["engine_stderr"]
+                .as_str()
+                .is_some_and(|s| s.contains("RuntimeError: <redacted 4 chars>")),
+            "bundle: {bundle}"
+        );
+        assert_eq!(bundle["engine_stderr_cap_bytes"], json!(STDERR_RING_BYTES));
+        assert_eq!(bundle["crash_file"]["cap_bytes"], json!(CRASH_FILE_MAX_BYTES));
+        let path = bundle["crash_file"]["path"]
+            .as_str()
+            .expect("a crash path");
+        assert!(
+            path.starts_with('~'),
+            "the crash path must be home-relative: {path}"
+        );
+        assert!(
+            bundle["previous_run"]["tail"]
+                .as_str()
+                .is_some_and(|s| s.contains("PermissionError:")),
+            "the previous run's evidence is the whole point of the on-disk half: {bundle}"
+        );
+        assert!(
+            bundle["previous_run"]["bytes"].as_u64().is_some_and(|n| n > 0),
+            "bundle: {bundle}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The process-wide sink is created once, and under `cfg(test)` it must NOT open a file
+    /// in the developer's real `%LOCALAPPDATA%\LLM Anthology\logs`.
+    #[test]
+    fn the_process_wide_sink_is_created_once_and_writes_no_file_under_test() {
+        assert!(
+            Arc::ptr_eq(diagnostics(), diagnostics()),
+            "three engines share ONE sink; a per-client buffer dies with the throwaway"
+        );
+        assert_eq!(
+            diagnostics().bundle()["crash_file"],
+            Value::Null,
+            "running the suite must not rotate the developer's real crash log"
+        );
+    }
+
+    /// THE WIRE: a real child's real traceback, through the real `drain_stderr`, lands in the
+    /// ring already scrubbed.
+    ///
+    /// The unit tests above drive `ingest` directly; this one proves the join — that the
+    /// production drainer is what feeds the sink — across a genuine OS pipe. That
+    /// `spawn_platform` calls `drain_stderr` is a compiler-checked citation rather than
+    /// something measured here.
+    #[test]
+    fn a_real_child_traceback_reaches_the_ring_through_the_production_drainer() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const BOOM: &str = concat!(
+            "import sys\n",
+            "sys.stderr.write('Traceback (most recent call last):\\n')\n",
+            "sys.stderr.write('  File \"/x/adapters/grok.py\", line 7, in load\\n')\n",
+            "sys.stderr.write(\"KeyError: 'SYNTHETIC-CANARY-9f3a'\\n\")\n",
+            "sys.stderr.flush()\n",
+        );
+
+        let sink = Arc::new(ring_only());
+        let mut child = Command::new("python")
+            .arg("-c")
+            .arg(BOOM)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the traceback-emitting child (python on PATH?)");
+        let stderr = child.stderr.take().expect("stderr piped");
+        drain_stderr(stderr, Arc::clone(&sink));
+        let _ = child.wait();
+
+        // The drainer owns its own thread, so WAIT for the bytes instead of assuming them.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !sink.snapshot().contains("grok.py") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let kept = sink.snapshot();
+        assert!(
+            kept.contains("Traceback (most recent call last):"),
+            "the drainer must feed the ring: {kept:?}"
+        );
+        assert!(kept.contains("line 7, in load"), "{kept:?}");
+        assert!(kept.contains("KeyError: <redacted"), "{kept:?}");
+        assert!(
+            !kept.contains("SYNTHETIC-CANARY-9f3a"),
+            "scrubbing happens at INGEST, so nothing unscrubbed is ever retained: {kept:?}"
+        );
+    }
 
     // === transport robustness: the child cannot wedge or exhaust the parent ==========
 
@@ -438,7 +1532,7 @@ mod tests {
         // read end, the child's write then fails instead of blocking, and the deadlock
         // silently fails to reproduce — the test would look green and prove nothing.
         let _held: Option<ChildStderr> = if drain {
-            drain_stderr(stderr);
+            drain_stderr(stderr, Arc::new(ring_only()));
             None
         } else {
             Some(stderr)
