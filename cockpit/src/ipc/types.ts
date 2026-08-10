@@ -86,11 +86,39 @@ export interface Subtree {
   edges: SpawnEdge[];
 }
 
-/** `search.query` result. */
+/**
+ * The D-3 histogram granularity, mirroring `corpus.SEARCH_BUCKETS`. The
+ * value doubles as an ISO-prefix WIDTH in the engine — year=4, month=7, day=10 — which is
+ * why the vocabulary is closed and a near-miss is refused rather than coerced.
+ */
+export type SearchBucket = "year" | "month" | "day";
+
+/** One histogram column: an ISO date PREFIX and how many matches fall under it. */
+export interface SearchHistogramBucket {
+  /** `2026`, `2026-03` or `2026-03-15`, per the requested granularity. */
+  bucket: string;
+  count: number;
+}
+
+/**
+ * `search.query` result.
+ *
+ * `histogram` IS OPTIONAL, AND THAT IS THE WIRE RATHER THAN A CHOICE. The engine merges the
+ * key in only when the caller asked for a granularity (`_hits_over_time`); absent means the
+ * key never appears, so an old caller pays neither a new response field nor a second query.
+ *
+ * Contrast `ExportPlan.mode` / `ExportResult.credential_scan`, which are REQUIRED: the engine
+ * always returns those, so required is what models that wire honestly and optional would let
+ * an adapter omit them and still typecheck. Same discipline — model the wire exactly — and it
+ * lands on the opposite answer here because the wire itself differs. An always-present
+ * `histogram: []` would be a lie a UI could not distinguish from "asked, and empty".
+ */
 export interface SearchResult {
   hits: SearchHit[];
   total: number;
   took_ms: number;
+  /** Present ONLY when `SearchParams.histogram` named a granularity. */
+  histogram?: SearchHistogramBucket[];
 }
 
 /** `thread.get` result: the full node projection (every field present, may be null). */
@@ -168,11 +196,41 @@ export interface RootsParams {
   order?: RootOrder;
 }
 
+/**
+ * `search.query` parameters, including the D-3 facets.
+ *
+ * `since` / `until` are INCLUSIVE PREFIX bounds, not timestamps: `2026` covers the year and
+ * `2026-03` covers the month, at whatever granularity the caller expressed. Accepted forms
+ * are exactly `YYYY`, `YYYY-MM`, `YYYY-MM-DD` and nothing else — `2026-3` is refused, because
+ * the comparison is a prefix compare and a six-character bound would match nothing at all.
+ * An empty result is the worst possible answer to a typo: it cannot be told apart from a true
+ * negative. The engine validates at the edge (`_search_filters`) and answers -32602.
+ *
+ * A bound also EXCLUDES undated rows, deliberately (`corpus.search_filter_sql`) — otherwise
+ * `until` would admit exactly the rows `since` rejects.
+ *
+ * The engine references in this block name CONSTRUCTS rather than `<file>:<line>`, against
+ * this file's usual convention and on purpose: they point into `sidecar.py`/`corpus.py`, which
+ * were being actively rewritten when this landed, so a line number would have been a claim
+ * about a moving target and stale within the hour. A function name survives the move and is
+ * greppable. Upgrade these to pinned line citations once that file settles — the pin table is
+ * the better tool whenever it can actually be kept true.
+ */
 export interface SearchParams {
   q: string;
   limit?: number;
   offset?: number;
   provider?: string;
+  /** Inclusive lower bound, `YYYY` | `YYYY-MM` | `YYYY-MM-DD`. */
+  since?: string;
+  /** Inclusive upper bound, same three forms. */
+  until?: string;
+  /**
+   * Ask for a hits-over-time roll-up at this granularity. ABSENT MEANS DO NOT COMPUTE IT —
+   * a granularity string rather than a boolean precisely so that omitting it costs an
+   * existing caller nothing, neither a response key nor a second query (`_opt_bucket`).
+   */
+  histogram?: SearchBucket;
 }
 
 /**

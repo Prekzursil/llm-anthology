@@ -59,6 +59,8 @@ import type {
   PlannedMove,
   RollupTable,
   RootsParams,
+  SearchBucket,
+  SearchHistogramBucket,
   SearchHit,
   SearchParams,
   SearchResult,
@@ -1069,6 +1071,89 @@ export interface MockIpcClient extends FullIpcClient {
   readonly openedIndex: string | null;
 }
 
+// ------------------------------------------------------------------- D-3 search facets
+//
+// The engine validates these at its RPC edge and filters by an ISO-PREFIX comparison. The
+// mock reproduces both, because the failure mode of getting it wrong here is silent: a
+// malformed bound that is quietly ignored returns a plausible page, and a dev never sees
+// the -32602 a real engine would have answered.
+
+/** The granularities `corpus.SEARCH_BUCKETS` defines, mapped to their ISO prefix WIDTH. */
+const SEARCH_BUCKET_WIDTH: Readonly<Record<SearchBucket, number>> = {
+  year: 4,
+  month: 7,
+  day: 10,
+};
+
+/** `YYYY`, `YYYY-MM` or `YYYY-MM-DD` — the only three forms `corpus.date_bound` accepts. */
+const DATE_BOUND = /^\d{4}(-\d{2}(-\d{2})?)?$/;
+
+/**
+ * Validate one temporal bound and return it unchanged, or throw -32602.
+ *
+ * A NEAR-MISS MUST RAISE rather than be tolerated. The comparison below is a PREFIX
+ * comparison, so `2026-3` would test six characters (`'2026-0' >= '2026-3'`) and match
+ * nothing at all — and an empty result set is indistinguishable from a true negative.
+ */
+function dateBound(value: string | undefined, label: string): string | null {
+  if (value === undefined) return null;
+  if (!DATE_BOUND.test(value)) {
+    throw rpcError(
+      RPC_INVALID_PARAMS,
+      `${label} must be YYYY, YYYY-MM or YYYY-MM-DD (got ${JSON.stringify(value)})`,
+    );
+  }
+  return value;
+}
+
+/** The optional granularity, or null when the caller did not ask for a roll-up. */
+function searchBucket(value: SearchBucket | undefined): SearchBucket | null {
+  if (value === undefined) return null;
+  if (typeof value === "string" && value in SEARCH_BUCKET_WIDTH) return value;
+  // A flag-shaped value from a caller that guessed the API fails loudly rather than
+  // silently selecting a granularity nobody chose.
+  throw rpcError(
+    RPC_INVALID_PARAMS,
+    `histogram must be one of ${Object.keys(SEARCH_BUCKET_WIDTH).sort().join(", ")}`,
+  );
+}
+
+/** A row's `created_at` as the engine stores it, or "" for an undated row. */
+function isoOf(createdAtMs: number): string {
+  return Number.isFinite(createdAtMs) ? new Date(createdAtMs).toISOString() : "";
+}
+
+/**
+ * The inclusive prefix test, at whatever granularity each bound expressed.
+ *
+ * AN UNDATED ROW IS EXCLUDED BY EITHER BOUND. `"".slice(0, 7)` is `""` and `"" <= "2026-03"`
+ * is true, so without the explicit non-empty requirement an `until` filter would ADMIT
+ * exactly the rows a `since` filter rejects — the same facet, opposite answers, no error
+ * anywhere. "In this range" must never quietly mean "or undated".
+ */
+function withinBounds(createdAtMs: number, since: string | null, until: string | null): boolean {
+  if (since === null && until === null) return true;
+  const iso = isoOf(createdAtMs);
+  if (iso === "") return false;
+  if (since !== null && iso.slice(0, since.length) < since) return false;
+  if (until !== null && iso.slice(0, until.length) > until) return false;
+  return true;
+}
+
+/** Hits-over-time for an already-filtered match set, ascending by bucket key. */
+function bucketCounts(matches: RawThread[], bucket: SearchBucket): SearchHistogramBucket[] {
+  const width = SEARCH_BUCKET_WIDTH[bucket];
+  const counts = new Map<string, number>();
+  for (const t of matches) {
+    const key = isoOf(t.created_at_ms).slice(0, width);
+    if (key === "") continue; // an undated row belongs to no column
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, count]) => ({ bucket: key, count }));
+}
+
 // ---------------------------------------------------------------- G-5 / G-6 export wire
 //
 // The mock must not LIE about the export surface. It is the browser preview every pane
@@ -1263,8 +1348,15 @@ export function createMockIpc(
     const q = params.q.trim().toLowerCase();
     const limit = params.limit ?? 50;
     const offset = params.offset ?? 0;
+    // VALIDATE BEFORE SEARCHING, like the engine does at its edge. `runSearch`
+    // short-circuits an empty query, so a malformed `since` beside a query of pure
+    // punctuation would otherwise produce a cheerful zero-hit page rather than an error.
+    const since = dateBound(params.since, "since");
+    const until = dateBound(params.until, "until");
+    const bucket = searchBucket(params.histogram);
     const matches = threads.filter((t) => {
       if (params.provider !== undefined && t.provider !== params.provider) return false;
+      if (!withinBounds(t.created_at_ms, since, until)) return false;
       if (q === "") return true;
       return (
         t.title.toLowerCase().includes(q) ||
@@ -1280,6 +1372,11 @@ export function createMockIpc(
     matches.sort((a, b) =>
       b.created_at_ms - a.created_at_ms || a.id.localeCompare(b.id));
     const page = matches.slice(offset, offset + limit);
+    // ROLLED UP OVER `matches`, NOT `page`, deliberately: the histogram's entire job is to
+    // say where the OTHER pages are, so its counts sum to `total` rather than to the rows
+    // this page returned. A roll-up scoped to the page would draw a March missing
+    // conversations the list beside it can still open.
+    const extra = bucket === null ? {} : { histogram: bucketCounts(matches, bucket) };
     const hits: SearchHit[] = page.map((t, i) => {
       const hit: SearchHit = {
         conversation_id: t.id,
@@ -1291,7 +1388,9 @@ export function createMockIpc(
       };
       return hit;
     });
-    return { hits, total: matches.length, took_ms: 1 };
+    // Merged rather than branched, so the pre-D-3 response stays exactly three keys when no
+    // granularity was named — absent means the key never appears at all.
+    return { hits, total: matches.length, took_ms: 1, ...extra };
   }
 
   return {

@@ -6,7 +6,7 @@
  * tested. Everything here is a pure string decision; `search.ts` does nothing but apply it.
  */
 
-import type { SearchHit } from "../ipc/types";
+import type { SearchBucket, SearchHit, SearchParams } from "../ipc/types";
 
 /** Thousands-grouped, so a five-digit count is readable at a glance. */
 function grouped(n: number): string {
@@ -98,13 +98,29 @@ export function resultStatus({ total, shown, tookMs, provider }: StatusInput): s
  *
  * `provider` is OMITTED rather than sent empty: the engine rejects a non-string but treats
  * any string as a filter, so `provider: ""` would filter to the providers named "".
+ *
+ * `facets` carries the D-3 additions on the SAME rule, and for the same reason the paragraph
+ * above exists — they reached the wire contract in CF-14 and this is the only funnel from the
+ * search box to `ipc.searchQuery`, so a facet this function drops is a facet the app does not
+ * have. An empty bound is omitted rather than forwarded: `since: ""` is not "unbounded", it is
+ * a malformed bound the engine answers with -32602.
+ *
+ * STILL NOT USER-REACHABLE, and that is deliberate rather than forgotten: no DOM control sets
+ * these yet, so `search.ts` passes nothing and every caller today gets the pre-D-3 behaviour.
+ * Adding the inputs means `index.html`, which is outside this unit. What this widening buys is
+ * that the wiring is DONE and TESTED, so the control is the only remaining piece.
  */
 export function searchParams(
   q: string,
   provider: string,
   limit: number,
-): { q: string; limit: number; provider?: string } {
-  return provider === "" ? { q, limit } : { q, limit, provider };
+  facets: { since?: string; until?: string; histogram?: SearchBucket } = {},
+): SearchParams {
+  const params: SearchParams = provider === "" ? { q, limit } : { q, limit, provider };
+  if (facets.since) params.since = facets.since;
+  if (facets.until) params.until = facets.until;
+  if (facets.histogram) params.histogram = facets.histogram;
+  return params;
 }
 
 /**

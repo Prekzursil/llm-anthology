@@ -483,6 +483,25 @@ describe("the optional-parameter omissions", () => {
   // preview and the engine both supported it. Nothing was red: the citation gate does not
   // pin real.ts, and `cmd<ExportPlan>()` is an unchecked cast, so tsc could not see it
   // either. Two independent detectors, both structurally blind to this file.
+  // The D-3 facets. `searchQuery` forwards its params OBJECT wholesale rather than rebuilding
+  // it key by key, so widening `SearchParams` wires the new facets with no adapter change.
+  // That is worth an assertion precisely BECAUSE it is a non-change: "it already works" is a
+  // claim, and the CF-17 defect was an adapter everyone assumed forwarded something it did not.
+  it("forwards the D-3 since/until/histogram facets on search.query", async () => {
+    await realIpc.searchQuery({ q: "rust", since: "2026-03", until: "2026-03", histogram: "month" });
+    expect(paramsOf()).toEqual({
+      q: "rust", since: "2026-03", until: "2026-03", histogram: "month",
+    });
+  });
+
+  it("sends no facet keys at all when the caller names none", async () => {
+    // A `{since: undefined}` would serialise as absent too, but this asserts the key is
+    // genuinely not there — which is what the engine sees, and what makes ABSENT mean
+    // "unbounded" rather than "a bound I could not parse".
+    await realIpc.searchQuery({ q: "rust" });
+    expect(Object.keys(paramsOf()).sort()).toEqual(["q"]);
+  });
+
   it("omits mode entirely when no projection is named, so the engine defaults to full", async () => {
     await realIpc.exportPlan!("C:\\ignored");
     // `dest` is still not forwarded — the engine ignores it — and `mode` is absent rather

@@ -134,6 +134,25 @@ describe("searchParams", () => {
       .toEqual({ q: "timeout", limit: 200, provider: "grok" });
   });
 
+  it("SENDS the D-3 facets when they are set", () => {
+    // Same defect, one facet later. `since`/`until`/`histogram` reached the wire contract in
+    // CF-14 and this builder is the ONLY funnel from the search box to `ipc.searchQuery`, so
+    // leaving it unwidened would put them in exactly the state `provider` was in above.
+    expect(searchParams("timeout", "", 200, { since: "2026-03", until: "2026-03", histogram: "month" }))
+      .toEqual({ q: "timeout", limit: 200, since: "2026-03", until: "2026-03", histogram: "month" });
+  });
+
+  it("OMITS each facet independently rather than sending a blank one", () => {
+    // Same reasoning as `provider: ""`. An empty `since` is not an unbounded search — the
+    // engine would reject it as a malformed bound, so a blank input must send NO key.
+    expect(searchParams("timeout", "", 200, { since: "", until: "", histogram: undefined }))
+      .toEqual({ q: "timeout", limit: 200 });
+    expect(searchParams("timeout", "", 200, { since: "2026" }))
+      .toEqual({ q: "timeout", limit: 200, since: "2026" });
+    // ...and the whole facet argument is optional, so every existing call site is unaffected.
+    expect(searchParams("timeout", "", 200)).toEqual({ q: "timeout", limit: 200 });
+  });
+
   it("OMITS it rather than sending an empty string", () => {
     // The engine accepts any string as a filter, so `provider: ""` filters to conversations
     // whose provider is the empty string — every search would return nothing.

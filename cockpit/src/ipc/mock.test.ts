@@ -1956,6 +1956,126 @@ describe("search.query edges", () => {
   });
 });
 
+describe("search.query D-3 facets (since / until / histogram)", () => {
+  /** Three rows a month apart, so a month-granularity bound has something to include AND
+   *  exclude on both sides. `created_at_ms` is UTC-explicit to keep the ISO prefix stable. */
+  const DATED = [
+    { id: "feb", title: "winter note", provider: "claude", created_at_ms: Date.UTC(2026, 1, 10) },
+    { id: "mar-early", title: "spring note", provider: "claude", created_at_ms: Date.UTC(2026, 2, 1) },
+    // 23:59:59 on the LAST day of March — the row a naive `created_at <= '2026-03-31'`
+    // silently drops, because the full timestamp sorts after the bare date.
+    { id: "mar-late", title: "spring note", provider: "codex", created_at_ms: Date.UTC(2026, 2, 31, 23, 59, 59) },
+    { id: "apr", title: "summer note", provider: "claude", created_at_ms: Date.UTC(2026, 3, 5) },
+  ];
+  const dated = () => createMockIpc(DATED, []);
+
+  it("bounds INCLUSIVELY at the granularity the caller expressed", async () => {
+    // `2026-03` is a 7-character prefix compare, so it covers the whole month at both ends.
+    const march = await dated().searchQuery({ q: "note", since: "2026-03", until: "2026-03" });
+    expect(march.hits.map((h) => h.thread_id).sort()).toEqual(["mar-early", "mar-late"]);
+    expect(march.total).toBe(2);
+    // The 23:59:59 row is the one this is really about: it is IN March and must not be lost.
+    const toEndOfMarch = await dated().searchQuery({ q: "note", until: "2026-03" });
+    expect(toEndOfMarch.hits.map((h) => h.thread_id)).toContain("mar-late");
+    // A year bound is a 4-character compare, so it covers everything in 2026.
+    expect((await dated().searchQuery({ q: "note", since: "2026", until: "2026" })).total).toBe(4);
+  });
+
+  it("composes the bounds with the provider facet rather than replacing it", async () => {
+    const r = await dated().searchQuery({ q: "note", since: "2026-03", provider: "codex" });
+    expect(r.hits.map((h) => h.thread_id)).toEqual(["mar-late"]);
+  });
+
+  it("REFUSES a malformed bound instead of returning a cheerful zero-hit page", async () => {
+    // The engine's stated reason: the compare is a PREFIX compare, so `2026-3` would test six
+    // characters and match nothing. An empty result is the worst answer to a typo — it is
+    // indistinguishable from a true negative.
+    for (const bad of ["2026-3", "2026/03/15", "2026-03-15T00:00:00Z", "march"]) {
+      await expect(dated().searchQuery({ q: "note", since: bad })).rejects.toSatisfy(
+        (e: unknown) => rpcErrorCode(e) === RPC_INVALID_PARAMS,
+      );
+    }
+    // ...and the same rule on the other bound, not just the one that happened to be tested.
+    await expect(dated().searchQuery({ q: "note", until: "2026-3" })).rejects.toSatisfy(
+      (e: unknown) => rpcErrorCode(e) === RPC_INVALID_PARAMS,
+    );
+  });
+
+  it("EXCLUDES an undated row from either bound rather than admitting it", async () => {
+    // Without this, `until` admits exactly the rows `since` rejects: the same facet giving
+    // opposite answers with no error anywhere. "In this range" must not mean "or undated".
+    const undated = [...DATED, { id: "nodate", title: "note", provider: "claude", created_at_ms: NaN }];
+    const ipc = createMockIpc(undated, []);
+    expect((await ipc.searchQuery({ q: "note" })).total).toBe(5); // present when unbounded
+    expect((await ipc.searchQuery({ q: "note", since: "2026" })).hits.map((h) => h.thread_id))
+      .not.toContain("nodate");
+    expect((await ipc.searchQuery({ q: "note", until: "2026" })).hits.map((h) => h.thread_id))
+      .not.toContain("nodate");
+  });
+
+  it("OMITS the histogram key entirely when no granularity was asked for", async () => {
+    // Absent means absent, not an empty array: an old caller must pay neither a new response
+    // key nor a second pass. This is the contract that keeps the pre-D-3 response three keys.
+    const r = await dated().searchQuery({ q: "note" });
+    expect("histogram" in r).toBe(false);
+    expect(Object.keys(r).sort()).toEqual(["hits", "took_ms", "total"]);
+  });
+
+  it("rolls the histogram over the WHOLE match set, so its counts sum to total not to the page",
+    async () => {
+      // The invariant the engine pins: the histogram exists to say where the OTHER pages are,
+      // so a roll-up scoped to `limit` rows would draw a March missing conversations the list
+      // beside it can still open.
+      const r = await dated().searchQuery({ q: "note", histogram: "month", limit: 1 });
+      expect(r.hits).toHaveLength(1);
+      expect(r.total).toBe(4);
+      const summed = (r.histogram ?? []).reduce((n, b) => n + b.count, 0);
+      expect(summed).toBe(r.total);
+      expect(summed).not.toBe(r.hits.length);
+      expect(r.histogram).toEqual([
+        { bucket: "2026-02", count: 1 },
+        { bucket: "2026-03", count: 2 },
+        { bucket: "2026-04", count: 1 },
+      ]);
+    });
+
+  it("buckets at year and day granularity too, keyed by the ISO prefix", async () => {
+    const byYear = await dated().searchQuery({ q: "note", histogram: "year" });
+    expect(byYear.histogram).toEqual([{ bucket: "2026", count: 4 }]);
+    // BOUNDED at both ends on purpose. A lone `since: "2026-03"` also admits April, so the
+    // first draft of this case expected two columns and got three — the histogram was right
+    // and the expectation was not.
+    const byDay = await dated().searchQuery({
+      q: "note", histogram: "day", since: "2026-03", until: "2026-03",
+    });
+    expect(byDay.histogram).toEqual([
+      { bucket: "2026-03-01", count: 1 },
+      { bucket: "2026-03-31", count: 1 },
+    ]);
+  });
+
+  it("REFUSES a bucket outside the vocabulary, including a flag-shaped one", async () => {
+    // `true` is refused explicitly rather than coerced: a caller that guessed the API has to
+    // fail loudly instead of silently selecting a granularity nobody chose.
+    for (const bad of ["week", "", "MONTH"]) {
+      await expect(dated().searchQuery({ q: "note", histogram: bad as never })).rejects.toSatisfy(
+        (e: unknown) => rpcErrorCode(e) === RPC_INVALID_PARAMS,
+      );
+    }
+    await expect(dated().searchQuery({ q: "note", histogram: true as never })).rejects.toSatisfy(
+      (e: unknown) => rpcErrorCode(e) === RPC_INVALID_PARAMS,
+    );
+  });
+
+  it("returns an EMPTY histogram, not an absent one, when the filter matches nothing", async () => {
+    // Asked-for-and-empty is a different answer from not-asked-for, and a UI drawing an axis
+    // needs to tell them apart.
+    const r = await dated().searchQuery({ q: "note", histogram: "month", since: "2030" });
+    expect(r.total).toBe(0);
+    expect(r.histogram).toEqual([]);
+  });
+});
+
 describe("projections over a sparse thread row", () => {
   /** One thread carrying ONLY the required fields — no tokens, sizes, dates or preview. */
   const SPARSE = [{ id: "bare", title: "Bare row", provider: "claude", created_at_ms: 5 }];
