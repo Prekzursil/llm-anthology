@@ -180,12 +180,6 @@ def count(conn):
     return conn.execute("SELECT count(*) FROM conversations").fetchone()[0]
 
 
-def posting_count(conn):
-    """Rows in the contentless FTS index. Equals `count` in a healthy build — a
-    divergence signals a duplicated or orphaned posting."""
-    return conn.execute("SELECT count(*) FROM conversations_fts").fetchone()[0]
-
-
 def search(conn, query, limit=DEFAULT_LIMIT):
     """Ranked bm25 search over the index, delegating to corpus.search (whose
     `ORDER BY rank` is bm25). A blank query yields no rows rather than an FTS error."""

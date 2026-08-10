@@ -47,6 +47,19 @@ def _close_connections():
         _OPEN.pop().close()
 
 
+def _fts_postings(conn):
+    """Rows in the contentless FTS index. Equals `index.count` in a healthy build — a
+    divergence signals a duplicated or orphaned posting, which is what the ingest tests
+    below assert cannot happen on a replay.
+
+    This was `index.posting_count` until DECISION G-17. It had zero production callers —
+    only these tests and three in `test_loaders_corpus.py` — so it moved out of the shipped
+    package rather than being deleted: the INVARIANT it checks is the valuable half, and it
+    is asserted here exactly as before. A test-only helper living in `llm_anthology/`
+    implied a caller that never existed."""
+    return conn.execute("SELECT count(*) FROM conversations_fts").fetchone()[0]
+
+
 def _conv(cid, title, body):
     """A one-turn synthetic ir.Conversation whose single block carries `body`."""
     return ir.Conversation(
@@ -177,7 +190,7 @@ def test_build_index_indexes_every_record_and_makes_it_searchable(tmp_path):
     stats = index.build_index(conn, [_src("f.jsonl", recs)])
     assert stats.files_total == 1 and stats.files_skipped == 0
     assert stats.records_processed == 2 and stats.chunks_committed == 1
-    assert index.count(conn) == 2 and index.posting_count(conn) == 2
+    assert index.count(conn) == 2 and _fts_postings(conn) == 2
     assert index.search(conn, "alpha")[0]["conversation_id"] == "c0"
     # the title column is indexed too
     assert index.search(conn, "Widgets")[0]["conversation_id"] == "c0"
@@ -265,7 +278,7 @@ def test_build_index_resumes_from_a_checkpoint_after_an_interruption(tmp_path):
     stats = index.build_index(conn_b, [index.IndexSource("roll.jsonl", h, list(recs))],
                               chunk_size=1)
     assert stats.records_processed == 2                      # only records[1:] this run
-    assert index.count(conn_b) == 3 and index.posting_count(conn_b) == 3
+    assert index.count(conn_b) == 3 and _fts_postings(conn_b) == 3
     assert corpus.get_checkpoint(conn_b, "roll.jsonl") == (3, h)
     for i in range(3):                                        # each token once, no dups
         assert len(index.search(conn_b, "tok%d" % i)) == 1
@@ -279,11 +292,11 @@ def test_rerun_with_a_matching_hash_skips_the_file(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
     src = _src("f.jsonl", [_conv("c0", "t", "alpha"), _conv("c1", "t", "beta")])
     index.build_index(conn, [src])
-    before = index.posting_count(conn)
+    before = _fts_postings(conn)
     stats = index.build_index(conn, [src])
     assert stats.files_skipped == 1 and stats.records_processed == 0
     assert stats.chunks_committed == 0
-    assert index.posting_count(conn) == before
+    assert _fts_postings(conn) == before
     assert len(index.search(conn, "alpha")) == 1
 
 
@@ -299,7 +312,7 @@ def test_rerun_with_a_changed_hash_reingests_without_duplicating(tmp_path):
     r2 = _conv("c2", "t", "gamma")
     h2 = index.hash_content("v2")
     stats = index.build_index(conn, [index.IndexSource("f.jsonl", h2, [r0, r1, r2])])
-    assert index.count(conn) == 3 and index.posting_count(conn) == 3
+    assert index.count(conn) == 3 and _fts_postings(conn) == 3
     assert stats.files_skipped == 0 and stats.records_processed == 3
     for tok in ("alpha", "beta", "gamma"):
         assert len(index.search(conn, tok)) == 1
@@ -332,16 +345,16 @@ def test_build_index_wraps_its_writes_in_the_lock_retry(tmp_path, monkeypatch):
 
 # ------------------------------------------------------- count / search API
 
-def test_count_and_posting_count_are_zero_on_a_fresh_index(tmp_path):
+def test_count_and_fts_postings_are_zero_on_a_fresh_index(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
-    assert index.count(conn) == 0 and index.posting_count(conn) == 0
+    assert index.count(conn) == 0 and _fts_postings(conn) == 0
 
 
-def test_posting_count_equals_conversation_count_after_a_build(tmp_path):
+def test_fts_postings_equal_the_conversation_count_after_a_build(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
     recs = [_conv("c%d" % i, "t", "tok") for i in range(4)]
     index.build_index(conn, [_src("f.jsonl", recs)])
-    assert index.posting_count(conn) == index.count(conn) == 4
+    assert _fts_postings(conn) == index.count(conn) == 4
 
 
 def test_search_on_a_blank_query_returns_no_rows(tmp_path):

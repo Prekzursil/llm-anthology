@@ -34,6 +34,18 @@ from llm_anthology import corpus, index, ir, loaders
 from llm_anthology.adapters import claude_code, grok
 
 
+def _fts_postings(conn):
+    """Rows in the contentless FTS index — `index.count`'s FTS half. Equals the
+    conversation count in a healthy build, so a divergence is a duplicated or orphaned
+    posting, which is exactly what a replay must not produce.
+
+    Inline `count(*)` rather than `index.posting_count`, which DECISION G-17 deleted for
+    having zero production callers. The invariant it checked is unchanged and still
+    asserted below; only the helper moved out of the shipped package.
+    """
+    return conn.execute("SELECT count(*) FROM conversations_fts").fetchone()[0]
+
+
 # ------------------------------------------------------------------- fixtures
 
 def _write_rollout(day_dir, name, records):
@@ -363,7 +375,7 @@ def test_load_corpus_is_idempotent_on_a_re_run(tmp_path):
     conn = corpus.open_index(str(idx))
     try:
         assert index.count(conn) == 2          # no duplicate rows on replay
-        assert index.posting_count(conn) == 2  # nor duplicate FTS postings
+        assert _fts_postings(conn) == 2  # nor duplicate FTS postings
     finally:
         conn.close()
 
@@ -1111,7 +1123,7 @@ def test_a_grok_inclusive_re_run_duplicates_no_row(tmp_path):
         edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
         assert (threads, edges) == (5, 3), (threads, edges)
         assert index.count(conn) == 4          # no duplicate conversation rows
-        assert index.posting_count(conn) == 4  # nor duplicate FTS postings
+        assert _fts_postings(conn) == 4  # nor duplicate FTS postings
     finally:
         conn.close()
 
@@ -1430,7 +1442,7 @@ def test_a_claude_code_inclusive_re_run_duplicates_no_row(tmp_path):
         edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
         assert (threads, edges) == (7, 4), (threads, edges)
         assert index.count(conn) == 6
-        assert index.posting_count(conn) == 6
+        assert _fts_postings(conn) == 6
     finally:
         conn.close()
 
