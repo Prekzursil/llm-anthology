@@ -331,9 +331,15 @@ fn last_path_segment(path: &str) -> Option<&str> {
 /// `<user>`.
 ///
 /// This is the same rule the shareable graph export applies for the same reason — the
-/// engine reduces a stored `rollout_path` to a basename precisely because "it embeds the
-/// owner's username" (`llm_anthology/sidecar.py:543`). A diagnostics bundle is a SHARED
+/// engine reduces a filesystem path to a basename precisely because "it embeds the owner's
+/// username" (`llm_anthology/sidecar.py`, `_build_error`). A diagnostics bundle is a SHARED
 /// artifact, so without this the support channel becomes the identification channel.
+///
+/// Cited BY NAME rather than by line: that anchor was written as `sidecar.py:543` and was
+/// already stale within the hour, because the engine is under concurrent edit and every
+/// insertion above shifts it. `tests/test_citation_anchors.py` pins `mock.ts`/`types.ts`
+/// citations only and says so explicitly — `.rs` anchors are NOT covered — so a line number
+/// here rots silently, which is precisely the decay that test exists to stop elsewhere.
 ///
 /// Both are INJECTED rather than read from the environment here, matching
 /// `base_dirs_with`'s contract in `lib.rs`: the rule is then testable without depending on
