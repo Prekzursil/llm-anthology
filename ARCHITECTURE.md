@@ -1,13 +1,25 @@
 # Architecture
 
+> **SCOPE OF THIS DOCUMENT — read this first.** It describes the **render pipeline** only:
+> export → adapter → IR → HTML/Markdown, plus the two cross-checks. That was the whole
+> product when this file was written and it no longer is. The corpus plane (SQLite/FTS5
+> index, spawn graph, search, time travel, diff, rollup, metadata, dedup, maintenance,
+> gated export) and the Tauri cockpit that reads it over stdio JSON-RPC are **not covered
+> here** — their surface is documented in `README.md` and, method by method, in the module
+> docstring at the top of `llm_anthology/sidecar.py`. Absence from this file is not evidence
+> that a plane does not exist.
+
 `llm-anthology` (llm_anthology) is a **local, offline** renderer for exported AI chat sessions.
-It parses the native export formats of Claude (claude.ai Data Export), Gemini (Google
-Takeout "Gemini Apps" activity), and ChatGPT (`conversations.json`) into one
-provider-agnostic intermediate representation (IR), then renders every conversation twice:
-a browser-faithful **HTML** copy for viewing and a clean **Markdown** copy for keeping and
-re-feeding to tools. Two independent cross-checks run on every conversation: a
-**text-exact fidelity gate** (`llm_anthology/verify.py`) and a **hidden-character forensic audit**
-(`llm_anthology/audit.py`).
+Six adapters live under `llm_anthology/adapters/`: the three account-export formats this
+document details — Claude (claude.ai Data Export), Gemini (Google Takeout "Gemini Apps"
+activity) and ChatGPT (`conversations.json`) — plus a Codex task export (`codex.py`) and
+three session-store readers (`codex_rollout.py` + `codex_state.py`, `grok.py`,
+`claude_code.py`) that feed the corpus rather than the render path. All six produce the same
+provider-agnostic intermediate representation (IR). The render path then writes every
+conversation twice: a browser-faithful **HTML** copy for viewing and a clean **Markdown**
+copy for keeping and re-feeding to tools. Two independent cross-checks run on every
+conversation: a **text-exact fidelity gate** (`llm_anthology/verify.py`) and a
+**hidden-character forensic audit** (`llm_anthology/audit.py`).
 
 **No network, no egress.** Nothing is fetched and nothing leaves the machine: the HTML is
 self-contained with inlined CSS and a `default-src 'none'` Content-Security-Policy
@@ -17,9 +29,12 @@ guarantee explicitly (`llm_anthology/build.py`, `llm_anthology/loaders.py`). Ses
 sensitive; every example in this document and in the code (`llm-anthology demo`,
 `llm_anthology/build.py`) is **synthetic**.
 
-Runtime dependency: `markdown-it-py` (MIT), imported at `llm_anthology/render_html.py:18`.
-(Note: `pyproject.toml` currently carries only project metadata and pytest config —
-`pyproject.toml:1-10` — it does not declare the dependency.)
+Runtime dependencies (all three declared in `pyproject.toml`, and all three required):
+`markdown-it-py>=2.2,<5` (MIT) for the Markdown→HTML step, `zstandard>=0.22` because a live
+Codex store compresses its rollouts, and `ijson>=3.1,<4` to stream a ChatGPT export too large
+to load whole. The earlier note here — that `pyproject.toml` carried only metadata and pytest
+config and declared no dependency — is **obsolete**; it is also the reason the version bounds
+are now gate-pinned (`tests/test_dependency_rails.py`).
 
 ## Pipeline
 
@@ -331,27 +346,52 @@ conversation exercising every major block type, with no real content
 Validation status (as reported from the real-corpus builds; the corpus itself is private
 and not part of the repo):
 
-- **Claude rail:** validated on 236 real conversations; fidelity gate passed 231/236.
+- **Claude rail:** validated on real conversations, and the two figures in this repository
+  **disagree**: 236 conversations / gate 231 here, against 212 / gate 207 in `README.md`.
+  212 / 207 is the later pair and supersedes this one — the earlier count included
+  non-conversation metadata artefacts as conversations. **UNVERIFIED:** the exact composition
+  of the difference. Neither number is reproducible from the repository (the corpus is
+  private), so the settling experiment is the owner re-running the Claude build over the
+  current export and reading `_fidelity-report.json` — its per-conversation rows are the only
+  authority, and whichever pair that produces should replace both.
 - **Gemini rail:** 1060 real Takeout records -> 2027 turns (consistent with the verb
   census at `gemini.py:12-13`: 2·967 Prompted + 93 events). Grouping is **provisional**
   (gap heuristic) until a web-app harvest supplies true boundaries
   (`llm_anthology/loaders.py`).
-- **ChatGPT rail:** adapter written, **UNVERIFIED** against a real export
-  (`chatgpt.py:18-19`); no build driver yet.
+- **ChatGPT rail:** **UNVALIDATED at scale** — a hardened adapter with synthetic tests, but
+  no large real export has been run through it. The old "no build driver yet" half of this
+  line is obsolete: `llm-anthology chatgpt <src> <out>` exists (`cli.py` -> the `chatgpt`
+  subcommand -> `loaders.load_chatgpt`), and `llm-anthology index --chatgpt-export` puts the
+  same export into the corpus.
 
 Known limitations, all deliberate and documented in-code:
 
 - The gate is **text-exact, not pixel-identical** (`verify.py:3-6`).
 - Math is preserved verbatim, not rendered; code is not syntax-highlighted
   (`render_html.py:9-11`).
-- One theme (`claude`); assistant label hard-coded "Claude" for all providers
-  (`render_html.py:214`).
-- `ir.py:16`'s block-type comment lags the real emitted set (see the table above).
-- `markdown-it-py` is not declared as a dependency in `pyproject.toml`.
+- One **conversation-page** theme: `llm_anthology/themes/` holds exactly `claude.css`, and
+  `render_conversation_html` defaults to `theme="claude"`. (Not to be confused with
+  `build.THEMES`, which does carry four per-provider colour sets — those style the generated
+  `index.html` only, not the pages themselves.) The assistant label is hard-coded for every
+  provider: `render_html.py:217` reads `who = "You" if role == "human" else "Claude"`, so a
+  rendered Gemini or ChatGPT page attributes its replies to Claude. Cosmetic, but it is a
+  wrong label rather than a missing one.
+- `ir.py`'s block-type comment on `Block.type` lags the emitted set, and now measurably:
+  the comment reads `text|thinking|tool_use|tool_result|attachment|file|image|unknown`, while
+  the constructors across the adapters emit `attachment, code, event, file, media, text,
+  thinking, tool_result, tool_use, unknown`. So it advertises `image`, which nothing emits,
+  and omits `code`, `event` and `media`. Not fixed here — `ir.py` is source, not
+  documentation, and this file only records the drift.
 
 ## Tests
 
-101 tests under `tests/` (counted via `pytest --collect-only`): sanitize 22,
-render_html 20, claude adapter 15, render_md 13, chatgpt adapter 10, gemini adapter 9,
-verify 9, audit 3. `conftest.py` pins the project root onto `pythonpath` alongside
-`pyproject.toml`'s pytest config (`pyproject.toml:7-10`).
+**1677 tests** under `tests/` as of 2026-08-10, measured with
+`python -m pytest --collect-only` and reading the `N tests collected` line. This number
+drifts by design — recount it rather than trusting it, and do not restore the old per-module
+breakdown (sanitize 22, render_html 20, ...) that stood here when the total was 101: a
+hand-maintained census of a suite that grows every week is stale the day after it is written.
+`conftest.py` pins the project root onto `pythonpath` alongside `pyproject.toml`'s pytest
+config.
+
+Do **not** add a second `-q`: `pyproject.toml`'s `addopts` already carries one, and `-qq`
+suppresses the pass/fail summary line, which reads as a broken suite.

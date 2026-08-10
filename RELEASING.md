@@ -153,6 +153,65 @@ cd cockpit/src-tauri && cargo test --locked && cargo clippy --locked --all-targe
 Do **not** pass `-q` to pytest — `pyproject.toml`'s `addopts` already contains it and a
 second one suppresses the pass/fail summary line.
 
+### Step 3b: the provider-drift check — the half no CI job can do
+
+Everything in Step 3, and the weekly `format-drift canary`
+(`.github/workflows/format-drift-canary.yml`), runs against **synthetic, frozen** inputs. So
+none of it can see the one drift that actually breaks this product: a **provider changing its
+export format**. ChatGPT's early-2026 export change broke third-party parsers with no version
+marker in the file, and a green suite would have said nothing. A runner has no exports, so
+this check only exists if a human with real exports runs it.
+
+Do it **before** a release, on a machine that has the corpus:
+
+```bash
+# 1. Re-download the exports. This is the only step that can surface provider drift at all --
+#    an old export cannot tell you the format moved.
+
+# 2. Render each export provider and read the report, not the exit code.
+llm-anthology claude   <fresh-claude-export>   /tmp/drift/claude/
+llm-anthology chatgpt  <fresh-chatgpt-export>  /tmp/drift/chatgpt/
+llm-anthology gemini   <fresh-gemini-export>   /tmp/drift/gemini/
+
+# 3. Read the report. It is a DICT, so print the fields that carry the verdict:
+python -c "import json;r=json.load(open('/tmp/drift/claude/_fidelity-report.json'));print({k:r[k] for k in ('conversations','rendered','turns','empty_conversations','fidelity_passed')}, 'failed:', len(r['failed']), 'errors:', len(r['errors']))"
+```
+
+What to look at, in order of how loudly it means "the format moved":
+
+| signal | reading |
+|---|---|
+| conversations parsed drops to 0, or an adapter raises | a **structural** change — the shape the adapter walks is gone |
+| `empty_conversations` > 0 | the sharpest signal there is: it parsed, reported no errors, and rendered **nothing**. `build.py` counts turns for exactly this reason — feeding a Codex-shaped export to the ChatGPT loader measured 1 conversation / 0 turns / 0 errors, a clean-looking load with the content gone |
+| the count parsed is far below the export's own size | a shard or a message shape is being skipped silently |
+| `_fidelity-report.json` failures jump | content is arriving in a container the renderer does not know |
+| new `unknown` blocks appear | a new content type — additive, so usually harmless, but it is the early warning |
+
+Compare the pass counts against the provider table in `README.md` and **update that table** if
+they moved. A number nobody re-measured is the same liability as a stale claim.
+
+Then the real-data cross-rail check:
+
+```bash
+python tools/gen-adapter-parity.py             # samples the REAL corpora into a local fixture
+cd js && npx vitest run test/adapter-parity.test.ts
+```
+
+Two things to know before you run that, both measured:
+
+- The fixture it writes (`js/test/fixtures/adapter-parity.json`) **embeds real conversation
+  content** — on the current corpus, 27,249,819 bytes. It is gitignored and never packaged.
+  Do not commit it, do not attach it to a release, and delete it when you are done. The
+  canary asserts weekly that it is still untracked, and refuses to run the tool at all on a
+  machine that has a corpus.
+- It only covers **Claude**. On the current corpus the tool prints `claude 44 | chatgpt 1 |
+  gemini 1`; two of those claude cases are its own synthetic ones, so 42 are real and the
+  chatgpt/gemini cases are synthetic only — it samples the Claude corpus directory and
+  nothing else. (The same 42 / zero / zero count is recorded independently in
+  `js/test/adapter-parity.test.ts`.) So a green run here is evidence about one rail, not
+  three, and the ChatGPT rail in particular stays `UNVALIDATED at scale` until someone runs a
+  large real export through it deliberately.
+
 ### Step 4: commit, tag, push
 
 ```bash

@@ -8,17 +8,34 @@ zero-width / bidi / private-use / TAG-block prompt-injection content
 how, and — just as importantly — what it does **not** cover. Every claim cites `file:line`
 in this repository. All examples in this document are synthetic.
 
+> **SCOPE.** This file covers the **render pipeline**: export bytes in, static HTML +
+> Markdown out. Six adapters exist now, not the three named above — the other three read
+> live session stores (Codex, Grok, Claude Code) into the corpus index. The corpus and
+> desktop-app planes have their own posture (opt-in-never-defaulted store roots, the Job
+> Object confinement, the built-but-not-enabled AppContainer membrane, the path refusals in
+> gated maintenance and export, and the corpus-blind synthesis plane that no app button can
+> reach and that is slated for removal), and it is summarised in `README.md` under *Security
+> & privacy posture* rather than here. Absence from this document is not a claim of absence.
+
 ---
 
 ## 1. Security goals
 
 1. **No egress.** The build and the rendered artifacts never touch the network
    (`llm_anthology/build.py` — "NOTHING leaves the machine"). Verified two ways: no
-   network-capable module (`urllib`, `http`, `socket`, `requests`, …) is imported anywhere
-   in the package — the `llm-anthology` package imports only stdlib (`html`, `json`, `os`, `re`,
-   `unicodedata`, `dataclasses`, `typing`, `collections`) plus `markdown-it-py`
-   (`llm_anthology/render_html.py:13-20`) — and the emitted HTML carries a CSP that blocks remote
-   loads (§4).
+   network-capable module is imported anywhere in the package, and the emitted HTML carries a
+   CSP that blocks remote loads (§4).
+
+   The import inventory has to be restated, because the version of this claim that stood here
+   is no longer literally true and a reader re-running the grep would catch it. Measured
+   2026-08-10 over `llm_anthology/**.py`, matching `^(import|from) (urllib|http|socket|ssl|
+   requests|ftplib|smtplib|telnetlib|asyncio)`: exactly **one** hit —
+   `from urllib.parse import unquote` in `llm_anthology/adapters/grok.py`, a pure string
+   function that opens nothing (Grok encodes a working directory into a path segment). There
+   is no HTTP client, no socket, no TLS. Third-party imports are now **three**, not one:
+   `markdown-it-py`, `zstandard` (decompresses Codex rollouts) and `ijson` (streams a large
+   ChatGPT export). All three widen the TCB; none of them is network-capable in the way it is
+   used here, and none is reached with anything but local file bytes.
 2. **Render hostile content without executing it.** Message bodies, titles, tool
    payloads, and attachment text are treated as text, never as live markup.
 3. **Preserve the evidence.** Hidden/injection codepoints are *neutralised*, not silently
@@ -33,7 +50,7 @@ in this repository. All examples in this document are synthetic.
 | Zone | Contents | Trust |
 |---|---|---|
 | Export files | `conversations.json` / `transcript.json` bodies, titles, tool inputs/outputs, attachment `extracted_content`, citation titles/URLs, unknown-block payloads | **Untrusted.** Anyone who ever influenced a message (a summarised web page, a tool result, a pasted document) writes into this zone. |
-| llm_anthology code + Python stdlib + `markdown-it-py` | The pipeline itself | Trusted (TCB). Parsing is `json.load` only — no `pickle`, no `eval` (`llm_anthology/build.py`). |
+| llm_anthology code + Python stdlib + `markdown-it-py` + `zstandard` + `ijson` | The pipeline itself | Trusted (TCB). Parsing is `json.load` / `ijson` streaming only — no `pickle`, no `eval` (`llm_anthology/build.py`). `zstandard` and `ijson` are in the TCB because both are handed **untrusted bytes** straight from a store or an export, ahead of any of the defences in §3-§5. |
 | Outputs | `html/`, `md/`, `index.html`, `_hidden-char-audit.json`, `_fidelity-report.json` (`llm_anthology/build.py`) | Derived; HTML is self-contained, CSP-pinned. |
 
 **Parties at risk:** (a) the human opening the rendered HTML in a browser; (b) any
@@ -209,13 +226,27 @@ conversation *structure* there:
    static pages. Modern browsers honour it, but meta-CSP applies from parse time and
    cannot express `frame-ancestors`; behaviour in non-browser HTML viewers is UNVERIFIED.
 8. **The markdown parser is in the TCB.** `markdown-it-py` parses untrusted text with
-   `html=False`; a parser bug is a real attack surface, and `pyproject.toml` currently
-   carries pytest configuration only — the dependency version is not pinned there.
-9. **Validation status (honest):** the Claude rail is validated on 236 real
-   conversations (fidelity gate passing 231/236); the Gemini adapter on 1060 real
-   records / 2027 turns with provisional conversation grouping; the **ChatGPT adapter is
-   written but NOT yet validated against a real export**. The test suite is 101 tests
-   under `tests/`.
+   `html=False`, so a parser bug is a real attack surface. The claim that used to sit here —
+   that `pyproject.toml` carried pytest configuration only and pinned no dependency version —
+   is **obsolete**: it declares `markdown-it-py>=2.2,<5`, `zstandard>=0.22` and
+   `ijson>=3.1,<4`, and `tests/test_dependency_rails.py` fails the build if the renderer
+   dependency loses its upper bound (an unbounded major rewrites user-facing output silently,
+   and no golden-HTML assertion exists to catch that). Two residual gaps, stated rather than
+   implied: the ceiling is a *bound*, not a lockfile — the Python rail has none, so a clean
+   install still resolves to the newest version inside the range — and a bound does not make
+   a parser bug in that range unreachable.
+9. **Validation status (honest):** the Claude rail is validated on real conversations, and
+   this repository carries two different figures for it — 236 / gate 231 here and in
+   `ARCHITECTURE.md`, against 212 / gate 207 in `README.md`. The later pair supersedes the
+   earlier one, whose count included non-conversation metadata artefacts; the exact
+   composition of the difference is **UNVERIFIED** and is settled only by the owner
+   re-running the build and reading `_fidelity-report.json` (the corpus is private, so no
+   reader of this repository can check it). The Gemini adapter is validated on 1060 real
+   records / 2027 turns with provisional conversation grouping. The **ChatGPT adapter is
+   hardened and synthetically tested but still NOT validated against a large real export** —
+   `RELEASING.md` Step 3b is the drill that would change that. The suite is **1677 tests**
+   under `tests/` as of 2026-08-10 (`python -m pytest --collect-only`), not the 101 recorded
+   here previously; recount it rather than trusting the number.
 
 ## 8. Guarantees for downstream consumers
 
