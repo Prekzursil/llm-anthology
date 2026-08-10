@@ -206,6 +206,20 @@ def _build_index(args):
     # parent directory, so do that here exactly as the demo branch has to.
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 
+    # REFUSE AN UNOPENABLE INDEX BEFORE DOING ANY WORK. The version check lives inside
+    # `corpus.open_index`, which `loaders.load_corpus` calls partway through the ingest — so
+    # without this probe the failure arrived as an uncaught `IndexRebuildRequired` traceback
+    # AFTER the sources had already been walked, from a call site (loaders.py) that this
+    # command does not own. Probing here turns it into a sentence, costs one open of a file
+    # that is about to be opened anyway, and wastes none of the user's time on an ingest that
+    # cannot land. Exit 1 — the existing "the input you named cannot be used" code — rather
+    # than a fourth code no caller distinguishes.
+    try:
+        corpus.open_index(out).close()
+    except corpus.IndexVersionError as exc:
+        print("ERROR: %s" % corpus.rebuild_guidance(exc), file=sys.stderr)
+        return 1
+
     # Announce before the work: a real sessions tree takes minutes and the call below
     # passes no `progress=`, so this line is the only thing standing between the user
     # and a silent terminal. NOT because there is no hook — `load_corpus` accepts one

@@ -308,6 +308,16 @@ BUILD_UNAVAILABLE = -32005
 # separate code lets a UI offer "open that one instead?" rather than "bad path".
 CORPUS_EXISTS = -32006
 
+# The attached index is a shape THIS build cannot open — today a pre-G-4 (version 1) index,
+# which is what every shipped build wrote. Distinct from CORPUS_NOT_INDEXED, and the
+# distinction is the whole point: "not indexed" sends a user hunting for a missing file, when
+# the file is present, intact, and merely old. Before this code existed the process did not
+# get as far as answering — `corpus.open_index` raised out of `main` and the cockpit spawned
+# a corpse: exit 1, ZERO bytes on stdout, an `IndexRebuildRequired` traceback nothing caught
+# (measured against a synthetic v1 index). Decision G-2 says a user's corpus must survive an
+# upgrade; a stack trace is the least survivable form that can take.
+INDEX_REBUILD_REQUIRED = -32007
+
 _ROOT_ORDERS = ("created", "recent", "title")
 
 # The LOCAL synthesis tier's instruction. This tier reads RAW transcript text and feeds
@@ -667,7 +677,13 @@ class Sidecar:
     works (reporting ``corpus_ready`` False) while every data method returns -32000."""
 
     def __init__(self, conn, research_backend=None, local_backend=None,
-                 build_runner=None):
+                 build_runner=None, corpus_error=""):
+        # WHY A REASON AND NOT JUST `conn is None`. Both mean "no corpus attached", but they
+        # are different situations for a USER: nothing was named, versus a real index that
+        # this build cannot open. Collapsing them is what made a version-1 index report
+        # "corpus not indexed" — sending someone to look for a file that is sitting right
+        # there. Empty string is the ordinary no-corpus case.
+        self.corpus_error = corpus_error
         self.conn = conn
         self.corpus = corpus.load_corpus(conn) if conn is not None else corpus.Corpus()
         # The metadata layer owns its OWN table, created idempotently here rather than in
@@ -799,13 +815,19 @@ class Sidecar:
 
     def _require_corpus(self):
         if self.conn is None:
+            if self.corpus_error:
+                raise RpcError(INDEX_REBUILD_REQUIRED, self.corpus_error)
             raise RpcError(CORPUS_NOT_INDEXED, "corpus not indexed")
 
     # -- handlers -----------------------------------------------------------------
 
     def _health_ping(self, params):
+        # `corpus_error` rides on the FIRST call the cockpit makes, so a UI can say WHY the
+        # corpus is unavailable without provoking an error to find out. Always present, ""
+        # when healthy — an absent-when-fine key makes every reader write the same guard.
         return {"ok": True, "engine_version": __version__,
-                "ir_version": ir.IR_VERSION, "corpus_ready": self.conn is not None}
+                "ir_version": ir.IR_VERSION, "corpus_ready": self.conn is not None,
+                "corpus_error": _clean(self.corpus_error)}
 
     def _corpus_stats(self, params):
         self._require_corpus()
@@ -2350,10 +2372,24 @@ def main(argv=None, stdin=None, stdout=None):
     own streams owns their encoding, and silently mutating them would be a surprise."""
     args = sys.argv[1:] if argv is None else list(argv)
     path = _parse_args(args).index or os.environ.get("LLM_ANTHOLOGY_INDEX")
-    conn = corpus.open_index(path) if path else None
+    conn, corpus_error = None, ""
+    if path:
+        try:
+            conn = corpus.open_index(path)
+        except corpus.IndexVersionError as exc:
+            # SERVE ANYWAY. This raised straight out of `main` before, and the cockpit —
+            # which SPAWNS this process and then waits on a reply — got a corpse: exit 1,
+            # ZERO bytes of stdout, a traceback nothing in the app catches or renders.
+            # Decision G-2 says a user's existing corpus must survive an upgrade, and the
+            # least survivable form that can take is a stack trace. `Sidecar(None)` was
+            # already a supported state, so the fix is to REACH it instead of dying: the
+            # process comes up, `health.ping` answers, and every corpus call returns a typed
+            # INDEX_REBUILD_REQUIRED naming the command to run.
+            corpus_error = corpus.rebuild_guidance(exc)
     try:
-        Sidecar(conn).serve(stdin if stdin is not None else _as_utf8(sys.stdin),
-                            stdout if stdout is not None else _as_utf8(sys.stdout))
+        Sidecar(conn, corpus_error=corpus_error).serve(
+            stdin if stdin is not None else _as_utf8(sys.stdin),
+            stdout if stdout is not None else _as_utf8(sys.stdout))
     finally:
         if conn is not None:             # release the index on EOF/shutdown
             conn.close()

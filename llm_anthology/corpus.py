@@ -818,6 +818,34 @@ class IndexRebuildRequired(IndexVersionError):
     may want to export or open with the older build first."""
 
 
+def rebuild_guidance(exc):
+    """An `IndexVersionError` -> the sentence a USER can act on. One policy, two surfaces.
+
+    `sidecar.main` and `cli._build_index` both meet this exception, and both used to let it
+    escape as a traceback. They need the SAME wording — two hand-written messages would drift
+    into telling one user something the other is not told, which is the failure
+    `search_filter_sql` documents for a duplicated SQL clause.
+
+    IT NAMES A COMMAND, because "rebuild required" without one is a dead end: the error says
+    what is wrong and nothing says what to DO. That mattered here more than usual —
+    `IndexRebuildRequired` shipped with NO tool that performs the rebuild.
+
+    AND IT SAYS "re-ingest", not "migrate", because a migration is IMPOSSIBLE and a reader
+    should not go looking for one. A version-1 FTS table is CONTENTLESS (`content=''`), so
+    the searchable text was never stored — only inverted postings, which do not reconstruct a
+    document — and `conversation_bodies`, the archive that would hold it, is itself a v2
+    addition. The text a v2 index needs is simply not present in a v1 file at any price. The
+    original sources are the only place it still exists.
+    """
+    return ("%s Rebuild it by re-ingesting your sources into a NEW index file, e.g. "
+            "`llm-anthology index <new.sqlite> --chatgpt-export <export>` (or the session "
+            "roots you originally used). The old file is left untouched, so it can still be "
+            "opened by the build that wrote it. There is no in-place migration: a version-1 "
+            "index stores no conversation text — its FTS table is contentless and the bodies "
+            "archive did not exist yet — so the text has to come from the sources again."
+            % exc)
+
+
 def _version_verdict(found, expected, additive_from):
     """Pure policy: what to DO about an index at version `found`.
 

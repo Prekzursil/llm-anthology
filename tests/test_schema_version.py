@@ -426,3 +426,99 @@ def test_a_breaking_delta_leaves_the_old_index_intact(tmp_path, monkeypatch):
         corpus.init_index(conn)
     assert conn.execute("SELECT count(*) FROM conversations").fetchone()[0] == 1
     assert corpus.read_schema_version(conn) == 1, "not re-stamped"
+
+
+# ============================================================ CF-22: the SURFACES
+#
+# The refusal above is correct and stays. What was missing is that NOTHING CAUGHT IT.
+# Measured against HEAD before this section existed, with a synthetic v1 index:
+#
+#   python -m llm_anthology.sidecar --index old.db  -> exit 1, ZERO bytes on stdout, an
+#       uncaught IndexRebuildRequired traceback. The cockpit spawns that process and gets a
+#       corpse: not one JSON-RPC message, so there is nothing for the UI to render.
+#   python -m llm_anthology.cli index <src> old.db  -> exit 1, same uncaught traceback.
+#
+# That violates decision G-2 (a user existing corpus must survive an upgrade) in the most
+# user-hostile way available: a stack trace instead of a sentence. A grep for
+# IndexRebuildRequired / IndexTooNewError / IndexVersionError across .py/.ts/.rs outside
+# corpus.py hit only this file.
+#
+# WHY THERE IS NO IN-PLACE MIGRATION, AND WHY NOBODY SHOULD GO LOOKING FOR ONE. It is not
+# that a v1 -> v2 migration is hard; the data it would need does not exist. The v1 FTS table
+# is CONTENTLESS, so the searchable text was never stored -- only inverted postings, which do
+# not reconstruct a document. conversation_bodies, the archive that WOULD hold it, is itself
+# a v2 addition. A v1 index therefore cannot yield the text a v2 index needs, and the only
+# route is re-ingesting the SOURCES. So the error tells the user to rebuild rather than
+# offering to migrate, and recording that here is cheaper than the next person re-deriving it.
+
+def _v1_index(tmp_path, name="old.sqlite"):
+    path = str(tmp_path / name)
+    _premarker_index(path)
+    return path
+
+
+def _drive(index_path, *lines):
+    """Run sidecar.main over in-memory streams; -> the parsed reply objects."""
+    import io
+    import json as _json
+
+    from llm_anthology import sidecar as sc
+    stdout = io.StringIO()
+    sc.main(["--index", index_path], stdin=io.StringIO("\n".join(lines) + "\n"),
+            stdout=stdout)
+    return [_json.loads(ln) for ln in stdout.getvalue().splitlines() if ln.strip()]
+
+
+def test_the_sidecar_ANSWERS_on_a_v1_index_instead_of_dying(tmp_path):
+    """THE DEFECT. The process must come up and speak JSON-RPC, not exit with a traceback.
+
+    Sidecar(None) is already a supported state -- main own docstring says "None -> no
+    corpus" -- so serving without a corpus is not a new mode, it is the existing one reached
+    by a path that previously raised instead of arriving.
+    """
+    out = _drive(_v1_index(tmp_path), '{"jsonrpc":"2.0","id":1,"method":"health.ping"}')
+    assert out, "the engine wrote NOTHING -- a spawned process that cannot answer is a corpse"
+    assert out[0]["result"]["ok"] is True
+    assert out[0]["result"]["corpus_ready"] is False
+
+
+def test_a_corpus_call_on_a_v1_index_is_a_TYPED_error_naming_the_rebuild(tmp_path):
+    """Not a generic "corpus not indexed": that sends a user looking for a missing file when
+    the file is present and merely old. The code is distinct and the message is actionable."""
+    from llm_anthology import sidecar as sc
+    out = _drive(_v1_index(tmp_path), '{"jsonrpc":"2.0","id":1,"method":"corpus.stats"}')
+    err = out[0]["error"]
+    assert err["code"] == sc.INDEX_REBUILD_REQUIRED, err
+    assert "rebuil" in err["message"].lower(), err
+    assert "llm-anthology index" in err["message"], "names the command, not just the problem"
+
+
+def test_the_v1_reason_is_visible_on_health_ping(tmp_path):
+    """The cockpit calls health.ping first. Putting the reason there lets the UI say WHY the
+    corpus is unavailable without provoking an error to find out."""
+    out = _drive(_v1_index(tmp_path), '{"jsonrpc":"2.0","id":1,"method":"health.ping"}')
+    assert "schema version 1" in out[0]["result"]["corpus_error"]
+
+
+def test_a_HEALTHY_index_is_untouched_by_the_new_path(tmp_path):
+    """The control. Without it, "the sidecar answers" would also pass if it had quietly
+    stopped opening anything at all."""
+    good = str(tmp_path / "new.sqlite")
+    _track(corpus.open_index(good)).close()
+    out = _drive(good, '{"jsonrpc":"2.0","id":1,"method":"health.ping"}')
+    assert out[0]["result"]["corpus_ready"] is True
+    assert out[0]["result"].get("corpus_error", "") == ""
+
+
+def test_the_cli_reports_a_v1_index_as_a_SENTENCE_not_a_traceback(tmp_path, capsys):
+    """cli index against an old index is the other spawn-a-corpse path."""
+    from llm_anthology import cli
+    src = tmp_path / "src"
+    src.mkdir()
+    code = cli.main(["index", str(src), _v1_index(tmp_path)])
+    captured = capsys.readouterr()
+    both = captured.err + captured.out
+    assert code != 0, "a refused index is not a success"
+    assert "Traceback" not in both
+    assert "rebuil" in both.lower()
+    assert "llm-anthology index" in both
