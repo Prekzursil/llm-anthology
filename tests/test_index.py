@@ -386,3 +386,81 @@ def test_ranked_search_returns_rows_with_bm25_scores_best_first(tmp_path):
     assert all(isinstance(s, float) for s in scores)
     assert scores == sorted(scores)                      # best-first == ascending bm25
     assert len(index.ranked_search(conn, "alpha", limit=1)) == 1
+
+
+# ------------------------------------------------- D-3 facets reach index.* (CF-15)
+#
+# `corpus.search` grew `provider` / `since` / `until` in D-3 and `corpus.search_filter_sql`
+# is the ONE policy all filtered call sites share — its own docstring names `search`,
+# `search_histogram` and the sidecar's `_run_search` as the three. `index.py` was outside
+# D-3's declared scope, so it was left behind: `index.search` delegated WITHOUT the facets
+# and `index.ranked_search` hand-rolled SQL that had no filter clause at all. Two different
+# mechanisms, one missing pass-through.
+#
+# HONEST SCOPE, because this is easy to overstate: `ranked_search` has ZERO production
+# callers (measured repo-wide; only its own tests and the build artifacts under
+# `src-tauri/target/`). So this completes a CONTRACT on a function that is itself an
+# unwired seam — it is not a defect a user can currently reach. `index.search` IS reachable
+# from `cli` and the export tests, but no caller passes a facet today either.
+
+def _dated(cid, title, body, provider, created):
+    conv = _conv(cid, title, body)
+    conv.provider = provider
+    conv.created_at = created
+    return conv
+
+
+def _faceted_index(tmp_path):
+    conn = _open(str(tmp_path / "facets.sqlite"))
+    index.build_index(conn, [_src("f.jsonl", [
+        _dated("c-codex", "t", "alpha", "codex", "2026-01-15T00:00:00Z"),
+        _dated("c-grok", "t", "alpha", "grok", "2026-06-15T00:00:00Z"),
+    ])])
+    return conn
+
+
+def test_index_search_passes_the_provider_facet_through(tmp_path):
+    conn = _faceted_index(tmp_path)
+    assert {r["conversation_id"] for r in index.search(conn, "alpha")} == {"c-codex", "c-grok"}
+    assert [r["conversation_id"] for r in
+            index.search(conn, "alpha", provider="grok")] == ["c-grok"]
+
+
+def test_index_search_passes_the_date_bounds_through(tmp_path):
+    conn = _faceted_index(tmp_path)
+    assert [r["conversation_id"] for r in
+            index.search(conn, "alpha", since="2026-03")] == ["c-grok"]
+    assert [r["conversation_id"] for r in
+            index.search(conn, "alpha", until="2026-03")] == ["c-codex"]
+
+
+def test_ranked_search_passes_the_facets_through_AND_keeps_its_score(tmp_path):
+    """The filter must not cost the thing `ranked_search` exists for: the bm25 column."""
+    conn = _faceted_index(tmp_path)
+    rows = index.ranked_search(conn, "alpha", provider="grok")
+    assert [r["conversation_id"] for r in rows] == ["c-grok"]
+    assert isinstance(rows[0]["bm25_score"], float)
+    assert [r["conversation_id"] for r in
+            index.ranked_search(conn, "alpha", since="2026-03")] == ["c-grok"]
+
+
+def test_an_unfiltered_call_is_byte_identical_to_before(tmp_path):
+    """`search_filter_sql` returns `("", [])` when nothing is filtered, so the unfiltered
+    query plan must be untouched — the additive guarantee D-3 states for `corpus.search`."""
+    conn = _faceted_index(tmp_path)
+    assert ({r["conversation_id"] for r in index.search(conn, "alpha")}
+            == {r["conversation_id"] for r in index.search(conn, "alpha", provider=None)})
+    assert len(index.ranked_search(conn, "alpha")) == 2
+
+
+def test_the_facets_use_the_SHARED_policy_not_a_fourth_copy(tmp_path):
+    """`corpus.search_filter_sql` is the one policy; a hand-rolled clause here would be a
+    fourth copy, and its own docstring says why three would already drift. Asserted by
+    BEHAVIOUR — a prefix bound (`2026-06`, not a full timestamp) is the distinctive thing
+    that policy does, so matching it is evidence the shared helper is what ran.
+    """
+    conn = _faceted_index(tmp_path)
+    assert [r["conversation_id"] for r in
+            index.search(conn, "alpha", since="2026-06", until="2026-06")] == ["c-grok"]
+    assert [r["conversation_id"] for r in
+            index.ranked_search(conn, "alpha", since="2026-06", until="2026-06")] == ["c-grok"]

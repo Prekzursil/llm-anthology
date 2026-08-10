@@ -180,16 +180,22 @@ def count(conn):
     return conn.execute("SELECT count(*) FROM conversations").fetchone()[0]
 
 
-def search(conn, query, limit=DEFAULT_LIMIT):
+def search(conn, query, limit=DEFAULT_LIMIT, provider=None, since=None, until=None):
     """Ranked bm25 search over the index, delegating to corpus.search (whose
-    `ORDER BY rank` is bm25). A blank query yields no rows rather than an FTS error."""
+    `ORDER BY rank` is bm25). A blank query yields no rows rather than an FTS error.
+
+    THE D-3 FACETS ARE FORWARDED (CF-15). They existed on `corpus.search` and stopped here:
+    `index.py` was outside D-3's declared file scope, so this delegated without them and a
+    caller reaching the corpus through `index` simply could not filter. All three stay
+    OPTIONAL and additive — omitting them reproduces the previous statement exactly, because
+    `corpus.search_filter_sql` returns the empty clause when nothing is filtered."""
     q = query.strip()
     if not q:
         return []
-    return corpus.search(conn, q, limit=limit)
+    return corpus.search(conn, q, limit=limit, provider=provider, since=since, until=until)
 
 
-def ranked_search(conn, query, limit=DEFAULT_LIMIT):
+def ranked_search(conn, query, limit=DEFAULT_LIMIT, provider=None, since=None, until=None):
     """Like `search`, but each returned row carries a `bm25_score`, best-first (ascending
     bm25 — in FTS5, more-negative is better).
 
@@ -199,13 +205,23 @@ def ranked_search(conn, query, limit=DEFAULT_LIMIT):
     `detail=full`, so the score now separates rows by term frequency AND by document length.
     The disclosure is kept as a note rather than deleted because the ORDERING of an
     `index.ranked_search` result silently changed meaning at that commit, and a reader
-    comparing old output to new deserves to know why."""
+    comparing old output to new deserves to know why.
+
+    THE D-3 FACETS ARE FORWARDED HERE TOO (CF-15), and through `corpus.search_filter_sql`
+    rather than a clause spelled out again. That helper's own docstring says why: it is ONE
+    policy shared by `corpus.search`, `search_histogram` and the sidecar's `_run_search`,
+    because copies of a filter drift silently — each side keeps returning a plausible page,
+    they simply stop being the SAME page. Hand-rolling a fourth here would have been the
+    cheaper edit and the exact failure that note predicts. The helper assumes the caller
+    aliased `conversations` as `c`, which the JOIN below does."""
     q = query.strip()
     if not q:
         return []
+    clause, args = corpus.search_filter_sql(provider, since, until)
     return conn.execute(
         "SELECT c.*, bm25(conversations_fts) AS bm25_score "
         "FROM conversations_fts "
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ? ORDER BY bm25(conversations_fts) LIMIT ?",
-        (q, limit)).fetchall()
+        "WHERE conversations_fts MATCH ?%s ORDER BY bm25(conversations_fts) LIMIT ?"
+        % clause,
+        [q] + args + [limit]).fetchall()
