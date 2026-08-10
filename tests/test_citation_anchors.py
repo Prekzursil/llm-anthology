@@ -569,10 +569,20 @@ PY_KNOWN_BROKEN = [
         "loaders.py", "dedup.py", 339, None,
         "TARGET-GONE, the only one in the sweep, and cited TWICE (loaders.py:520 and :582) "
         "for the rule that 'nothing maps onto nothing'. dedup.py is 317 lines, so :339-345 "
-        "cannot resolve at any offset. A grep for the rule's wording finds nothing in "
-        "dedup.py either, so the cited passage looks DELETED rather than moved — which means "
-        "the claim now rests on a source that may no longer state it. Cannot be re-anchored "
-        "without deciding what the rule's real home is; that is the loaders.py owner's call.",
+        "cannot resolve at any offset. CAUSE CONFIRMED, no longer a hypothesis: "
+        "`git show cf371fe^:llm_anthology/dedup.py` is 363 lines and its :339-345 is exactly "
+        "the 'Blank ids are EXCLUDED' passage — including the sentence 'An id that identifies "
+        "nothing maps onto nothing', which loaders.py:582 quotes VERBATIM. So the citation "
+        "was precise when written and cf371fe deleted its target: "
+        "'refactor(engine): dedup could scan but the collapse it fed had no caller'. "
+        "THE GENERAL LESSON, worth more than this instance: 'no production callers' is not "
+        "'nothing depends on it'. That removal correctly checked callers and never checked "
+        "CITATIONS — a docstring citing dead code is a dependency no caller sweep and no test "
+        "will surface. The RULE loaders.py follows is still right; only its stated "
+        "justification is gone, so this needs a judgement about where the reasoning should "
+        "now live (inlined at the two citing sites, or relocated into what remains of "
+        "dedup.py) rather than a re-anchor. Owned by the orchestrator whose wave removed it, "
+        "NOT by a loaders.py owner — an earlier version of this note misattributed it.",
     ),
     (
         "loaders.py", "claude_code.py", 263, "uuid",
@@ -901,6 +911,46 @@ def test_every_engine_citation_is_pinned():
         "the citation moved (re-point the entry to the spelling the scraper now reports) or "
         "it is gone (delete the entry) — a waiver nothing spends is decoration, and the next "
         "reader will trust it as evidence the anchor was checked." % ", ".join(spent)
+    )
+
+
+#: The EXACT waivers this file is allowed to carry. Adding a row means editing this set too.
+#:
+#: Without it PY_KNOWN_BROKEN is a one-way valve: `test_a_known_broken_anchor_is_still_broken`
+#: retires a row that gets FIXED, but nothing objected to a row being ADDED, so any future
+#: broken anchor could be waived into silence and the suite would stay green. A waiver list
+#: that grows unattended is how a gate stops gating.
+PY_KNOWN_BROKEN_EXPECTED = {
+    ("loaders.py", "dedup.py", 339),
+    ("loaders.py", "claude_code.py", 263),
+}
+
+
+def test_the_known_broken_list_cannot_grow_unnoticed():
+    """Adding a waiver must be a DELIBERATE act, not a way to silence a red build.
+
+    The pairing matters: the other leg expires a waiver whose defect got fixed, this one
+    refuses a waiver nobody signed off. Together they make the table a ledger with two-sided
+    entry rather than a drawer things get put in.
+    """
+    actual = {(s, t, c) for s, t, c, _tok, _w in PY_KNOWN_BROKEN}
+    added = sorted("%s -> %s:%d" % k for k in actual - PY_KNOWN_BROKEN_EXPECTED)
+    removed = sorted("%s -> %s:%d" % k for k in PY_KNOWN_BROKEN_EXPECTED - actual)
+    assert not added, (
+        "NEW known-broken waiver(s) not in PY_KNOWN_BROKEN_EXPECTED: %s. A broken anchor is "
+        "not closed by waiving it. Fix it if you can; if you genuinely cannot, add it here "
+        "AND say in the row who owns the fix and what decision it is waiting on."
+        % ", ".join(added)
+    )
+    assert not removed, (
+        "waiver(s) %s left PY_KNOWN_BROKEN but are still listed as expected. If the anchor "
+        "was fixed, drop it from PY_KNOWN_BROKEN_EXPECTED in the same edit — a stale "
+        "expectation is the same decoration hazard the other retirement legs guard against."
+        % ", ".join(removed)
+    )
+    assert len(actual) == len(PY_KNOWN_BROKEN), (
+        "PY_KNOWN_BROKEN has duplicate (source, target, line) keys, so one row's stated "
+        "reason is shadowing another's."
     )
 
 
