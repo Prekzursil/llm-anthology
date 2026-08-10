@@ -24,10 +24,13 @@ name: format-drift canary
 #
 # WHAT THIS JOB CANNOT DO, stated plainly. It does NOT detect provider-side format drift. A
 # runner has no exports, and every input here is synthetic and frozen, so a change in what
-# ChatGPT/Claude/Gemini emit is invisible to it -- ChatGPT's early-2026 export change, which
-# broke third-party parsers with no version marker, would not have turned this red. Detecting
-# that still requires running `python tools/gen-adapter-parity.py` against FRESH real exports
-# on a machine that has them, then reading the diff. This job's scope is OUR-side drift
+# ChatGPT/Claude/Gemini emit is invisible to it. The motivating case -- an early-2026 ChatGPT
+# export change that broke third-party parsers with no version marker in the file -- is the
+# PREMISE this job was commissioned on and is UNVERIFIED here: nothing in this repository
+# measures it, and a machine with no network cannot. It is quoted because it names the shape
+# of the risk, not as a finding. Detecting that class still requires running
+# `python tools/gen-adapter-parity.py` against FRESH real exports on a machine that has them,
+# then reading the diff. This job's scope is OUR-side drift
 # (fixture staleness, cross-rail divergence, toolchain-side serialisation change) plus the
 # liveness of that instrument. RELEASING.md carries the human half of the drill.
 #

@@ -158,9 +158,12 @@ second one suppresses the pass/fail summary line.
 Everything in Step 3, and the weekly `format-drift canary`
 (`.github/workflows/format-drift-canary.yml`), runs against **synthetic, frozen** inputs. So
 none of it can see the one drift that actually breaks this product: a **provider changing its
-export format**. ChatGPT's early-2026 export change broke third-party parsers with no version
-marker in the file, and a green suite would have said nothing. A runner has no exports, so
-this check only exists if a human with real exports runs it.
+export format**. The motivating case — an early-2026 ChatGPT export change that broke
+third-party parsers with no version marker in the file — is **UNVERIFIED here**: it is the
+premise this drill was written on, taken as briefed, and nothing in this repository measures
+it (a check that would is a network check, which this project does not make). Treat it as the
+shape of the risk rather than a finding. The structural point stands on its own: a runner has
+no exports, so this check only exists if a human with real exports runs it.
 
 Do it **before** a release, on a machine that has the corpus:
 
