@@ -34,7 +34,7 @@ import threading
 
 import pytest
 
-from llm_anthology import corpus, ir, sidecar
+from llm_anthology import corpus, ir, loaders, sidecar
 from llm_anthology.corpus import ThreadMeta
 
 # A zero-width space (U+200B) — the hidden-unicode payload sanitize_for_copy must strip
@@ -1009,3 +1009,242 @@ def test_the_request_thread_stays_answerable_while_a_build_runs(tmp_path):
     assert srv.dispatch("corpus.stats", {})["conversations"] == 0
     pending[0]()
     assert srv.dispatch("corpus.stats", {})["conversations"] == 2
+
+
+# ------------------------------------------------- DOWNLOADED exports (CF-8)
+#
+# THE DEFECT THIS CLOSES, in the owner's own words: "this app cannot import a downloaded
+# export yet". `loaders.ingest_exports` has existed and worked since G-1 — driven end to
+# end, export -> index -> search -> read, with the source directory deleted before the
+# read. It was CLI-ONLY. A caller sweep found it in `cli.py`, `loaders.py` and its own
+# tests, and NOWHERE in `sidecar.py` or under `cockpit/src`, so the app one layer up could
+# not reach it. Same unwired-seam class as `claude_root` before it: correct work inside a
+# file scope, with nobody owning the seam to the next surface.
+#
+# EVERY TEST HERE ASSERTS A POSITIVE POSTCONDITION — the export's own text comes back from
+# a search, or a specific guard message is the one that fired. `test_build_rejects_a_unc_
+# claude_root` above records why: written the absence-only way, it PASSED against the
+# unwired engine, because "name at least one source" also contains no "existing
+# directory". A test that cannot tell an UNRECOGNISED parameter from a HANDLED one proves
+# nothing about wiring, which is the exact thing under test.
+
+def _chatgpt_export(tmp_path, name="conversations.json", text="zebra quokka", cid="c-1"):
+    """A minimal ChatGPT export in the measured shape: a `mapping` of nodes whose active
+    path is resolved from `current_node`. Synthetic only — no test here reads a real
+    export, `~/.codex`, or the owner's corpus."""
+    path = tmp_path / name
+    path.write_text(json.dumps([{
+        "id": cid, "title": "title %s" % cid,
+        "create_time": 1700000000.0, "update_time": 1700000060.0,
+        "current_node": "n2",
+        "mapping": {
+            "n1": {"id": "n1", "parent": None, "children": ["n2"],
+                   "message": {"id": "m1", "author": {"role": "user"},
+                               "create_time": 1700000000.0,
+                               "content": {"content_type": "text", "parts": [text]}}},
+            "n2": {"id": "n2", "parent": "n1", "children": [],
+                   "message": {"id": "m2", "author": {"role": "assistant"},
+                               "create_time": 1700000060.0,
+                               "content": {"content_type": "text",
+                                           "parts": ["reply to " + text]}}},
+        },
+    }]), encoding="utf-8")
+    return str(path)
+
+
+def test_build_accepts_a_DOWNLOADED_EXPORT_as_its_ONLY_source(tmp_path):
+    """CF-8, the owner's literal complaint: import a downloaded export, no session store.
+
+    Asserts the CONTENT is searchable rather than merely that the call returned. A build
+    that accepted the parameter and ingested nothing would satisfy `state == "done"` and
+    an error-free list; only reading the export's own text back out of the index
+    distinguishes a wired seam from an accepted-and-ignored one.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    src = _chatgpt_export(tmp_path)
+
+    out = srv.dispatch("corpus.build", {"chatgpt_export": src})
+
+    assert out["state"] == "running"
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["errors"] == [], status
+    assert status["indexed_conversations"] == 1, status
+    # THE POSTCONDITION THAT MATTERS: the export's text is retrievable through the app's
+    # own search surface, not merely counted.
+    hits = srv.dispatch("search.query", {"q": "zebra"})
+    assert [h["conversation_id"] for h in hits["hits"]] == ["c-1"], hits
+
+
+def test_an_export_and_a_SESSIONS_ROOT_in_one_build_both_land(tmp_path):
+    """The two halves share an index and ONE error list, exactly as `cli.py` folds them.
+
+    A session ingest and an export ingest are different code paths against the same
+    connection; running them together is the case where a regression would show up as one
+    half silently replacing the other.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    out = srv.dispatch("corpus.build", {
+        "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=2),
+        "codex_home": _codex_home(tmp_path),
+        "chatgpt_export": _chatgpt_export(tmp_path)})
+
+    assert out["state"] == "running"
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] == 3, status     # 2 rollouts + 1 export
+    assert [h["conversation_id"] for h in
+            srv.dispatch("search.query", {"q": "zebra"})["hits"]] == ["c-1"]
+    assert srv.dispatch("search.query", {"q": "alpha"})["hits"], "the rollout half"
+
+
+def test_a_named_export_that_RESOLVES_TO_NOTHING_is_an_error_not_a_silent_success(tmp_path):
+    """An empty directory is the shape that makes a false success: it EXISTS, so the
+    boundary check passes, and the glob then finds no export file.
+
+    `ingest_exports` turns that into a `resolve` error; the point of this test is that the
+    error reaches `build_status` rather than dying in the worker."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    empty = tmp_path / "empty_export"
+    empty.mkdir()
+
+    srv.dispatch("corpus.build", {"chatgpt_export": str(empty)})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert len(status["errors"]) == 1, status
+    assert status["errors"][0]["stage"] == "resolve", status["errors"][0]
+    assert status["indexed_conversations"] == 0
+
+
+def test_a_named_export_path_that_does_not_exist_is_refused_at_the_boundary(tmp_path):
+    """Loud at the RPC edge, like the roots — and the POSITIVE message is asserted, so an
+    unrecognised parameter cannot masquerade as a guarded one."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build",
+                     {"chatgpt_export": str(tmp_path / "nope" / "conversations.json")})
+    assert excinfo.value.code == -32602
+    assert "chatgpt_export must be an existing path" in str(excinfo.value.message)
+
+
+def test_an_export_path_is_refused_when_UNC(tmp_path):
+    """Same outbound SMB/NTLM class as the roots, and the guard must fire BEFORE any
+    filesystem call that would itself reach over the wire."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"claude_export": r"\\evil.example\share"})
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value.message)
+    assert "claude_export must be a local path, not a UNC/network path" == message, message
+    assert "existing path" not in message, \
+        "a UNC path must be refused by the path guard, not by an exists() that touched it"
+
+
+def test_the_GEMINI_HARVEST_is_deliberately_NOT_existence_checked(tmp_path):
+    """A documented CLI exemption that must survive the port, not a gap.
+
+    `cli.py:168-170` checks `src`, `chatgpt_projects` and each spec's PRIMARY path — and
+    pointedly not the gemini harvest, because `load_gemini` reports a named-but-absent
+    harvest as an ERROR while still falling back to the labelled provisional grouping.
+    Hard-failing here would make that documented, tested path unreachable from the app,
+    exactly as it would from the command line. So: an absent harvest is an error entry,
+    never a -32602.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    src = tmp_path / "transcript.json"
+    src.write_text(json.dumps([
+        {"prompt": "zebra quokka", "response_md": "reply", "gem": None,
+         "timestamp_iso": "2026-03-03T10:00:00"}]), encoding="utf-8")
+
+    srv.dispatch("corpus.build", {"gemini_export": str(src),
+                                  "gemini_harvest": str(tmp_path / "absent.json")})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] >= 1, status
+    assert any("harvest" in e.get("error", "").lower() for e in status["errors"]), \
+        "a named-but-absent harvest must be reported, not swallowed: %s" % status["errors"]
+
+
+def test_the_chatgpt_PROJECTS_second_path_joins_the_same_dedup_pool(tmp_path):
+    """The second path is a real source, not decoration: its conversations land, and one
+    repeated across both files is indexed ONCE."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    main = _chatgpt_export(tmp_path, "conversations.json", "zebra quokka", "c-1")
+    proj = _chatgpt_export(tmp_path, "projects.json", "narwhal", "c-2")
+
+    srv.dispatch("corpus.build", {"chatgpt_export": main, "chatgpt_projects": proj})
+
+    status = srv.dispatch("corpus.build_status", {})
+    assert status["state"] == "done", status
+    assert status["indexed_conversations"] == 2, status
+    assert [h["conversation_id"] for h in
+            srv.dispatch("search.query", {"q": "narwhal"})["hits"]] == ["c-2"]
+
+
+def test_naming_ONLY_an_export_satisfies_the_at_least_one_source_rule(tmp_path):
+    """The refusal must LIST the exports, or a caller reads it as "exports are not a
+    source" and goes looking for a session store they do not have."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {})
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value.message)
+    assert "export" in message, message
+
+
+def test_the_start_reply_echoes_the_export_SOURCES_it_accepted(tmp_path):
+    """A caller must be able to see WHICH sources the engine took, for the same reason the
+    roots are echoed: an accepted-and-ignored parameter is otherwise invisible."""
+    srv, _ = _server(tmp_path, runner=_sync)
+    src = _chatgpt_export(tmp_path)
+    out = srv.dispatch("corpus.build", {"chatgpt_export": src})
+    assert out["chatgpt_export"] == src, out
+
+
+def test_the_export_params_match_the_loader_vocabulary():
+    """`sidecar._EXPORT_PARAMS` must not drift from `loaders`, in BOTH directions.
+
+    The RPC keeps its own table because the WIRE names the params; the loader owns which
+    providers exist and which take a second path. Two tables describing one vocabulary is
+    the drift shape this repo keeps paying for, so a fifth provider added on either side
+    alone goes red here rather than becoming a parameter the app accepts and the loader
+    refuses (or one the loader supports and the app cannot reach — which is CF-8 itself).
+
+    Named in `_EXPORT_PARAMS`' own docstring. A docstring that cites a test which does not
+    exist is the false-citation class this suite already pins elsewhere.
+    """
+    assert tuple(p for p, _second in sidecar._EXPORT_PARAMS) == loaders.EXPORT_PROVIDERS
+
+    seconds = {p: bool(second) for p, second in sidecar._EXPORT_PARAMS}
+    expected = {p: p in loaders._EXPORT_SECOND_PATH for p in loaders.EXPORT_PROVIDERS}
+    assert seconds == expected, (
+        "a provider's second-path support disagrees with loaders._EXPORT_SECOND_PATH; "
+        "a second path accepted here and ignored there is a flag that does nothing")
+
+    # Every declared key is really read by the handler, and the exemption names a real key.
+    assert set(sidecar._EXPORT_EXISTENCE_EXEMPT) <= set(sidecar._EXPORT_KEYS)
+    for provider, second in sidecar._EXPORT_PARAMS:
+        assert provider + "_export" in sidecar._EXPORT_KEYS
+        if second:
+            assert second in sidecar._EXPORT_KEYS
+
+
+def test_a_non_string_export_path_is_a_caller_bug(tmp_path):
+    """Absent means 'not this source'; a wrong TYPE stays an error, as for the roots.
+
+    ASSERTS THE EXACT MESSAGE, and this test is the reason to. Written as a bare
+    `code == -32602` it PASSED against the unwired engine — an unrecognised
+    `chatgpt_export` fell through to "name at least one source", which is also -32602. It
+    was green while proving the opposite of what it claimed, the same failure
+    `test_build_rejects_a_unc_claude_root` documents one screen up. Two independent
+    instances in one file is not a coincidence; a code-only assertion on a surface with a
+    catch-all refusal is structurally incapable of showing wiring.
+    """
+    srv, _ = _server(tmp_path, runner=_sync)
+    with pytest.raises(sidecar.RpcError) as excinfo:
+        srv.dispatch("corpus.build", {"chatgpt_export": 17})
+    assert excinfo.value.code == -32602
+    assert "chatgpt_export must be a string" == str(excinfo.value.message), \
+        "a wrong TYPE must be refused by _opt_str, not by the no-source catch-all"

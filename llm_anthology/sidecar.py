@@ -259,6 +259,35 @@ _REPARSERS = {
     "grok": (grok, "parse_session", os.path.isdir),
 }
 
+#: (export provider, the param naming its optional SECOND path or "" for none).
+#:
+#: Mirrors `cli._export_specs` and the `--<provider>-export` flag set ONE FOR ONE, which is
+#: deliberate: `loaders.ingest_exports` shipped with G-1 and worked — driven export ->
+#: index -> search -> read — but had callers only in `cli.py`, so the APP could not import
+#: a downloaded export at all. The missing piece was this seam, not the ingest, and a new
+#: nested parameter shape here would have made the two surfaces disagree about what naming
+#: a source looks like. Providers and second paths are `loaders.EXPORT_PROVIDERS` and
+#: `loaders._EXPORT_SECOND_PATH`; `test_the_export_params_match_the_loader_vocabulary`
+#: checks this table against them so a fifth provider cannot be added on one side only.
+_EXPORT_PARAMS = (("chatgpt", "chatgpt_projects"), ("claude", ""), ("codex", ""),
+                  ("gemini", "gemini_harvest"))
+
+#: Every export param, primary and second, in refusal order. Read unconditionally so a
+#: wrong TYPE is a caller bug rather than a silently skipped source.
+_EXPORT_KEYS = tuple(
+    key for provider, second in _EXPORT_PARAMS
+    for key in ((provider + "_export",) + ((second,) if second else ())))
+
+#: The one export param that is NOT existence-checked, and why it must stay that way.
+#:
+#: `--gemini-harvest` is a grouping HINT, not a corpus: `load_gemini` reports a
+#: named-but-absent harvest as an ERROR and still falls back to the labelled provisional
+#: grouping. Hard-failing it at this boundary would make that documented, tested path
+#: unreachable from the app — exactly the exemption `cli.py:168-170` already carves out by
+#: checking only `src`, `chatgpt_projects` and each spec's PRIMARY path. It is still
+#: PATH-GUARDED: a UNC harvest is an outbound SMB/NTLM vector whether or not it exists.
+_EXPORT_EXISTENCE_EXEMPT = frozenset({"gemini_harvest"})
+
 # App-specific JSON-RPC error codes (standard codes -32700/-32600/-32601/-32602/-32603
 # are used directly where they apply).
 CORPUS_NOT_INDEXED = -32000
@@ -758,8 +787,11 @@ class Sidecar:
     # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
     # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
-    # (loaders.py:461). True now, and narrower: the worker (sidecar.py:957) passes none, a
-    # call-site gap, not an architectural one. What still holds: the phase BEFORE it,
+    # (loaders.py:461), and `ingest_exports` accepts one too. True now, and narrower:
+    # NEITHER worker call passes one (sidecar.py:1027, :1030), a call-site gap and not an
+    # architectural one — TWO of them since the export half was wired, so a cancel means
+    # threading it through both; doing only the first would leave the export ingest
+    # uncancellable while the UI claimed otherwise. What still holds: the phase BEFORE it,
     # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
     # longest phase would be a lie, and killing the thread is unsafe in CPython. What
     # stands in for it: build_index commits and advances its checkpoint every chunk
@@ -847,7 +879,7 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:902) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:957) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
         LIVE Codex store (codex_state.py:127-130), and an automated probe really did read
@@ -878,10 +910,18 @@ class Sidecar:
         sessions_root = _opt_str(params, "sessions_root")
         grok_root = _opt_str(params, "grok_root")
         claude_root = _opt_str(params, "claude_root")
-        if not sessions_root and not grok_root and not claude_root:
+        # Read EVERY export key, named or not, so a wrong TYPE is a caller bug rather than
+        # a silently skipped source: `_opt_str` collapses absent and empty to "".
+        export = {key: _opt_str(params, key) for key in _EXPORT_KEYS}
+        specs = [(provider, export[provider + "_export"],
+                  export[second_key] if second_key else "")
+                 for provider, second_key in _EXPORT_PARAMS if export[provider + "_export"]]
+        if not sessions_root and not grok_root and not claude_root and not specs:
             raise RpcError(-32602,
                            "name at least one source: sessions_root (Codex), "
-                           "grok_root (Grok Build) and/or claude_root (Claude Code)")
+                           "grok_root (Grok Build), claude_root (Claude Code) and/or a "
+                           "downloaded export (chatgpt_export, claude_export, "
+                           "codex_export, gemini_export)")
         # EVERY root must EXIST when named. Each adapter walks or globs, so a typo'd root
         # yields zero docs and zero errors — a silent, perfectly "successful" build of
         # nothing, which is the failure mode this whole ingest path has been bitten by
@@ -895,6 +935,21 @@ class Sidecar:
             if not os.path.isdir(value):
                 raise RpcError(-32602,
                                "%s must be an existing directory: %s" % (name, _clean(value)))
+        # An export is a FILE **or** a directory (a sharded export is a directory; a Gemini
+        # Takeout transcript is a file), so this is `exists`, not `isdir` — the roots'
+        # `isdir` would refuse the single-file case the owner actually has. UNC is refused
+        # first, for the roots' reason: `os.path.exists` on a UNC path reaches over SMB
+        # itself, so an existence wording would mean the leak already happened.
+        for name in _EXPORT_KEYS:
+            value = export[name]
+            if not value:
+                continue
+            _reject_nonlocal_path(value, name)
+            if name in _EXPORT_EXISTENCE_EXEMPT:
+                continue
+            if not os.path.exists(value):
+                raise RpcError(-32602,
+                               "%s must be an existing path: %s" % (name, _clean(value)))
         # OPTIONAL, like the roots. It is only the Codex state graph, which a Grok-only
         # ingest has none of. Leaving it unnamed skips that merge outright — `load_corpus`
         # no longer falls through to the live store, which is the behaviour that let an
@@ -925,19 +980,25 @@ class Sidecar:
                    "claude_root": claude_root, "started_ms": _now_ms(),
                    "finished_ms": None, "errors": [], "error": None,
                    "needs_reload": False}
+            job.update(export)
             self._next_build_id += 1
             self._build_job = job
         # OUTSIDE the lock: a synchronous runner executes the worker inline, and the worker
         # takes this same non-reentrant lock — starting it while held would deadlock.
         self._build_runner(
             lambda: self._run_build(job, sessions_root, index_path, codex_home, grok_root,
-                                    claude_root))
-        return {"job_id": job["job_id"], "state": "running",
-                "sessions_root": _clean(sessions_root), "grok_root": _clean(grok_root),
-                "claude_root": _clean(claude_root), "started_ms": job["started_ms"]}
+                                    claude_root, specs))
+        reply = {"job_id": job["job_id"], "state": "running",
+                 "sessions_root": _clean(sessions_root), "grok_root": _clean(grok_root),
+                 "claude_root": _clean(claude_root), "started_ms": job["started_ms"]}
+        # Echo the export sources too, for the roots' reason: a parameter that was accepted
+        # and then ignored is otherwise invisible to the caller, which is precisely how this
+        # whole surface came to be missing one.
+        reply.update((key, _clean(value)) for key, value in export.items())
+        return reply
 
     def _run_build(self, job, sessions_root, index_path, codex_home, grok_root="",
-                   claude_root=""):
+                   claude_root="", specs=()):
         """THE WORKER. Runs off the request thread; touches ONLY the job record (under the
         lock) and thread-local objects. Values are stored RAW and projected at the wire in
         ``_corpus_build_status``, like every other text-bearing surface here.
@@ -952,11 +1013,22 @@ class Sidecar:
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
         conversation ingest (loaders.py:454-445), so a FAILED build can still have changed
-        the index and the live view must follow it."""
+        the index and the live view must follow it.
+
+        BOTH HALVES, ONE ERROR LIST. The session ingest and the DOWNLOADED-export ingest
+        are separate calls against the same index — a streamed export must write and drop
+        each conversation, so it cannot be a `load_corpus` argument — and `cli.py` folds
+        their errors into one list before deciding its exit code. This does the same, so
+        `build_status` reports a partial ingest identically whichever half was partial.
+        `ingest_exports` runs UNCONDITIONALLY with an empty `specs`, reading nothing: the
+        alternative is a branch whose untaken side is indistinguishable from an export
+        parameter that was accepted and ignored."""
         try:
             _built, errors = loaders.load_corpus(
                 sessions_root, index_path, codex_home, grok_root=grok_root,
                 claude_root=claude_root)
+            _files, export_errors = loaders.ingest_exports(index_path, specs)
+            errors = errors + export_errors
         except Exception as exc:                      # noqa: BLE001 — see the docstring
             with self._build_lock:
                 job["error"] = "%s: %s" % (type(exc).__name__, exc)
