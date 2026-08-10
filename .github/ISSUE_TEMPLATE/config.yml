@@ -1,0 +1,23 @@
+# Blank issues stay ENABLED on purpose.
+#
+# The bug form (bug_report.yml) exists to make the diagnostics bundle the default thing a
+# reporter attaches — with six providers across eight adapter modules over formats this
+# project does not control, the frame list and the exception type are usually the whole
+# answer. But turning the form into the ONLY route would push questions, feature ideas and
+# "is this supposed to work like this?" into the wrong shape, and a reporter who cannot find
+# the right box files nothing at all. A form that is easy to reach beats a form that is
+# mandatory.
+blank_issues_enabled: true
+
+contact_links:
+  # The one report class that must NOT arrive as a public issue. If a bundle, an export, or
+  # any other shareable artifact carries conversation content, saying so publicly is itself
+  # the disclosure — and DECISION G-8's whole premise is that the support channel must not
+  # become the leak channel. Private vulnerability reporting is enabled on this repository
+  # (SECURITY.md, "How to report — preferred").
+  - name: A privacy leak, or anything security-shaped
+    url: https://github.com/Prekzursil/ai-sessions-render/security/advisories/new
+    about: >
+      Report it PRIVATELY, not here. That includes finding conversation content in a
+      diagnostics bundle, a crash file, or an export — do not paste the evidence into a
+      public issue to prove it.
