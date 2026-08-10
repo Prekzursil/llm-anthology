@@ -82,28 +82,93 @@ export interface CredentialScanView {
   headline: string;
 }
 
+/*
+ * THE PROSE THAT USED TO LIVE HERE IS DELETED, NOT AMENDED.
+ *
+ * It described the projection field by field — "drops `preview`, relativizes
+ * `cwd`/`rollout_path`, and since CF-23 runs `title` and `git_branch` through
+ * `scrub_home_mentions`; `agent_role`/`agent_nickname` are untouched by construction" — and
+ * it carried a banner reading KEPT CURRENT. It was not current: `2b2492c` had dropped
+ * `agent_nickname` and this paragraph still said it survived. Rewriting it a fourth time
+ * would have restored exactly the arrangement that failed three times, banner included.
+ *
+ * A hand-maintained description of a machine-readable fact is the defect. The table below is
+ * the description now, the label is generated from it, and `exportPanel.test.ts` re-derives
+ * the same table straight from `redact.py` and refuses to pass if the two disagree.
+ */
+
+/** What SHAREABLE mode does to one `ThreadMeta` field. */
+export type FieldTreatment = "dropped" | "scrubbed" | "relativized" | "kept";
+
+/**
+ * Every `ThreadMeta` field and what shareable mode does to it — a MIRROR of
+ * `redact.shareable_thread`, not an independent opinion.
+ *
+ * This table exists because the prose it replaced rotted three times by the same mechanism:
+ * the engine changed a field's treatment, this file kept describing the previous engine, and
+ * every suite stayed green because a stale-but-plausible sentence produces no type error.
+ * The last one shipped to `main` telling users `agent_nickname` was kept on the day it
+ * started being dropped.
+ *
+ * `exportPanel.test.ts` re-derives this table from `redact.py` itself and demands an exact
+ * match in both directions, so it cannot drift silently and cannot go stale by omission.
+ * UPDATE IT ONLY TO FOLLOW THE ENGINE — the label below is generated from it, so a wrong
+ * entry here is a wrong sentence shown to somebody deciding what to share.
+ */
+export const SHAREABLE_TREATMENT: Readonly<Record<string, FieldTreatment>> = {
+  id: "kept",
+  title: "scrubbed",
+  model_provider: "kept",
+  tokens_used: "kept",
+  created_at_ms: "kept",
+  updated_at_ms: "kept",
+  git_branch: "scrubbed",
+  cwd: "relativized",
+  agent_role: "kept",
+  agent_nickname: "dropped",
+  preview: "dropped",
+  rollout_path: "relativized",
+  adapter: "kept",
+};
+
+/** Field names under one treatment, sorted so the sentence is stable across edits. */
+function fieldsUnder(treatment: FieldTreatment): string[] {
+  return Object.keys(SHAREABLE_TREATMENT)
+    .filter((field) => SHAREABLE_TREATMENT[field] === treatment)
+    .sort();
+}
+
+/** `a`, `a and b`, `a, b and c` — an empty list would be a bug, so it says so. */
+function listed(fields: string[]): string {
+  if (fields.length === 0) return "(none)";
+  if (fields.length === 1) return fields[0];
+  return `${fields.slice(0, -1).join(", ")} and ${fields[fields.length - 1]}`;
+}
+
 /**
  * What each mode ACTUALLY does today, in the words a user is shown.
  *
- * DELIBERATELY UNDERSOLD, AND KEPT CURRENT. `redact.shareable_thread` drops `preview`,
- * relativizes `cwd`/`rollout_path`, and — since CF-23 (868a033) — runs `title` and
- * `git_branch` through `scrub_home_mentions`, because a title is PROSE and the realistic leak
- * is a path embedded in it.
+ * GENERATED from {@link SHAREABLE_TREATMENT} rather than written out, so the field lists
+ * cannot disagree with the engine. Only the two sentences the table CANNOT express are
+ * hand-written, and both are residuals rather than reassurances:
  *
- * THE TWO RESIDUALS ARE REAL AND ARE NAMED. Only the home ROOT is substituted, so a non-home
- * absolute path (`D:/work/client-x`) survives; and `agent_role`/`agent_nickname` are untouched
- * by construction. An earlier version of this label said title and git branch are "NOT
- * stripped" — true when written, and CF-23 made it inaccurate in the SAFE direction. That is
- * still inaccurate: a warning that overstates the risk teaches the reader to discount it, the
- * same way one that understates it gets them hurt. Calling the mode "anonymised" remains a lie
- * the UI would be telling on the engine's behalf.
+ *   * home-ROOT-only substitution is a property of `scrub_home_mentions`, not of any field —
+ *     `D:/work/client-x` is not a home leak and survives untouched;
+ *   * "kept" means VERBATIM, which is what makes the kept list a warning rather than trivia.
+ *
+ * DELIBERATELY UNDERSOLD. Calling the mode "anonymised" would be a lie the UI tells on the
+ * engine's behalf, and the person who believes it is the one about to hand the file to
+ * somebody else.
  */
 export function modeLabel(mode: ExportMode): string {
-  return mode === "shareable"
-    ? "shareable — drops the preview excerpt, rewrites cwd/rollout_path to ~, and scrubs " +
-        "home-directory mentions out of the title and git branch. Note: only HOME paths are " +
-        "scrubbed (a path like D:/work/client-x survives), and agent role/nickname are not."
-    : "full — the archive of record: every field, unchanged.";
+  if (mode !== "shareable") return "full — the archive of record: every field, unchanged.";
+  return (
+    `shareable — DROPS ${listed(fieldsUnder("dropped"))}; ` +
+    `rewrites ${listed(fieldsUnder("relativized"))} to ~; ` +
+    `scrubs home-directory mentions out of ${listed(fieldsUnder("scrubbed"))}. ` +
+    `Everything else is kept VERBATIM: ${listed(fieldsUnder("kept"))}. ` +
+    `Note: only HOME paths are scrubbed — a path like D:/work/client-x survives.`
+  );
 }
 
 /** The subset of the full IPC client this panel can be built from. Both methods optional. */

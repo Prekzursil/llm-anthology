@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { CREDENTIAL_SHAPE_COVERAGE_LIMIT } from "../ipc/mock";
+// The engine source as a Vite `?raw` asset, the same way `ipc/mock.test.ts` reads it for
+// the credential-shape parity check. NOT `node:fs`: this tsconfig is browser-only.
+// @ts-ignore — vite resolves `?raw` to the file text; there is no ambient declaration.
+import REDACT_PY from "../../../llm_anthology/redact.py?raw";
 import type { CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
 import {
   asExportMode,
@@ -11,6 +15,7 @@ import {
   formatBytes,
   modeLabel,
   renderView,
+  SHAREABLE_TREATMENT,
   type ExportIpc,
   type ExportRunResult,
   type ExportView,
@@ -746,5 +751,117 @@ describe("ExportPanel", () => {
     const running = views[0];
     if (running.kind !== "running") throw new Error("unreachable");
     expect(running.preview).toBeNull();
+  });
+});
+
+/**
+ * THE STRUCTURAL FIX. This sentence rotted THREE times by the identical mechanism before
+ * this test existed: the pre-CF-23 wording, the CF-23 wording, and then `2b2492c` dropping
+ * `agent_nickname` while the label still told users it was kept. Each time the engine
+ * changed a field's treatment, the label kept describing the previous engine, every suite
+ * stayed green, and the only detector was somebody re-reading both files side by side.
+ *
+ * A fourth hand-correction would buy a fourth rotation. So the label is no longer written
+ * as prose: it is DERIVED from {@link SHAREABLE_TREATMENT}, and this test derives the same
+ * table INDEPENDENTLY from the engine's own source and demands they match exactly. Change a
+ * field's treatment in `redact.shareable_thread` and this goes red until the table follows;
+ * the label text then updates itself.
+ *
+ * Same `?raw` technique as the `CREDENTIAL_SHAPE_COVERAGE_LIMIT` parity check in
+ * `ipc/mock.test.ts`, and for the same reason: the truth lives in Python, nothing in
+ * TypeScript changes when it moves, and a stale-but-plausible string produces no type error.
+ */
+describe("shareable treatment parity with redact.shareable_thread", () => {
+  /**
+   * Classify every field of the engine's `shareable_thread` constructor by what it DOES to
+   * that field. FAILS CLOSED: an expression this cannot recognise becomes "unknown", which
+   * no table entry can match, so a new treatment the label has never heard of turns this red
+   * rather than being silently filed under something plausible.
+   */
+  function engineTreatments(source: string): Record<string, string> {
+    const block = /def shareable_thread\([\s\S]*?return ThreadMeta\(([\s\S]*?)\n {4}\)/.exec(source);
+    if (block === null) throw new Error("shareable_thread's ThreadMeta(...) block not found");
+    const out: Record<string, string> = {};
+    for (const line of block[1].split("\n")) {
+      const m = /^\s*([a-z_]+)=(.+),\s*$/.exec(line);
+      if (m === null) continue; // comment or blank
+      const [, field, expr] = m;
+      out[field] =
+        expr === `meta.${field}` ? "kept"
+        : expr.startsWith("scrub_home_mentions(") ? "scrubbed"
+        : expr.startsWith("relativize_home(") ? "relativized"
+        : expr === `""` ? "dropped"
+        : "unknown";
+    }
+    return out;
+  }
+
+  it("CONTROL: the parser reads the real file and recognises every expression", () => {
+    // Rule 3 of single-signal verification — verify the detector before trusting a match.
+    // A regex that silently matched nothing would make the parity assertion below pass by
+    // comparing two empty objects.
+    const parsed = engineTreatments(REDACT_PY);
+    expect(Object.keys(parsed).length).toBeGreaterThanOrEqual(10);
+    expect(Object.values(parsed)).not.toContain("unknown");
+    // Anchors picked from three different treatment classes, so a parser that collapsed
+    // everything into one bucket cannot pass.
+    expect(parsed.title).toBe("scrubbed");
+    expect(parsed.cwd).toBe("relativized");
+    expect(parsed.id).toBe("kept");
+  });
+
+  it("CONTROL: the parser can tell the treatments apart", () => {
+    // The both-states half. Feed it a synthetic block where one field moved from dropped to
+    // kept and confirm the reading CHANGES — a parser hardcoded to the real file would not.
+    const synthetic = [
+      "def shareable_thread(meta, home=None):",
+      '    """doc"""',
+      "    return ThreadMeta(",
+      "        agent_nickname=meta.agent_nickname,",
+      "        preview=\"\",",
+      "        title=scrub_home_mentions(meta.title, home=home),",
+      "    )",
+    ].join("\n");
+    expect(engineTreatments(synthetic)).toEqual({
+      agent_nickname: "kept",
+      preview: "dropped",
+      title: "scrubbed",
+    });
+  });
+
+  it("the declared table matches the ENGINE, field for field, with no gaps either way", () => {
+    // Exact equality in BOTH directions on purpose. A subset check would let the engine grow
+    // a field the label never mentions, which is precisely how `agent_nickname` went stale.
+    expect(SHAREABLE_TREATMENT).toEqual(engineTreatments(REDACT_PY));
+  });
+
+  it("says agent_nickname is DROPPED, which is the regression that motivated all this", () => {
+    // Named explicitly rather than left to the table comparison, so the failure message
+    // points at the field a reader is looking for. `2b2492c` dropped it engine-side while
+    // the label still read "agent role/nickname are not [scrubbed]".
+    expect(SHAREABLE_TREATMENT.agent_nickname).toBe("dropped");
+    expect(SHAREABLE_TREATMENT.agent_role).toBe("kept");
+    const label = modeLabel("shareable");
+    expect(label).toContain("agent_nickname");
+    expect(label).not.toMatch(/agent[ _]role\/?,? ?(and )?nickname are not/i);
+  });
+
+  it("the LABEL names every dropped and scrubbed field, because it is generated from the table", () => {
+    // The coupling made observable: no field may be protected silently, and none may be
+    // claimed as protected that is not.
+    const label = modeLabel("shareable");
+    for (const [field, treatment] of Object.entries(SHAREABLE_TREATMENT)) {
+      if (treatment === "kept") continue;
+      expect(label, `${field} is ${treatment} but the label never names it`).toContain(field);
+    }
+  });
+
+  it("keeps the two residuals the table cannot express", () => {
+    // Neither is derivable from a field list: home-ROOT-only substitution is a property of
+    // `scrub_home_mentions` itself, and "kept means verbatim" is what makes the kept list a
+    // warning rather than trivia. Both stay hand-written, so both stay asserted.
+    const label = modeLabel("shareable");
+    expect(label).toMatch(/D:|non-home|only home/i);
+    expect(label).not.toMatch(/anonymi[sz]ed|safe to share|removes all/i);
   });
 });

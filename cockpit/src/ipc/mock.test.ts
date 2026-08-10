@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 
+// A UI module from an ipc TEST: one-directional and deliberate. `mock.ts` never imports
+// `ui/`; only this test does, to reuse the treatment table that `ui/exportPanel.test.ts`
+// holds to `redact.shareable_thread`.
+import { SHAREABLE_TREATMENT } from "../ui/exportPanel";
+import type { ThreadNode } from "./types";
+
 import {
   createMockIpc,
   CREDENTIAL_SHAPE_COVERAGE_LIMIT,
   MockGraph,
   mockIpc,
+  projectNode,
   MOCK_DEDUP_SESSIONS,
   MOCK_EDGES,
   MOCK_THREADS,
@@ -2307,5 +2314,114 @@ describe("appInfo (CF-1: the app-data locations nothing was reading)", () => {
     expect(info.version).not.toBe("");
     // A bare launch has no sidecar until a corpus is opened (`lib.rs:14-16`).
     expect(info.engine).toBe("not-wired");
+  });
+});
+
+describe("the export projection matches the ENGINE field for field", () => {
+  // Pinned through `SHAREABLE_TREATMENT` rather than by hand. That table is held to
+  // `redact.shareable_thread` by a parity test in `ui/exportPanel.test.ts`, so the chain is
+  // engine -> table -> this: change the engine and the table goes red, fix the table and
+  // this goes red until the projection follows. No link in it is a sentence somebody has to
+  // remember to update, which is the whole point — the previous arrangement was prose and it
+  // rotted three times.
+  //
+  // TESTED DIRECTLY, and that needs justifying. `projectNode` is exported FOR this test
+  // because no public surface carries node fields: `exportPlan` and `exportRun` return
+  // counts, `est_bytes`, `mode` and `credential_scan`, and nothing else. The last case below
+  // covers the one route the projection reaches a caller through, so this is not testing an
+  // internal in place of the observable — it is testing the internal AND the observable,
+  // because the observable alone cannot see which field changed.
+  //
+  // Importing a UI module from an ipc test is one-directional and deliberate: `mock.ts`
+  // itself never imports `ui/`.
+  const FULLY_POPULATED: ThreadNode = {
+    id: "t-proj",
+    title: "see C:/Users/synthuser/notes.md",
+    provider: "codex",
+    model_provider: "openai",
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    git_branch: "fix/C:/Users/synthuser/x",
+    cwd: "C:/Users/synthuser/repo",
+    agent_role: "implementer",
+    agent_nickname: "synthuser@desktop",
+    preview: "the opening user message, verbatim",
+    child_count: 0,
+    depth: 0,
+  };
+
+  it("CONTROL: the fixture actually exercises every treatment in the table", () => {
+    // Without this a node missing `agent_nickname` would make the drop check below vacuous —
+    // it would pass by having nothing to drop.
+    for (const field of ["preview", "agent_nickname", "cwd", "git_branch", "title", "agent_role"]) {
+      expect(FULLY_POPULATED[field as keyof ThreadNode], `${field} missing`).toBeTruthy();
+    }
+    for (const treatment of ["dropped", "scrubbed", "relativized", "kept"]) {
+      expect(
+        Object.values(SHAREABLE_TREATMENT),
+        `no field is ${treatment}, so its check proves nothing`,
+      ).toContain(treatment);
+    }
+  });
+
+  it("full mode is the identity, so any difference below is the projection and not the fixture", () => {
+    expect(projectNode(FULLY_POPULATED, "full")).toEqual(FULLY_POPULATED);
+  });
+
+  it("DROPS every field the engine drops", () => {
+    const out = projectNode(FULLY_POPULATED, "shareable");
+    const dropped = Object.keys(SHAREABLE_TREATMENT).filter(
+      (f) => SHAREABLE_TREATMENT[f] === "dropped",
+    );
+    expect(dropped.length).toBeGreaterThan(0);
+    for (const field of dropped) {
+      if (!(field in FULLY_POPULATED)) continue; // ThreadNode is narrower than ThreadMeta
+      const value = out[field as keyof ThreadNode];
+      expect(value ?? "", `${field} is dropped by the engine but survived the projection`).toBe("");
+    }
+  });
+
+  it("KEEPS every field the engine keeps, so the preview does not over-promise either", () => {
+    // The direction a well-meaning "make the preview safer" change would break. A projection
+    // that hid `agent_role` would tell the user it is protected when the engine keeps it.
+    const out = projectNode(FULLY_POPULATED, "shareable");
+    for (const [field, treatment] of Object.entries(SHAREABLE_TREATMENT)) {
+      if (treatment !== "kept" || !(field in FULLY_POPULATED)) continue;
+      expect(
+        out[field as keyof ThreadNode],
+        `${field} is kept verbatim by the engine but the projection altered it`,
+      ).toEqual(FULLY_POPULATED[field as keyof ThreadNode]);
+    }
+  });
+
+  it("agent_role survives while agent_nickname does not — the exact 2b2492c contract", () => {
+    // Named explicitly so a failure points at the field rather than a loop index. The engine
+    // drops the nickname because `<name>@desktop` is a bare username that no path treatment
+    // can reach, and keeps the role because it carries the signal without the identity.
+    const out = projectNode(FULLY_POPULATED, "shareable");
+    expect(out.agent_role).toBe("implementer");
+    expect(out.agent_nickname ?? "").toBe("");
+    expect(JSON.stringify(out)).not.toContain("synthuser@desktop");
+  });
+
+  it("reaches the PUBLIC surface: a nickname-only node still shrinks the plan", async () => {
+    // The observable half. Isolated to one field for the reason CF-23 taught: a fixture
+    // carrying several protected fields proves only that SOMETHING shrank, and a mutation
+    // removing any single treatment stays green.
+    // `created_at_ms` is excluded from the override type on purpose: it is `number | null`
+    // on `ThreadNode` but non-null on the row `createMockIpc` accepts, so spreading a bare
+    // `Partial<ThreadNode>` widens it and fails tsc (which vitest does NOT run).
+    const only = async (over: Omit<Partial<ThreadNode>, "created_at_ms">) => {
+      const ipc = createMockIpc(
+        [{ id: "x", title: "t", provider: "claude", created_at_ms: 1, ...over }],
+        [],
+      );
+      return [
+        (await ipc.exportPlan(undefined, "full")).est_bytes,
+        (await ipc.exportPlan(undefined, "shareable")).est_bytes,
+      ];
+    };
+    const [full, shareable] = await only({ agent_nickname: "synthuser@desktop" });
+    expect(shareable).toBeLessThan(full);
   });
 });

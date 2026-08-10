@@ -1235,7 +1235,7 @@ const SCANNED_NODE_FIELDS = [
  * (`export.py:232`). SHAREABLE drops `preview` outright (a shorter excerpt is the same
  * leak) and relativizes `cwd` to `~` (an absolute path carries the OS username).
  */
-function projectNode(node: ThreadNode, mode: ExportMode): ThreadNode {
+export function projectNode(node: ThreadNode, mode: ExportMode): ThreadNode {
   if (mode !== "shareable") return node;
   const { preview: _dropped, ...kept } = node;
   const out: ThreadNode = { ...kept };
@@ -1248,9 +1248,17 @@ function projectNode(node: ThreadNode, mode: ExportMode): ThreadNode {
   // Applying it here would have looked like a fix while leaving that case leaking.
   out.title = scrubHomeMentions(out.title);
   if (out.git_branch !== undefined) out.git_branch = scrubHomeMentions(out.git_branch);
-  // `agent_role` / `agent_nickname` are NOT scrubbed, matching the engine. They are not
-  // path-bearing by construction, and the mock must model what the engine does rather than
-  // what would be tidier.
+  // `agent_nickname` is DROPPED OUTRIGHT, not scrubbed, because no path treatment can reach
+  // it: `<name>@desktop` is a bare username, so `scrubHomeMentions` reads it as ordinary
+  // prose and returns it whole. `agent_role` is KEPT — it carries the useful signal without
+  // the identity, and hiding it here would tell the user it is protected when it is not.
+  //
+  // This comment previously said BOTH were kept "matching the engine". That was true when
+  // written and `2b2492c` made it false, which is the third time a hand-written description
+  // of this projection went stale. `mock.test.ts` now derives the field list from
+  // `SHAREABLE_TREATMENT`, which `ui/exportPanel.test.ts` holds to `redact.shareable_thread`
+  // itself, so the next engine change fails a test instead of rotting a paragraph.
+  if (out.agent_nickname !== undefined) out.agent_nickname = "";
   return out;
 }
 
