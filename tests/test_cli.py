@@ -8,6 +8,9 @@ import json
 import os
 import sqlite3
 
+import pytest
+
+import llm_anthology
 from llm_anthology import cli, corpus, index, loaders
 
 
@@ -538,3 +541,30 @@ def test_index_without_codex_home_discloses_the_live_store_it_will_read(
     assert "STATE_GRAPH_MERGED no" in out, (
         "with no --codex-home the state graph is NOT merged; the line above must not "
         "imply otherwise")
+
+
+def test_version_flag_reports_the_installed_version(capsys):
+    """`--version` is a contract of any published CLI, and 0.1.0 shipped without it.
+
+    A user who installs from PyPI and asks the tool what it is got
+    `error: unrecognized arguments: --version` and exit 2. Worse than useless: it looks
+    like the install is broken. The value comes from `llm_anthology.__version__`, which
+    is the copy that ships INSIDE the wheel, so what this prints is the version actually
+    running rather than whatever the source tree happens to say.
+    """
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"llm-anthology {llm_anthology.__version__}"
+
+
+def test_version_flag_is_not_confused_with_a_subcommand(capsys):
+    """`--version` must win before argparse starts demanding a subcommand.
+
+    argparse resolves `action="version"` during parsing, so this exits 0 rather than
+    falling through to the no-command path that returns 2.
+    """
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version", "claude", "nope", "nope"])
+    assert exc.value.code == 0
+    assert "llm-anthology" in capsys.readouterr().out

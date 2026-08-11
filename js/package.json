@@ -1,6 +1,6 @@
 {
   "name": "llm-anthology",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, offline, faithful renderer for ChatGPT / Claude / Gemini session exports (HTML + Markdown). No network, no egress.",
   "keywords": [
     "chatgpt",

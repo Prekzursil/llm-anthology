@@ -31,7 +31,7 @@ import argparse
 import os
 import sys
 
-from llm_anthology import build, corpus, demo, index, loaders, render_html
+from llm_anthology import __version__, build, corpus, demo, index, loaders, render_html
 from llm_anthology.adapters import codex_state
 
 # How many ingest errors get a detail line before the rest are summarised. A tree of
@@ -44,6 +44,13 @@ def build_parser():
         prog="llm-anthology",
         description="Render AI session exports to faithful HTML + clean Markdown. "
                     "Fully offline — no network calls, ever.")
+    # 0.1.0 shipped without this, so `llm-anthology --version` answered
+    # "error: unrecognized arguments: --version" and exit 2 -- which reads as a broken
+    # install rather than a missing flag. The value is `llm_anthology.__version__`, the
+    # copy that ships INSIDE the wheel, so it reports the version actually running and
+    # not whatever a nearby source tree happens to say.
+    p.add_argument("--version", action="version",
+                   version=f"llm-anthology {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     c = sub.add_parser("claude", help="Claude native export (a .json file or a directory of them)")

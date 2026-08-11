@@ -486,7 +486,7 @@ PY_PINS = [
     ("sidecar.py", "sidecar.py", 1107, "loaders.load_corpus(", "the worker call that passes none"),
     ("sidecar.py", "sidecar.py", 1110, "loaders.ingest_exports(", "the SECOND uncancellable call site, added when the export half was wired"),
     ("sidecar.py", "sidecar.py", 1037, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
-    ("sidecar.py", "cli.py", 168, "checked = [args.src, args.chatgpt_projects]",
+    ("sidecar.py", "cli.py", 175, "checked = [args.src, args.chatgpt_projects]",
      "the CLI existence-check the export guard ports, harvest deliberately excluded"),
     ("sidecar.py", "index.py", 168, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
     ("sidecar.py", "codex_state.py", 127, "def _db_path", "the LIVE Codex store fallback"),

@@ -283,7 +283,7 @@ _EXPORT_KEYS = tuple(
 #: `--gemini-harvest` is a grouping HINT, not a corpus: `load_gemini` reports a
 #: named-but-absent harvest as an ERROR and still falls back to the labelled provisional
 #: grouping. Hard-failing it at this boundary would make that documented, tested path
-#: unreachable from the app — exactly the exemption `cli.py:168-170` already carves out by
+#: unreachable from the app — exactly the exemption `cli.py:175-177` already carves out by
 #: checking only `src`, `chatgpt_projects` and each spec's PRIMARY path. It is still
 #: PATH-GUARDED: a UNC harvest is an outbound SMB/NTLM vector whether or not it exists.
 _EXPORT_EXISTENCE_EXEMPT = frozenset({"gemini_harvest"})
