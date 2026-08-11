@@ -563,3 +563,32 @@ describe("module entry point", () => {
     }
   });
 });
+
+describe("--version", () => {
+  it("prints the package version and exits 0, matching the python rail", () => {
+    // 0.1.0 shipped on both registries without this flag, so `llm-anthology --version`
+    // printed usage instead of a version on BOTH rails. Parity is the point of this
+    // file, so the two must agree on the exact output shape: `llm-anthology <semver>`.
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(main(["--version"])).toBe(0);
+      const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
+      const pkg = JSON.parse(
+        readFileSync(resolvePath(fileURLToPath(import.meta.url), "..", "..", "package.json"), "utf8"),
+      ) as { version: string };
+      expect(printed.trim()).toBe(`llm-anthology ${pkg.version}`);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("wins over a following subcommand rather than trying to run it", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(main(["--version", "claude", "nope", "nope"])).toBe(0);
+      expect(log.mock.calls.map((c) => String(c[0])).join("\n")).toContain("llm-anthology ");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});

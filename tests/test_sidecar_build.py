@@ -1144,7 +1144,7 @@ def test_an_export_path_is_refused_when_UNC(tmp_path):
 def test_the_GEMINI_HARVEST_is_deliberately_NOT_existence_checked(tmp_path):
     """A documented CLI exemption that must survive the port, not a gap.
 
-    `cli.py:168-170` checks `src`, `chatgpt_projects` and each spec's PRIMARY path — and
+    `cli.py:175-177` checks `src`, `chatgpt_projects` and each spec's PRIMARY path — and
     pointedly not the gemini harvest, because `load_gemini` reports a named-but-absent
     harvest as an ERROR while still falling back to the labelled provisional grouping.
     Hard-failing here would make that documented, tested path unreachable from the app,

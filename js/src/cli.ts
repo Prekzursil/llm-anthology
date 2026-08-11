@@ -433,11 +433,36 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
+/**
+ * The version this build reports, read from the package.json that ships beside it.
+ *
+ * Resolved relative to THIS module rather than to cwd, so it is the version of the
+ * installed package and not of whatever directory the user happens to be standing in.
+ * The path works in both layouts: from `dist/cli.js` it resolves to the tarball root,
+ * and from `src/cli.ts` under vitest it resolves to `js/package.json`. Reading the file
+ * directly rather than importing it is deliberate — `exports` does not expose
+ * `./package.json`, so a bare import would throw ERR_PACKAGE_PATH_NOT_EXPORTED.
+ */
+export function packageVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as { version: string };
+  return pkg.version;
+}
+
 export function main(argv: string[]): number {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "-h" || cmd === "--help") {
     console.log(USAGE);
     return cmd ? 0 : 2;
+  }
+
+  // Matches the python rail's `--version` exactly, output shape included, because
+  // parity between the two CLIs is the contract this file is tested against. Python
+  // uses argparse `action="version"`, which also wins before any subcommand is
+  // resolved — hence this check sits above the command dispatch rather than inside it.
+  if (cmd === "--version") {
+    console.log(`llm-anthology ${packageVersion()}`);
+    return 0;
   }
 
   if (cmd === "demo") {

@@ -13,6 +13,36 @@ Release. See [RELEASING.md](RELEASING.md).
 
 Nothing yet.
 
+## [0.1.1] — 2026-08-12
+
+A same-day patch for two things that only became visible once 0.1.0 was actually
+installed from the registries. Neither is a behaviour change to ingestion, rendering
+or the corpus; if 0.1.0 works for you there is no urgency in upgrading.
+
+### Fixed
+
+- **`--version` now works on both rails.** 0.1.0 shipped without it, so asking either
+  CLI what it was printed usage and exited 2 — which reads as a broken install rather
+  than a missing flag. Both rails now print `llm-anthology <version>` and exit 0, and
+  the shape is pinned by tests on each side because CLI parity is a contract here.
+  The Python value comes from `llm_anthology.__version__`, the copy inside the wheel;
+  the JS value is read from the `package.json` shipped beside `dist/cli.js`. Both
+  therefore report the version actually running rather than a nearby source tree.
+- **The PyPI project page no longer contradicts itself.** 0.1.0's long description was
+  built from a README still carrying the pre-release banner, so the page for the
+  published package told visitors "the first release is not published yet". PyPI has
+  no metadata-edit API — the description is baked into the uploaded distribution — so
+  correcting it required a new version. npm was never affected: it ships
+  `js/README.md`, which never carried that banner.
+
+### Changed
+
+- The release workflow's PyPI and npm publish jobs are now **idempotent**. A version
+  already on a registry is a logged no-op instead of a hard failure, so re-running a
+  release after a later job fails retries the job that actually broke rather than
+  dying at publish. PyPI uses `skip-existing`; npm has no equivalent, so the guard is
+  an explicit `npm view` check reading name and version out of the tarball being
+  published.
 ## [0.1.0] — 2026-08-11
 
 First public release. There is no earlier version, so rather than a diff against
@@ -123,5 +153,6 @@ than an error, which is the class most worth knowing about.
   there would have produced a correctly-named package containing an engine that
   announces the previous version.
 
-[Unreleased]: https://github.com/Prekzursil/llm-anthology/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Prekzursil/llm-anthology/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Prekzursil/llm-anthology/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Prekzursil/llm-anthology/releases/tag/v0.1.0
