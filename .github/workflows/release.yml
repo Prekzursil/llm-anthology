@@ -94,7 +94,18 @@ jobs:
         with:
           name: dist
           path: dist/
+      # skip-existing makes this job IDEMPOTENT. Without it, a version already on the
+      # index is a hard 400 and the whole release run goes red, which matters in two
+      # real cases: 0.1.0 was published by hand before the first Release was cut, and
+      # any release where a LATER job fails and the run is re-run -- the re-run would
+      # then fail here instead of retrying the job that actually broke. With it, an
+      # already-present file is a logged no-op and a genuinely new file still uploads.
+      # It does NOT weaken the gate: a CHANGED file at an existing version is still an
+      # error, because PyPI forbids overwriting and skip-existing only skips identical
+      # filenames it already has.
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # ===================================================================== npm ===
   js-build:
@@ -208,12 +219,30 @@ jobs:
       # publish must not execute repo lifecycle scripts (js/package.json's
       # prepublishOnly rebuilds and re-tests) -- that would put a build back inside
       # the token-holding job, which is the exact property this shape exists to avoid.
+      # npm has no --skip-existing, so the idempotence guard is explicit. Same two cases
+      # as the PyPI job: 0.1.0 was published by hand before the first Release was cut,
+      # and a re-run after a LATER job fails must not die here instead of retrying the
+      # job that actually broke. npm rejects a re-publish of an existing version with
+      # 403 "You cannot publish over the previously published versions", which is a
+      # hard failure rather than something --force can override.
+      #
+      # Name and version are read from the TARBALL rather than from js/package.json,
+      # so the check is about the exact bytes being published and cannot drift from a
+      # checkout that moved underneath it.
       - name: publish the validated tarball
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           TGZ=$(ls npm-dist/*.tgz)
-          echo "publishing $TGZ"
+          META=$(tar -xzOf "$TGZ" package/package.json)
+          NAME=$(printf '%s' "$META" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).name')
+          VER=$(printf '%s' "$META" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "SKIP: $NAME@$VER is already on the registry; nothing to publish."
+            echo "      (re-runs are idempotent by design -- see the comment above)"
+            exit 0
+          fi
+          echo "publishing $TGZ as $NAME@$VER"
           npm publish "$TGZ" --provenance --access public --ignore-scripts
 
   # ====================================================== Windows installer ===

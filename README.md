@@ -133,15 +133,6 @@ The engine is a **stdio** JSON-RPC server — deliberately not a localhost HTTP 
 There are three ways in, and they are three separate artifacts of the same release. Pick
 the one that matches what you want.
 
-> **The first release is not published yet.** `llm-anthology` is unregistered on both
-> [PyPI](https://pypi.org/project/llm-anthology/) and
-> [npm](https://www.npmjs.com/package/llm-anthology), and this repository has no version
-> tag, so the two package-manager commands below do not resolve *yet* and there is no
-> installer to download. Until then, use **[From source](#from-source)**. The release
-> runbook is
-> [RELEASING.md](https://github.com/Prekzursil/llm-anthology/blob/main/RELEASING.md);
-> delete this note when 0.1.0 ships.
-
 ### The desktop app — Windows
 
 This is the product. Download `LLM Anthology_<version>_x64-setup.exe` from the

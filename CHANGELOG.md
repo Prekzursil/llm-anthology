@@ -13,7 +13,7 @@ Release. See [RELEASING.md](RELEASING.md).
 
 Nothing yet.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-08-11
 
 First public release. There is no earlier version, so rather than a diff against
 nothing, this entry says what you get — and then, because the run-up to this release was
