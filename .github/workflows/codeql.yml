@@ -1,5 +1,68 @@
 name: CodeQL
 
+# GATING-INTENT: ADVISORY
+# MEASURED-ON: 2026-08-13
+#
+# WHY THIS IS SPELLED OUT.
+#
+# Every other gate in this repo argues its posture out loud -- ci.yml:187-190 spends four lines
+# on why the `cockpit` job is "Deliberately BLOCKING on both legs". This file said nothing, so a
+# reader could not tell whether a CodeQL finding was a merge gate or a note, and the workflow's
+# own text is not evidence either way: whether a check blocks is decided by branch protection
+# and rulesets, which live outside the file. An advisory gate is fine. An advisory gate nobody
+# documented as advisory is the trap.
+#
+# WHAT WAS MEASURED, read-only, five mechanically different probes, all on 2026-08-13:
+#
+# SETTLING-PROBE: gh api repos/Prekzursil/llm-anthology/branches/main/protection  -> 404 "Branch not protected"
+# SETTLING-PROBE: gh api repos/Prekzursil/llm-anthology/branches/main --jq .protected  -> false
+# SETTLING-PROBE: gh api repos/Prekzursil/llm-anthology/rulesets  -> []
+# SETTLING-PROBE: gh api repos/Prekzursil/llm-anthology/rules/branches/main  -> []  (evaluated view, catches inherited rulesets too)
+# SETTLING-PROBE: gh api repos/Prekzursil/llm-anthology/code-scanning/default-setup  -> state "not-configured"
+#
+# Detector control for that 404: `gh api repos/Prekzursil/llm-anthology --jq .permissions.admin`
+# -> true. The token CAN read protection, so the 404 means "no protection", not "no access". A
+# 404 from an under-scoped token is a DETECTOR failure, never a verdict.
+#
+# Confirmation from a fifth, independent direction: 34 code-scanning alerts were OPEN (7 error /
+# 22 warning / 5 note by rule severity; 6 of them `high` security-severity) while the three most
+# recent runs of this workflow all concluded `success`. Alerts present AND the check green is
+# what advisory looks like from the outside.
+#
+# So: no CodeQL finding blocks a merge here -- and in fact NO check does, because `main` carries
+# neither branch protection nor a ruleset. Findings land in the Security tab and are read by a
+# human. That is deliberate: the analyze step below sets no severity threshold, and
+# `queries: security-and-quality` is chosen to cast a wide quality net that would red every PR
+# if it gated.
+#
+# HOW TO PROMOTE THIS TO BLOCKING. Both halves are required; neither works alone.
+#   1. Fail the RUN on a finding -- add a severity threshold to the analyze step below. Doing
+#      that turns `tests/test_codeql_intent.py` red until this declaration is changed to
+#      BLOCKING, and vice versa: the declaration and the machinery are gated against each other
+#      on purpose, so the two can never drift apart silently again.
+#   2. Fail the MERGE -- add a ruleset on `main` that either requires the check contexts named
+#      below, or carries a `code_scanning` rule with an `alerts_threshold`. Until a ruleset or
+#      branch protection exists, a red check is a red X that stops nobody.
+#
+# THE CHECK-RUN CONTEXT NAMES THIS WORKFLOW ACTUALLY PRODUCES -- the job `name:` expanded over
+# the language matrix, confirmed against the check-runs on the tip of `main`:
+#
+# CHECK-CONTEXT: analyze (python)
+# CHECK-CONTEXT: analyze (javascript-typescript)
+#
+# CONTEXT-TRAP: this repo produces no check named `CodeQL`, and none named `codeql / CodeQL`.
+# CONTEXT-TRAP: requiring either string pins a required context that never arrives, so the PR
+# CONTEXT-TRAP: sits pending forever instead of failing loudly -- and the reverse rename, from a
+# CONTEXT-TRAP: required context to one nothing produces, silently un-gates a check that was
+# CONTEXT-TRAP: blocking. Either way the required string must be one of the two above, verbatim,
+# CONTEXT-TRAP: and re-derived whenever the matrix or the job `name:` changes.
+#
+# SETUP-CONFLICT: this is ADVANCED setup. Turning on code-scanning default setup takes ownership
+# SETUP-CONFLICT: of the languages it covers and stops this workflow uploading results for them,
+# SETUP-CONFLICT: which reads as "CodeQL still green" while this file has effectively stopped
+# SETUP-CONFLICT: reporting. Default setup measured "not-configured", so the clash is latent --
+# SETUP-CONFLICT: which is exactly the state in which it gets tripped by accident later.
+
 on:
   push:
     branches: [main]

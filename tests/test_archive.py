@@ -43,24 +43,6 @@ def _mixed_records():
     return [b"alpha\n", b"br\n", b"gammagamma\n", b"d\n", b"epsilon-tail"]
 
 
-# --------------------------------------------------------- split_records()
-
-def test_split_records_is_a_lossless_inverse_of_join():
-    """`b"".join(split_records(raw)) == raw` for every shape a rollout file takes:
-    empty, single line, trailing newline, no trailing newline, a blank line, and
-    a body with no separator at all. This is what lets re-encode reconstruct the
-    source byte-for-byte."""
-    for raw in (b"", b"a\n", b"a\nb\n", b"a\nb", b"\n", b"a\n\nb\n", b"no-sep"):
-        assert b"".join(archive.split_records(raw)) == raw
-    assert archive.split_records(b"") == []                       # `not raw` true
-    assert archive.split_records(b"a\nb\n") == [b"a\n", b"b\n"]   # trailing-sep end
-    assert archive.split_records(b"a\nb") == [b"a\n", b"b"]       # no-trailing-sep end
-
-
-def test_split_records_honours_a_custom_separator():
-    assert archive.split_records(b"a|b|", b"|") == [b"a|", b"b|"]
-
-
 # ----------------------------------------------------- encode_records()
 
 def test_each_frame_decompresses_to_its_record_independently():
@@ -141,22 +123,25 @@ def test_empty_archive_round_trips_as_zero_frames():
         reader.frame(0)
 
 
-# ---------------------------------------------------- reencode() flow
+# ---------------------------------------------------- whole-archive round trip
 
-def test_reencode_a_plain_zst_into_a_seekable_archive(tmp_path):
-    """End to end: a plain single-frame .zst rollout is re-encoded so each JSONL
-    record becomes an independently openable frame, the source is reconstructed
-    byte-for-byte, and a single record opens without inflating the whole file."""
-    raw = b'{"turn":0}\n{"turn":1}\n{"turn":2}\n'          # synthetic JSONL rollout
-    src = tmp_path / "rollout.jsonl.zst"
-    src.write_bytes(zstandard.ZstdCompressor(level=5).compress(raw))
+def test_a_record_list_round_trips_through_an_archive_byte_for_byte(tmp_path):
+    """End to end over the surface that actually ships: a JSONL-shaped record list is
+    encoded, written to disk, read back and each record opens independently, with the
+    concatenation equal to the original bytes.
+
+    This REPLACES `test_reencode_a_plain_zst_into_a_seekable_archive`, which drove the same
+    property through the deleted disk-to-disk converter. The property is kept, the dead
+    entry point is not — the same trade the G-17 deletion made when it moved
+    `index.posting_count`'s invariant into a local test helper."""
+    records = [b'{"turn":0}\n', b'{"turn":1}\n', b'{"turn":2}\n']
     dst = tmp_path / "rollout.seekable.zst"
+    dst.write_bytes(archive.encode_records(records))
 
-    count = archive.reencode(str(src), str(dst))
+    reader = archive.SeekableReader(dst.read_bytes())
 
-    assert count == 3
-    reader = archive.SeekableReader.open(str(dst))
-    assert b"".join(reader) == raw                          # lossless round-trip
+    assert len(reader) == 3
+    assert b"".join(reader) == b"".join(records)            # lossless round-trip
     assert reader.frame(1) == b'{"turn":1}\n'               # random single record
 
 
@@ -204,6 +189,76 @@ def test_reader_parses_a_checksummed_seek_table_and_skips_the_checksum():
     skippable = struct.pack("<II", archive._SKIPPABLE_MAGIC, len(content)) + bytes(content)
     reader = archive.SeekableReader(b"".join(frames) + skippable)
     assert list(reader) == records
+
+
+# --------------------------------------- U-CLEAN-DEADCODE: the re-encode closure is GONE
+#
+# WHY A TEST AND NOT JUST A DELETION — the reasoning `tests/test_g17_dead_code_removed.py`
+# already established for `dedup.collapse_corpus` / `index.posting_count`: a deletion is not
+# self-enforcing, and a function reachable only from its own test is exactly the shape that
+# grows back. An absence assertion turns a re-introduction into a red build and records the
+# reason, so the next author argues with the decision instead of guessing at it.
+#
+# WHAT WENT, AND WHY IT WAS A CLOSURE, NOT ONE FUNCTION. `reencode(source, destination)`
+# read a plain `.zst` off disk, split it and wrote a seekable archive. Measured by an AST
+# reference walk over every non-vendored `.py` in the repo (imports resolved absolute AND
+# relative, module-attribute and bare-name loads counted, the defining `def` span excluded so
+# self-delegation does not read as a use): zero production callers, one test caller. Its two
+# callees then had no other caller at all — `split_records` was used ONLY at the old
+# `archive.py:142` and `_decompress_all` ONLY at `:141` — and `SeekableReader.open` was
+# reached ONLY from this file's `reencode` test. Deleting the head alone would have MADE
+# three new orphans, so the whole dead subgraph went in one commit.
+#
+# WHAT SURVIVES AND WHY. `encode_records` and `SeekableReader` are the module's live
+# production surface (`corpus.py:1200` stores a conversation body as a seekable archive;
+# `:1222` and `:1250` read one back), and `SeekTableEntry` is used by three internal helpers
+# outside the deleted span, so it is NOT an orphan — an earlier review that listed it
+# alongside `split_records` was measuring text, not references.
+
+def test_archive_no_longer_exposes_reencode():
+    """The plain-`.zst` -> seekable re-encoder. Nothing in `corpus`, `loaders`, `sidecar`
+    or `cli` ever re-encoded an archive; the corpus writes seekable frames directly through
+    `encode_records`. Re-adding it means wiring a caller too."""
+    assert not hasattr(archive, "reencode"), (
+        "archive.reencode is back. It is only useful WITH a caller - if a production path "
+        "now re-encodes a plain .zst rollout, say so and delete this assertion deliberately."
+    )
+
+
+def test_archive_no_longer_exposes_split_records():
+    """The separator-preserving splitter, whose `b"".join(split_records(raw)) == raw`
+    invariant existed to let `reencode` reconstruct its source byte-for-byte. With
+    `reencode` gone the invariant has nothing to guarantee: every production caller already
+    holds a record LIST and hands it straight to `encode_records`."""
+    assert not hasattr(archive, "split_records"), (
+        "archive.split_records is back. If a caller now needs to split a raw blob into "
+        "records, wire it and delete this assertion; a test-only helper belongs in tests."
+    )
+
+
+def test_the_archive_module_surface_is_exactly_what_is_wired():
+    """A named-absence pair only proves the two names. This asserts the WHOLE exported
+    surface, so a third orphan cannot appear unremarked, and doubles as the detector control
+    for the two assertions above: if the import were broken or the module empty, `hasattr`
+    would be vacuously false while THIS assertion would fail loudly."""
+    assert archive.__all__ == ["SeekTableEntry", "encode_records", "SeekableReader"]
+    for name in archive.__all__:
+        assert hasattr(archive, name), "__all__ names %s, which does not exist" % name
+
+
+def test_the_archive_docstring_does_not_advertise_a_deleted_function():
+    """A module docstring that still describes a removed callee is worse than the dead code
+    was: the function a reader cannot find reads as a broken import. Same rule the G-17
+    deletion applied to `dedup.py`."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "llm_anthology" / "archive.py").read_text(
+        encoding="utf-8")
+    for gone in ("reencode", "split_records", "_decompress_all"):
+        assert gone not in source, (
+            "archive.py still names %s. Every mention has to go with the function, or the "
+            "file documents a callee that no longer exists." % gone
+        )
 
 
 if __name__ == "__main__":       # pragma: no cover

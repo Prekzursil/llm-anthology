@@ -1,8 +1,8 @@
-"""Seekable-zstd re-encoding for llm_anthology rollout archives.
+"""Seekable-zstd encoding for llm_anthology conversation archives.
 
-A rollout `.zst` is a single zstd frame: opening one record means inflating the
-whole file. This module re-encodes such an archive into the zstd **seekable
-format** so a single record opens in isolation:
+A plain `.zst` blob is a single zstd frame: opening one record means inflating the
+whole thing. This module writes the zstd **seekable format** instead, so a single
+record opens in isolation:
 
   * every record becomes its OWN complete, independently-compressed zstd frame,
     concatenated in order;
@@ -23,25 +23,30 @@ byte-for-byte equal to slicing the fully-decompressed archive.
 
 Format reference: the zstd seekable format (contrib/seekable_format).
 
+THE WHOLE SURFACE IS TWO NAMES, deliberately. `encode_records` writes an archive
+from a record list and `SeekableReader` reads one back — that pair is what
+`corpus.py` uses to store a conversation body and to slice one back
+out again (`corpus.py:1200`, `:1222`, `:1250`). There is no disk-to-disk converter and no raw-blob
+splitter: every caller already holds its records in memory, so a `.zst` file was
+never the input. A converter DID ship here and was deleted with its callees under
+U-CLEAN-DEADCODE after an AST reference walk measured zero production callers for
+the three of them; `tests/test_archive.py` pins the absence and says why.
+
 PRIVACY: this module moves opaque bytes between compression formats and reads
 only sizes/offsets — it never inspects or emits record content. Tests use
 synthetic fixtures only.
 """
 from __future__ import annotations
 
-import io
 import struct
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Tuple, Union
 
 import zstandard
 
 __all__ = [
     "SeekTableEntry",
-    "split_records",
     "encode_records",
-    "reencode",
     "SeekableReader",
 ]
 
@@ -65,30 +70,6 @@ class SeekTableEntry:
     the record it decompresses to."""
     compressed_size: int
     decompressed_size: int
-
-
-# ------------------------------------------------------------------ splitting
-
-def split_records(raw: bytes, separator: bytes = b"\n") -> List[bytes]:
-    """Split `raw` on `separator`, KEEPING the separator on each record, so that
-    ``b"".join(split_records(raw)) == raw`` for any input — the property that lets
-    re-encoding reconstruct the source byte-for-byte."""
-    if not raw:
-        return []
-    records: List[bytes] = []
-    start = 0
-    step = len(separator)
-    while True:
-        index = raw.find(separator, start)
-        if index < 0:                       # no further separator: final record
-            records.append(raw[start:])
-            break
-        end = index + step
-        records.append(raw[start:end])
-        start = end
-        if start >= len(raw):               # source ended exactly on a separator
-            break
-    return records
 
 
 # ------------------------------------------------------------------ encoding
@@ -124,24 +105,6 @@ def encode_records(records: Iterable[Union[bytes, str]], *,
         entries.append(SeekTableEntry(len(frame), len(raw)))
     body += _encode_seek_table(entries)
     return bytes(body)
-
-
-def _decompress_all(blob: bytes) -> bytes:
-    """Fully decompress a (possibly multi-frame) zstd blob, skipping any skippable
-    frame. Used to read the plain source archive during re-encoding."""
-    dctx = zstandard.ZstdDecompressor()
-    return dctx.stream_reader(io.BytesIO(blob), read_across_frames=True).read()
-
-
-def reencode(source, destination, *, level: int = _DEFAULT_LEVEL,
-             separator: bytes = b"\n") -> int:
-    """Re-encode the plain `.zst` at `source` into a seekable archive at
-    `destination`, one frame per `separator`-delimited record. Returns the number
-    of records written."""
-    raw = _decompress_all(Path(source).read_bytes())
-    records = split_records(raw, separator)
-    Path(destination).write_bytes(encode_records(records, level=level))
-    return len(records)
 
 
 # ------------------------------------------------------------------ reading
@@ -195,11 +158,6 @@ class SeekableReader:
             compressed += entry.compressed_size
             decompressed += entry.decompressed_size
         self._decompressed_size = decompressed
-
-    @classmethod
-    def open(cls, path) -> "SeekableReader":
-        """Read a seekable archive from `path`."""
-        return cls(Path(path).read_bytes())
 
     def __len__(self) -> int:
         return len(self._entries)

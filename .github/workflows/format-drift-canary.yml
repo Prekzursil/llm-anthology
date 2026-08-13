@@ -55,10 +55,46 @@ on:
   # workflow is unreachable for a week.
   workflow_dispatch:
 
-  # Path-filtered, so editing the canary or anything it watches validates it on the PR that
-  # makes the change instead of a week later. No `push:` twin: ci.yml's `js` job already
-  # covers the post-merge direction for adapter parity, and GitHub Actions does not support
-  # YAML anchors, so a second copy of this list would be a hand-maintained duplicate.
+  # Path-filtered on BOTH integration routes this repo actually uses.
+  #
+  # `pull_request` validates the change on the PR that makes it, instead of a week later.
+  #
+  # `push` covers the direct-to-main route, and it is NOT optional here. Measured 2026-08-13:
+  # this workflow had run ZERO times since it was registered on 2026-08-10 -- `gh api
+  # "repos/{owner}/{repo}/actions/workflows/331270287/runs"` -> `total_count: 0`,
+  # corroborated by `gh run list --workflow=format-drift-canary.yml --limit 25` -> `[]` while
+  # `gh run list --limit 5` returned five runs of other workflows, so the detector was sound
+  # and the absence was real. No trigger had had an opportunity: the Monday 06:17 UTC slot had
+  # already passed when the file was registered at 16:32 UTC that same Monday, the only two
+  # PRs merged since (#18, #19) touched no watched path, and this workflow's own three
+  # commits -- 3524df7, 10d9bce, 4b8d9e6 -- each edited THIS file, the first entry in the
+  # filters below, yet all three are on main's first-parent chain: direct pushes, not PR
+  # merges. A canary whose own edits cannot trigger it is indistinguishable from an absent one.
+  #
+  # This replaces an earlier note arguing a `push:` twin was redundant because "ci.yml's `js`
+  # job already covers the post-merge direction". That holds for ADAPTER parity only --
+  # `grep -n "gen-" .github/workflows/ci.yml` matches exactly one line (`:98`, the synthetic
+  # adapter generator) -- so render-parity.json and sanitize-parity.json had no post-merge
+  # coverage at all.
+  #
+  # GitHub Actions still has no YAML anchors, so the two lists below are hand-maintained
+  # duplicates. `tests/test_format_drift_canary.py` pins them EQUAL, and pins both to cover
+  # every generator this job runs, rather than trusting them to stay in step.
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/format-drift-canary.yml"
+      - "tools/gen-adapter-parity.py"
+      - "tools/gen-render-parity.py"
+      - "tools/gen-parity-fixture.py"
+      - "js/test/fixtures/gen-adapter-parity-synthetic.py"
+      - "js/test/fixtures/*.json"
+      - "llm_anthology/adapters/**"
+      - "llm_anthology/render_html.py"
+      - "llm_anthology/render_md.py"
+      - "llm_anthology/sanitize.py"
+
   pull_request:
     paths:
       - ".github/workflows/format-drift-canary.yml"
@@ -101,8 +137,32 @@ jobs:
         with:
           node-version: "22"
 
-      # No `pip install`: every generator puts the repo root on sys.path itself and the whole
-      # import chain is stdlib-only -- the same reasoning ci.yml's `js` job records.
+      # The generators put the repo root on sys.path themselves, so `llm_anthology` imports
+      # without an install -- but its import CHAIN is not stdlib-only, and the comment that
+      # used to stand here claimed it was.
+      #
+      # MEASURED on run 31661604666 (2026-08-13), the first execution this workflow ever had:
+      # the regenerate step below died with `ModuleNotFoundError: No module named
+      # 'markdown_it'` at tools/gen-render-parity.py:22 -> llm_anthology/render_html.py:18.
+      # So this canary could never have reached green, and nothing noticed, because it had
+      # never run at all. The two failures compound: an unrunnable gate hides a broken one.
+      #
+      # The false premise was inherited verbatim from ci.yml's `js` job (`:66`), where it is
+      # TRUE -- that job runs only gen-adapter-parity-synthetic.py, whose chain really is
+      # stdlib-only. This job runs three more generators and gen-render-parity.py reaches
+      # render_html -> markdown-it-py.
+      #
+      # `-e .` rather than a hand-listed package: it reads pyproject.toml, so it cannot drift
+      # from the declared dependencies the way a literal list would -- and drift is this job's
+      # entire subject. Not `.[dev]`: nothing here runs pytest. Measured today the chain pulls
+      # only markdown-it-py (zstandard and ijson are imported by archive.py and loaders.py,
+      # which no generator reaches), but installing the declared set is what keeps a future
+      # generator from failing here the way this one did.
+      - name: install the engine's declared runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
       - name: install the js rail (it consumes the fixtures regenerated below)
         working-directory: js
         run: npm ci

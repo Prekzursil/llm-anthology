@@ -21,6 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  AppInfo,
   BuildParams,
   BuildStatus,
   CreateCorpusResult,
@@ -29,6 +30,7 @@ import type {
   OpenCorpusResult,
 } from "../ipc/types";
 import {
+  CHANGE_DESTINATION_LABEL,
   DiscoveryPanel,
   NOTHING_FOUND_LABEL,
   type DiscoveryDeps,
@@ -71,6 +73,32 @@ function codexStore(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
     detail: { items_root: "C:\\Users\\me\\.codex\\sessions", rollouts_zst: 2043 },
     ...over,
   });
+}
+
+/**
+ * The default index `app_info` resolves. Shape MEASURED by
+ * `.scratch/perfect/_probe_cbdialog_locations.ps1` against this machine's real environment
+ * (`%LOCALAPPDATA%\LLM Anthology\anthology.sqlite`); the profile name is generic here.
+ */
+const DEFAULT_INDEX = "C:\\Users\\me\\AppData\\Local\\LLM Anthology\\anthology.sqlite";
+
+function appInfoResult(): AppInfo {
+  const dataDir = "C:\\Users\\me\\AppData\\Local\\LLM Anthology";
+  return {
+    name: "Cockpit",
+    version: "0.1.1",
+    engine: "not-wired",
+    locations: {
+      data_dir: dataDir,
+      index_path: DEFAULT_INDEX,
+      logs_dir: `${dataDir}\\logs`,
+      cache_dir: `${dataDir}\\cache`,
+      exports_dir: "C:\\Users\\me\\Documents\\LLM Anthology",
+      grant_roots: [dataDir],
+    },
+    locations_error: null,
+    diagnostics: null,
+  };
 }
 
 function builtIndex(over: Partial<DiscoveryFinding> = {}): DiscoveryFinding {
@@ -702,10 +730,14 @@ describe("collapsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("importing through the shell", () => {
-  it("asks the NATIVE save dialog where to put the new index", async () => {
-    // The default `chooseDestination`, which is what the app gets. A webview
-    // `<input type="file">` yields no filesystem path under Tauri v2, so this is the only way
-    // to name a destination.
+  it("FALLS BACK to the native save dialog when no default index can be resolved", async () => {
+    // The default `chooseDestination`, reached because this `mount()` has no `appInfo` — the
+    // shape a shell too old to answer the command has. A webview `<input type="file">` yields
+    // no filesystem path under Tauri v2, so the native dialog is the only way to name one.
+    //
+    // THIS USED TO BE THE ONLY PATH, and this test's own comment used to say the dialog is
+    // "what the app gets". It no longer is: the app's ipc answers `app_info`, so the import
+    // below runs with zero dialogs — asserted in "creates the default index with NO dialog".
     saveDialog.mockResolvedValue("C:\\Users\\me\\anthology.db");
     const shell = mount({}, { now: (): number => NOW });
     await shell.panel.scan();
@@ -722,6 +754,85 @@ describe("importing through the shell", () => {
       sessions_root: "C:\\Users\\me\\.codex\\sessions",
       codex_home: "C:\\Users\\me\\.codex",
     });
+  });
+
+  it("creates the default index with NO dialog, and says on screen where it went", async () => {
+    // C-B, at the surface the owner screenshotted: the first run demanded a "Create corpus
+    // index" save dialog. It does not any more — `app_info` already knew where the app keeps
+    // its own index, and the panel now consumes that instead of asking.
+    const shell = mount(
+      { appInfo: async (): Promise<AppInfo> => appInfoResult() },
+      { now: (): number => NOW },
+    );
+    await shell.panel.scan();
+
+    // The destination is stated BEFORE anything is pressed — a silent default is a different
+    // (and worse) failure than a dialog.
+    expect(text(shell.container, ".discovery-destination")).toContain(DEFAULT_INDEX);
+
+    section(shell, "codex").querySelector<HTMLButtonElement>(".discovery-action")?.click();
+    await vi.waitFor(() => expect(shell.ipc.builds).toHaveLength(1));
+
+    expect(saveDialog).not.toHaveBeenCalled();
+    expect(shell.ipc.created).toEqual([DEFAULT_INDEX]);
+    expect(shell.ipc.opened).toEqual([DEFAULT_INDEX]);
+  });
+
+  it("offers the dialog as an explicit OVERRIDE, and repaints the destination", async () => {
+    saveDialog.mockResolvedValue("C:\\Elsewhere\\mine.db");
+    const shell = mount(
+      { appInfo: async (): Promise<AppInfo> => appInfoResult() },
+      { now: (): number => NOW },
+    );
+    await shell.panel.scan();
+
+    const change = shell.container.querySelector<HTMLButtonElement>(".discovery-change-destination");
+    expect(change?.textContent).toBe(CHANGE_DESTINATION_LABEL);
+    change?.click();
+
+    await vi.waitFor(() =>
+      expect(text(shell.container, ".discovery-destination")).toContain("C:\\Elsewhere\\mine.db"),
+    );
+    expect(saveDialog).toHaveBeenCalledTimes(1);
+
+    section(shell, "codex").querySelector<HTMLButtonElement>(".discovery-action")?.click();
+    await vi.waitFor(() => expect(shell.ipc.builds).toHaveLength(1));
+    expect(shell.ipc.created).toEqual(["C:\\Elsewhere\\mine.db"]);
+    // Still one: the override was reused rather than re-asked.
+    expect(saveDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the destination line while a corpus is attached", async () => {
+    // An import then lands in the open corpus and creates nothing, so there is no
+    // destination to name and the line would be describing a step that will not happen.
+    const shell = mount(
+      { appInfo: async (): Promise<AppInfo> => appInfoResult() },
+      { now: (): number => NOW },
+    );
+    await shell.panel.scan();
+    const line = (): boolean | undefined =>
+      shell.container.querySelector<HTMLElement>(".discovery-destination")?.hidden;
+    const button = (): boolean | undefined =>
+      shell.container.querySelector<HTMLElement>(".discovery-change-destination")?.hidden;
+    expect(line()).toBe(false);
+
+    shell.panel.setCorpusAttached("C:\\existing.db");
+    expect(line()).toBe(true);
+    expect(button()).toBe(true);
+  });
+
+  it("keeps the bare .discovery-action selector on the Dismiss button", async () => {
+    // The Change button shares `.discovery-action` for its STYLE, exactly as Dismiss does,
+    // so it is created AFTER Dismiss — otherwise it would silently steal the bare selector
+    // that "scopes a row's action away from the Dismiss button" pins.
+    const shell = mount(
+      { appInfo: async (): Promise<AppInfo> => appInfoResult() },
+      { now: (): number => NOW },
+    );
+    await shell.panel.scan();
+    expect(shell.container.querySelector(".discovery-action")?.className).toContain(
+      "discovery-dismiss",
+    );
   });
 
   it("does nothing when the save dialog is dismissed", async () => {

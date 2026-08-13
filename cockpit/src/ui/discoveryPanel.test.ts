@@ -17,6 +17,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  AppInfo,
   BuildParams,
   BuildStatus,
   CreateCorpusResult,
@@ -29,10 +30,13 @@ import {
   buildOutcomeMessage,
   buildProgressLabel,
   capNote,
+  CHANGE_DESTINATION_LABEL,
   countLabel,
   DEFAULT_POLL_LIMITS,
+  defaultIndexPath,
   deriveAction,
   deriveBuildParams,
+  destinationNote,
   detailSummary,
   DiscoveryPanelController,
   expandLabel,
@@ -1002,6 +1006,74 @@ describe("buildProgressLabel", () => {
 });
 
 // ---------------------------------------------------------------------------
+// the zero-dialog default destination
+// ---------------------------------------------------------------------------
+
+/**
+ * The MEASURED value `app_info` resolves on this machine, not an invented one.
+ *
+ * `.scratch/perfect/_probe_cbdialog_locations.ps1` read the inputs the Rust resolver takes
+ * (`base_dirs_with`, `lib.rs:598-612`) and each guard it must survive, and derived
+ * `%LOCALAPPDATA%\LLM Anthology\anthology.sqlite` — absolute, non-roaming, non-UNC, on a
+ * DRIVE_FIXED volume, with the parent directory already present. The user profile name is
+ * replaced here so the fixture is not machine-specific; the SHAPE is the measured one.
+ */
+const DEFAULT_INDEX = "C:\\Users\\me\\AppData\\Local\\LLM Anthology\\anthology.sqlite";
+
+function appInfo(over: Partial<AppInfo> = {}): AppInfo {
+  return {
+    name: "Cockpit",
+    version: "0.1.1",
+    engine: "not-wired",
+    locations: {
+      data_dir: "C:\\Users\\me\\AppData\\Local\\LLM Anthology",
+      index_path: DEFAULT_INDEX,
+      logs_dir: "C:\\Users\\me\\AppData\\Local\\LLM Anthology\\logs",
+      cache_dir: "C:\\Users\\me\\AppData\\Local\\LLM Anthology\\cache",
+      exports_dir: "C:\\Users\\me\\Documents\\LLM Anthology",
+      grant_roots: ["C:\\Users\\me\\AppData\\Local\\LLM Anthology"],
+    },
+    locations_error: null,
+    diagnostics: null,
+    ...over,
+  };
+}
+
+describe("defaultIndexPath", () => {
+  it("reads the resolved default out of app_info", () => {
+    expect(defaultIndexPath(appInfo())).toBe(DEFAULT_INDEX);
+  });
+
+  it("is null when resolution FAILED, so the caller falls back instead of guessing", () => {
+    // `locations` and `locations_error` are always both present and exactly one is null
+    // (`lib.rs:26-29`). A stripped environment with no %USERPROFILE% takes this arm, and
+    // inventing a path for it would be the one thing worse than showing the dialog.
+    expect(
+      defaultIndexPath(
+        appInfo({ locations: null, locations_error: "neither LOCALAPPDATA nor USERPROFILE is set" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a blank index_path as no answer", () => {
+    // `to_string_lossy` on an empty PathBuf yields "", which is present-but-useless.
+    expect(defaultIndexPath(appInfo({ locations: { ...appInfo().locations!, index_path: "   " } })))
+      .toBeNull();
+  });
+});
+
+describe("destinationNote", () => {
+  it("names the full path and says it is changeable", () => {
+    const note = destinationNote(DEFAULT_INDEX);
+    expect(note).toContain(DEFAULT_INDEX);
+    // The wording has to make the override discoverable — the whole point of removing the
+    // dialog is that the path is now a decision the app made FOR the user, so the app has
+    // to say which decision it made and how to undo it.
+    expect(note).toContain(CHANGE_DESTINATION_LABEL);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // the controller
 // ---------------------------------------------------------------------------
 
@@ -1345,6 +1417,174 @@ describe("DiscoveryPanelController.activate", () => {
     expect(h.ipc.created).toEqual([]);
     expect(h.ipc.builds).toEqual([]);
   });
+});
+
+describe("DiscoveryPanelController destination (zero-dialog first run)", () => {
+  /** A recording `app_info`, so "how many times was it asked" is assertable. */
+  function asked(info: AppInfo = appInfo()): { calls: number; appInfo: () => Promise<AppInfo> } {
+    const rec = {
+      calls: 0,
+      appInfo: async (): Promise<AppInfo> => {
+        rec.calls += 1;
+        return info;
+      },
+    };
+    return rec;
+  }
+
+  it("imports into the DEFAULT index without opening any dialog", async () => {
+    // The owner's complaint C-B, at the exact line where it happens: a first run demanded a
+    // "Create corpus index" save dialog and made the user choose where anthology.db lives.
+    // The engine has always known where it would put one — `app_info` resolves the DECISION
+    // G-10 locations against the real environment (`lib.rs:49-62`) — and nothing on this side
+    // of the boundary asked.
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\never-asked.db");
+    const rec = asked();
+    const h = harness({ appInfo: rec.appInfo }, { chooseDestination: picker });
+
+    await h.controller.activate(codexStore());
+
+    expect(picker).not.toHaveBeenCalled();
+    expect(h.ipc.created).toEqual([DEFAULT_INDEX]);
+    expect(h.ipc.opened).toEqual([DEFAULT_INDEX]);
+    expect(h.ipc.builds).toHaveLength(1);
+    expect(h.ready).toEqual([DEFAULT_INDEX, DEFAULT_INDEX]);
+  });
+
+  it("publishes the destination for display once a scan has run", async () => {
+    const h = harness({ appInfo: asked().appInfo });
+    await h.controller.scan();
+    expect(h.controller.current.destination).toBe(DEFAULT_INDEX);
+  });
+
+  it("says nothing about a destination while a corpus is already attached", async () => {
+    // An import then lands in the OPEN corpus and creates no index at all, so naming a
+    // destination would describe a step that is not going to happen.
+    const h = harness({ appInfo: asked().appInfo });
+    await h.controller.scan();
+    h.controller.setCorpusAttached("C:\\existing.db");
+    expect(h.controller.current.destination).toBe("");
+  });
+
+  it("asks app_info ONCE across a scan and a later import", async () => {
+    const rec = asked();
+    const h = harness({ appInfo: rec.appInfo });
+    await h.controller.scan();
+    await h.controller.activate(codexStore());
+    expect(rec.calls).toBe(1);
+  });
+
+  it("falls back to the dialog when resolution FAILED", async () => {
+    // A stripped environment answers `locations: null` with a reason (`lib.rs:26-29`). The
+    // dialog is the honest fallback there — it is only the DEFAULT case that was wrong.
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\chosen.db");
+    const h = harness(
+      { appInfo: asked(appInfo({ locations: null, locations_error: "no USERPROFILE" })).appInfo },
+      { chooseDestination: picker },
+    );
+    await h.controller.activate(codexStore());
+    expect(picker).toHaveBeenCalledTimes(1);
+    expect(h.ipc.created).toEqual(["C:\\chosen.db"]);
+  });
+
+  it("falls back to the dialog when app_info itself rejects", async () => {
+    // FAIL-OPEN, like `corpusBar.hintDefaultIndex`: a shell too old to answer the command
+    // must still be able to import, and an error line about a path the user never asked
+    // about would cost attention for nothing.
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\chosen.db");
+    const h = harness(
+      {
+        appInfo: async (): Promise<AppInfo> => {
+          throw new Error("command app_info not found");
+        },
+      },
+      { chooseDestination: picker },
+    );
+    await h.controller.activate(codexStore());
+    expect(picker).toHaveBeenCalledTimes(1);
+    expect(h.controller.current.status).not.toContain("app_info");
+  });
+
+  it("falls back to the dialog when the ipc has no app_info at all", async () => {
+    // Every narrowed fake in this file is that shape, which is why `appInfo` is OPTIONAL on
+    // `DiscoveryIpc` — the same asymmetry `CorpusIpc` already carries.
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\chosen.db");
+    const h = harness({}, { chooseDestination: picker });
+    await h.controller.activate(codexStore());
+    expect(picker).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the user OVERRIDE the default, and then uses the override", async () => {
+    // The dialog is not deleted, it is demoted: still one click away, no longer compulsory.
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\elsewhere\\mine.db");
+    const h = harness({ appInfo: asked().appInfo }, { chooseDestination: picker });
+    await h.controller.scan();
+
+    await h.controller.changeDestination();
+    expect(picker).toHaveBeenCalledTimes(1);
+    expect(h.controller.current.destination).toBe("C:\\elsewhere\\mine.db");
+
+    await h.controller.activate(codexStore());
+    // Still ONE call: the import consumed the override instead of asking again.
+    expect(picker).toHaveBeenCalledTimes(1);
+    expect(h.ipc.created).toEqual(["C:\\elsewhere\\mine.db"]);
+  });
+
+  it("keeps the default when the override picker is dismissed", async () => {
+    const h = harness(
+      { appInfo: asked().appInfo },
+      { chooseDestination: async (): Promise<string | null> => null },
+    );
+    await h.controller.scan();
+    await h.controller.changeDestination();
+    expect(h.controller.current.destination).toBe(DEFAULT_INDEX);
+  });
+
+  it("refuses to open the override picker while something is in flight", async () => {
+    // Single-flight, like every other entry point here: a picker opened mid-import would
+    // change the destination of a build that has already been started somewhere else.
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\elsewhere\\mine.db");
+    const h = harness(
+      {
+        appInfo: asked().appInfo,
+        async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
+          await gate;
+          return { ok: true, index: indexPath };
+        },
+      },
+      { chooseDestination: picker },
+    );
+    const inFlight = h.controller.activate(codexStore());
+    await h.controller.changeDestination();
+    expect(picker).not.toHaveBeenCalled();
+    release();
+    await inFlight;
+  });
+
+  it("does nothing on changeDestination once destroyed", async () => {
+    const picker = vi.fn(async (): Promise<string | null> => "C:\\elsewhere\\mine.db");
+    const h = harness({ appInfo: asked().appInfo }, { chooseDestination: picker });
+    h.controller.destroy();
+    await h.controller.changeDestination();
+    expect(picker).not.toHaveBeenCalled();
+  });
+
+  it("abandons an import when the panel is destroyed while the OVERRIDE picker is open",
+    async () => {
+      // The same hazard the fallback picker has (a native dialog can sit open indefinitely),
+      // reached through the new entry point.
+      const h = harness({ appInfo: asked().appInfo }, {
+        chooseDestination: async (): Promise<string | null> => {
+          h.controller.destroy();
+          return "C:\\elsewhere\\mine.db";
+        },
+      });
+      await h.controller.scan();
+      await h.controller.changeDestination();
+      expect(h.controller.current.destination).toBe(DEFAULT_INDEX);
+    });
 });
 
 describe("DiscoveryPanelController build polling", () => {

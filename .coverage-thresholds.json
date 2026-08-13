@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "SINGLE SOURCE OF TRUTH for coverage in this repo; overrides any skill's own coverage logic. This project has THREE stacks, so the flat `thresholds`/`enforcement` pair below is the PYTHON gate (the only one enforced today) and `stacks` carries the per-stack detail. Do NOT lower the Python numbers: pyproject.toml `addopts` enforces them independently, so relaxing them here would create two disagreeing sources of truth.",
+  "$comment": "SINGLE SOURCE OF TRUTH for coverage in this repo; overrides any skill's own coverage logic. This project has FOUR stacks, so the flat `thresholds`/`enforcement` pair below is the PYTHON gate and `stacks` carries the per-stack detail. THREE of the four now fail the build on a coverage number (python, typescript, js); rust runs tests with no coverage gate. Every `thresholds` block states the number the command in `enforcedBy` ACTUALLY fails on -- not an aspiration. Aspirations live in `aspiration` (`target` is the source path). `tests/test_coverage_ssot.py` asserts both directions of that (nothing declared that nothing enforces, nothing enforced that nothing declares) and DISCOVERS coverage configs by walking the tree, so a new rail cannot arrive with its own gate while this file stays silent about it. Do NOT lower any number here: each is enforced independently by its own config, so relaxing this file would create two disagreeing sources of truth AND go red in that test.",
   "thresholds": {
     "lines": 100,
     "branches": 100,
@@ -16,31 +16,45 @@
   "stacks": {
     "python": {
       "target": "llm_anthology",
+      "enforcedBy": "pyproject.toml",
       "thresholds": { "lines": 100, "branches": 100, "functions": 100, "statements": 100 },
       "command": "python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100",
       "status": "enforced",
-      "note": "Also enforced independently by `addopts` in pyproject.toml, so a bare `python -m pytest` already fails below 100%. Measured 1261 passing at 100% branch coverage at HEAD 3a0cdbe. Do not pass `-q` on top of addopts: it becomes `-qq` and SUPPRESSES the pass/fail summary line, which reads as a broken suite.",
+      "note": "Enforced by `addopts` in pyproject.toml (`--cov-fail-under=100`) with `[tool.coverage.run] branch = true`, so a bare `python -m pytest` already fails below 100% and the explicit command above is the same gate spelled out. CI overrides it per matrix leg (.github/workflows/ci.yml:48). `functions` is the one number here with no direct instrument -- coverage.py reports no per-function metric -- but at a 100% statement+branch gate every function with an executable body provably ran, so 100 is ENTAILED rather than measured; `tests/test_coverage_ssot.py` pins that entailment and rejects any other value. Do not pass `-q` on top of addopts: it becomes `-qq` and SUPPRESSES the pass/fail summary line, which reads as a broken suite.",
       "python39Exemption": "CI gates the branch PERCENTAGE on 3.13 only (three OSes); the 3.9 leg runs the full suite and must pass every test, but with --cov-fail-under=0. Reason: 3.9 mis-traces `if cond: body` followed immediately by `continue` — a false condition jumps straight to the loop header, so the arc into the `continue` line reads as a partial branch even when a test provably drives both outcomes. Controlled: an identical 9-line function whose test asserts both paths ran reports 93% on 3.9 and 100% on 3.13. Four such arcs exist (codex_rollout.py, discover.py) and all four are covered on 3.13. This is an exemption for an EOL interpreter's measurement fidelity, NOT a relaxation of the standard - do not extend it to any other leg.",
       "blockPRCreation": true,
       "blockTaskCompletion": true
     },
     "typescript": {
       "target": "cockpit/src",
-      "thresholds": { "lines": 100, "branches": 100, "functions": 100, "statements": 100 },
+      "enforcedBy": "cockpit/vitest.config.ts",
+      "thresholds": { "statements": 71.71, "branches": 80.67, "functions": 77.19, "lines": 70.95 },
+      "aspiration": { "lines": 100, "branches": 100, "functions": 100, "statements": 100 },
       "command": "npx vitest run --coverage",
-      "status": "target-not-yet-enforceable",
-      "note": "100% is the agreed TARGET, set deliberately before it is reachable so the goal is unambiguous. MEASURED 2026-08-07 under `environment: \"node\"`: 75.85% statements (1156/1524), 77.84% branches, 76.33% functions, 74.80% lines, over the 17 modules some test loads. That number FLATTERS the codebase: six runtime modules are imported by zero test files and are therefore excluded from the denominator entirely - app.ts, main.ts, ui/reader.ts, ui/search.ts, graph/canvas.ts, graph/elkLayout.ts. (ipc/types.ts is also absent but has 0 runtime statements, so that one is correct, not a gap.) CORRECTION - an earlier version of this note said the missing DOM makes those modules STRUCTURALLY untestable. That was wrong in three ways, each measured: (1) virtualList.ts is loaded and covered at 4.41%, so it is partially tested, not structurally excluded; (2) ipc/real.ts sits at 3.03% with ZERO DOM references - it is blocked on mocking @tauri-apps/api, and is testable under node today; (3) elkLayout.ts needs a browser `Worker` and canvas.ts needs a 2D CanvasRenderingContext2D, and jsdom implements NEITHER, so switching environment does not unblock those two at all. Flipping to jsdom on its own was measured to change coverage by exactly zero. A DOM is necessary for app/reader/search/scrubber/virtualList and sufficient for none of them; the actual missing thing is tests.",
-      "unblockedBy": "Write the tests. Order by cost: ipc/real.ts and elkLayout.ts need no DOM at all; app/reader/search/scrubber/virtualList need jsdom ADDED ALONGSIDE new tests (the environment flip alone is a no-op); canvas.ts and elkLayout.ts's worker path stay browser-only and are covered by the headless probes in cockpit/tools/ instead. Flip blockPRCreation/blockTaskCompletion to true only once measured.",
-      "reportingGotcha": "The vitest terminal table hides files at 100% on all metrics, so it lists 10 of the 17 measured modules and reads as if seven tested files were missing. Read coverage-summary.json (`--coverage.reporter=json-summary`) for the real per-file list.",
-      "blockPRCreation": false,
-      "blockTaskCompletion": false
+      "status": "enforced-ratchet",
+      "note": "A RATCHET, not the aspiration. The four numbers above are the ones `cockpit/vitest.config.ts:127-132` fails the build on; they reach CI through `cockpit/package.json`'s `test` script (`vitest run --coverage`), which the BLOCKING `cockpit` job runs at .github/workflows/ci.yml:273. 100 stays recorded as `aspiration` so the goal is unambiguous, but it is NOT the gate: an unreachable threshold is red on its first CI run and the cheapest escape from a permanently-red required check is to delete the gate, which is how this rail previously ended up measuring nothing at all. HISTORY, because it is the reason this file is now guarded: until 2026-08-13 this entry declared the aspiration 100 AS the threshold and `status: target-not-yet-enforceable` with blockPRCreation false, while the config had already begun failing the build at the ratchet -- four enforced numbers the declared SSOT did not state. DELIBERATELY NOT RESTATED HERE: the measured percentages, the numerator/denominator split and the list of modules no test imports. Those are recorded ONCE, at cockpit/vitest.config.ts:74-102, together with the measurement that produced them. Copying them into this file is exactly what rotted last time -- the copy aged in both directions (some modules had since reached 100%, two new dark modules had appeared) while the config moved on. Read them there.",
+      "raisingThisRatchet": "Only upward, and in ONE commit touching both places: `cockpit/src/coverageGate.test.ts` fails if a number in the config is lowered, and `tests/test_coverage_ssot.py` fails if the config and this file disagree. Order of work is in cockpit/vitest.config.ts:74-102: the modules imported by zero tests are the whole gap, and the fix is tests, not a config flag (flipping the vitest environment to jsdom was measured to change coverage by exactly zero).",
+      "reportingGotcha": "The vitest terminal table hides files at 100% on all metrics, so it prints a subset of the measured modules and reads as if tested files went missing. Read coverage-summary.json (`--coverage.reporter=json-summary`) for the real per-file list.",
+      "blockPRCreation": true,
+      "blockTaskCompletion": true
+    },
+    "js": {
+      "target": "js/src",
+      "enforcedBy": "js/vitest.config.ts",
+      "thresholds": { "lines": 100, "functions": 100, "statements": 100, "branches": 88 },
+      "command": "npx vitest run --coverage",
+      "status": "enforced",
+      "note": "The standalone TypeScript port (js/), a FOURTH stack -- this file previously declared three and omitted it entirely, while its gate was already blocking. Enforced by js/vitest.config.ts through js/package.json's `test` script, run by the BLOCKING `js` CI job at .github/workflows/ci.yml:111. Branches are floored at 88 rather than 100 on the rail's own stated reasoning: TypeScript's null-safety idiom (`x ?? d`, `a || b`) emits a falsy-side branch for every defensive guard, many of which the type system already proves unreachable, and chasing those is the coverage theater the Lean philosophy rejects. Statements, lines and functions are all at 100, so this rail is STRICTER than the cockpit's and is not a relaxation. Note the js job carries a second, non-coverage gate that is easy to mistake for one: it regenerates test/fixtures/adapter-parity-synthetic.json from the Python adapters and fails on a diff, catching python/js rail drift at its source.",
+      "blockPRCreation": true,
+      "blockTaskCompletion": true
     },
     "rust": {
       "target": "cockpit/src-tauri",
+      "enforcedBy": null,
       "thresholds": null,
-      "command": "cargo test",
+      "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
       "status": "tests-run-no-coverage-gate",
-      "note": "18 tests exist. No coverage instrumentation is configured (cargo-tarpaulin is not installed) and none is planned for the first release; `cargo test` passing is the bar. As of HEAD 3a0cdbe these have never run in CI - see Phase 1d.",
+      "note": "No coverage instrumentation is configured -- no cargo-tarpaulin, llvm-cov or grcov anywhere in .github/workflows/ci.yml or cockpit/src-tauri/Cargo.toml -- and none is planned for the first release; `cargo test` PASSING is the bar, which is why `thresholds` is null rather than a number. `tests/test_coverage_ssot.py` checks that null in BOTH directions: it fails if a coverage tool is ever wired without a threshold being declared here, and it fails if a threshold is declared here without a tool to enforce it. The tests DO now run in CI, on ubuntu + windows, at .github/workflows/ci.yml:288 -- an earlier version of this note said they never had, which was true only before the `cockpit` job existed (ci.yml:171). A test COUNT is deliberately not pinned here: the previous one (18) had drifted badly by the time anyone reread it, and a count nothing asserts is a number that rots silently.",
       "blockPRCreation": false,
       "blockTaskCompletion": false
     }

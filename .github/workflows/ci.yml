@@ -112,11 +112,29 @@ jobs:
       - run: npm run build
 
   js-package:
-    name: packaged npm artifact smoke test
-    runs-on: ubuntu-latest
+    # WHY THIS JOB IS MATRIXED.
+    #
+    # The `test` job above matrixes three OSes on its own stated grounds that "a
+    # Windows-only green run can hide a Linux/CI gap". The same argument runs in
+    # reverse and nobody had applied it here: this job and `package` install and
+    # drive the two artifacts actually PUBLISHED to the world -- the npm tarball
+    # and the PyPI wheel -- and both did so on ubuntu only. A Windows-only
+    # packaging or path break in either would have shipped green past a CI that
+    # tests the SOURCE on three platforms.
+    #
+    # The POSIX steps below are unchanged, deliberately: keeping them byte-for-byte
+    # what they were means a red windows leg cannot be confused with a regression
+    # on the leg that was already passing. fail-fast: false keeps one red leg from
+    # cancelling its sibling, same as `test` and `cockpit`.
+    name: packaged npm artifact smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: js
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -127,19 +145,63 @@ jobs:
       # a green source tree does not prove the PACKED artifact works: pack, install
       # the tarball into a throwaway project, drive the installed binary
       - name: pack, install and drive the installed CLI
+        if: runner.os == 'Linux'
         run: |
           TGZ=$(npm pack --silent)
           mkdir -p /tmp/smoke && cd /tmp/smoke && npm init -y >/dev/null
           npm install "$OLDPWD/$TGZ"
           npx llm-anthology demo /tmp/demo.html
       - name: postcondition - the demo page exists and is real HTML
+        if: runner.os == 'Linux'
         run: |
           test -s /tmp/demo.html
           head -c 15 /tmp/demo.html | grep -qi '<!doctype html'
 
+      # The Windows translation of the two steps above. Not a transliteration:
+      # `npm pack --silent` is given an explicit --pack-destination and the tarball
+      # is then FOUND on disk, rather than parsed out of stdout, because a single
+      # stray line of npm chatter would otherwise be consumed as a filename. The
+      # count check makes a second .tgz in that directory an error instead of a
+      # coin flip.
+      - name: pack, install and drive the installed CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm pack --silent --pack-destination "$env:RUNNER_TEMP"
+          $tgz = Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter *.tgz
+          if (@($tgz).Count -ne 1) { throw "expected exactly 1 tarball, found $(@($tgz).Count)" }
+          $smoke = Join-Path $env:RUNNER_TEMP 'smoke'
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Push-Location $smoke
+          npm init -y | Out-Null
+          npm install $tgz.FullName
+          npx llm-anthology demo "$env:RUNNER_TEMP/demo.html"
+          Pop-Location
+      # `test -s` + `head -c 15 | grep -qi` has no pwsh equivalent, so it is spelled
+      # out. Both arms fail LOUDLY rather than falling through: an under-15-byte file
+      # throws out of Substring, which is the correct direction for a postcondition.
+      - name: postcondition - the demo page exists and is real HTML
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $page = Get-Item -LiteralPath "$env:RUNNER_TEMP/demo.html"
+          if ($page.Length -le 0) { throw "the demo page is empty" }
+          $head = (Get-Content -LiteralPath $page.FullName -Raw).Substring(0, 15)
+          if ($head -notmatch '(?i)^<!doctype html') { throw "not HTML, starts: $head" }
+          Write-Host "OK: $($page.Length) bytes"
+
   package:
-    name: packaged-artifact smoke test
-    runs-on: ubuntu-latest
+    # Matrixed for the reason spelled out on `js-package` above: this job installs
+    # and drives the PyPI wheel, and it did so on ubuntu only. The wheel is
+    # py3-none-any, so the risk it now covers is not a compiled artifact but the
+    # thing that actually breaks on Windows -- console-script generation, path
+    # handling and file encoding.
+    name: packaged-artifact smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -152,18 +214,52 @@ jobs:
       # wheel into a clean venv, drive the installed console script, and assert a
       # real postcondition on what it produced.
       - name: install the wheel into a clean venv and run the CLI
+        if: runner.os == 'Linux'
         run: |
           python -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.whl
           /tmp/venv/bin/python -c "from llm_anthology.adapters import chatgpt, claude, gemini; from llm_anthology import cli, build, loaders; print('imports ok')"
           /tmp/venv/bin/llm-anthology demo /tmp/demo.html
       - name: postcondition - the demo page exists and is real HTML
+        if: runner.os == 'Linux'
         run: |
           test -s /tmp/demo.html
           head -c 15 /tmp/demo.html | grep -qi '<!doctype html'
           echo "OK: $(wc -c < /tmp/demo.html) bytes"
 
+      # The Windows arm. `pip install dist/*.whl` cannot be transliterated: pip does
+      # no globbing of its own, the POSIX leg relies on the SHELL to expand that, and
+      # PowerShell passes the literal string to a native executable unexpanded. So the
+      # wheel is resolved first and the count asserted -- `python -m build` emits an
+      # sdist alongside it, and a stale second wheel would otherwise be installed at
+      # random. The venv is driven by its own Scripts\ entry points rather than by
+      # activating it, so the console script the WHEEL generated is what runs.
+      - name: install the wheel into a clean venv and run the CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'venv'
+          python -m venv $venv
+          $whl = Get-ChildItem -LiteralPath dist -Filter *.whl
+          if (@($whl).Count -ne 1) { throw "expected exactly 1 wheel, found $(@($whl).Count)" }
+          & "$venv\Scripts\pip.exe" install $whl.FullName
+          & "$venv\Scripts\python.exe" -c "from llm_anthology.adapters import chatgpt, claude, gemini; from llm_anthology import cli, build, loaders; print('imports ok')"
+          & "$venv\Scripts\llm-anthology.exe" demo "$env:RUNNER_TEMP/demo.html"
+      - name: postcondition - the demo page exists and is real HTML
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $page = Get-Item -LiteralPath "$env:RUNNER_TEMP/demo.html"
+          if ($page.Length -le 0) { throw "the demo page is empty" }
+          $head = (Get-Content -LiteralPath $page.FullName -Raw).Substring(0, 15)
+          if ($head -notmatch '(?i)^<!doctype html') { throw "not HTML, starts: $head" }
+          Write-Host "OK: $($page.Length) bytes"
+
+      # Linux only. Two legs uploading the same artifact NAME is an error on
+      # upload-artifact v4+, and the wheel is py3-none-any -- the windows leg would
+      # be publishing identical bytes under a colliding name for no gain.
       - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
         with:
           name: dist
           path: dist/

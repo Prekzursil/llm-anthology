@@ -373,7 +373,7 @@ describe("every method invokes the command Rust registers", () => {
     expect(unregistered).toEqual([]);
   });
 
-  it("pins the two registered commands the adapter never calls", async () => {
+  it("pins the registered commands the adapter never calls", async () => {
     // Pinned deliberately rather than left to drift. If a future command is registered and
     // never bound, this says so instead of the omission being invisible.
     //
@@ -392,6 +392,16 @@ describe("every method invokes the command Rust registers", () => {
     //     this list is where that is recorded rather than left for someone to rediscover.
     //     Fully retiring them means deleting the engine RPCs too — a bigger decision than
     //     dropping an unused TS method, and not this change.
+    //
+    //   * `conversation_list` — NEWLY registered, and deliberately listed here rather than
+    //     bound, because it is HALF-WIRED and saying so is the point of this list. The
+    //     engine serves `conversation.list` and the Rust gate
+    //     `every_engine_rpc_has_a_registered_tauri_command` therefore requires the command
+    //     to exist; the TypeScript adapter binding and the browse pane that would call it
+    //     did not land in this round. Until they do, importing a downloaded export still
+    //     leaves the UI with nothing to render, because `graph.roots` is thread-derived and
+    //     an export declares no `thread_id`. This entry is the record that the remaining
+    //     work is a TS binding plus a list surface — not a missing engine capability.
     const used = new Set<string>();
     for (const binding of Object.values(BINDINGS)) {
       invokeMock.mockClear();
@@ -399,7 +409,7 @@ describe("every method invokes the command Rust registers", () => {
       used.add(invokeMock.mock.calls[0][0]);
     }
     const unused = rustRegisteredCommands().filter((command) => !used.has(command));
-    expect(unused.sort()).toEqual(["graph_ancestors", "graph_children"]);
+    expect(unused.sort()).toEqual(["conversation_list", "graph_ancestors", "graph_children"]);
   });
 });
 

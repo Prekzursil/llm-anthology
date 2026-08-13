@@ -235,18 +235,28 @@ conversation *structure* there:
    implied: the ceiling is a *bound*, not a lockfile — the Python rail has none, so a clean
    install still resolves to the newest version inside the range — and a bound does not make
    a parser bug in that range unreachable.
-9. **Validation status (honest):** the Claude rail is validated on real conversations, and
-   this repository carries two different figures for it — 236 / gate 231 here and in
-   `ARCHITECTURE.md`, against 212 / gate 207 in `README.md`. The later pair supersedes the
-   earlier one, whose count included non-conversation metadata artefacts; the exact
-   composition of the difference is **UNVERIFIED** and is settled only by the owner
-   re-running the build and reading `_fidelity-report.json` (the corpus is private, so no
-   reader of this repository can check it). The Gemini adapter is validated on 1060 real
-   records / 2027 turns with provisional conversation grouping. The **ChatGPT adapter is
-   hardened and synthetically tested but still NOT validated against a large real export** —
-   `RELEASING.md` Step 3b is the drill that would change that. The suite is **1677 tests**
-   under `tests/` as of 2026-08-10 (`python -m pytest --collect-only`), not the 101 recorded
-   here previously; recount it rather than trusting the number.
+9. **Validation status (honest):** the Claude rail is validated on **212 real conversations,
+   text-exact gate 207/212**, which is the figure `README.md` carries and the one this
+   document now states. An earlier pair — 236 / gate 231 — is still quoted in
+   `ARCHITECTURE.md`, flagged there as superseded; this section used to repeat it as its own
+   headline, which documented the contradiction rather than resolving it. The earlier count
+   included non-conversation metadata artefacts, but the exact composition of the difference
+   is **UNVERIFIED** and is settled only by the owner re-running the build and reading
+   `_fidelity-report.json` (the corpus is private, so no reader of this repository can check
+   it). The Gemini adapter is validated on 1060 real records / 2027 turns with provisional
+   conversation grouping. The **ChatGPT adapter is hardened and synthetically tested but still
+   NOT validated against a large real export** — `RELEASING.md` Step 3b is the drill that
+   would change that.
+
+   The suite is over **1,600 test functions** under `tests/`, not the 101 this section
+   recorded before that. It is written as a FLOOR on purpose: an exact literal here has been
+   wrong twice — 1677 was recorded on 2026-08-10 and an AST walk three days later found 1,665
+   functions against 1,786 cases collected — because the number grows on any working day, and
+   two agents measuring it two ways get two answers. `tests/test_docs_counts.py` holds the
+   floor from below and fails if the live count drifts more than 25% above it, which is the
+   signal to raise the floor rather than to keep patching a literal. Recount with
+   `python -m pytest --collect-only`, which reports more than the function count because
+   parametrised cases expand.
 
 ## 8. Guarantees for downstream consumers
 

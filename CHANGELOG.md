@@ -11,7 +11,55 @@ Release. See [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-Nothing yet.
+Batch 1 of the audit remediation — six work units, each traced to a measured finding in
+the gap inventory. The engine was never the problem: it has ingested downloaded ChatGPT,
+Claude, Codex and Gemini exports since the G-1 seam landed. What was broken was the
+wiring and the wording around it.
+
+### Fixed
+
+- **The app can import a downloaded export (U-CA1).** The TypeScript `BuildParams`
+  contract declared none of the six export fields the engine accepts, so the cockpit
+  could not express a request the engine already served. A downloaded export discovered
+  on your disk now gets an Import action that names the one `<provider>_export`
+  parameter it maps to. The two companion paths, `chatgpt_projects` and `gemini_harvest`,
+  are deliberately still not sent: each alone is refused `-32602`, because the engine
+  keys its ingest specs on the primary export key. Four user-visible strings, the IPC
+  mock, the README and a green test had all been asserting the capability did not exist —
+  the test was pinning the bug rather than catching it.
+- **A corpus with no threads is no longer a blank window (U-CB1).** `graph.roots` is
+  thread-derived and a downloaded export declares no `thread_id`, so after importing one
+  the app showed `conversations=2, threads=0`, an empty root list, and — because an empty
+  search query deliberately returns nothing — a window containing only a search box. A
+  new `conversation.list` RPC reaches those conversations directly.
+- **The bundled engine is isolated from your ambient Python (U-SEC1).** This one is live
+  in the released 0.1.0 installer. The "self-contained" engine spawned with no isolation
+  flag, so a user-site `site-packages` sat on `sys.path` *ahead* of the bundled one; 18 of
+  25 resolvable distributions resolved from outside the bundle. Both spawn sites built
+  their own argv literal, which is why no flag had ever been added to both: argv
+  construction is now centralised, the bundled arm takes `-I`, and the development PATH
+  fallback takes `-s` because it legitimately reaches a source tree through `PYTHONPATH`.
+- **Rendered HTML attribute surfaces (U-SEC2).** Hidden-unicode handling now covers
+  attribute context, not just text nodes.
+
+### Changed
+
+- **The cockpit CI job measures coverage (U-GATE1).** It ran `vitest run` with no
+  `--coverage` at all, so it measured zero. The documented command reported 99.68% while
+  `--coverage.include='src/**/*.ts'` reported 71.71% — a 1,120-statement delta that is
+  exactly the modules no test loads. The threshold is ratcheted at the measured number
+  rather than an unreachable 100.
+- **`AGENTS.md` and `CLAUDE.md` no longer give opposite orders (U-SSOT1).** One declared
+  the push exception ACTIVE while the other declared it EXPIRED, so the answer to "may I
+  push this repo" depended on which file an agent happened to read.
+- **The README no longer denies the import that shipped.** Two paragraphs still described
+  `corpus.build` as accepting "only the three session ROOTS". Nothing in the test suite
+  referenced either sentence, so the contradiction could not fail a gate;
+  `tests/test_readme_export_claim.py` now pins the corrected claim.
+
+Not yet adversarially reviewed: the planned refutation panel did not run against these
+units. When a three-refuter panel judged the audit findings it killed 15 of 20, almost
+all as overclaims with correct code under a sentence wider than its evidence.
 
 ## [0.1.1] — 2026-08-12
 

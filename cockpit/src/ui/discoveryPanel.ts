@@ -66,12 +66,24 @@
  *   * `detail` is rendered key-agnostically. Its keys are provider-specific and adding a
  *     provider is a table edit in the engine (`discover.py:48-51`), so a renderer built
  *     around a fixed key set would silently drop whatever a new provider reports.
+ *   * IMPORTING CREATES ITS INDEX AT A DEFAULT PATH AND ASKS NOBODY. The first line of this
+ *     note says the app's one route to a corpus "used to be naming a SQLite index in a file
+ *     dialog"; until this change that was still half true, because the FIRST import opened a
+ *     native "Create corpus index" save dialog and made the user choose where `anthology.db`
+ *     lives. The owner reported exactly that screen. `app_info` has resolved the DECISION
+ *     G-10 default since CF-1 (`cockpit/src-tauri/src/lib.rs:49-62`, `:546-577`) and nothing
+ *     on this side of the boundary read it — the same unwired-mechanism shape as the export
+ *     seam above, one layer out. {@link DiscoveryPanelController.resolveDestination} now
+ *     consumes it, and the dialog is DEMOTED rather than deleted: it is the fallback when
+ *     resolution genuinely fails, and it is one press of {@link CHANGE_DESTINATION_LABEL}
+ *     away when the user wants a different location.
  */
 
 import { save } from "@tauri-apps/plugin-dialog";
 
 import { engineErrorText } from "./errors";
 import type {
+  AppInfo,
   BuildParams,
   BuildStatus,
   CreateCorpusResult,
@@ -111,6 +123,54 @@ export const NOTHING_FOUND_LABEL =
 
 /** Why a source of an unrecognised kind is listed but offers no action. */
 export const UNKNOWN_KIND_REASON = "Detected. This app has no action for this kind of source yet.";
+
+/** The control that demotes the save dialog from compulsory to optional. */
+export const CHANGE_DESTINATION_LABEL = "Change…";
+
+// ---------------------------------------------------------------------------
+// pure derivations — where a NEW index goes when nothing is attached
+// ---------------------------------------------------------------------------
+
+/**
+ * The default corpus index out of an `app_info` reply, or null when there is no answer.
+ *
+ * Null is a real outcome, not a defensive stub. `locations` and `locations_error` are BOTH
+ * always present with exactly one null (`cockpit/src-tauri/src/lib.rs:26-29`, `:49-53`), and
+ * resolution genuinely fails in a stripped environment with neither `%LOCALAPPDATA%` nor
+ * `%USERPROFILE%` (`lib.rs:604-610`). A blank string counts as no answer too: the field
+ * crosses the wire through `to_string_lossy` (`lib.rs:443`), so "present" and "useful" are
+ * different questions.
+ *
+ * MEASURED on this machine rather than assumed, because the whole zero-dialog behaviour
+ * rests on this being answerable in practice and not merely in principle
+ * (`.scratch/perfect/_probe_cbdialog_locations.ps1`): `%LOCALAPPDATA%` is set, survives
+ * `reject_roaming`, and the derived
+ * `%LOCALAPPDATA%\LLM Anthology\anthology.sqlite` is absolute, non-UNC and on a DRIVE_FIXED
+ * volume whose parent directory already exists. UNVERIFIED on a domain profile whose
+ * `%LOCALAPPDATA%` is redirected to a share — the settling experiment is to run that probe
+ * there and read the drive type; the fallback below is what covers it either way.
+ */
+export function defaultIndexPath(info: AppInfo): string | null {
+  const resolved = info.locations?.index_path;
+  if (typeof resolved !== "string" || resolved.trim() === "") return null;
+  return resolved;
+}
+
+/**
+ * The sentence that replaces the dialog.
+ *
+ * Removing a prompt is only an improvement if the app then SAYS what it decided. A silent
+ * default is worse than the dialog it replaced: the user would have a corpus index somewhere
+ * they never chose and cannot name. So the path is stated in full — not shortened to its
+ * basename the way a row's `detail` is — and the override control is named in the same
+ * breath, because a default nobody can see how to change is a jail rather than a default.
+ */
+export function destinationNote(indexPath: string): string {
+  return (
+    `A new corpus index will be created at ${indexPath}. ` +
+    `Press “${CHANGE_DESTINATION_LABEL}” to keep it somewhere else.`
+  );
+}
 
 // ---------------------------------------------------------------------------
 // pure derivations — time
@@ -836,6 +896,18 @@ export interface DiscoveryIpc {
   createCorpus(indexPath: string): Promise<CreateCorpusResult>;
   corpusBuild(params: BuildParams): Promise<{ job_id: string }>;
   corpusBuildStatus(jobId?: string): Promise<BuildStatus>;
+  /**
+   * OPTIONAL, unlike the five above, and the asymmetry is the one `ui/corpusBar`'s
+   * `CorpusIpc.appInfo` already carries. The panel cannot do its job without discovery and
+   * build; it works — degraded, via the save dialog — without knowing where the app would
+   * put an index of its own. Keeping it optional also means every narrowed fake that
+   * predates this still satisfies the interface, so the fallback arm is exercised by the
+   * whole existing suite rather than by one bespoke test.
+   *
+   * The real `IpcClient` declares it NON-optional (`ipc/types.ts:1201`), so the shipped app
+   * always takes the zero-dialog path.
+   */
+  appInfo?: () => Promise<AppInfo>;
 }
 
 /** The environment seams: the clock, the timer, and the destination picker. */
@@ -864,6 +936,17 @@ export interface DiscoveryView {
   emptyLabel: string;
   /** One line of progress, outcome, or refusal. Never a raw engine string. */
   status: string;
+  /**
+   * Where an import would CREATE its index, or "" when there is nothing to say — either
+   * because a corpus is already attached (the import lands in that one and creates nothing)
+   * or because no default could be resolved (the save dialog will ask instead).
+   *
+   * DERIVED, never patched: {@link DiscoveryPanelController.emit} recomputes it on every
+   * transition from the attach state and the resolved default. A field a caller had to
+   * remember to include would go stale in exactly the arm that matters — the first paint
+   * after a corpus attaches.
+   */
+  destination: string;
   /** True while an engine call is in flight; the shell disables its controls. */
   busy: boolean;
   /**
@@ -896,6 +979,7 @@ function initialView(): DiscoveryView {
     notes: [],
     emptyLabel: "",
     status: "",
+    destination: "",
     busy: false,
     needsAttention: false,
   };
@@ -919,6 +1003,14 @@ export class DiscoveryPanelController {
   /** The last scan, kept so a corpus-attach or an expand re-derives without re-scanning. */
   private result: DiscoveryResult | null = null;
   private attached: string | null = null;
+  /**
+   * Where a new index would go: the `app_info` default, or a destination the user picked
+   * explicitly. Null until resolved, and null FOREVER once {@link destinationAsked} is set
+   * and the answer was "there isn't one".
+   */
+  private destination: string | null = null;
+  /** Whether `app_info` has been consulted, so a shell that cannot answer is asked once. */
+  private destinationAsked = false;
   private readonly expanded = new Set<string>();
   private readonly limits: PollLimits;
 
@@ -940,8 +1032,102 @@ export class DiscoveryPanelController {
     // patch still wins. Without the reset the merge would carry a previous run's unread-
     // outcome marker forward and pin the panel open forever: import 2 skipped files, then
     // open a different corpus, and that unrelated success would inherit the marker.
-    this.view = { ...this.view, needsAttention: false, ...patch };
+    //
+    // `destination` is RECOMPUTED here for the opposite reason: it is derived from state no
+    // patch carries (the attach, and whether the default has resolved yet), so deriving it
+    // once at the single exit point is what keeps it from going stale in the arm nobody
+    // remembers — the paint immediately after a corpus attaches.
+    this.view = {
+      ...this.view,
+      needsAttention: false,
+      destination: this.destinationText(),
+      ...patch,
+    };
     this.onChange(this.view);
+  }
+
+  /** The destination to DISPLAY: nothing while a corpus is attached, nothing until resolved. */
+  private destinationText(): string {
+    if (this.attached !== null) return "";
+    return this.destination ?? "";
+  }
+
+  /**
+   * The `app_info` default, resolved at most once.
+   *
+   * FAIL-OPEN AT EVERY STEP, like `corpusBar.hintDefaultIndex`: the method may be absent (a
+   * narrowed fake, or a shell older than the command), the call may reject, and resolution
+   * itself may legitimately fail. None of those is worth a visible error, because each one
+   * lands on a working fallback — the save dialog this change demoted, not deleted.
+   *
+   * Memoised on `destinationAsked` rather than on the value, so a failed resolution is not
+   * retried on every import. An explicit override sets `destination` directly and therefore
+   * short-circuits here on the first line.
+   */
+  private async ensureDestination(): Promise<string | null> {
+    if (this.destination !== null) return this.destination;
+    if (this.destinationAsked) return null;
+    this.destinationAsked = true;
+    const ask = this.ipc.appInfo;
+    if (ask === undefined) return null;
+    try {
+      this.destination = defaultIndexPath(await ask.call(this.ipc));
+    } catch {
+      this.destination = null;
+    }
+    return this.destination;
+  }
+
+  /**
+   * Where this import's new index goes — WITHOUT a dialog whenever that is answerable.
+   *
+   * This is the whole of the owner's C-B complaint, in five lines. The panel used to open a
+   * native "Create corpus index" save dialog on every first import and make the user choose
+   * where `anthology.db` lives — a decision they have no basis to make, about a file whose
+   * location the app already knew. `app_info` has resolved the DECISION G-10 default since
+   * CF-1 and nothing on this side of the boundary read it.
+   *
+   * The dialog remains the fallback rather than being removed, because "no default" is a
+   * state the engine can genuinely report and a guessed path is worse than a prompt.
+   */
+  private async resolveDestination(): Promise<string | null> {
+    const known = await this.ensureDestination();
+    if (known !== null) return known;
+    this.emit({ phase: "working", status: "Choose where to keep the new corpus index…", busy: true });
+    return this.deps.chooseDestination();
+  }
+
+  /**
+   * Open the picker on purpose, and adopt whatever it returns as the destination.
+   *
+   * The override half of the contract: a default the user cannot see how to change is not a
+   * default. Single-flight like every other entry point here — a picker opened mid-import
+   * would be choosing a destination for a build that has already been started elsewhere —
+   * and a dismissal is a no-op, so the previous default survives it.
+   *
+   * It deliberately does NOT repaint `busy` while the picker is open, unlike
+   * {@link resolveDestination}'s fallback arm. Two reasons, and the second is the load-bearing
+   * one: the guard above already makes a second press a no-op, and an emit here would have to
+   * carry `status` too — which would silently erase a failure line the user is still reading
+   * (a create-then-decline leaves `phase: "error"` with nothing attached, i.e. with this
+   * control visible). Cosmetically the button stays enabled behind a native modal for the
+   * duration; UNVERIFIED whether Tauri's `save()` blocks webview input on every Windows
+   * shell, and the settling experiment is a click-through attempt against the running app.
+   */
+  async changeDestination(): Promise<void> {
+    if (this.busy || this.disposed) return;
+    this.busy = true;
+    try {
+      const chosen = await this.deps.chooseDestination();
+      if (this.disposed || chosen === null) return;
+      this.destination = chosen;
+      // An explicit choice supersedes the unasked default, so the engine is never consulted
+      // afterwards — otherwise a later `ensureDestination` could overwrite the user's pick.
+      this.destinationAsked = true;
+      this.emitRegroup();
+    } finally {
+      this.busy = false;
+    }
   }
 
   /** Re-derive the rendered groups from the last scan (after an attach or an expand). */
@@ -1004,6 +1190,11 @@ export class DiscoveryPanelController {
       const result = await this.ipc.discoverSources();
       if (this.disposed) return;
       this.result = result;
+      // Resolved HERE and not lazily at import time, so the destination is on screen before
+      // the user presses anything. A default that only appears after the decision has been
+      // made is not a default the user got to see.
+      await this.ensureDestination();
+      if (this.disposed) return;
       const groups = this.regroup();
       this.emit({
         phase: "ready",
@@ -1077,16 +1268,19 @@ export class DiscoveryPanelController {
     this.busy = true;
     try {
       if (this.attached === null) {
-        this.emit({ phase: "working", status: "Choose where to keep the new corpus index…", busy: true });
-        const dest = await this.deps.chooseDestination();
+        const dest = await this.resolveDestination();
         if (this.disposed) return;
         if (dest === null) {
           // Dismissed. A no-op, not a failure — nothing was created and nothing changed.
+          // Only reachable through the FALLBACK dialog: a resolved default never returns
+          // null, which is why the zero-dialog path cannot end here.
           this.emit({ phase: "ready", status: "", busy: false });
           return;
         }
         const { name } = pathSummary(dest);
-        this.emit({ status: `Creating ${name}…` });
+        // `phase` and `busy` are named rather than inherited: with a resolved default there
+        // was no preceding "Choose where…" emit to inherit them from.
+        this.emit({ phase: "working", status: `Creating ${name}…`, busy: true });
         await this.ipc.createCorpus(dest);
         const opened = await this.ipc.openCorpus(dest);
         if (!opened.ok) throw new Error(`the engine did not attach ${dest}`);
@@ -1192,6 +1386,8 @@ export class DiscoveryPanel {
   private shell: {
     status: HTMLElement;
     dismiss: HTMLButtonElement;
+    destination: HTMLElement;
+    change: HTMLButtonElement;
     notes: HTMLElement;
     groups: HTMLElement;
   } | null = null;
@@ -1274,6 +1470,25 @@ export class DiscoveryPanel {
     dismiss.hidden = true;
     dismiss.addEventListener("click", () => this.controller.acknowledge());
 
+    // WHERE a new index would go, and the control that changes it. Created AFTER `dismiss`
+    // on purpose: this button reuses `.discovery-action` for its STYLE exactly as Dismiss
+    // does, and a bare `.discovery-action` selector finds whichever came first — a fact the
+    // suite pins ("scopes a row's action away from the Dismiss button"). Inserting ahead of
+    // Dismiss would silently steal that selector.
+    //
+    // Both are toggled with `hidden` rather than created and destroyed, so the destination
+    // line keeps a stable node across repaints for the same reason the status line does.
+    const destination = document.createElement("p");
+    destination.className = "discovery-destination muted";
+    destination.hidden = true;
+
+    const change = document.createElement("button");
+    change.type = "button";
+    change.className = "discovery-action discovery-change-destination";
+    change.textContent = CHANGE_DESTINATION_LABEL;
+    change.hidden = true;
+    change.addEventListener("click", () => void this.controller.changeDestination());
+
     const notes = document.createElement("p");
     notes.className = "discovery-notes muted";
 
@@ -1282,8 +1497,8 @@ export class DiscoveryPanel {
 
     this.container.setAttribute("role", "group");
     this.container.setAttribute("aria-labelledby", "discovery-title");
-    this.container.replaceChildren(heading, status, dismiss, notes, groups);
-    this.shell = { status, dismiss, notes, groups };
+    this.container.replaceChildren(heading, status, dismiss, destination, change, notes, groups);
+    this.shell = { status, dismiss, destination, change, notes, groups };
     return this.shell;
   }
 
@@ -1301,6 +1516,13 @@ export class DiscoveryPanel {
     // Offered ONLY while the panel is held open, because dismissing is then the only way
     // out — nothing else will collapse a panel whose outcome has not been read.
     shell.dismiss.hidden = !view.needsAttention;
+    // "" means there is nothing honest to say — a corpus is attached, so no index will be
+    // created, or no default resolved, so the dialog will ask. Both hide the pair.
+    const named = view.destination !== "";
+    shell.destination.hidden = !named;
+    shell.destination.textContent = named ? destinationNote(view.destination) : "";
+    shell.change.hidden = !named;
+    shell.change.disabled = view.busy;
     shell.notes.textContent = view.notes.join(" ");
     shell.groups.replaceChildren(
       ...(view.emptyLabel !== "" ? [this.renderEmpty(view.emptyLabel)] : []),

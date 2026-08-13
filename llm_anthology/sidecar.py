@@ -2193,7 +2193,8 @@ class Sidecar:
         return {"id": row["conversation_id"], "title": _clean(row["title"]),
                 "provider": row["provider"], "created_at": row["created_at"],
                 "updated_at": row["updated_at"], "account": row["account"],
-                "turns": [], "available": False, "reason": reason}
+                "turns": [], "available": False, "reason": reason,
+                "model": self._recorded_model(row["conversation_id"])}
 
     def _serialize_conversation(self, conv, errors):
         return {"id": conv.id, "title": _clean(conv.title), "provider": conv.provider,
@@ -2202,6 +2203,7 @@ class Sidecar:
                 "available": True,
                 "turns": [self._serialize_turn(t) for t in conv.turns],
                 "meta": _sanitize_tree(_redact_paths(conv.meta)),
+                "model": self._recorded_model(conv.id),
                 "parse_errors": len(errors)}
 
     def _serialize_turn(self, turn):
@@ -2397,6 +2399,71 @@ class Sidecar:
                  "created_at": _clean(row["created_at"]),
                  "updated_at": _clean(row["updated_at"]),
                  "turn_count": row["turn_count"]} for row in rows]
+
+    # -- which MODEL answered (D-5, the read half) --------------------------------
+    #
+    # APPENDED AT THE END OF THE CLASS, and the two call sites above it changed a dict
+    # literal rather than gaining a statement, for the reason `_conversation_list` and
+    # `_read_conversation` state: `tests/test_citation_anchors.py` compares `sidecar.py:<n>`
+    # citations in `mock.ts`/`types.ts` by line, the highest of them is 2039 (`types.ts:387`),
+    # and an insertion above that shifts anchors in files this change may not edit. Both
+    # edited literals and this method sit below it.
+
+    def _recorded_model(self, conversation_id):
+        """The model recorded for `conversation_id`, sanitized for the wire, or None.
+
+        WHY THIS EXISTS AT ALL, since `conversation.get` already emitted the same string.
+        `_serialize_conversation` relays the archived `conv.meta` with no key whitelist, so
+        `meta.model_id` was ALREADY on the wire for any conversation with a stored body —
+        measured, and the reason the brief for this seam ("no code path ever reads it, 0%
+        reachable") is only two-thirds true and is recorded as such in
+        `tests/test_corpus_model_id.py`. Three things this adds that that route does not:
+
+          1. A NAMED FIELD. `meta` is whatever key an adapter privately chose; `model` is a
+             contract, and `corpus.MODEL_ID_KEY` is the one place the spelling lives.
+          2. THE CHEAP READ. `meta` arrives only because `load_conversation_body` inflated
+             every frame of the archive to produce it — the cost `corpus.conversation_model`
+             names in its own docstring; this is one SELECT against one short table.
+          3. THE BODY-GONE STATE, the only case where the ANSWER changes rather than its
+             shape. With no body row and no readable rollout the response is
+             `_conversation_stub`, which carries no `meta` key at all — so the recorded model
+             was unreachable in exactly the state D-5 built the table to survive. That is why
+             the stub literal above calls this too, and not only the full serializer.
+
+        `corpus.conversation_model` RATHER THAN AN INLINE SELECT. A second copy of
+        table-and-column knowledge in this module is how it drifts — the same rule `_CONV_COLS`
+        and `indexed_provider` exist under. `test_the_CHEAP_reader_is_what_the_wire_calls_not_a
+        _second_copy_of_the_SQL` is an AST census that fails if this becomes a private query.
+
+        None SURVIVES AS None, and is not run through `_clean`. `_clean` is
+        `sanitize_for_copy`, which answers "" for a non-string, and "" is a value the corpus
+        contract promises never to record — collapsing "not recorded" into "recorded, blank"
+        at the wire would invent a fact. The key is still EMITTED on absence so a reader can
+        tell "this build does not send the field" from "no model was recorded"; None means
+        NOT RECORDED, three-way ambiguously (unknown id, an index predating the table, or an
+        adapter that captured nothing), exactly as `corpus.conversation_model` documents.
+
+        SANITIZED, because a model id is text an adapter lifted out of a downloaded export
+        and `dispatch` does not sanitize results globally — every handler does it explicitly,
+        which is precisely how a new wire key gets missed. The STORED value is left alone;
+        this is a wire concern.
+
+        NO GUARD FOR A MISSING TABLE. `corpus.open_index` runs `init_index` on every open and
+        the DDL is `IF NOT EXISTS`, so an index that predates `conversation_models` gains it
+        empty on the way in and answers None — the migration `test_an_index_built_BEFORE_this
+        _table_still_works` drives end to end. A `try/except OperationalError` here would be a
+        branch no reachable state exercises, and swallowing that error would hide a real
+        schema fault behind a plausible "not recorded".
+
+        STILL DEFERRED, INLINE rather than in a footnote: the cost ledger and model-reliance
+        reporting D-5 split off remain unbuilt, so there is no aggregate or facet over
+        `conversation_models` and no per-model rollup; and the cockpit does not declare or
+        render this field (`cockpit/src/ipc/types.ts` is another unit's scope), so the fact
+        reaches the wire and stops. UNVERIFIED that one string per conversation is what a UI
+        needs — the settling experiment is the cockpit unit that renders it.
+        """
+        model = corpus.conversation_model(self.conn, conversation_id)
+        return None if model is None else _clean(model)
 
 
 # -------------------------------------------------------------------- entrypoint

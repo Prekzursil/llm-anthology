@@ -42,14 +42,22 @@ time this build opens an index that predates it, and "no row" means "not recorde
 exactly as `rollout_legs` documents at `corpus.py:288-291`.
 `test_an_index_built_BEFORE_this_table_still_works` is that migration, end to end.
 
-NOT BUILT, DELIBERATELY: the cost ledger and model-reliance reporting on top of this. D-5
-was split under the EVPI gate and the analysis half is DEFERRED. There is therefore no
-aggregate/facet function here, and the read surface is not wired to the sidecar RPC or the
-cockpit yet — `conversation_model` has no production caller in this commit, which is stated
-plainly rather than dressed up: this unit closes the persistence hole, and exposing it is a
-separate unit. UNVERIFIED that any UI need is met by this alone; the settling experiment is
-whichever unit adds a `conversation.model` RPC and finds out whether one string per
-conversation is enough.
+THE READ SURFACE IS NOW WIRED — the sentence that used to sit here is RETIRED, not deleted.
+It read: "the read surface is not wired to the sidecar RPC or the cockpit yet —
+`conversation_model` has no production caller in this commit". The first half is now false
+and the second half was measured false as of this commit: `conversation.get` carries the
+recorded model as a top-level `model` field (`sidecar.py:_recorded_model`), and the section
+`the read surface is WIRED` at the bottom of this file is that seam's test. The wording is
+recorded rather than silently overwritten so a reader who finds it quoted in an old
+transcript can see it was retired deliberately.
+
+STILL DEFERRED, AND THIS IS THE WHOLE OF WHAT IS LEFT: (a) the cost ledger and
+model-reliance reporting — D-5 was split under the EVPI gate and the ANALYSIS half stays
+deferred, so there is still no aggregate/facet function and no per-model rollup; (b) the
+COCKPIT half — `cockpit/src/ipc/types.ts` does not declare the new field and no pane renders
+it, so the fact reaches the wire and stops there. (b) is a separate unit's scope, not an
+oversight. UNVERIFIED that one string per conversation is what a UI actually needs; the
+settling experiment is the cockpit unit that renders it and finds out.
 
 DISTINCT FROM `threads.model_provider`, which is the VENDOR — measured 'openai' on 92.8% of
 real Codex rollouts and never a model name (`corpus.py:73-76`).
@@ -78,12 +86,13 @@ reproducible by hand, which is the part that has to survive.
 PRIVACY: synthetic fixtures only. Every model name below was invented for this file; none
 was read off the owner's corpus.
 """
+import ast
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from llm_anthology import corpus, ir
+from llm_anthology import corpus, ir, sidecar
 
 _OPEN = []
 
@@ -461,3 +470,166 @@ def test_the_contracted_key_is_the_spelling_the_adapters_shipped():
     """Pinned as a literal, not derived: the value IS the wire contract with two adapters and
     every index already on disk. Changing it silently orphans every recorded row."""
     assert corpus.MODEL_ID_KEY == "model_id"
+
+
+# ------------------------------------------ the read surface is WIRED (D-5, the second half)
+#
+# WHAT WAS FALSIFIED FIRST, because the brief for this half was a HYPOTHESIS and two thirds
+# of it did not survive. The claim handed over was "`model_id` is captured and stored on
+# every ingest and no code path ever reads it — 0% reachable on the read side". Measured on
+# this tree before a line was written (in-memory index + the real `Sidecar.dispatch`, plus an
+# `ast.Call` census over `llm_anthology/**.py` controlled against the known-present write at
+# `corpus.py:395`):
+#
+#   * REPRODUCED — `corpus.conversation_model` has ZERO production call sites and seventeen
+#     test ones. The CONTRACTED cheap reader really was dead code.
+#   * REFUTED — "0% reachable". `conversation.get` already emitted
+#     `meta = {"model_id": "..."}`, because `_serialize_conversation` relays the archived
+#     `conv.meta` with no key whitelist. The FACT was reachable; the cheap named path was not.
+#   * REFUTED — "every ingest pays a write". `set_conversation_model` returns before its
+#     INSERT whenever the adapter captured nothing, which `corpus.py:1307-1308` calls the
+#     common case.
+#
+# So this is NOT "expose a fact the wire never had". It is three narrower things, and the
+# third is the only one that changes an ANSWER rather than its shape:
+#
+#   1. A NAMED top-level field instead of an untyped key inside an opaque blob. `meta` is
+#      whatever the adapter happened to put there; `model` is a contract.
+#   2. The CHEAP read. `meta.model_id` arrives only because the whole archived body was
+#      inflated to produce it (`corpus.py:1403-1406`); `conversation_model` is one SELECT
+#      against one short table.
+#   3. THE BODY-GONE STATE, which is a real reachability gap and is measured below. With no
+#      body row and no readable rollout, `conversation.get` answers the STUB — which carries
+#      no `meta` key at all — while `conversation_models` still holds the model. Before this
+#      change the recorded fact was 100% unreachable in exactly the state D-5's
+#      `test_the_model_survives_a_body_that_is_GONE` was built to survive.
+#
+# NOT A NEW VERB. `conversation.model` was rejected: it would be a second round trip for one
+# string the reader is already fetching, and a verb is a wider contract than a field.
+
+
+ZW = "​"   # a zero-width space, the shape `sanitize` strips; matches test_sidecar.py:29
+
+
+def _wired(model_id="synth-opus-9", cid="c1"):
+    """One indexed conversation behind the REAL Sidecar, returned as ``(server, conn)``.
+
+    `sidecar.Sidecar(conn)` rather than a stdio subprocess: `dispatch` is the same function
+    the JSON-RPC loop calls, and an in-process call keeps this file's fixtures synthetic and
+    its runtime in milliseconds. The stdio round trip is covered by `test_sidecar.py`.
+    """
+    conn = _open()
+    corpus.add_conversation(conn, _conv(cid=cid, model_id=model_id))
+    conn.commit()
+    return sidecar.Sidecar(conn), conn
+
+
+def test_conversation_get_reports_the_recorded_model():
+    """The seam, in one assertion: the fact the ingest recorded arrives at the wire."""
+    srv, _conn = _wired(model_id="synth-opus-9")
+    out = srv.dispatch("conversation.get", {"id": "c1"})
+    assert out["available"] is True, out.get("reason")
+    assert out["model"] == "synth-opus-9"
+
+
+def test_the_field_is_PRESENT_and_None_when_no_model_was_recorded():
+    """`None`, and the key still there.
+
+    Omitting the key on absence would make "this build does not send the field" and "no model
+    was recorded" the same observation at the wire, and the reader has to tell them apart —
+    `corpus.conversation_model` documents None as NOT RECORDED (three-way ambiguous), never
+    as "this conversation had no model". Never "" either: nothing writes a blank.
+    """
+    srv, _conn = _wired(model_id=None)
+    out = srv.dispatch("conversation.get", {"id": "c1"})
+    assert "model" in out
+    assert out["model"] is None
+
+
+def test_the_model_reaches_the_wire_when_the_BODY_IS_GONE():
+    """REASON 3, the only part of this change that alters an ANSWER rather than a shape.
+
+    Delete the body row and leave no readable rollout — every pre-G-4 index, and a deleted
+    archive — and `conversation.get` degrades to `_conversation_stub`, which carries no
+    `meta` at all. So the pre-existing `meta.model_id` route reports nothing while the table
+    still holds the model. This asserts BOTH halves, because asserting only the new field
+    would pass just as well if `meta` had been there all along and the gap were imaginary.
+    """
+    srv, conn = _wired(model_id="synth-durable")
+    conn.execute("DELETE FROM conversation_bodies WHERE conversation_id=?", ("c1",))
+    conn.commit()
+
+    out = srv.dispatch("conversation.get", {"id": "c1"})
+
+    assert out["available"] is False and "reason" in out, out
+    assert "meta" not in out, "the stub carries no meta — that IS the gap being closed"
+    assert corpus.conversation_model(conn, "c1") == "synth-durable", "the table still has it"
+    assert out["model"] == "synth-durable"
+
+
+def test_the_model_is_SANITIZED_on_its_way_to_the_wire():
+    """A model id is text an adapter copied out of a downloaded export, so it is
+    other-process-influenceable and bound for a UI — the class this module's privacy boundary
+    covers. `dispatch` does not sanitize results globally (every handler does it explicitly,
+    which is exactly how a new wire key gets missed), and the stub path never passes through
+    `_sanitize_tree`, so the field is `_clean`ed at its own source.
+
+    The STORED value keeps the hidden character: `corpus._meta_model_id` only strips
+    surrounding whitespace, and rewriting what the provider emitted would be the fidelity
+    loss that table exists to prevent. Sanitizing is a WIRE concern, asserted here as one.
+    """
+    srv, conn = _wired(model_id="synth" + ZW + "-opus-9")
+    assert corpus.conversation_model(conn, "c1") == "synth" + ZW + "-opus-9"
+    assert srv.dispatch("conversation.get", {"id": "c1"})["model"] == "synth-opus-9"
+
+
+def test_the_new_field_is_ADDITIVE_and_displaces_nothing():
+    """The pre-existing response is a SUBSET of the new one, and the old route to the fact
+    still works. A refactor that moved `model_id` OUT of `meta` "now that there is a real
+    field" would break every reader of the shape this wire already shipped."""
+    srv, _conn = _wired(model_id="synth-opus-9")
+    out = srv.dispatch("conversation.get", {"id": "c1"})
+    assert set(out) >= {"id", "title", "provider", "created_at", "updated_at", "account",
+                        "ir_version", "available", "turns", "meta", "parse_errors", "model"}
+    assert out["meta"]["model_id"] == "synth-opus-9"
+
+
+def test_the_CHEAP_reader_is_what_the_wire_calls_not_a_second_copy_of_the_SQL():
+    """The structural pin, and the one thing the four behavioural tests above cannot see.
+
+    `sidecar.py` could satisfy every assertion above by inlining
+    `SELECT model_id FROM conversation_models ...` and never touching `corpus`. That passes,
+    and it puts a second private copy of table-and-column knowledge in another module — the
+    precise drift `MODEL_ID_KEY`, `_CONV_COLS` and `indexed_provider` all exist to prevent.
+    So the census asserts the CALL, not the behaviour.
+
+    An `ast.Call` walk, not a grep: a text search cannot tell a call from a docstring
+    mention, and this module's name appears in prose in both files. DETECTOR CONTROL, because
+    a census that finds nothing is indistinguishable from a broken detector — the same walk
+    must also find the known-present `set_conversation_model` call inside `add_conversation`,
+    and the test fails loudly if it does not.
+    """
+    root = Path(__file__).resolve().parents[1] / "llm_anthology"
+    sites = {"conversation_model": [], "set_conversation_model": []}
+    files = sorted(root.rglob("*.py"))
+    assert files, "no engine sources found — this census verifies nothing until re-pointed"
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name in sites:
+                sites[name].append("%s:%d" % (path.name, node.lineno))
+
+    assert sites["set_conversation_model"], (
+        "DETECTOR CONTROL FAILED: the walk cannot even see the known-present writer call in "
+        "add_conversation, so its verdict on the reader means nothing.")
+    assert sites["conversation_model"], (
+        "corpus.conversation_model has no production caller again. Either the wire field was "
+        "removed (then retire it in this file and in corpus.py rather than leaving a dead "
+        "reader) or sidecar.py grew its own copy of the SELECT (then point it back at "
+        "corpus.conversation_model — one place knows the table).")
+    assert any(s.startswith("sidecar.py:") for s in sites["conversation_model"]), (
+        "the caller is not sidecar.py: %s" % sites["conversation_model"])

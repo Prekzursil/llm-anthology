@@ -5,7 +5,7 @@ import { CREDENTIAL_SHAPE_COVERAGE_LIMIT } from "../ipc/mock";
 // the credential-shape parity check. NOT `node:fs`: this tsconfig is browser-only.
 // @ts-ignore — vite resolves `?raw` to the file text; there is no ambient declaration.
 import REDACT_PY from "../../../llm_anthology/redact.py?raw";
-import type { CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
+import type { CredentialFinding, CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
 import {
   asExportMode,
   derivePreview,
@@ -36,6 +36,27 @@ function scanFixture(over: Partial<CredentialScan> = {}): CredentialScan {
     findings: [],
     coverage_limit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     scrubbed: false,
+    ...over,
+  };
+}
+
+/**
+ * The masked excerpt a finding carries on the wire. NOT A SECRET and not a truncation of
+ * one: `redact.py:280` masks before the value is ever put on the wire, so this is the shape
+ * label plus a length, which is all the engine itself would ever emit. Kept as a named
+ * constant so no case below can drift into pasting something that looks like a real key.
+ */
+const MASKED_EXCERPT = "sk-a… (34 chars)";
+
+/** One MASKED credential finding, located on a thread field. */
+function findingFixture(over: Partial<CredentialFinding> = {}): CredentialFinding {
+  return {
+    shape: "api-key",
+    offset: 12,
+    preview: MASKED_EXCERPT,
+    scope: "thread",
+    id: "t-7",
+    field: "preview",
     ...over,
   };
 }
@@ -654,16 +675,22 @@ describe("ExportPanel", () => {
     expect(done.preview?.nodeCount).toBe(16);
   });
 
-  it("runs without a prior plan: preview is null through the run", async () => {
+  it("runs without a prior plan: SCANS first, so the preview is never null", async () => {
+    // THIS CASE USED TO ASSERT THE OPPOSITE — `expect(running.preview).toBeNull()` — and
+    // that assertion was pinning the defect. A null preview here meant the panel was about
+    // to write bytes it had never measured, which is exactly the one-click unscanned write
+    // the pre-write gate exists to stop. The panel now takes the write-free dry run itself,
+    // so a run always carries the scan that licensed it.
     const views: ExportView[] = [];
     const panel = new ExportPanel(fakeIpc(), (v) => views.push(v));
     await panel.run("/out/export.json");
-    const running = views[0];
+    expect(views.map((v) => v.kind)).toEqual(["planning", "running", "done"]);
+    const running = views[1];
     if (running.kind !== "running") throw new Error("unreachable");
-    expect(running.preview).toBeNull();
-    const done = views[1];
+    expect(running.preview?.nodeCount).toBe(16);
+    const done = views[2];
     if (done.kind !== "done") throw new Error("unreachable");
-    expect(done.preview).toBeNull();
+    expect(done.preview?.nodeCount).toBe(16);
   });
 
   it("runs: reports an Error message on failure", async () => {
@@ -676,6 +703,10 @@ describe("ExportPanel", () => {
       }),
       (v) => views.push(v),
     );
+    // Plan first, as the shell's Plan button does: this case is about the WRITE failing, and
+    // without a scan on hand the panel would take one and shift every index by one.
+    await panel.plan("/dest.json");
+    views.length = 0;
     await panel.run("/out/export.json");
     const err = views[1];
     if (err.kind !== "error") throw new Error("unreachable");
@@ -723,6 +754,13 @@ describe("ExportPanel", () => {
       (v) => views.push(v),
     );
 
+    // A scan on hand keeps this case about RE-ENTRANCY: `run()` then reaches `export.run`
+    // synchronously, so the counters below are read at a deterministic point rather than
+    // wherever the microtask queue happened to be. The in-flight-DRY-RUN variant is covered
+    // separately, in the pre-write-credential-gate block.
+    await panel.plan("/dest.json");
+    views.length = 0;
+
     const first = panel.run("/out/export.json");
     const second = panel.run("/out/export.json"); // busy -> no-op
     await second;
@@ -748,9 +786,274 @@ describe("ExportPanel", () => {
 
     views.length = 0;
     await panel.run("/out/export.json");
-    const running = views[0];
-    if (running.kind !== "running") throw new Error("unreachable");
-    expect(running.preview).toBeNull();
+    // The carried preview really is gone — the run has to go and take a fresh scan rather
+    // than reusing the one from before the reset.
+    expect(views.map((v) => v.kind)).toEqual(["planning", "running", "done"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the pre-write credential gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Before this gate existed, `run()` had no dependency on a prior `plan()` and no dependency
+ * on the scan at all: `export.py:375` documents the scrub as "OPT-IN, default False", and
+ * `sidecar.py:1364` states outright that "a finding never blocks the write". With `app.ts`'s
+ * defaults in force — mode FULL (`app.ts:793`), scrub checkbox UNCHECKED (`app.ts:802-808`) —
+ * ONE click on Export wrote any matched credential verbatim, and the user first learned it
+ * had been in there from a report rendered AFTER the bytes were already on disk.
+ *
+ * BOTH-STATES. Every case below asserts on `seen.writes`, the number of times `export.run`
+ * was actually invoked. Against the pre-gate module the credential-bearing cases measured
+ * `writes === 1` — that is the state these were watched failing in, and it is what makes a
+ * green run here mean the gate FIRES rather than that the assertion is vacuous. The clean
+ * cases measured `writes === 1` before and after: they are the other half of the control,
+ * pinning that the gate did not simply break exporting.
+ *
+ * NO FIXTURE HERE CARRIES A SECRET. `preview` on a finding is the engine's MASKED excerpt
+ * (`redact.py:280` never puts the matched run on the wire), so the strings below are
+ * synthetic shape labels — there is no credential in this file to leak into a failure
+ * message, a CI log or a pasted diff.
+ */
+describe("the pre-write credential gate", () => {
+  /**
+   * A panel whose dry run reports `findings`, instrumented with the two counters that
+   * matter: how many times a WRITE happened, and how many dry-run scans it took.
+   */
+  function gated(findings: CredentialFinding[], over: Partial<ExportIpc> = {}) {
+    const views: ExportView[] = [];
+    const seen = { writes: 0, plans: 0 };
+    const panel = new ExportPanel(
+      fakeIpc({
+        exportPlan: async (_dest, mode) => {
+          seen.plans += 1;
+          return planFixture({ mode: mode ?? "full", credential_scan: scanFixture({ findings }) });
+        },
+        exportRun: async (destPath) => {
+          seen.writes += 1;
+          return runResult({ written_path: destPath, credential_scan: scanFixture({ findings }) });
+        },
+        ...over,
+      }),
+      (v) => views.push(v),
+    );
+    return { panel, views, seen };
+  }
+
+  const ONE = [findingFixture()];
+  const TWO = [findingFixture(), findingFixture({ id: "t-9", offset: 40 })];
+
+  it("WITHHOLDS the write when the pre-write scan found a credential shape", async () => {
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json");
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+
+    // THE LOAD-BEARING ASSERTION. Not "a warning was rendered" — no bytes left the process.
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["withheld"]);
+  });
+
+  it("lets a CLEAN scan straight through to the write", async () => {
+    const { panel, views, seen } = gated([]);
+    await panel.plan("/out/x.json");
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(1);
+    expect(views.map((v) => v.kind)).toEqual(["running", "done"]);
+  });
+
+  it("SCANS FIRST when Export is pressed without a Plan, and withholds on a finding", async () => {
+    // The defect's actual shape: `app.ts:837` wires the Export button straight to `run()`,
+    // so the one-click path never went through a scan at all. The panel now takes the dry
+    // run itself rather than writing blind — `export.plan` touches no filesystem.
+    const { panel, views, seen } = gated(ONE);
+
+    await panel.run("/out/x.json");
+
+    expect(seen).toEqual({ writes: 0, plans: 1 });
+    expect(views.map((v) => v.kind)).toEqual(["planning", "withheld"]);
+  });
+
+  it("scans first and then writes when that unprompted scan comes back clean", async () => {
+    const { panel, views, seen } = gated([]);
+
+    await panel.run("/out/x.json");
+
+    expect(seen).toEqual({ writes: 1, plans: 1 });
+    expect(views.map((v) => v.kind)).toEqual(["planning", "running", "done"]);
+  });
+
+  it("does NOT let a scan taken in another MODE license the write", async () => {
+    // `export.py:298` computes the scan over `export_graph(corpus, mode=mode)`, and
+    // MODE_SHAREABLE drops `preview` — the very field the finding fixture sits on. So a
+    // clean `shareable` scan says nothing about a `full` write, and reusing it would be a
+    // gate that can be walked past by touching the mode dropdown.
+    let planned: (ExportMode | undefined)[] = [];
+    const { panel, views, seen } = gated([], {
+      exportPlan: async (_dest, mode) => {
+        planned.push(mode);
+        return planFixture({
+          mode: mode ?? "full",
+          credential_scan: scanFixture({ findings: mode === "shareable" ? [] : ONE }),
+        });
+      },
+    });
+
+    await panel.plan("/out/x.json", "shareable");
+    views.length = 0;
+    await panel.run("/out/x.json", "full");
+
+    expect(planned).toEqual(["shareable", "full"]);
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["planning", "withheld"]);
+  });
+
+  it("writes without withholding when the caller opted into the scrub", async () => {
+    // Scrub ON means the engine REPLACES the matched runs in the written bytes
+    // (`export.py:441` carries `scrubbed: True`), so there is nothing to withhold.
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json");
+    views.length = 0;
+
+    await panel.run("/out/x.json", undefined, true);
+
+    expect(seen.writes).toBe(1);
+    expect(views.map((v) => v.kind)).toEqual(["running", "done"]);
+  });
+
+  it("writes on an IDENTICAL second press — the warning is a hold, not a dead end", async () => {
+    // `app.ts` has no confirm control and this unit may not add one, so the acknowledgement
+    // has to ride the button the user already has. First press discloses, second press
+    // commits. Without this the owner could never export their own archive of record.
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json");
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(1);
+    expect(views.map((v) => v.kind)).toEqual(["withheld", "running", "done"]);
+  });
+
+  it("re-withholds when the acknowledged write is not the write being asked for", async () => {
+    // The acknowledgement is bound to the exact parameters that were shown. Agreeing to
+    // write a credential to a scratch file is not agreeing to write it to a shared drive.
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json", "full");
+    views.length = 0;
+
+    await panel.run("/tmp/scratch.json", "full", false);
+    await panel.run("//share/team/export.json", "full", false);
+
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["withheld", "withheld"]);
+  });
+
+  it("re-arms after a completed write, so the NEXT export is gated again too", async () => {
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json");
+    await panel.run("/out/x.json"); // withheld
+    await panel.run("/out/x.json"); // acknowledged -> written
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(1);
+    expect(views.map((v) => v.kind)).toEqual(["withheld"]);
+  });
+
+  it("re-arms on a fresh Plan — a new scan is new information", async () => {
+    const { panel, views, seen } = gated(ONE);
+    await panel.run("/out/x.json"); // scans, withholds, arms
+    await panel.plan("/out/x.json"); // the user looks again -> the hold is back
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["withheld"]);
+  });
+
+  it("re-arms on reset", async () => {
+    const { panel, views, seen } = gated(ONE);
+    await panel.plan("/out/x.json");
+    await panel.run("/out/x.json"); // withheld, armed
+    panel.reset();
+    views.length = 0;
+
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["planning", "withheld"]);
+  });
+
+  it("reports the dry run failing instead of falling back to writing blind", async () => {
+    // FAIL CLOSED. If the scan cannot be taken, the answer is not "write it anyway".
+    const { panel, views, seen } = gated(ONE, {
+      exportPlan: async () => {
+        throw new Error("engine gone");
+      },
+    });
+
+    await panel.run("/out/x.json");
+
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["planning", "error"]);
+    expect(renderView(views[1])).toEqual(["Export plan failed: engine gone"]);
+  });
+
+  it("counts the shapes, singular and plural, and never echoes one", async () => {
+    const one = gated(ONE);
+    await one.panel.run("/out/x.json");
+    const oneLines = renderView(one.views[1]).join("\n");
+    expect(oneLines).toContain("1 credential shape would be written");
+
+    const two = gated(TWO);
+    await two.panel.run("/out/x.json");
+    const twoLines = renderView(two.views[1]).join("\n");
+    expect(twoLines).toContain("2 credential shapes would be written");
+
+    // The masked excerpt reaches the screen; the run it stands for does not exist here.
+    expect(oneLines).toContain(MASKED_EXCERPT);
+    expect(oneLines).not.toContain("sk-abcdefghijklmnopqrstuvwxyz012345");
+  });
+
+  it("renders the hold with the destination, the remedies, the findings and the LIMIT last", async () => {
+    const { panel, views } = gated(ONE);
+    await panel.plan("/out/x.json");
+    views.length = 0;
+    await panel.run("//share/team/export.json");
+
+    expect(renderView(views[0])).toEqual([
+      "Withheld before writing: 1 credential shape would be written VERBATIM to //share/team/export.json.",
+      "Enable the scrub option to replace the matched runs, or press Export again to write them as they are.",
+      "1 credential shape found — warning only, bytes untouched.",
+      `api-key in thread t-7 field preview: ${MASKED_EXCERPT}`,
+      // LAST, exactly as in every other view: an empty findings list is not a safety
+      // verdict, so the sentence that says so must not be buried mid-block.
+      CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+    ]);
+  });
+
+  it("ignores a re-entrant run while the dry-run scan is still in flight", async () => {
+    const gate = deferred<ExportPlan>();
+    const { panel, views, seen } = gated(ONE, { exportPlan: () => gate.promise });
+
+    const first = panel.run("/out/x.json");
+    const second = panel.run("/out/x.json"); // busy -> no-op, NOT a second write path
+    await second;
+    expect(views.map((v) => v.kind)).toEqual(["planning"]);
+
+    gate.resolve(planFixture({ credential_scan: scanFixture({ findings: ONE }) }));
+    await first;
+    expect(seen.writes).toBe(0);
+    expect(views.map((v) => v.kind)).toEqual(["planning", "withheld"]);
   });
 });
 

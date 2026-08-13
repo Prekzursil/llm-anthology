@@ -373,9 +373,15 @@ def test_search_respects_the_limit(tmp_path):
 
 def test_ranked_search_returns_rows_with_bm25_scores_best_first(tmp_path):
     """ranked_search surfaces a bm25_score per row, ordered best-first (ascending bm25).
-    The index is contentless with detail=none, so bm25 carries no term-frequency signal
-    and matching rows tend to tie — this asserts the ordering key and the matched set,
-    NOT a fine-grained relevance separation the schema cannot provide."""
+
+    THIS DOCSTRING WAS STALE and is corrected here. It said the index is "contentless with
+    detail=none, so bm25 carries no term-frequency signal and matching rows tend to tie".
+    That was true when it was written and is false now: G-4 rebuilt the table at
+    `detail=full` (`corpus.py:201`) and `test_corpus_fts_rebuild.py:230` asserts the scores
+    DO separate by term frequency. What this test still deliberately asserts is the ordering
+    KEY and the matched set, not a particular separation — the fine-grained relevance claim
+    belongs to the file that owns the schema decision, and duplicating it here would be a
+    second copy to drift."""
     conn = _open(str(tmp_path / "i.sqlite"))
     recs = [_conv("c0", "t", "alpha beta"), _conv("c1", "t", "alpha"),
             _conv("c2", "t", "gamma")]
@@ -400,8 +406,30 @@ def test_ranked_search_returns_rows_with_bm25_scores_best_first(tmp_path):
 # HONEST SCOPE, because this is easy to overstate: `ranked_search` has ZERO production
 # callers (measured repo-wide; only its own tests and the build artifacts under
 # `src-tauri/target/`). So this completes a CONTRACT on a function that is itself an
-# unwired seam — it is not a defect a user can currently reach. `index.search` IS reachable
-# from `cli` and the export tests, but no caller passes a facet today either.
+# unwired seam — it is not a defect a user can currently reach.
+#
+# CORRECTION (U-CLEAN-DEADCODE). The sentence that used to end this block said "`index.search`
+# IS reachable from `cli` and the export tests". The second half is right and the first half is
+# FALSE, which mattered because it made `ranked_search` look like the lone outlier. Measured two
+# ways that cannot share a blind spot: an AST reference walk over every non-vendored `.py`
+# (imports resolved absolute and relative, module-attribute and bare-name loads counted) finds
+# no `index.search` load in any production module, and a plain `grep -n "index\."
+# llm_anthology/cli.py` returns only `index.count` at `cli.py:313` and one comment naming
+# `index.build_index`. Detector control for the grep, per the single-signal rule: the same
+# pattern DOES find `index.count(`, so the silence is meaningful and not a broken matcher.
+# The four files that call `index.search` are all tests — `test_index.py`, `test_cli.py`,
+# `test_export_ingest.py`, `test_loaders_corpus.py`. Production reaches the corpus through
+# `corpus.search` and the sidecar's hand-rolled `_run_search` (`sidecar.py:2066` says so in its
+# own docstring) instead, so the ENTIRE query surface below `count` is unwired, not one function.
+#
+# WHY IT IS STILL HERE. Deleting it is the standing precedent for this shape — DECISION G-17
+# removed `index.posting_count` from this very module and `tests/test_g17_dead_code_removed.py`
+# pins the absence. It was NOT done under U-CLEAN-DEADCODE because the deletion cannot be
+# contained: `index.search` has live callers in three test files outside that unit's scope
+# (`test_cli.py`, `test_export_ingest.py`, `test_loaders_corpus.py`, 7 call sites) and
+# `ranked_search` has one in a fourth (`test_corpus_fts_rebuild.py:234`), and this suite's
+# 100% line+branch gate means the functions and their tests must go in the SAME commit. A
+# follow-up that owns those four files can finish it; nothing here is a user-reachable defect.
 
 def _dated(cid, title, body, provider, created):
     conv = _conv(cid, title, body)

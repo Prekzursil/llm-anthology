@@ -70,7 +70,7 @@ processes are reaped at the turn boundary here.
 | stack | test command | coverage | status |
 |---|---|---|---|
 | Python (`llm_anthology`) | `python -m pytest` | `python -m pytest --cov=llm_anthology --cov-branch --cov-fail-under=100` | **enforced** — `pyproject.toml` addopts already fails below 100% |
-| Cockpit TS (`cockpit/`) | `cd cockpit && npx vitest run` | `npx vitest run --coverage` | target only — see below |
+| Cockpit TS (`cockpit/`) | `cd cockpit && npm test` (= `vitest run --coverage`) | floors in `cockpit/vitest.config.ts` | **ratchet, enforced** — the `cockpit` CI job runs `npm test`; below a floor is red |
 | Rust (`cockpit/src-tauri/`) | `cargo test` | none configured | tests must pass; no coverage gate |
 
 Also run `cd cockpit && npx tsc --noEmit` and `npm run build` — the build script is
@@ -79,34 +79,44 @@ Also run `cd cockpit && npx tsc --noEmit` and `npm run build` — the build scri
 **Do not pass `-q` to pytest.** `pyproject.toml` addopts already contains it; a second one
 makes it `-qq`, which suppresses the pass/fail summary line and looks like a broken suite.
 
-**The TypeScript 100% is a TARGET, not an enforced gate.** Measured 2026-08-07:
-**75.85% statements** (1156/1524), 74.80% lines — over the 17 modules some test loads.
+**The cockpit TypeScript gate is a measured RATCHET, and its floors are not restated here.**
+They live in `cockpit/vitest.config.ts` under `coverage.thresholds`, are asserted key by key
+by `cockpit/src/coverageGate.test.ts`, and do run in CI: `cockpit/package.json`'s `test`
+script is `vitest run --coverage` and the `cockpit` job runs `npm test`. Read the numbers
+from that file. `tests/test_docs_counts.py` fails if a coverage percentage appears in this
+section that is not one of those floors — a percentage copied into prose is a snapshot, and
+this paragraph has already shipped two stale ones.
 
-That number flatters the codebase, but not for the reason an earlier version of this file
-gave. Six runtime modules are imported by **zero** test files and are excluded from the
-denominator outright: `app.ts`, `main.ts`, `ui/reader.ts`, `ui/search.ts`, `graph/canvas.ts`,
-`graph/elkLayout.ts`. (`ipc/types.ts` is absent too but has 0 runtime statements — correct,
-not a gap.)
+Two properties of that gate are worth knowing before you read any coverage number in this
+repo:
 
-The earlier claim that `environment: "node"` makes those modules *structurally* untestable
-was wrong, in three measured ways:
+- **The two rails have opposite defaults, and only the Python one is safe.** Python's
+  `[tool.coverage.run] source` names a package root and walks it on disk, so a module no test
+  imports still enters the denominator at 0% and drags the total DOWN. vitest/v8 builds the
+  denominator from the files the run actually LOADED, so an unimported module is not 0%, it
+  is ABSENT — and adding untested code RAISES the reported percentage. The default rewards
+  not testing. `coverage.include: ["src/**/*.ts"]` in `cockpit/vitest.config.ts` is what
+  makes the cockpit number comparable to the Python one, and that file's header comment
+  carries the measurement the floors were set from.
+- **The dark set — runtime modules no test file imports — is deliberately NOT enumerated
+  here.** It moves whenever a DOM test lands, and the enumeration this paragraph used to
+  carry was wrong in both directions by 2026-08-13: `ipc/real.ts` and `ui/search.ts` had
+  acquired tests, while `ui/maintenanceShell.ts` and `ui/workspace.ts` had joined the set.
+  Recompute it instead of citing it — `cd cockpit && npx vitest run --coverage
+  --coverage.reportsDirectory=<a temp dir>`, then read the 0% rows. The isolated reports
+  directory is not optional: other agents share this working tree.
 
-- `virtualList.ts` is loaded and covered at 4.41% — partially tested, not excluded.
-- `ipc/real.ts` sits at 3.03% with **zero** DOM references. It is blocked on mocking
-  `@tauri-apps/api`, and is testable under node today.
-- `elkLayout.ts` needs a browser `Worker`; `canvas.ts` needs a 2D `CanvasRenderingContext2D`.
-  **jsdom implements neither**, so the environment switch does not unblock those two at all.
-
-Flipping to jsdom on its own was measured to change coverage by exactly zero. A DOM is
-necessary for `app`/`reader`/`search`/`scrubber`/`virtualList` and sufficient for none of
-them — the missing thing is tests, so jsdom is worth adding *together with* tests that need
-it, not before. `canvas.ts` and the elk worker path stay browser-only and are covered by the
-headless probes in `cockpit/tools/` instead.
+`jsdom` is not the missing piece for the whole dark set. It implements neither `Worker` nor
+`CanvasRenderingContext2D`, so `graph/elkLayout.ts` and `graph/canvas.ts` stay browser-only
+whatever the environment and are covered by the headless probes in `cockpit/tools/` instead;
+flipping to jsdom on its own was measured to change coverage by exactly zero. For the rest of
+the set the missing thing is tests, so jsdom is worth adding *together with* tests that need
+it, not before.
 
 **Reporting gotcha:** the vitest terminal table hides files that are at 100% on every metric,
-so it prints 10 of the 17 measured modules and looks as though seven tested files went
-missing. Use `--coverage.reporter=json-summary` and read `coverage-summary.json` for the real
-per-file list.
+so it prints a subset of the measured modules and looks as though tested files went missing.
+Use `--coverage.reporter=json-summary` and read `coverage-summary.json` for the real per-file
+list.
 
 ## Coverage
 
@@ -261,10 +271,45 @@ or every one of them breaks.
 - If one is added, remember that a local pass being green does NOT mean CI is green: the
   working tree is CRLF and CI checks out the LF blob, and formatters can decide differently
   on the two forms. Verify against the blob (`git archive <rev> | tar -x -C <tmp>`).
-- What CI runs: FOUR pre-existing jobs — `test` (pytest, on a python × OS matrix), `js`,
-  `js-package` and `package` — none of which enters `cockpit/` or `src-tauri/`; plus the
-  `cockpit` job added to close exactly that gap (tsc · vitest · cargo test · clippy · tauri
-  build, on a windows + linux matrix, blocking).
+- **What CI runs — four workflow files · 16 jobs.** An earlier version of this bullet listed
+  five jobs from one file and called that the whole surface: it named 5 of the 16 jobs and
+  none of the other three workflow files, two of which run on a pull request. The table is
+  machine-
+  checked against `.github/workflows/` by `tests/test_docs_counts.py`: adding, renaming or
+  re-homing a job to another OS turns that test red until this table is updated. Matrix cell
+  counts are deliberately absent — the parenthetical after each runner is prose, not a pinned
+  figure — because they churn and a stale cell count is what this bullet is being fixed for.
+
+| workflow | job | runners | on PR? |
+|---|---|---|---|
+| `ci.yml` | `test` | ubuntu-latest (3.9 + 3.13) · windows-latest · macos-latest | yes |
+| `ci.yml` | `js` | ubuntu-latest (node 20 + 22) | yes |
+| `ci.yml` | `js-package` | ubuntu-latest · windows-latest | yes |
+| `ci.yml` | `package` | ubuntu-latest · windows-latest | yes |
+| `ci.yml` | `cockpit` | ubuntu-latest · windows-latest | yes |
+| `codeql.yml` | `analyze` | ubuntu-latest (python + javascript-typescript) | yes |
+| `format-drift-canary.yml` | `canary` | ubuntu-latest | yes |
+| `release.yml` | `build` | ubuntu-latest | no |
+| `release.yml` | `smoke` | ubuntu-latest | no |
+| `release.yml` | `pypi` | ubuntu-latest | no |
+| `release.yml` | `js-build` | ubuntu-latest | no |
+| `release.yml` | `js-smoke` | ubuntu-latest | no |
+| `release.yml` | `npm` | ubuntu-latest | no |
+| `release.yml` | `installer-build` | windows-latest | no |
+| `release.yml` | `installer-smoke` | windows-latest | no |
+| `release.yml` | `installer-attach` | ubuntu-latest | no |
+
+- The `cockpit` job is the one that closed the original gap: no other job enters `cockpit/` or
+  `cockpit/src-tauri/`, and it runs tsc · vitest (with coverage) · cargo test · clippy · tauri
+  build on both legs.
+- **A red run is not a blocked merge here.** `ci.yml` calls the `cockpit` job "Deliberately
+  BLOCKING" and the job does fail the run — but whether that stops a merge is decided by
+  branch protection and rulesets, which live outside the workflow files, and `main` has
+  neither. Measured 2026-08-13 by five read-only `gh api` probes recorded in
+  `.github/workflows/codeql.yml`'s `GATING-INTENT` header, and corroborated here by re-running
+  one of them (`gh api …/branches/main --jq .protected` → `false`; a second observation of the
+  same probe, not a mechanically independent one). So the gates are advisory to git and
+  mandatory to you.
 - All quality gates must pass before PR creation.
 
 ## Key Decisions

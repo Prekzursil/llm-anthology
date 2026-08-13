@@ -314,11 +314,20 @@ export type ExportVerdict =
       scan: CredentialScanView;
     };
 
-/** The panel's render-state: idle -> planning -> planned -> running -> done|error. */
+/**
+ * The panel's render-state: idle -> planning -> planned -> withheld|running -> done|error.
+ *
+ * `withheld` is the PRE-WRITE credential hold and is deliberately NOT called "blocked",
+ * because {@link ExportVerdict} already uses that word for something else: a verdict is
+ * `blocked` when the engine's fidelity gates reject bytes it has already produced, whereas
+ * `withheld` happens before `export.run` is called at all. Nothing was written, nothing was
+ * attempted, and the only thing that has run is a write-free dry run.
+ */
 export type ExportView =
   | { kind: "idle" }
   | { kind: "planning" }
   | { kind: "planned"; preview: ExportPreview }
+  | { kind: "withheld"; preview: ExportPreview; headline: string; remedy: string }
   | { kind: "running"; preview: ExportPreview | null }
   | { kind: "done"; preview: ExportPreview | null; verdict: ExportVerdict }
   | { kind: "error"; stage: "plan" | "run"; message: string };
@@ -425,6 +434,12 @@ export function renderView(view: ExportView): string[] {
         `Mode: ${modeLabel(view.preview.mode)}`,
         ...renderScan(view.preview.scan),
       ];
+    case "withheld":
+      // The scan lines come last so the coverage limit stays the FINAL line, exactly as in
+      // every other view that carries a scan. It is the sentence that stops "no findings"
+      // reading as "safe to share", and burying it mid-block to make room for the remedy
+      // would trade the load-bearing half of G-5 for a hint the user can already see.
+      return [view.headline, view.remedy, ...renderScan(view.preview.scan)];
     case "running":
       return ["Exporting…"];
     case "done":
@@ -443,10 +458,55 @@ export function renderView(view: ExportView): string[] {
  * injected {@link ExportIpc}, tracks a single-flight busy flag (a re-entrant call while
  * one is in flight is ignored), and emits the current {@link ExportView} to `onChange`
  * on every transition. `current` exposes the latest view for an initial paint.
+ *
+ * ## The pre-write credential gate
+ *
+ * `run()` USED TO BE unconditional, and that was the defect. Nothing tied it to a prior
+ * `plan()`, and nothing tied it to the scan: the engine documents the scrub as "OPT-IN,
+ * default False" (`export.py:375`) and states outright that "a finding never blocks the
+ * write" (`sidecar.py:1364`). With the shell's defaults in force — mode FULL, scrub
+ * checkbox UNCHECKED (`app.ts:793,802-808`) — one click on Export wrote any matched
+ * credential verbatim, and the user first learned it had been in there from a report
+ * rendered AFTER the bytes were on disk. For an artifact `redact.py:44-50` itself
+ * describes as "a FILE the owner deliberately hands to someone else", that inverts
+ * safe-by-default.
+ *
+ * Two rules close it, and both live here rather than in the shell because `app.ts` has no
+ * tests and cannot get them in this environment — behaviour left there is behaviour
+ * nothing can catch (the same reasoning as {@link exportIpcFrom}):
+ *
+ *   1. **No write without a scan measured for THIS projection.** If there is no fresh
+ *      preview, `run()` takes the dry run itself. `export.plan` writes nothing and touches
+ *      no filesystem (`sidecar.py:1306`), so the unasked-for scan costs only a round trip.
+ *   2. **A finding holds the write once.** The first press discloses what would be written
+ *      and to where; an IDENTICAL second press commits it.
+ *
+ * Rule 2 is a HOLD, not a veto, and that is deliberate. The shell offers no confirm control
+ * and this panel may not invent one, so the acknowledgement has to ride the button that
+ * already exists. A veto would mean the owner could never export their own archive of
+ * record — the scan matches credential SHAPES, so a false positive would otherwise be a
+ * permanent lockout. What the gate guarantees is not that the bytes are never written; it
+ * is that they are never written before the person was told.
  */
 export class ExportPanel {
   private view: ExportView = { kind: "idle" };
   private preview: ExportPreview | null = null;
+  /**
+   * The `mode` ARGUMENT that produced {@link preview} — not the mode the plan echoed back.
+   *
+   * Compared by identity, so ANY difference (including `undefined` against an explicit
+   * `"full"`) forces a fresh dry run. The asymmetry is the point: a needless re-scan costs
+   * one write-free RPC, whereas REUSING a scan taken for another projection is precisely
+   * how this gate would be walked past. `export.py:298` measures the scan over
+   * `export_graph(corpus, mode=mode)` and shareable DROPS `preview` — the field a finding
+   * most often sits on — so a clean shareable scan licenses nothing about a full write.
+   */
+  private previewMode: ExportMode | undefined;
+  /**
+   * The one write the user has been warned about and may repeat to confirm, keyed by the
+   * exact arguments they were shown. `null` means the gate is armed.
+   */
+  private acknowledged: string | null = null;
   private busy = false;
 
   constructor(
@@ -467,13 +527,9 @@ export class ExportPanel {
   async plan(dest?: string, mode?: ExportMode): Promise<void> {
     if (this.busy) return;
     this.busy = true;
-    this.emit({ kind: "planning" });
     try {
-      const plan = await this.ipc.exportPlan(dest, mode);
-      this.preview = derivePreview(plan);
-      this.emit({ kind: "planned", preview: this.preview });
-    } catch (err) {
-      this.emit({ kind: "error", stage: "plan", message: errorMessage(err) });
+      const preview = await this.rescan(dest, mode);
+      if (preview !== null) this.emit({ kind: "planned", preview });
     } finally {
       this.busy = false;
     }
@@ -483,22 +539,115 @@ export class ExportPanel {
   async run(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<void> {
     if (this.busy) return;
     this.busy = true;
-    this.emit({ kind: "running", preview: this.preview });
     try {
-      const result = await this.ipc.exportRun(destPath, mode, scrub);
-      this.emit({ kind: "done", preview: this.preview, verdict: deriveVerdict(result) });
-    } catch (err) {
-      this.emit({ kind: "error", stage: "run", message: errorMessage(err) });
+      // Rule 1. FAIL CLOSED: if the scan cannot be taken, the answer is an error, never
+      // "write it anyway" — `rescan` has already emitted that error by the time it says null.
+      const preview = this.freshPreview(mode) ?? (await this.rescan(destPath, mode));
+      if (preview === null) return;
+
+      // Rule 2.
+      const withheld = this.withheldFor(preview, destPath, mode, scrub);
+      if (withheld !== null) {
+        this.emit(withheld);
+        return;
+      }
+
+      this.emit({ kind: "running", preview });
+      try {
+        const result = await this.ipc.exportRun(destPath, mode, scrub);
+        // Re-arm. The acknowledgement covered THIS write and this write has now happened,
+        // so a later export is gated again. A FAILED write deliberately keeps it: the bytes
+        // never landed, the user already consented to these exact parameters, and re-warning
+        // on every transient failure would train them to click through the warning.
+        this.acknowledged = null;
+        this.emit({ kind: "done", preview, verdict: deriveVerdict(result) });
+      } catch (err) {
+        this.emit({ kind: "error", stage: "run", message: errorMessage(err) });
+      }
     } finally {
       this.busy = false;
     }
   }
 
-  /** Clear back to idle, dropping any carried preview. */
+  /** Clear back to idle, dropping any carried preview and re-arming the gate. */
   reset(): void {
     this.preview = null;
+    this.previewMode = undefined;
+    this.acknowledged = null;
     this.emit({ kind: "idle" });
   }
+
+  /** The current preview IFF it was measured for this exact `mode` argument. */
+  private freshPreview(mode: ExportMode | undefined): ExportPreview | null {
+    return this.preview !== null && this.previewMode === mode ? this.preview : null;
+  }
+
+  /**
+   * Emit `planning`, take the write-free dry run, and adopt it as the current preview.
+   * Returns the preview, or null when the call failed — in which case an `error` view has
+   * already been emitted and the caller must not proceed to a write.
+   */
+  private async rescan(
+    dest: string | undefined,
+    mode: ExportMode | undefined,
+  ): Promise<ExportPreview | null> {
+    this.emit({ kind: "planning" });
+    try {
+      const plan = await this.ipc.exportPlan(dest, mode);
+      this.preview = derivePreview(plan);
+      this.previewMode = mode;
+      // A new scan is new information, so any standing acknowledgement is void.
+      this.acknowledged = null;
+      return this.preview;
+    } catch (err) {
+      this.emit({ kind: "error", stage: "plan", message: errorMessage(err) });
+      return null;
+    }
+  }
+
+  /**
+   * The hold, or null when this write may proceed. Arms the acknowledgement as a
+   * side effect, so an identical repeat of the SAME write is let through next time.
+   */
+  private withheldFor(
+    preview: ExportPreview,
+    destPath: string,
+    mode: ExportMode | undefined,
+    scrub: boolean | undefined,
+  ): ExportView | null {
+    const count = preview.scan.findings.length;
+    // Scrub ON means the engine REPLACES the matched runs in the written bytes, so there is
+    // nothing left to withhold — the warning still renders, it just no longer describes the file.
+    if (count === 0 || scrub === true) return null;
+    const key = writeKey(destPath, mode, scrub);
+    if (this.acknowledged === key) return null;
+    this.acknowledged = key;
+    const shapes = `${count} credential shape${count === 1 ? "" : "s"}`;
+    return {
+      kind: "withheld",
+      preview,
+      headline: `Withheld before writing: ${shapes} would be written VERBATIM to ${destPath}.`,
+      // Describes the scrub control by what it DOES rather than quoting the shell's label
+      // text. A second copy of that label here is a string nothing keeps in sync — the exact
+      // rot that took SHAREABLE_TREATMENT three rewrites to stop.
+      remedy:
+        "Enable the scrub option to replace the matched runs, or press Export again to write them as they are.",
+    };
+  }
+}
+
+/**
+ * A collision-free identity for ONE specific write. The acknowledgement is bound to it
+ * rather than to a bare "user said yes" flag, because agreeing to write a credential to a
+ * scratch file is not agreeing to write it to a shared drive. `undefined` serializes to
+ * `null` inside an array, so the unspecified and explicit forms stay distinguishable.
+ */
+function writeKey(
+  destPath: string,
+  mode: ExportMode | undefined,
+  scrub: boolean | undefined,
+): string {
+  return JSON.stringify([destPath, mode, scrub]);
 }
 
 // ---------------------------------------------------------------------------

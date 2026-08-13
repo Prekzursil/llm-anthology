@@ -13,7 +13,14 @@ param(
   [switch]$Enter,
   [switch]$Launch,
   [switch]$Keep,
-  [string]$Shot = "$env:USERPROFILE\.local\opt\ai-sessions-render\.audit\installed.png",
+  # Land the screenshot in THIS checkout's gitignored .audit/, derived from the script's own
+  # location the way cockpit/scripts/stage-engine.ps1:36 derives $repo. The previous default
+  # hardcoded ~/.local/opt/ai-sessions-render, which the repo left behind when it moved to
+  # Documents/GitHub; that path survives only as an empty husk, so every run since the move
+  # silently created a fresh .audit inside a dead tree instead of overwriting anything the
+  # operator would go looking for. Naming any absolute checkout path just reschedules that
+  # failure for the next move -- tests/test_tool_script_defaults.py pins the derivation.
+  [string]$Shot = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path '.audit\installed.png'),
   [int]$SettleMs = 9000
 )
 $ErrorActionPreference = 'Stop'

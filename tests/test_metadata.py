@@ -742,6 +742,82 @@ def test_metadata_never_reaches_the_cloud_payload(tmp_path):
     assert metadata.get_alias(conn, "conv-1") == "ALIASTOKEN"      # still stored locally
 
 
+# ------------------------------------- U-CLEAN-DEADCODE: the facade is DELIBERATE, and pinned
+#
+# WHY THIS EXISTS. An audit filed `metadata.py` as dead code: "12+ of 26 exported functions
+# have zero production callers, at an enforced 100% coverage gate". The measurement is real and
+# was three names short; the DISPOSITION it proposed — delete them — was refuted three times
+# over and is not what happened. This block records both halves so the next sweep argues with a
+# decision instead of re-deriving it, exactly as `tests/test_g17_dead_code_removed.py` does for
+# the deletions that DID go ahead.
+#
+# THE MEASUREMENT, refined. Reachability was computed as a TRANSITIVE closure over the
+# intra-module call graph, seeded from the six symbols a production module outside `metadata.py`
+# actually loads (`ensure_schema` at `sidecar.py:692`; `get_metadata` `:1589`/`:1645`;
+# `set_metadata` `:1607`; `clear_metadata` `:1618`; `search_conversations` `:1631`; `tag_counts`
+# `:1655`). That is mechanically different from the earlier probes — a text grep counts a
+# docstring mention as a use, and a single-level AST walk cannot see a symbol kept alive ONLY by
+# another orphan. It finds SIXTEEN unreachable names, not the twelve filed or the fifteen a
+# refuter measured: `get_tags` is loaded only at `metadata.py:380` and `:388`, inside `add_tags`
+# and `remove_tags`, which are themselves unreachable. Controls: every seeded entry point comes
+# back reachable, and a fabricated name does not.
+#
+# WHY THEY STAY. Three reasons, none of them "nobody looked".
+#   1. `__all__` here is a PUBLISHED API contract, not an accident. `llm-anthology` ships to
+#      PyPI (`pyproject.toml:7`, wheel `packages=["llm_anthology"]`), and the port notes name
+#      this list as the intended consumer surface — `open_metadata(path)` exists so a caller
+#      "cannot forget `ensure_schema`". Removing names is a breaking change for ~34 body lines.
+#   2. It is NOT coverage theater by this repo's own definition. The repo uses that term for a
+#      MUTANT that survives a green suite (`tools/privacy_mutation_check.py:5`); this module was
+#      mutation-probed and the tests assert behaviour, not execution.
+#   3. Deletion is not containable anyway. `tests/test_citation_anchors.py` pins six
+#      `metadata.py` line numbers cited from the cockpit IPC sources (`:214`, `:243`, `:456`,
+#      `:470`, `:501`, `:529`). Removing even the FIRST orphan, the 8-line `open_metadata`,
+#      shifts all six and turns that suite red — verified both-states: the same six rows hold
+#      against the file as it stands and every one of them misses against the mutated copy.
+#
+# WHAT IS ASSERTED BELOW is the surface, not the prose: the split is exhaustive, disjoint, and
+# every name resolves. Wiring one of these, or adding a seventeenth, is then a deliberate edit
+# here rather than a silent drift.
+
+#: Loaded by a production module outside `metadata.py`, or transitively from one that is.
+_WIRED_EXPORTS = {
+    "METADATA_SCHEMA", "Metadata", "clean_tags", "clean_text", "clear_metadata",
+    "ensure_schema", "get_metadata", "search_conversations", "set_metadata", "tag_counts",
+}
+
+#: Reachable only by an out-of-repo library consumer. Thin per-field sugar over the wired
+#: tri-state `set_metadata`/`get_metadata`, plus `find_by_tag`, which `search_conversations(tag=)`
+#: already serves, and `find_by_thread`, justified in the module docstring as the general case
+#: that keeps `conversation_id` the single key.
+_LIBRARY_ONLY_EXPORTS = {
+    "add_tags", "clear_alias", "clear_notes", "clear_tags", "find_by_tag", "find_by_thread",
+    "get_alias", "get_notes", "get_tags", "merge_metadata", "open_metadata", "remove_tags",
+    "search_metadata", "set_alias", "set_notes", "set_tags",
+}
+
+
+def test_the_metadata_export_surface_is_split_exhaustively_and_disjointly():
+    """`__all__` is entirely accounted for: every name is either wired or a declared
+    library-only wrapper, never both and never neither."""
+    exported = set(metadata.__all__)
+    assert len(metadata.__all__) == len(exported) == 26        # no duplicate in the list
+    assert _WIRED_EXPORTS | _LIBRARY_ONLY_EXPORTS == exported, (
+        "metadata.__all__ moved. A name added here needs a caller or a line in the "
+        "library-only set; a name removed is a breaking change on a published package."
+    )
+    assert not (_WIRED_EXPORTS & _LIBRARY_ONLY_EXPORTS)
+
+
+def test_every_declared_metadata_export_actually_resolves():
+    """The detector control for the split above: if the import were broken or a name were
+    deleted from the module but left in `__all__`, the set comparison could still pass while
+    `from llm_anthology.metadata import *` raised for a consumer."""
+    for name in metadata.__all__:
+        assert hasattr(metadata, name), "__all__ names %s, which does not exist" % name
+    assert not hasattr(metadata, "_this_name_was_never_defined")   # control: hasattr can fail
+
+
 def test_metadata_module_makes_no_network_or_filesystem_reach():
     """LOCAL-ONLY by construction: the module imports no network, subprocess or
     session-store-discovery machinery, and never opens a file itself — every entry point

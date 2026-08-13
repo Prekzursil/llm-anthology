@@ -885,7 +885,7 @@ def _finalize(findings, max_per_group, state):
     Two different orderings, deliberately: the cap must keep the most recent items
     (an old export is the least interesting thing in a full Downloads folder), while the
     presentation order must be stable across runs so a UI never reshuffles. Selection by
-    mtime, presentation by (kind, provider, path).
+    mtime AND by export SET (see ``_cap_group``), presentation by (kind, provider, path).
     """
     groups = {}
     for f in findings:
@@ -895,7 +895,83 @@ def _finalize(findings, max_per_group, state):
     for key, items in groups.items():
         if len(items) > max_per_group:
             state.truncated_groups.append("%s/%s" % key)
-            items = sorted(items, key=lambda f: (-f.newest_mtime, f.path))[:max_per_group]
+            items = _cap_group(items, max_per_group)
         kept.extend(items)
     return tuple(sorted(kept, key=lambda f: (_KIND_RANK.get(f.kind, 9),
                                              f.provider, f.path)))
+
+
+def _export_set_key(f):
+    """The EXPORT SET a finding belongs to — its provider, its kind, and its parent
+    DIRECTORY.
+
+    A large ChatGPT history downloads as ``conversations-000.json`` ... ``-016.json`` side
+    by side in one folder. Those are not seventeen exports; they are one export in
+    seventeen pieces, and importing any single piece imports a seventeenth of the history.
+    Grouping by directory is what lets the cap treat them as the unit they already are.
+    ``normcase`` because a Windows path is case-insensitive, so two spellings of one folder
+    must not read as two sets.
+    """
+    return (f.provider, f.kind, os.path.normcase(os.path.dirname(f.path)))
+
+
+def _newest_first(findings):
+    """Deterministic newest-first order. The path breaks an mtime tie, and a real export
+    ties constantly — its pieces are written inside the same second."""
+    return sorted(findings, key=lambda f: (-f.newest_mtime, f.path))
+
+
+def _cap_group(items, max_per_group):
+    """Trim an over-cap group to ``max_per_group`` WITHOUT cutting through an export set.
+
+    The cap counts findings, and it used to SELECT findings too, so the twenty-fifth row
+    landed wherever it happened to land — through the middle of an export. MEASURED on the
+    real machine's shape, one 17-shard export plus a duplicate copy of it against the
+    default cap: the two directories offered 12 and 13 of their 17, and the oldest shards
+    of each vanished with no signal beyond the group's bare name. Importing what was
+    offered would have imported an export missing its own earliest conversations.
+
+    Selection therefore happens over SETS, newest set first, and a set is admitted only if
+    it fits whole. Three consequences worth naming:
+
+      * The NEWEST set is admitted unconditionally, truncated to the cap if it alone is
+        larger than one. Offering nothing for the only export on the machine is a worse
+        answer than offering most of it — and ``_annotate`` then says how much is missing,
+        so the shortfall is stated rather than hidden.
+      * Packing CONTINUES past a set that does not fit, so a small old export is still
+        offered beside a large new one instead of disappearing behind it.
+      * The result is never larger than ``max_per_group``, which is what keeps the caller's
+        bookkeeping honest: the caller records a truncation whenever the raw group exceeded
+        the cap, and under this rule that condition always does drop something.
+    """
+    sets = {}
+    for f in items:
+        sets.setdefault(_export_set_key(f), []).append(f)
+    order = sorted(sets.values(), key=lambda g: (-max(f.newest_mtime for f in g),
+                                                 min(f.path for f in g)))
+    kept = _newest_first(order[0])[:max_per_group]
+    for group in order[1:]:
+        if len(kept) + len(group) <= max_per_group:
+            kept.extend(group)
+    return _annotate(kept, sets, len(items))
+
+
+def _annotate(kept, sets, found):
+    """Stamp the cap's arithmetic onto every survivor, so a drop can be READ rather than
+    inferred.
+
+    ``ScanStats.truncated_groups`` names the group that was capped and stops there — it
+    cannot say 17 of 34, and it cannot say which export came up short. These four keys can.
+    They are written ONLY here, i.e. only for a group the cap actually touched, so their
+    presence is itself the signal and an untouched scan's payload is exactly what it was.
+    ``detail`` is documented on both sides of the wire as an OPEN dict whose keys vary by
+    provider and must be rendered generically, so adding to it uses that contract rather
+    than breaking it.
+    """
+    offered = {}
+    for f in kept:
+        offered[_export_set_key(f)] = offered.get(_export_set_key(f), 0) + 1
+    return [dataclasses.replace(f, detail=dict(
+        f.detail, cap_group_found=found, cap_group_offered=len(kept),
+        cap_set_found=len(sets[_export_set_key(f)]),
+        cap_set_offered=offered[_export_set_key(f)])) for f in kept]

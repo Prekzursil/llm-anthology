@@ -47,7 +47,9 @@ Both shapes reach the corpus. `llm-anthology index [<sessions-root>] <out.sqlite
 
 Only the export shapes have a **render** path — `llm-anthology <provider> <src> <out>` writes the HTML + Markdown pair. A session store is indexed and read in the app; it is not rendered to a directory of pages.
 
-**One asymmetry to know about:** the cockpit's own import (`corpus.build`) currently accepts only the three session ROOTS. To pull a downloaded export into the corpus, build the index with the CLI and point the app at it. That is a gap in the app, not in the engine.
+**The cockpit imports an export too — this is not a CLI-only path.** Auto-discovery classifies a downloaded export as an `export_file` and offers it an Import action that hands `corpus.build` the one parameter its provider maps to — `chatgpt_export`, `claude_export`, `codex_export` or `gemini_export` — with the path exactly as discovered. The two *companion* paths stay out of v1 deliberately: discovery reports neither, and `chatgpt_projects` or `gemini_harvest` sent alone is refused `-32602`, because the engine keys each ingest spec on the primary `<provider>_export`, so a build naming only a companion has named no source at all. Their home is an opt-in per-row control, unset by default.
+
+> This paragraph used to assert the opposite: that the cockpit took session roots only, and that the shortfall was the app's rather than the engine's. The second half was the more misleading one — the engine had accepted all six export parameters since the G-1 seam landed, and what was actually missing was the *TypeScript wire contract* between them. A refusal string in the discovery panel, the IPC mock, this README and a green test all went on asserting an absence the engine did not have. The corrected claim is now pinned by `tests/test_readme_export_claim.py`, so the next stale version of this sentence fails CI instead of shipping. (The superseded wording is quoted in that file's module docstring, not here, so the check stays a plain substring search — an exemption for quoted text is exactly the hole a future stale sentence would hide in.)
 
 Every session store is **opt-in and never defaulted**: omit its flag and nothing under that path is read. That is deliberate rather than cautious — these directories hold whatever you have said to the tool, and an earlier default-to-the-live-store is how an automated probe once read the owner's real sessions.
 
@@ -122,7 +124,7 @@ The three capabilities inherited when that app was retired (see [Lineage](#linea
    └─────────────────────────────────────────────────────────────┘
 ```
 
-Both input shapes reach the corpus, and only the export shapes are rendered to a directory of pages. The cockpit's own `corpus.build` is the one narrower door: it accepts the three session ROOTS, so exports are ingested with the CLI (see [Ingest](#ingest--six-providers-one-model)).
+Both input shapes reach the corpus, and only the export shapes are rendered to a directory of pages. Both reach it through the cockpit as well as the CLI: `corpus.build` takes the three session ROOTS **and** the four `<provider>_export` paths, in one call, so a desktop-only user never has to drop to a terminal to ingest a download (see [Ingest](#ingest--six-providers-one-model)).
 
 The engine is a **stdio** JSON-RPC server — deliberately not a localhost HTTP port, so nothing else on the machine can talk to it.
 

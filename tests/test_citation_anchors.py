@@ -490,6 +490,10 @@ PY_SOURCES = {
     "loaders.py": REPO / "llm_anthology" / "loaders.py",
     "claude_code.py": REPO / "llm_anthology" / "adapters" / "claude_code.py",
     "grok.py": REPO / "llm_anthology" / "adapters" / "grok.py",
+    # Added when archive.py grew its first engine citation. The sweep derives this set from
+    # the tree and fails closed on a source it does not know, which is exactly how this one
+    # was found rather than slipping through unverified.
+    "archive.py": REPO / "llm_anthology" / "archive.py",
 }
 
 #: Every engine file an engine-side citation NAMES. Same fail-closed rule as ENGINES: a
@@ -517,6 +521,16 @@ PY_TARGETS = {
 #: (source engine file, cited engine file, cited line, token that line must contain, claim).
 #: Same token-containment contract as PINS, and the same honesty rule about weak tokens.
 PY_PINS = [
+    # -------------------------------------------------------------------- archive.py (1)
+    # archive.py's first engine citation. The anchor is the call site in corpus.py that
+    # reaches back into archive, so the citation is a genuine back-reference rather than a
+    # decorative one, and the token is the call itself so it cannot drift silently.
+    ("archive.py", "corpus.py", 1200, "return archive.encode_records(",
+     "the corpus-side caller this module encodes records for"),
+    ("archive.py", "corpus.py", 1222, "archive.SeekableReader(blob).decompressed_size",
+     "the reader used to size a stored body without decompressing it whole"),
+    ("archive.py", "corpus.py", 1250, "for frame in archive.SeekableReader(bytes(row[1]))",
+     "the reader used to slice a stored body back out frame by frame"),
     # ------------------------------------------------------------------- sidecar.py (16)
     ("sidecar.py", "codex_rollout.py", 343, '"file": rollout_path', "a producer of the `file` key"),  # weak
     ("sidecar.py", "codex_rollout.py", 347, '"file": rollout_path', "a producer of the `file` key"),  # weak
@@ -1176,9 +1190,23 @@ RS_CITATION_INVENTORY = {
     "cockpit/src/ipc/mock.ts": 2, "cockpit/src/ipc/real.test.ts": 7,
     "cockpit/src/ipc/real.ts": 3, "cockpit/src/ipc/types.ts": 7,
     "cockpit/src/ui/corpusBar.dom.test.ts": 1, "cockpit/src/ui/corpusBar.test.ts": 5,
-    "cockpit/src/ui/corpusBar.ts": 4, "cockpit/src/ui/discoveryPanel.test.ts": 1,
-    "cockpit/src/ui/discoveryPanel.ts": 1, "llm_anthology/sidecar.py": 1,
+    "cockpit/src/ui/corpusBar.ts": 4, "cockpit/src/ui/discoveryPanel.test.ts": 5,
+    "cockpit/src/ui/discoveryPanel.ts": 5, "llm_anthology/sidecar.py": 1,
 }
+# discoveryPanel.{ts,test.ts} 1 -> 5 each: raised when the first-run path stopped asking the
+# user where to put the corpus index. Every new anchor was opened and read against the line
+# it names before this number moved, which is the only condition under which it may move:
+#   lib.rs:26  `locations` and `locations_error` are ALWAYS both present, exactly one null
+#   lib.rs:35  the diagnostics bundle is NOT a new #[tauri::command]
+#   lib.rs:49  fn app_info() -> Value
+#   lib.rs:443 "index_path": self.index_path.to_string_lossy()
+#   lib.rs:598 #[cfg(windows)]   /  lib.rs:604 let local = present("LOCALAPPDATA")
+# Two of these (26, 35) land on `///` doc lines and 598 on an attribute, so they share the
+# weakness this table already records for 5 of the original 39 — they are anchored to real,
+# on-topic content, but a refactor that moves those lines will not be caught by anything
+# here. UNVERIFIED inline: whether a token-based pin (as PINS does for the Python side)
+# would be affordable for lib.rs; the settling experiment is to try it for these 8 and
+# measure the churn on one refactor.
 
 _RS_CITATION = re.compile(r"lib\.rs:(\d+)")
 

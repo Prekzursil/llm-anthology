@@ -1408,11 +1408,19 @@ def conversation_model(conn, conversation_id):
     Indexed POSITIONALLY: several callers hand in a bare connection with no row_factory, so
     `row["model_id"]` would raise on a plain tuple.
 
-    NO PRODUCTION CALLER IN THIS COMMIT, stated plainly. D-5 was split under the EVPI gate:
-    persisting the fact is urgent because an un-persisted one is gone, and the ANALYSIS on
-    top (cost ledger, model-reliance reporting) is DEFERRED. Wiring a `conversation.model`
-    RPC and a cockpit surface is a separate unit that owns `sidecar.py`; this one owns the
-    write contract so that unit has something true to read.
+    THE PRODUCTION CALLER LANDED. This used to read "NO PRODUCTION CALLER IN THIS COMMIT,
+    stated plainly", and the sentence is retired rather than deleted so a reader who finds it
+    quoted elsewhere can see it expired on its own terms. `sidecar._recorded_model` calls
+    this, and `conversation.get` carries the answer as a top-level `model` field on BOTH the
+    full response and the stub — the stub being the case that matters, since it carries no
+    `meta` and was therefore the one state where a recorded model was unreachable at the
+    wire. No `conversation.model` VERB was added: a second round trip for one string the
+    reader is already fetching is a wider contract than a field.
+
+    STILL DEFERRED, and this is now the whole of it: the ANALYSIS half D-5 split under the
+    EVPI gate — cost ledger, model-reliance reporting, any aggregate or facet over
+    `conversation_models` — plus the cockpit surface, which does not yet declare or render
+    the field. Persisting the fact was the urgent half because an un-persisted one is gone.
     """
     row = conn.execute(
         "SELECT model_id FROM conversation_models WHERE conversation_id=?",

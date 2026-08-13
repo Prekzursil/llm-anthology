@@ -7,8 +7,17 @@
 # nothing. Comparing the child process's ExecutablePath against the bundled path is the
 # signal that distinguishes them.
 param(
+  # $InstallDir is a MACHINE path -- where the installer puts the app. It is deliberately NOT
+  # derived from the script location; the installed app does not live in the checkout.
   [string]$InstallDir = "$env:LOCALAPPDATA\LLM Anthology",
-  [string]$OutPng     = "$env:USERPROFILE\.local\opt\ai-sessions-render\.audit\installed-app.png"
+  # $OutPng is a REPO path, so it is derived rather than named, the way
+  # cockpit/scripts/stage-engine.ps1:36 derives $repo. The previous default hardcoded
+  # ~/.local/opt/ai-sessions-render, which the repo left behind when it moved to
+  # Documents/GitHub; that path survives only as an empty husk, so every run since the move
+  # wrote its screenshot into a dead tree. tests/test_tool_script_defaults.py pins both the
+  # derivation here and the machine path above, so a sweep of "hardcoded paths" cannot take
+  # $InstallDir with it.
+  [string]$OutPng     = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path '.audit\installed-app.png')
 )
 $ErrorActionPreference = 'Stop'
 
