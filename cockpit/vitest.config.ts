@@ -70,10 +70,67 @@ import { defineConfig } from "vitest/config";
  * (clamped to min/max) all behave identically in the two. `focus()` only moves
  * `document.activeElement` for an element ATTACHED to the document — a detached element
  * silently does not take focus in either, so DOM tests must append to `document.body`.
+ *
+ * ── COVERAGE: WHY `include` IS LOAD-BEARING AND NOT A TIDINESS PREFERENCE ─────────────
+ *
+ * This file carried NO `coverage` block, and `package.json`'s `test` script was
+ * `vitest run` with no `--coverage`. Since `.github/workflows/ci.yml:273` runs exactly
+ * `npm test`, the blocking `cockpit` job measured ZERO coverage and reported green for it.
+ *
+ * The reason that failure is silent rather than loud is that the two rails in this repo
+ * have OPPOSITE defaults, and only the Python one is safe:
+ *
+ *   - Python (`pyproject.toml:107-109`) sets `[tool.coverage.run] source = ["llm_anthology"]`.
+ *     `source` names a package ROOT, so coverage.py walks it on disk; a module no test
+ *     imports still enters the denominator at 0% and drags the total DOWN.
+ *   - vitest/v8 with no `coverage.include` builds the denominator from the files the run
+ *     actually LOADED. A module no test imports is not 0%, it is ABSENT — so adding an
+ *     untested module RAISES the reported percentage. The default rewards not testing.
+ *
+ * Measured 2026-08-12, same suite (1101 tests / 33 files), same commit, isolated
+ * `--coverage.reportsDirectory` because concurrent agents share this tree:
+ *
+ *     (vitest default)  99.68% statements (2863/2872), 29 files
+ *     include src ts    71.71% statements (2863/3992), 34 files
+ *
+ * Same numerator, denominator +1120 — and 1120 is EXACTLY the sum of the eight modules no
+ * test imports: `app.ts` 352, `graph/canvas.ts` 241, `ui/maintenanceShell.ts` 198,
+ * `ui/reader.ts` 157, `ui/search.ts` 85, `ui/workspace.ts` 58, `graph/elkLayout.ts` 19,
+ * `main.ts` 10. The 28-point gap is that dark set, named and added up — not overhead.
+ *
+ * `js/vitest.config.ts:6-20` is the honest twin already in the repo and this mirrors it.
+ * `src/coverageGate.test.ts` asserts every key below, so deleting one goes red.
  */
 export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    coverage: {
+      // `@vitest/coverage-v8` is the installed devDependency; `istanbul` would need a
+      // package that is not here.
+      provider: "v8",
+      // The whole fix. Without this the denominator is only what the run imported, and
+      // the eight dark modules above vanish from it instead of counting as 0%.
+      include: ["src/**/*.ts"],
+      // `include` above also sweeps in the test files and the ambient declaration, and
+      // setting `exclude` REPLACES vitest's defaults rather than extending them — so both
+      // must be named here or the gate measures its own suite.
+      exclude: ["src/**/*.test.ts", "src/vite-env.d.ts"],
+      // A RATCHET pinned at the values measured above, not an aspirational 100. An
+      // unreachable threshold is red on its first CI run, and the cheapest escape from a
+      // permanently-red required check is to delete the gate — which is precisely how
+      // this repo ended up measuring nothing. These may only be raised: the units that
+      // add the missing DOM tests own that, and `coverageGate.test.ts` fails if one is
+      // lowered. The numbers are v8's PRINTED values, which it truncates at two decimals
+      // (statements are really 71.7184%), so each floor sits a hair below its raw value
+      // rather than balancing on a knife edge.
+      thresholds: {
+        statements: 71.71,
+        branches: 80.67,
+        functions: 77.19,
+        lines: 70.95,
+      },
+      reporter: ["text-summary", "text"],
+    },
   },
 });

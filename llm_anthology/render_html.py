@@ -180,8 +180,8 @@ def _block_html(b):
         return ('<span class="chip">📎 %s <em>(no bytes in export)</em></span>'
                 % sanitize.neutralize_html(b.data.get("file_name") or "file"))
     if b.type == "code":
-        lang = b.data.get("language") or ""
-        cls = ' class="language-%s"' % html.escape(lang, quote=True) if lang else ""
+        lang = b.data.get("language") or ""   # ATTRIBUTE surface -> inert NCRs, never a badge span
+        cls = ' class="language-%s"' % sanitize.ncr_invisibles(html.escape(lang, quote=True)) if lang else ""
         return "<pre><code%s>%s</code></pre>" % (
             cls, sanitize.badge_invisibles(html.escape(b.text or "", quote=False)))
     if b.type == "event":
@@ -196,8 +196,12 @@ def _block_html(b):
         # browsers normalise "\" to "/" after it runs, so /\host/x.png fetched remotely.
         if sanitize.is_local_media_path(path):
             rel = path if "/" in path else ("../media/" + path)
+            # src and alt are ATTRIBUTES -> inert numeric refs, never a badge span.
+            # is_local_media_path gates the FETCH; it says nothing about invisibles,
+            # so a flagged codepoint in a legitimately-local filename reached the DOM raw.
             return ('<figure class="media"><img src="%s" alt="%s" loading="lazy"></figure>'
-                    % (html.escape(rel, quote=True), html.escape(path, quote=True)))
+                    % (sanitize.ncr_invisibles(html.escape(rel, quote=True)),
+                       sanitize.ncr_invisibles(html.escape(path, quote=True))))
         return '<span class="chip">🖼 %s</span>' % sanitize.neutralize_html(path or "media")
     if b.type == "unknown":
         # show the payload, not just the type name — a future block type may carry

@@ -1,27 +1,7 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
-
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
-
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+**Governance SSOT is [`CLAUDE.md`](CLAUDE.md)** — the testing and coverage gates, the workflow-enforcement rules, and the standing decision about whether to push are stated there once; this file must never restate or contradict them, and what is unique here is the shell guidance below plus the `bd`-generated block.
+**Beads (issue tracker)** is described exactly once, in that generated block: run `bd prime` for the full workflow and `bd dolt push` to sync issue data.
 
 ## Non-Interactive Shell Commands
 
@@ -95,24 +75,17 @@ bd close <id>         # Complete work
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
 
-> ### ACTIVE EXCEPTION to the push rule above — read before pushing this repo
->
-> The block above is a generic template appended by `bd init`. It currently contradicts a
-> deliberate decision about THIS repo, and the same exception is recorded in `CLAUDE.md`.
->
-> As of 2026-08-07 there are **40 commits on `main` that are intentionally unpushed.** That is
-> not stranded work. No CI job enters `cockpit/` or `cockpit/src-tauri/`, so 365 vitest tests,
-> 18 cargo tests, the typecheck and the Tauri build have never run in CI. Pushing before that
-> job exists makes the work *visible* without making it *validated*. The agreed order is:
-> cockpit CI job on a windows + linux matrix first, then push.
->
-> **Precedence:** the owner's explicit decision outranks a template rule. Do not auto-push this
-> repo. When the cockpit CI job is merged and green, this exception expires — delete it then.
->
-> **Also note before pushing:** beads syncs issue data to `refs/dolt/data` on the git remote and
-> auto-push is enabled by default when a remote exists. **This repo is public.** Confirm
-> `git-push: false` in `.beads/config.yaml`, or that the tracker holds nothing private, before
-> the first push.
+## Before pushing: beads syncs issue data to a PUBLIC remote
+
+Beads auto-pushes issue data to `refs/dolt/data` when a remote exists, and **this repo is
+public**. Keep `git-push: false` in `.beads/config.yaml`, or keep the tracker free of anything
+private.
+
+The 2026-08-07 carve-out that held commits back from `main` while no CI job entered `cockpit/`
+is **retired** — that job now exists (`.github/workflows/ci.yml`, windows + linux, blocking)
+and the held commits were pushed. Push normally. `CLAUDE.md` keeps the retirement record,
+including the commit count, so an old transcript quoting the carve-out cannot revive it and
+this file does not restate a number that would drift.
 
 ## Windows caution on the "non-interactive flags" advice above
 

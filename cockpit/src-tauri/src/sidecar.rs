@@ -840,26 +840,100 @@ pub struct SidecarClient {
 /// Note this returns a path, not a decision about hardening: the spawn flags (Job Object
 /// reap, CREATE_NO_WINDOW, optional AppContainer membrane) are unchanged and apply
 /// identically to the bundled interpreter.
-pub(crate) fn engine_python_in(exe_dir: &Path) -> String {
+/// The resolved interpreter together with WHICH kind it is.
+///
+/// The kind is load-bearing, not informational: it selects how much of the ambient Python
+/// environment the spawn must shut out (see [`sidecar_argv`]). A bundled interpreter owns
+/// its own `site-packages` and needs nothing from the user's environment; the PATH fallback
+/// is a source tree reached through `PYTHONPATH`, and must keep it.
+pub(crate) struct ResolvedEngine {
+    pub python: String,
+    /// True only for a self-contained interpreter staged beside the app binary.
+    pub bundled: bool,
+}
+
+pub(crate) fn resolve_engine_in(exe_dir: &Path) -> ResolvedEngine {
     let bundled = if cfg!(windows) {
         exe_dir.join("engine").join("python.exe")
     } else {
         exe_dir.join("engine").join("bin").join("python3")
     };
     if bundled.is_file() {
-        return bundled.to_string_lossy().into_owned();
+        return ResolvedEngine {
+            python: bundled.to_string_lossy().into_owned(),
+            bundled: true,
+        };
     }
-    "python".to_string()
+    ResolvedEngine { python: "python".to_string(), bundled: false }
 }
 
 /// The interpreter this process should spawn. Falls back to `python` if the executable's
 /// own location cannot be determined, so a resolution failure degrades to today's
 /// behaviour rather than to no engine at all.
-fn engine_python() -> String {
+fn engine_python() -> ResolvedEngine {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(engine_python_in))
-        .unwrap_or_else(|| "python".to_string())
+        .and_then(|exe| exe.parent().map(resolve_engine_in))
+        .unwrap_or_else(|| ResolvedEngine { python: "python".to_string(), bundled: false })
+}
+
+/// Build the argv (everything after the interpreter) for a sidecar spawn.
+///
+/// # Why this function exists at all
+///
+/// It is the ONE place the engine's argv is constructed. Both spawn sites previously built
+/// their own literal — the `cfg(windows)` raw-`CreateProcessW` path and the
+/// `cfg(not(windows))` `Command` path — and that duplication is exactly why NEITHER ever
+/// acquired an isolation flag. Centralising it means a flag cannot land on one platform
+/// only.
+///
+/// # The isolation flags (P0, live in the released 0.1.0 installer)
+///
+/// A bundled engine advertises itself as self-contained, but CPython still adds the user's
+/// `site-packages` unless told not to. Measured against the shipped install, spawning
+/// `engine\python.exe` exactly as the app does:
+///
+/// | probe | `sys.path` user-site index | bundle index | distributions resolved |
+/// |---|---|---|---|
+/// | bare (today) | **5** | 6 | **25**, of which only 7 inside the bundle |
+/// | `-s` (control) | absent | — | 7, all 7 inside the bundle |
+///
+/// So 18 distributions — `pycryptodomex`, `python-jose`, `rsa`, `ecdsa`, `passlib`,
+/// `browser-cookie3`, `capstone`, `minidump`, ... — were being resolved out of
+/// `%APPDATA%\Roaming\Python\Python312\site-packages` AHEAD of the bundled copies, into a
+/// process that reads the owner's private archive. Anything a stray `pip install --user`
+/// ever placed there silently shadows the engine's own dependency.
+///
+/// `-I` is used for the bundled arm because it is the complete set: `-s` (no user site),
+/// `-E` (no `PYTHONPATH`/`PYTHONHOME` injection) and `-P` (no directory prepended to
+/// `sys.path`). That last one is not redundant — measured on the bundled 3.12,
+/// `python -m <mod>` from a scratch cwd put **that cwd at `sys.path[0]`**, so a
+/// `sitecustomize.py` or `json.py` beside the runtime CWD is importable; `-I` closed it and
+/// `-E -s` did NOT. **UNVERIFIED** whether that CWD is attacker-influenceable in the
+/// packaged app — the settling experiment is logging `std::env::current_dir()` here.
+///
+/// The PATH fallback deliberately gets `-s` only. It is a DEV build, where `llm_anthology`
+/// is a source tree at the repo root that the e2e tests below put on `PYTHONPATH`, and `-I`
+/// implies `-E`, which would discard it. That is not hypothetical: this box carries a
+/// non-editable `llm_anthology` **0.1.0** in `C:\Python314\Lib\site-packages` while the
+/// repo is **0.1.1**, and `python -I -c "import llm_anthology"` was measured to resolve the
+/// STALE installed copy while `python -s` (with `PYTHONPATH` set) resolved the checkout. So
+/// `-I` on this arm would leave the five e2e tests passing while silently measuring code
+/// that is not in the tree. `-s` still closes the user-site hole on both arms — the actual
+/// defect — and is available on every interpreter this project supports
+/// (`requires-python >= 3.9`; `-P` alone would need 3.11+, which is why it is reached only
+/// via `-I` on the bundled 3.12).
+pub(crate) fn sidecar_argv<'a>(bundled: bool, index_path: Option<&'a str>) -> Vec<&'a str> {
+    // Interpreter flags FIRST: after `-m` they become the module's `sys.argv` and are
+    // silently ignored, which is a fix that shows up in a diff and does nothing at runtime.
+    let mut args: Vec<&'a str> = if bundled { vec!["-I"] } else { vec!["-s"] };
+    args.push("-m");
+    args.push("llm_anthology.sidecar");
+    if let Some(p) = index_path {
+        args.push("--index");
+        args.push(p);
+    }
+    args
 }
 
 impl SidecarClient {
@@ -899,14 +973,10 @@ impl SidecarClient {
     #[cfg(windows)]
     fn spawn_platform(index_path: Option<&str>) -> Result<Self, String> {
         use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
-        let mut args: Vec<&str> = vec!["-m", "llm_anthology.sidecar"];
-        if let Some(p) = index_path {
-            args.push("--index");
-            args.push(p);
-        }
-        let python = engine_python();
+        let engine = engine_python();
+        let args = sidecar_argv(engine.bundled, index_path);
         let HardenedSpawn { stdin, stdout, stderr, reaper } =
-            spawn_hardened(&python, &args, &SpawnOpts::job_only())?;
+            spawn_hardened(&engine.python, &args, &SpawnOpts::job_only())?;
         // The drainer thread now OWNS the parent end of stderr: it keeps the handle
         // alive exactly as the old `_stderr` field did, and additionally keeps the pipe
         // from ever filling. See `drain_stderr` for why holding it un-read deadlocks.
@@ -922,11 +992,9 @@ impl SidecarClient {
     #[cfg(not(windows))]
     fn spawn_platform(index_path: Option<&str>) -> Result<Self, String> {
         use std::process::{Command, Stdio};
-        let mut cmd = Command::new(engine_python());
-        cmd.arg("-m").arg("llm_anthology.sidecar");
-        if let Some(p) = index_path {
-            cmd.arg("--index").arg(p);
-        }
+        let engine = engine_python();
+        let mut cmd = Command::new(&engine.python);
+        cmd.args(sidecar_argv(engine.bundled, index_path));
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -978,8 +1046,8 @@ impl Drop for SidecarClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        diagnostics, drain_stderr, engine_python_in, jsonrpc_roundtrip,
-        jsonrpc_roundtrip_bounded, open_crash_log, scrub_line, CrashLog, Diagnostics,
+        diagnostics, drain_stderr, jsonrpc_roundtrip, jsonrpc_roundtrip_bounded,
+        open_crash_log, resolve_engine_in, scrub_line, sidecar_argv, CrashLog, Diagnostics,
         PathScrubber, CRASH_FILE_MAX_BYTES, CRASH_FILE_NAME, CRASH_FILE_PREV_NAME,
         MAX_PENDING_LINE_BYTES, STDERR_RING_BYTES,
     };
@@ -1659,12 +1727,18 @@ mod tests {
     }
 
     /// A dev build (no bundled interpreter beside the exe) must fall back to PATH.
+    ///
+    /// `bundled` is asserted too, because it now SELECTS the isolation flag set: a
+    /// misclassification here would spawn the dev fallback with `-I` and silently point the
+    /// e2e tests at an installed copy instead of this checkout.
     #[test]
     fn engine_python_falls_back_to_path_when_nothing_is_bundled() {
         let dir = std::env::temp_dir().join(format!(
             "llm_anthology_enginepy_none_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(engine_python_in(&dir), "python");
+        let resolved = resolve_engine_in(&dir);
+        assert_eq!(resolved.python, "python");
+        assert!(!resolved.bundled, "PATH fallback is not a self-contained bundle");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1688,12 +1762,20 @@ mod tests {
         };
         std::fs::write(&exe, b"stand-in").unwrap();
 
-        let resolved = engine_python_in(&dir);
-        assert_ne!(resolved, "python", "a bundled interpreter must win over PATH");
-        assert_eq!(std::path::Path::new(&resolved), exe.as_path());
+        let resolved = resolve_engine_in(&dir);
+        assert_ne!(resolved.python, "python", "a bundled interpreter must win over PATH");
+        assert_eq!(std::path::Path::new(&resolved.python), exe.as_path());
         // An absolute path is what hardened_spawn::resolve_program accepts directly
         // (it short-circuits the PATH walk for an absolute, existing file).
-        assert!(std::path::Path::new(&resolved).is_absolute());
+        assert!(std::path::Path::new(&resolved.python).is_absolute());
+        // The kind drives isolation: a bundled interpreter MUST be flagged as such or it
+        // ships with the weaker dev flag set and keeps the user-site hole open.
+        assert!(resolved.bundled, "a staged interpreter is the self-contained bundle");
+        assert_eq!(
+            sidecar_argv(resolved.bundled, None).first().copied(),
+            Some("-I"),
+            "resolution and isolation must agree end to end"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1704,8 +1786,162 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "llm_anthology_enginepy_empty_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("engine")).unwrap();
-        assert_eq!(engine_python_in(&dir), "python");
+        let resolved = resolve_engine_in(&dir);
+        assert_eq!(resolved.python, "python");
+        assert!(!resolved.bundled, "a half-staged bundle is not a bundle");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // === P0 SECURITY: the bundled engine must not load the user's ambient Python =======
+    //
+    // MEASURED against the SHIPPED 0.1.0 install at
+    // `%LOCALAPPDATA%\LLM Anthology`, spawning `engine\python.exe` exactly as the app
+    // does. Bare, the interpreter reported:
+    //
+    //   sys.path[5] = %APPDATA%\Roaming\Python\Python312\site-packages   <-- USER site
+    //   sys.path[6] = <install>\engine\Lib\site-packages                 <-- the BUNDLE
+    //
+    // so the user's ambient site-packages sits AHEAD of the bundled one, and
+    // `importlib.metadata.distributions()` resolved **25** distributions of which only
+    // **7** came from inside the bundle — 18 (WMI, browser-cookie3, capstone,
+    // pycryptodomex, python-jose, rsa, ecdsa, passlib, minidump, ...) were the user's.
+    // Re-running the identical probe under `-s` returned **7 / 7 / 0**, which is the
+    // both-states control proving the measurement is of the flag and not of the box.
+    //
+    // Any of those 18 is an import-shadowing vector into a process that reads the
+    // owner's private archive, and the defect is LIVE in the released 0.1.0 installer.
+
+    /// The SHIPPED interpreter must be spawned fully isolated.
+    ///
+    /// `-I` is the whole set at once: `-s` (no user site-packages — the measured defect),
+    /// `-E` (no `PYTHONPATH`/`PYTHONHOME` injection) and, since 3.11, `-P` (do not prepend
+    /// a directory to `sys.path`). The last one is not cosmetic: measured on the bundled
+    /// 3.12, `python -m probemod` from a scratch cwd reported
+    /// `sys.path[0] = <that cwd>`, so a `sitecustomize.py`/`json.py` dropped beside the
+    /// runtime CWD is importable — and `-I` was measured to close it (`No module named
+    /// probemod`) while `-E -s` was measured NOT to (`sys.path[0]` still the cwd).
+    /// **UNVERIFIED** whether that CWD is attacker-influenceable in the packaged app; the
+    /// settling experiment is logging `std::env::current_dir()` at the spawn site.
+    #[test]
+    fn sidecar_spawn_argv_isolates_the_bundled_interpreter() {
+        let args = sidecar_argv(true, None);
+        assert_eq!(
+            args.first().copied(),
+            Some("-I"),
+            "the bundled engine is self-contained, so it must ignore the ambient \
+             environment ENTIRELY, and the flag must precede -m to be honoured: {args:?}"
+        );
+        // `-E -s` is the near-miss: it closes the user-site hole but was MEASURED to leave
+        // the -m cwd prepend open. Assert the strictly stronger flag actually shipped.
+        assert!(
+            !args.contains(&"-E") || args.contains(&"-I"),
+            "-E -s is weaker than -I and must not be the shipped form: {args:?}"
+        );
+    }
+
+    /// A DEV build resolves `python` on PATH, where `llm_anthology` is a SOURCE TREE at the
+    /// repo root put on `PYTHONPATH` by the e2e tests below — so this arm must keep `-E`
+    /// OFF while still closing the user-site hole with `-s`.
+    ///
+    /// This is not a stylistic split. MEASURED on this box, which carries a NON-editable
+    /// `llm_anthology` **0.1.0** in `C:\Python314\Lib\site-packages` while the repo is
+    /// **0.1.1** (`sidecar.py` sha256 differs):
+    ///
+    ///   `python -s -c "import llm_anthology"`  -> <repo>\llm_anthology\__init__.py   (0.1.1)
+    ///   `python -I -c "import llm_anthology"`  -> C:\Python314\...\llm_anthology\...  (0.1.0)
+    ///
+    /// So spawning the DEV arm with `-I` would silently redirect
+    /// `e2e_roundtrip_real_python_sidecar` and its four siblings onto a stale installed
+    /// copy — they would keep passing while measuring code that is not in this checkout.
+    /// `-s` keeps `PYTHONPATH` authoritative (it precedes site-packages on `sys.path`) and
+    /// was measured to round-trip `health.ping` -> `engine_version: 0.1.1`.
+    #[test]
+    fn sidecar_spawn_argv_keeps_pythonpath_usable_for_the_dev_fallback() {
+        let args = sidecar_argv(false, None);
+        assert!(
+            args.contains(&"-s"),
+            "the user-site hole must be closed on BOTH arms: {args:?}"
+        );
+        assert!(
+            !args.contains(&"-E") && !args.contains(&"-I"),
+            "the dev arm must still honour PYTHONPATH or the e2e tests silently test a \
+             stale installed copy instead of this checkout: {args:?}"
+        );
+    }
+
+    /// Isolation flags are interpreter options, so they are only honoured BEFORE `-m`.
+    /// After it they would be handed to the module as `sys.argv` and silently ignored —
+    /// a fix that looks present in a diff and does nothing at runtime.
+    #[test]
+    fn sidecar_spawn_argv_places_every_flag_before_dash_m() {
+        for bundled in [true, false] {
+            let args = sidecar_argv(bundled, Some("C:/tmp/x.sqlite"));
+            let m = args
+                .iter()
+                .position(|a| *a == "-m")
+                .unwrap_or_else(|| panic!("-m must be present: {args:?}"));
+            assert_eq!(
+                args.get(m + 1).copied(),
+                Some("llm_anthology.sidecar"),
+                "-m must be followed by the module: {args:?}"
+            );
+            for (i, a) in args.iter().enumerate() {
+                if i < m {
+                    assert!(
+                        a.starts_with('-'),
+                        "only interpreter flags may precede -m, found {a:?}: {args:?}"
+                    );
+                }
+            }
+            assert!(m >= 1, "at least one isolation flag must precede -m: {args:?}");
+        }
+    }
+
+    /// The isolation change must not disturb the existing contract: `--index <path>` when a
+    /// corpus is attached, and NOTHING when it is not (the index-less first-run spawn).
+    #[test]
+    fn sidecar_spawn_argv_still_carries_the_index_contract() {
+        let with = sidecar_argv(true, Some("C:/tmp/anth.sqlite"));
+        assert_eq!(
+            with.iter().rev().take(2).copied().collect::<Vec<_>>(),
+            vec!["C:/tmp/anth.sqlite", "--index"],
+            "an attached corpus must still arrive as `--index <path>` last: {with:?}"
+        );
+        let without = sidecar_argv(true, None);
+        assert!(
+            !without.contains(&"--index"),
+            "the index-less spawn must pass no --index at all: {without:?}"
+        );
+    }
+
+    /// The two spawn sites (`cfg(windows)` raw CreateProcessW, `cfg(not(windows))` std
+    /// Command) drifted apart precisely because each built its own argv literal — which is
+    /// how neither ever acquired an isolation flag. Both now read from this one builder, so
+    /// the property worth pinning is that the two ARMS differ ONLY by their leading
+    /// isolation flags: everything from `-m` rightwards must be byte-identical, or a
+    /// platform/build could silently spawn a different engine.
+    ///
+    /// Asserted behaviourally rather than by grepping this file's own source: a text scan
+    /// would count the literals inside these very assertions and report a false positive.
+    #[test]
+    fn sidecar_spawn_argv_differs_between_arms_only_in_the_isolation_prefix() {
+        fn tail<'a>(a: &[&'a str]) -> Vec<&'a str> {
+            let m = a.iter().position(|x| *x == "-m").expect("-m present");
+            a[m..].to_vec()
+        }
+        for index in [None, Some("C:/tmp/anth.sqlite")] {
+            let bundled = sidecar_argv(true, index);
+            let dev = sidecar_argv(false, index);
+            assert_eq!(
+                tail(&bundled),
+                tail(&dev),
+                "the module + index contract must be identical on both arms"
+            );
+            assert_ne!(
+                bundled, dev,
+                "the bundled arm must be strictly more isolated than the dev fallback"
+            );
+        }
     }
 
     #[test]

@@ -394,7 +394,52 @@ PINS = [
     ("types.ts", "export.py", 255, "def _located", "why a finding carries scope/id/field/offset"),
     ("types.ts", "export.py", 276, "def _credential_scan", "the CredentialScan shape"),
     ("types.ts", "redact.py", 203, "CREDENTIAL_SHAPE_COVERAGE_LIMIT", "coverage_limit is unconditional"),
-    ("types.ts", "redact.py", 280, "def scan_credential_shapes", "the shape/offset/preview finding keys"),]
+    ("types.ts", "redact.py", 280, "def scan_credential_shapes", "the shape/offset/preview finding keys"),
+
+    # ------------------------------------------------------- sidecar.py, export params (18)
+    #
+    # Added when the six downloaded-export fields were propagated across the TypeScript wire
+    # contract. The engine had accepted `chatgpt_export` / `claude_export` / `codex_export` /
+    # `gemini_export` (plus the two optional second paths) since the G-1 seam landed, while
+    # `BuildParams` declared none of them — so the app could not express a request the engine
+    # already served, and four user-visible strings asserted the capability did not exist.
+    # Wiring it added these citations; this table is what stops them drifting.
+    ("types.ts", "sidecar.py", 265, "loaders.ingest_exports",
+     "the seam whose only callers were in cli.py, which is why the app could not import"),
+    ("types.ts", "sidecar.py", 277, "_EXPORT_KEYS = tuple(",
+     "the flattened export key list the TS field set mirrors one for one"),
+    ("types.ts", "sidecar.py", 289, "_EXPORT_EXISTENCE_EXEMPT",
+     "gemini_harvest is a grouping HINT, so it is not existence-checked"),
+    ("types.ts", "sidecar.py", 995, "_opt_str(params, key)",
+     "every export key is read unconditionally, so a wrong TYPE is a caller bug"),
+    ("types.ts", "sidecar.py", 996, "specs = [(provider",
+     "how a named export becomes a (provider, primary, second) spec"),
+    ("types.ts", "sidecar.py", 1018, "An export is a FILE",
+     "an export may be a file OR a directory, so it is exists() not isdir()"),
+    ("types.ts", "sidecar.py", 1074, "Echo the export sources too",
+     "the reply echoes accepted export params, as the roots already did"),
+    ("types.ts", "sidecar.py", 1077, "reply.update((key, _clean(value))",
+     "the echoed export values are cleaned before they reach the reply"),
+    ("mock.ts", "sidecar.py", 277, "_EXPORT_KEYS = tuple(",
+     "the mock refuses on the same key set the engine reads"),
+    ("mock.ts", "sidecar.py", 606, "must be a local path, not a UNC/network path",
+     "the UNC refusal wording the mock reproduces verbatim"),
+    ("mock.ts", "sidecar.py", 623, "must be an absolute local path",
+     "the absolute-path refusal wording the mock reproduces verbatim"),
+    ("mock.ts", "sidecar.py", 996, "specs = [(provider",
+     "the mock builds the same spec shape so a preview cannot diverge"),
+    ("mock.ts", "sidecar.py", 1000, "raise RpcError(-32602,",
+     "the no-source-named refusal the mock error text must match"),
+    ("mock.ts", "sidecar.py", 1023, "for name in _EXPORT_KEYS",
+     "export paths are guarded in the same refusal order as the engine"),
+    ("mock.ts", "sidecar.py", 1030, "os.path.exists(value)",
+     "existence, not isdir, because a Gemini Takeout export is a single file"),
+    ("mock.ts", "sidecar.py", 1063, "job.update(export)",
+     "the running job carries the export params it was started with"),
+    ("mock.ts", "sidecar.py", 1074, "Echo the export sources too",
+     "the mock echoes export sources so the preview matches the real reply"),
+    ("mock.ts", "sidecar.py", 1077, "reply.update((key, _clean(value))",
+     "the echoed export values are cleaned before they reach the reply"),]
 
 #: (ts file, engine file, cited line, the FALSE sentence, why it is not simply re-anchored).
 #:

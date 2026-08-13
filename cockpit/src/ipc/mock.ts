@@ -663,13 +663,24 @@ function rpcError(code: number, message: string): Error {
  * bug reach the engine untested. Note that `C:/store/../evil` passes here exactly as it
  * passes the real edge: parent-traversal is the ENGINE's refusal, not the edge's
  * (`tests/test_sidecar_maintenance.py:103-119`).
+ *
+ * THE TWO TEMPLATES ARE THE ENGINE'S, VERBATIM (`llm_anthology/sidecar.py:606`, `:623`) —
+ * `<label> must be a local path, not a UNC/network path` and `<label> must be an absolute
+ * local path`, and NEITHER appends the offending value. This said `must not be a UNC path:
+ * <value>` and `must be an absolute local path: <value>`, which is a wording divergence of
+ * the same class as the collapsed build roots below: every dev run, preview and design
+ * review read a sentence the engine never emits, and the shipped test matched it with a
+ * PREFIX regex, which structurally cannot see a wrong suffix. Not appending the value is the
+ * engine's deliberate choice, not an omission — a refused path is already in the caller's
+ * hand, and echoing an attacker-influenceable UNC string back into the UI is a surface with
+ * no upside.
  */
 function requireLocalPath(value: string, label: string): void {
   if (value.startsWith("\\\\") || value.startsWith("//")) {
-    throw rpcError(RPC_INVALID_PARAMS, `${label} must not be a UNC path: ${value}`);
+    throw rpcError(RPC_INVALID_PARAMS, `${label} must be a local path, not a UNC/network path`);
   }
   if (!/^[A-Za-z]:[\\/]/.test(value)) {
-    throw rpcError(RPC_INVALID_PARAMS, `${label} must be an absolute local path: ${value}`);
+    throw rpcError(RPC_INVALID_PARAMS, `${label} must be an absolute local path`);
   }
 }
 
@@ -1323,8 +1334,16 @@ export function createMockIpc(
   // All three roots are held SEPARATELY rather than collapsed into one field: the engine
   // reports each as itself, and a single `sessionsRoot` is what let a Grok path be echoed
   // as the Codex tree.
+  //
+  // `exports` carries the six downloaded-export paths the same way. The engine stores them on
+  // the job too (`job.update(export)`, `sidecar.py:1063`), so an export-only ingest has a
+  // recorded source rather than three empty roots and nothing else — a status that could name
+  // no source at all would make a running export import indistinguishable from a stray job.
   let buildJob:
-    | { id: string; polls: number; sessionsRoot: string; grokRoot: string; claudeRoot: string }
+    | {
+        id: string; polls: number; sessionsRoot: string; grokRoot: string; claudeRoot: string;
+        exports: Record<string, string>;
+      }
     | null = null;
 
   // -- annotation / dedup / maintenance state -------------------------------------
@@ -1499,23 +1518,63 @@ export function createMockIpc(
      * The PARAMS CHECKS are the engine's, because they need no filesystem. Every source is
      * opt-in by naming its root and at least one must be named (`sidecar.py:999-1004`), and
      * each named root is refused if UNC or relative (`sidecar.py:1010-1017`). What is NOT
-     * reproduced is the engine's `os.path.isdir` on each root — that one is a real disk
-     * question this adapter cannot answer.
+     * reproduced is the engine's `os.path.isdir` on each root, nor the `os.path.exists` on
+     * each export path (`sidecar.py:1030-1032`) — those are real disk questions this adapter
+     * cannot answer.
+     *
+     * THE SIX EXPORT PATHS ARE SOURCES TOO, and this method refused them for a whole
+     * release while the engine accepted them. That is the gap the panel's "this app cannot
+     * import a downloaded export yet" was reporting: not a missing engine feature, a missing
+     * wire contract. Three rules, each MEASURED against the engine in-process rather than
+     * inferred, because all three refusals are -32602 and the code cannot tell them apart:
+     *
+     *   1. Only the four PRIMARY keys count toward at-least-one-source. `specs` is keyed on
+     *      `<provider>_export` (`sidecar.py:996-998`), so `{chatgpt_projects}` alone or
+     *      `{gemini_harvest}` alone names NOTHING and is refused with the source text.
+     *   2. ORDER: that refusal precedes the path guard, so a bare second path never reaches
+     *      its own UNC check. A second path needs a primary beside it to be guarded at all.
+     *   3. ALL SIX are path-guarded, second paths included (`sidecar.py:1023-1027`).
+     *      `gemini_harvest` is exempt from the EXISTENCE check and NOT from this one — a UNC
+     *      harvest coerces an outbound SMB/NTLM authentication whether the file exists or not.
      */
     async corpusBuild(params: BuildParams): Promise<BuildHandle> {
       const sessionsRoot = params.sessions_root ?? "";
       const grokRoot = params.grok_root ?? "";
       const claudeRoot = params.claude_root ?? "";
-      if (sessionsRoot === "" && grokRoot === "" && claudeRoot === "") {
+      // In the engine's own refusal order, which is also the order `_EXPORT_KEYS` lists them
+      // in (`sidecar.py:277-279`): each provider's primary, then its second path if it has one.
+      const exportKeys = ["chatgpt_export", "chatgpt_projects", "claude_export",
+        "codex_export", "gemini_export", "gemini_harvest"] as const;
+      /** The four that are SOURCES. A second path rides one; it is never one itself. */
+      const primaryKeys = ["chatgpt_export", "claude_export", "codex_export",
+        "gemini_export"] as const;
+      const exports: Record<(typeof exportKeys)[number], string> = {
+        chatgpt_export: params.chatgpt_export ?? "",
+        chatgpt_projects: params.chatgpt_projects ?? "",
+        claude_export: params.claude_export ?? "",
+        codex_export: params.codex_export ?? "",
+        gemini_export: params.gemini_export ?? "",
+        gemini_harvest: params.gemini_harvest ?? "",
+      };
+      const namedPrimary = primaryKeys.some((key) => exports[key] !== "");
+      if (sessionsRoot === "" && grokRoot === "" && claudeRoot === "" && !namedPrimary) {
+        // The engine's sentence, verbatim (`sidecar.py:1000-1004`). It named only the three
+        // roots here, so a dev run's refusal told the user something the engine does not
+        // believe — and the shipped test matched it with `/name at least one source/`, a
+        // prefix regex that cannot see a truncated tail.
         throw rpcError(
           RPC_INVALID_PARAMS,
-          "name at least one source: sessions_root (Codex), grok_root (Grok Build) " +
-            "and/or claude_root (Claude Code)",
+          "name at least one source: sessions_root (Codex), grok_root (Grok Build), " +
+            "claude_root (Claude Code) and/or a downloaded export (chatgpt_export, " +
+            "claude_export, codex_export, gemini_export)",
         );
       }
       if (sessionsRoot !== "") requireLocalPath(sessionsRoot, "sessions_root");
       if (grokRoot !== "") requireLocalPath(grokRoot, "grok_root");
       if (claudeRoot !== "") requireLocalPath(claudeRoot, "claude_root");
+      for (const key of exportKeys) {
+        if (exports[key] !== "") requireLocalPath(exports[key], key);
+      }
       // Each root is echoed AS ITSELF. This used to collapse all three into
       // `sessions_root` (`sessionsRoot || grokRoot || claudeRoot`) on the reasoning that a
       // Grok-only build "carries no sessions_root at all, so falling through mirrors the
@@ -1531,13 +1590,25 @@ export function createMockIpc(
       // makes the real contract untestable here. The empty string means ABSENT rather
       // than invalid, matching the engine exactly — it falls through to the refusal above
       // instead of being validated.
-      buildJob = { id: "mock-build-1", polls: 0, sessionsRoot, grokRoot, claudeRoot };
+      //
+      // The six export paths are carried on the job for the same reason and echoed
+      // UNCONDITIONALLY below, because that is what the engine does: `reply.update(...)`
+      // (`sidecar.py:1077`) writes every key of the export dict, named or not, so an
+      // export-only handle carries all nine source keys with eight of them empty. That is
+      // deliberate on the engine's side — `sidecar.py:1074-1076` says an echo exists so a
+      // parameter that was accepted and then ignored cannot be invisible, which is precisely
+      // how the whole export half of this surface went missing here.
+      buildJob = {
+        id: "mock-build-1", polls: 0, sessionsRoot, grokRoot, claudeRoot,
+        exports: { ...exports },
+      };
       return {
         job_id: buildJob.id,
         state: "running",
         sessions_root: sessionsRoot,
         grok_root: grokRoot,
         claude_root: claudeRoot,
+        ...exports,
         started_ms: T0,
       };
     },

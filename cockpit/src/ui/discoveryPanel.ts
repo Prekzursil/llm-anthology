@@ -18,11 +18,28 @@
  *     deliberately, because defaulting the latter would read the user's live private store
  *     unasked. So a store whose finding names only one of them gets a stated reason, not a
  *     guessed default.
- *   * `export_file`   -> NOTHING but the fact it exists. There is no import RPC for a
- *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:602-607`) has one
- *     ingest verb, `corpus.build`, and it runs `loaders.load_corpus`, which is Codex
- *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:280`).
- *     Offering an "Import" button here would be inventing a capability.
+ *   * `export_file`   -> IMPORT it, naming the ONE `<provider>_export` parameter it maps to.
+ *     There is one ingest verb, `corpus.build`, and it runs TWO ingests: `loaders.load_corpus`
+ *     for the session stores AND `loaders.ingest_exports` for the downloaded exports
+ *     (`llm_anthology/sidecar.py:1107-1110`, both call sites, back to back).
+ *
+ *     THIS BULLET USED TO SAY THE OPPOSITE, and it was the load-bearing half of a defect
+ *     the owner reported as "it seems things are not yet functional". It read: there is no
+ *     import RPC for a downloaded export, `corpus.build` "runs `loaders.load_corpus`, which
+ *     is Codex rollout logs plus a Codex state DB and nothing else", so "offering an Import
+ *     button here would be inventing a capability". Every clause of that is now false, and
+ *     one of them was already false when written — `load_corpus` has taken `grok_root` and
+ *     `claude_root` for longer than this comment has existed. The engine's own note at
+ *     `sidecar.py:265-267` records the export seam being added *because* the app could not
+ *     import an export; it was never propagated across this boundary, and this comment, a
+ *     user-facing refusal string, the mock, the README and a GREEN TEST all went on
+ *     asserting the absence. Withholding a capability the engine has is exactly as
+ *     dishonest as inventing one it does not.
+ *
+ *     A `chatgpt_projects` / `gemini_harvest` companion path is NOT sent: discovery reports
+ *     neither, and each ALONE is refused -32602 by the engine (measured), because `specs` is
+ *     keyed on the primary `<provider>_export` (`sidecar.py:996-998`). Their eventual home is
+ *     an opt-in per-row control, unset by default.
  *
  * THE SPLIT. Same shape as `ui/corpusBar` and `ui/exportPanel`: pure derivations carry
  * every DECISION (what is actionable, how findings group and rank, what each of the two
@@ -91,11 +108,6 @@ export const DEFAULT_POLL_LIMITS: PollLimits = {
 export const NOTHING_FOUND_LABEL =
   "No AI session data found in the usual places. Use “Open corpus…” in the top bar to " +
   "choose a corpus index yourself.";
-
-/** Why a downloaded export is listed but offers no action. */
-export const EXPORT_NO_IMPORT_REASON =
-  "Detected. This app cannot import a downloaded export yet — its only import reads Codex " +
-  "session stores.";
 
 /** Why a source of an unrecognised kind is listed but offers no action. */
 export const UNKNOWN_KIND_REASON = "Detected. This app has no action for this kind of source yet.";
@@ -344,9 +356,94 @@ const SUBDIR_IMPORTABLE: ReadonlyArray<readonly [string, keyof BuildParams]> = [
   [CLAUDE_CODE_PROVIDER, "claude_root"],
 ];
 
+/**
+ * The DOWNLOADED-EXPORT providers, each mapped to the one `corpus.build` parameter that names
+ * it. The sibling of {@link SUBDIR_IMPORTABLE}, and a better-founded table than that one.
+ *
+ * The mapping is not a guess and not maintained by hand: it is mechanically
+ * `<provider>_export`, which is how the engine derives its own key set
+ * (`_EXPORT_KEYS` from `_EXPORT_PARAMS`, `llm_anthology/sidecar.py:277-279`). The four
+ * providers are 1:1 with `loaders.EXPORT_PROVIDERS`, and that pairing is ALREADY GATED on the
+ * Python side by `tests/test_sidecar_build.py::test_the_export_params_match_the_loader_
+ * vocabulary` — so a fifth export provider cannot be added to the engine without a test
+ * naming it, which is the property `SUBDIR_IMPORTABLE` lacks.
+ *
+ * Written as a derivation rather than four literal pairs on purpose: a literal table would let
+ * `["gemini", "chatgpt_export"]` typecheck, and a provider-to-wrong-key row is precisely the
+ * silent mis-import this file's ambiguity handling exists to make visible.
+ */
+const EXPORT_PROVIDERS = ["chatgpt", "claude", "codex", "gemini"] as const;
+
+type ExportProvider = (typeof EXPORT_PROVIDERS)[number];
+
+const EXPORT_IMPORTABLE: ReadonlyArray<readonly [ExportProvider, keyof BuildParams]> =
+  EXPORT_PROVIDERS.map((provider) => [provider, `${provider}_export`] as const);
+
+/**
+ * The sentence a row shows when discovery could not tell which provider a file belongs to;
+ * empty when it could.
+ *
+ * `discover.py` emits ONE FINDING PER MATCHING SPEC and records the rivals in
+ * `detail.ambiguous_with` (`discover.py:719-724`), so an ambiguous `conversations.json`
+ * arrives as two findings that land in two different provider groups. Neither is wrong to
+ * offer — the file IS one of them — but exactly one import will index anything, and the two
+ * rows are otherwise indistinguishable on screen. Naming the rival is the cheapest honest fix:
+ * it does not guess, and it tells the user what to try if the first pick indexes nothing.
+ *
+ * NOT a refusal. Refusing both would withhold the capability over a distinction the engine
+ * makes cheaply and non-destructively (a wrong pick indexes 0 and changes nothing else), and
+ * `buildOutcomeMessage` already reports a zero-count import as the non-success it is.
+ */
+export function ambiguityNote(finding: DiscoveryFinding): string {
+  const rivals = finding.detail["ambiguous_with"];
+  if (!Array.isArray(rivals) || rivals.length === 0) return "";
+  const names = rivals.map((r) => (typeof r === "string" ? r : String(r))).join(", ");
+  return (
+    `This file also matches ${names}, so which provider wrote it is a guess. Importing it as ` +
+    `${finding.provider} is safe to try — a wrong guess indexes no conversations and changes ` +
+    "nothing else."
+  );
+}
+
+/**
+ * An EXPORT finding -> the one `<provider>_export` parameter, or a stated reason.
+ *
+ * Separate from the store derivation below, and reached BEFORE it, because an export finding
+ * carries no `items_root` at all: its whole `detail` is `{size_bytes, ambiguous_with?}`
+ * (`discover.py:719-724`). Running the store rule over it refuses every export for missing a
+ * field its provider does not report — which is not a hypothetical, it is what the
+ * `items_root === ""` early return did on the first attempt at this change.
+ *
+ * The path is passed VERBATIM. Not the parent directory "to pick up shards": the engine
+ * already matches `conversations-*.json` (`discover.py:349-351`), `ingest_exports` is
+ * idempotent per file, and a DIRECTORY handed to a claude export risks the recursive `.js`
+ * fallback glob that `loaders.py:948-954` records as having once added ~30 junk conversations.
+ * (Spelled in prose, not as the literal pattern: its `*` + `/` sequence closes a block comment
+ * and the first draft of this docstring broke the build.)
+ */
+function deriveExportParams(
+  finding: DiscoveryFinding,
+): { build: BuildParams; missing: "" } | { build: null; missing: string } {
+  const importable = EXPORT_IMPORTABLE.find(([provider]) => finding.provider === provider);
+  if (importable === undefined) {
+    // A fifth export provider in `discover.PROVIDERS` with no engine parameter behind it.
+    // Naming it beats sending `${provider}_export` and letting the engine refuse: the RPC
+    // would fail with a -32602 the user cannot act on, whereas this says which provider.
+    return {
+      build: null,
+      missing:
+        `this app cannot import a ${finding.provider} export yet — it reads ChatGPT, Claude, ` +
+        "Codex and Gemini exports",
+    };
+  }
+  return { build: { [importable[1]]: finding.path }, missing: "" };
+}
+
 export function deriveBuildParams(
   finding: DiscoveryFinding,
 ): { build: BuildParams; missing: "" } | { build: null; missing: string } {
+  // KIND FIRST. The store rules below all read `detail.items_root`, which only a store has.
+  if (finding.kind === "export_file") return deriveExportParams(finding);
   const itemsRoot = detailString(finding.detail, "items_root");
   if (itemsRoot === "") {
     return {
@@ -387,33 +484,47 @@ export interface ActionContext {
 }
 
 /**
- * A finding -> the one thing the app may honestly offer for it.
+ * The import button's text.
  *
- * The import label changes with `corpusAttached` because the two flows differ in what they
- * do to the user's data: with nothing attached the app must first CREATE an index, so the
- * label ends in an ellipsis to signal it will ask where; with a corpus already open the
- * import lands in that one, and saying so prevents an import silently joining a corpus the
- * user forgot was attached.
+ * `corpusAttached` changes it because the two flows differ in what they do to the user's data:
+ * with nothing attached the app must first CREATE an index, so the label ends in an ellipsis to
+ * signal it will ask where; with a corpus already open the import lands in that one, and saying
+ * so prevents an import silently joining a corpus the user forgot was attached.
+ *
+ * `qualifier` names the PROVIDER, and only when the finding is ambiguous. Two findings over one
+ * ambiguous file render in two groups, and a bare "Import…" on both gives the user two
+ * identical buttons over the same path with nothing to choose by; "Import as chatgpt…" beside
+ * "Import as claude…" is the same information the engine has, on screen. An unambiguous row
+ * keeps the short label — qualifying every button would spend the distinction on the 99% of
+ * rows that do not need it.
+ */
+function importLabel(ctx: ActionContext, qualifier: string): string {
+  const verb = qualifier === "" ? "Import" : `Import as ${qualifier}`;
+  return ctx.corpusAttached ? `${verb} into open corpus` : `${verb}…`;
+}
+
+/**
+ * A finding -> the one thing the app may honestly offer for it.
  */
 export function deriveAction(finding: DiscoveryFinding, ctx: ActionContext): DiscoveryAction {
   if (finding.kind === "built_index") {
     return { kind: "open", label: "Open", enabled: true, reason: "", build: null };
   }
-  if (finding.kind === "session_store") {
+  // A store and an export share this arm now. They differ only in how the parameters are
+  // derived — which is `deriveBuildParams`'s job, not this one's — and folding them together is
+  // what stops a THIRD ingestable kind arriving as a copy of the refusal branch again.
+  if (finding.kind === "session_store" || finding.kind === "export_file") {
     const derived = deriveBuildParams(finding);
     if (derived.build === null) {
       return { kind: "none", label: "", enabled: false, reason: `Detected, but ${derived.missing}.`, build: null };
     }
     return {
       kind: "import",
-      label: ctx.corpusAttached ? "Import into open corpus" : "Import…",
+      label: importLabel(ctx, ambiguityNote(finding) === "" ? "" : finding.provider),
       enabled: true,
       reason: "",
       build: derived.build,
     };
-  }
-  if (finding.kind === "export_file") {
-    return { kind: "none", label: "", enabled: false, reason: EXPORT_NO_IMPORT_REASON, build: null };
   }
   return { kind: "none", label: "", enabled: false, reason: UNKNOWN_KIND_REASON, build: null };
 }
@@ -448,6 +559,16 @@ export interface DiscoveryRow {
   summary: string;
   /** The generically-rendered `detail` line; empty when nothing renders. */
   detail: string;
+  /**
+   * A sentence about THIS row that the generic `detail` line cannot express; empty for almost
+   * every row. Today it carries exactly one thing: {@link ambiguityNote}.
+   *
+   * Separate from `detail` because `detail` is deliberately key-AGNOSTIC (see the module note)
+   * and therefore renders `ambiguous_with claude` — the raw engine key, which states the fact
+   * without saying what to do about it. A row whose action is a coin-flip needs prose, and prose
+   * about a specific key is exactly what the generic renderer must not start doing.
+   */
+  note: string;
   action: DiscoveryAction;
 }
 
@@ -589,6 +710,7 @@ function toRow(finding: DiscoveryFinding, options: GroupOptions): DiscoveryRow {
     parent,
     summary: `${countLabel(finding)} · ${age} · ${finding.confidence} confidence`,
     detail: detailSummary(finding.detail),
+    note: ambiguityNote(finding),
     action: deriveAction(finding, { corpusAttached: options.corpusAttached }),
   };
 }
@@ -665,6 +787,30 @@ export function buildOutcomeMessage(status: BuildStatus): string {
     status.errors.length > 0
       ? ` ${groupDigits(status.errors.length)} ${status.errors.length === 1 ? "file" : "files"} could not be read and ${status.errors.length === 1 ? "was" : "were"} skipped.`
       : "";
+  if (status.state === "done" && status.indexed_conversations === 0) {
+    // A CLEAN COMPLETION THAT IMPORTED NOTHING is its own outcome, and it must not read as
+    // success. It is what a wrong-provider pick over an ambiguous export produces — the
+    // adapter reads the file, recognises none of it, and the job finishes with `state: "done"`
+    // and an EMPTY error list (MEASURED in-process: a valid-JSON non-ChatGPT file under
+    // `chatgpt_export` gave exactly that). So neither `state` nor `errors` distinguishes it,
+    // and the old wording — "Import finished — 0 conversations in the corpus." — was
+    // technically true while reading as a completed import, which is the one thing this line
+    // must never do.
+    //
+    // Deliberately shares NO PREFIX with the success sentence. "Import finished but added no
+    // conversations" was the first wording and it fails its own test: `not.toContain("Import
+    // finished")` is the invariant worth having, because a UI that truncates, or a reader
+    // skimming, sees the first two words and reads a completed import. Disjoint strings make
+    // that impossible rather than unlikely.
+    //
+    // Says what to try, because both live causes are actionable: the wrong side of an
+    // ambiguous file, or a source that no longer holds what it did.
+    return (
+      "Nothing was imported — the engine read the source and recognised no conversations in " +
+      `it.${skipped} If this file matched more than one provider, try importing it as the ` +
+      "other one."
+    );
+  }
   if (status.state === "done") {
     return `Import finished — ${groupDigits(status.indexed_conversations)} conversations in the corpus.${skipped}`;
   }
@@ -1227,6 +1373,15 @@ export class DiscoveryPanel {
     summary.textContent = row.detail === "" ? row.summary : `${row.summary} · ${row.detail}`;
 
     text.append(name, where, summary);
+    // Appended only when there IS one, so `.discovery-row-note` being absent is itself the
+    // assertion that this row is unambiguous — an always-present empty span would make the
+    // two cases indistinguishable to a test and to a screen reader alike.
+    if (row.note !== "") {
+      const note = document.createElement("span");
+      note.className = "discovery-row-note muted";
+      note.textContent = row.note;
+      text.appendChild(note);
+    }
     el.appendChild(text);
 
     if (row.action.kind === "none") {

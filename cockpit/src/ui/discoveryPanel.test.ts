@@ -25,6 +25,7 @@ import type {
   OpenCorpusResult,
 } from "../ipc/types";
 import {
+  ambiguityNote,
   buildOutcomeMessage,
   buildProgressLabel,
   capNote,
@@ -35,7 +36,6 @@ import {
   detailSummary,
   DiscoveryPanelController,
   expandLabel,
-  EXPORT_NO_IMPORT_REASON,
   formatDetailValue,
   groupDigits,
   groupFindings,
@@ -488,14 +488,92 @@ describe("deriveAction", () => {
     );
   });
 
-  it("offers a downloaded export NO action, because no import RPC exists for one", () => {
-    // The sidecar's dispatch table has exactly one ingest verb, corpus.build, and it runs
-    // loaders.load_corpus — Codex rollouts plus a Codex state DB, nothing else.
+  it("offers a downloaded export an IMPORT, because the engine ingests all four", () => {
+    // THIS TEST WAS THE DEFECT. It read "offers a downloaded export NO action, because no
+    // import RPC exists for one", and it was green — pinning a refusal the engine stopped
+    // believing a release ago. `corpus.build` reads six export params
+    // (`_EXPORT_KEYS`, `llm_anthology/sidecar.py:277`, read at `:995`) and turns the four
+    // primaries into ingest specs (`:996-998`).
+    //
+    // MEASURED before this was rewritten, in-process against the real engine with a
+    // synchronous build runner: `corpus.build{chatgpt_export}` alone is ACCEPTED and reaches
+    // `state: "done"`. The old test's own premise — "the dispatch table runs
+    // loaders.load_corpus and nothing else" — is refuted by `sidecar.py:1110`, which calls
+    // `loaders.ingest_exports` immediately after it.
     const action = deriveAction(finding(), OPEN_CTX);
+    expect(action.kind).toBe("import");
+    expect(action.enabled).toBe(true);
+    expect(action.reason).toBe("");
+    expect(action.build).toEqual({
+      chatgpt_export: "C:\\Users\\me\\Downloads\\a\\conversations.json",
+    });
+  });
+
+  it("sends exactly ONE key, the finding's path VERBATIM, per export provider", () => {
+    // The whole parameter derivation, and each half of it is a decision:
+    //
+    // ONE KEY. Not the parent directory "to pick up shards" — `discover.py:349-351` already
+    // matches `conversations-*.json`, `ingest_exports` is idempotent per file, and handing a
+    // DIRECTORY to a claude export risks the `**/*.js` fallback glob that
+    // `loaders.py:948-954` records as having once added ~30 junk conversations. And no
+    // `chatgpt_projects`/`gemini_harvest`: discovery reports neither, and each ALONE was
+    // measured to return -32602, so neither is a source.
+    //
+    // VERBATIM. The same rule `SUBDIR_IMPORTABLE` applies to a store root, for the same
+    // reason: the engine takes the path as given and the UI inventing a variant of it is how
+    // a build succeeds against nothing.
+    for (const [provider, key] of [
+      ["chatgpt", "chatgpt_export"],
+      ["claude", "claude_export"],
+      ["codex", "codex_export"],
+      ["gemini", "gemini_export"],
+    ] as const) {
+      const path = "C:\\Users\\me\\Downloads\\x\\conversations.json";
+      const derived = deriveBuildParams(finding({ provider, path }));
+      expect(derived).toEqual({ build: { [key]: path }, missing: "" });
+      expect(Object.keys(derived.build ?? {})).toHaveLength(1);
+    }
+  });
+
+  it("derives an export's params even though no export finding carries an items_root", () => {
+    // The structural trap this had to be sequenced around: `deriveBuildParams` opened with an
+    // `items_root === ""` refusal, and an export finding's `detail` is only
+    // `{size_bytes, ambiguous_with?}` (`discover.py:719-724`) — it has no `items_root` and
+    // never will. So the kind must be branched on BEFORE that early return, or every export
+    // is refused for missing a field its provider does not report.
+    expect(finding().detail.items_root).toBeUndefined();
+    expect(deriveBuildParams(finding()).build).not.toBeNull();
+  });
+
+  it("refuses an export whose provider the engine has no ingest key for, and names it", () => {
+    // `EXPORT_IMPORTABLE` is 1:1 with `sidecar._EXPORT_PARAMS` and `loaders.EXPORT_PROVIDERS`
+    // — a pairing already gated on the Python side by
+    // `tests/test_sidecar_build.py::test_the_export_params_match_the_loader_vocabulary`. A
+    // FIFTH export provider in `discover.PROVIDERS` would land here, and the honest answer is
+    // a stated reason rather than a `${provider}_export` key the engine would refuse.
+    const action = deriveAction(finding({ provider: "future-ai" }), OPEN_CTX);
     expect(action.kind).toBe("none");
     expect(action.enabled).toBe(false);
     expect(action.build).toBeNull();
-    expect(action.reason).toBe(EXPORT_NO_IMPORT_REASON);
+    expect(action.reason).toContain("future-ai");
+  });
+
+  it("names the AMBIGUITY in the row copy, so two rows over one file are not identical", () => {
+    // An ambiguous file produces TWO findings — one per matching spec, each naming the other
+    // in `ambiguous_with` (`discover.py:719-724`) — and they land in two different
+    // provider/kind groups. Rendering both as a bare "Import…" gives the user two identical
+    // buttons over the same file, exactly one of which is right, with nothing on screen to
+    // choose by. Naming the provider in the label is what makes them distinguishable.
+    const amb = finding({ detail: { size_bytes: 4_100_000, ambiguous_with: ["claude"] } });
+    const action = deriveAction(amb, OPEN_CTX);
+    expect(action.kind).toBe("import");
+    expect(action.label).toBe("Import as chatgpt…");
+    expect(deriveAction(amb, { corpusAttached: true }).label)
+      .toBe("Import as chatgpt into open corpus");
+    expect(ambiguityNote(amb)).toContain("claude");
+    // ...and an UNambiguous export says nothing, so the note cannot become background noise.
+    expect(ambiguityNote(finding())).toBe("");
+    expect(deriveAction(finding(), OPEN_CTX).label).toBe("Import…");
   });
 
   it("offers a store whose parameters are not derivable NO action, and says why", () => {
@@ -895,6 +973,24 @@ describe("buildOutcomeMessage", () => {
   it("reports an unexpected terminal state as what it saw, not as success", () => {
     expect(buildOutcomeMessage(status({ state: "idle" }))).toContain("state “idle”");
   });
+
+  it("does NOT report success for a finished build that indexed nothing", () => {
+    // The safety net under the ambiguity. `done` with `indexed_conversations: 0` is exactly
+    // what a wrong-provider pick over an ambiguous file produces — the adapter reads the file,
+    // recognises none of it, and the job completes cleanly — and it is also what a stale or
+    // emptied source produces. MEASURED: an in-process `corpus.build{chatgpt_export}` over a
+    // file that is valid JSON but not a ChatGPT export reached `state: "done"` with
+    // `indexed_conversations: 0` and an EMPTY error list, so neither `state` nor `errors` can
+    // distinguish it. "Import finished — 0 conversations in the corpus." is technically true
+    // and reads as success, which is the one thing it must not do.
+    const text = buildOutcomeMessage(status({ indexed_conversations: 0 }));
+    expect(text).not.toContain("Import finished");
+    expect(text).toContain("no conversations");
+    // The skipped-file tail still rides along, because a zero-count import that ALSO could not
+    // read four files is a different diagnosis from one that read them all and matched none.
+    expect(buildOutcomeMessage(status({ indexed_conversations: 0, errors: ["a: bad"] })))
+      .toContain("1 file could not be read");
+  });
 });
 
 describe("buildProgressLabel", () => {
@@ -1076,13 +1172,20 @@ describe("DiscoveryPanelController.activate", () => {
     expect(h.ready).toEqual([]);
   });
 
-  it("does NOTHING but state the reason for an export file", async () => {
+  it("IMPORTS an export file through corpus.build, one key, path verbatim", async () => {
+    // The controller half of the inversion above. This asserted `builds` stayed EMPTY and the
+    // status merely restated a refusal; the engine has accepted this call since the export
+    // seam shipped.
     const h = harness();
     await h.controller.activate(finding());
-    expect(h.ipc.opened).toEqual([]);
-    expect(h.ipc.created).toEqual([]);
-    expect(h.ipc.builds).toEqual([]);
-    expect(h.controller.current.status).toBe(EXPORT_NO_IMPORT_REASON);
+    expect(h.ipc.builds).toEqual([
+      { chatgpt_export: "C:\\Users\\me\\Downloads\\a\\conversations.json" },
+    ]);
+    // Nothing was attached, so the index had to be created and opened first — the same
+    // sequence a store import follows, for the reason `importStore` documents: `corpus.build`
+    // is forwarded only once a corpus is attached.
+    expect(h.ipc.created).toHaveLength(1);
+    expect(h.controller.current.phase).toBe("done");
   });
 
   it("does NOTHING but state the reason for a store whose parameters are missing", async () => {

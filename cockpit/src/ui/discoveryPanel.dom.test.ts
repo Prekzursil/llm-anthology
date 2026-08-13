@@ -30,7 +30,6 @@ import type {
 } from "../ipc/types";
 import {
   DiscoveryPanel,
-  EXPORT_NO_IMPORT_REASON,
   NOTHING_FOUND_LABEL,
   type DiscoveryDeps,
   type DiscoveryIpc,
@@ -428,13 +427,50 @@ describe("row actions", () => {
     expect(shell.ready).toEqual(["C:\\Users\\me\\Documents\\anthology.db"]);
   });
 
-  it("gives a downloaded export a stated reason and NO button", async () => {
+  it("gives a downloaded export an Import button that starts the ingest", async () => {
+    // INVERTED. This asserted a stated reason and NO button, which is what the app shipped
+    // while the engine had ingested all four export formats for a release — the literal shape
+    // of the owner's report. `corpus.build{chatgpt_export}` alone was MEASURED accepted
+    // in-process before this was rewritten.
+    // The destination picker has to answer, because nothing is attached and `importStore`
+    // creates the index first — the default stub resolves null (dismissed) and no build fires.
+    saveDialog.mockResolvedValue("C:\\Users\\me\\anthology.db");
     const shell = mount();
     await shell.panel.scan();
     const row = section(shell, "chatgpt");
 
-    expect(text(row, ".discovery-reason")).toBe(EXPORT_NO_IMPORT_REASON);
-    expect(row.querySelector("button.discovery-action")).toBeNull();
+    const button = row.querySelector<HTMLButtonElement>("button.discovery-action");
+    expect(button?.textContent).toBe("Import…");
+    expect(button?.disabled).toBe(false);
+    expect(row.querySelector(".discovery-reason")).toBeNull();
+
+    button?.click();
+    await flush();
+    expect(shell.ipc.builds).toEqual([
+      { chatgpt_export: "C:\\Users\\me\\Downloads\\a\\conversations.json" },
+    ]);
+  });
+
+  it("names the provider and the rival on an AMBIGUOUS export row", async () => {
+    // Two findings over ONE file, one per matching spec (`discover.py:719-724`), landing in two
+    // groups. Without the qualifier both rows read "Import…" over the same path with nothing
+    // to choose by; exactly one of them indexes anything.
+    const shell = mount({}, { now: (): number => NOW }, scan([
+      finding({ provider: "chatgpt", detail: { size_bytes: 9, ambiguous_with: ["claude"] } }),
+      finding({ provider: "claude", detail: { size_bytes: 9, ambiguous_with: ["chatgpt"] } }),
+    ]));
+    await shell.panel.scan();
+
+    expect(text(section(shell, "chatgpt"), "button.discovery-action"))
+      .toBe("Import as chatgpt…");
+    expect(text(section(shell, "claude"), "button.discovery-action"))
+      .toBe("Import as claude…");
+    // ...and the row SAYS why, rather than leaving the qualifier to be guessed at.
+    expect(text(section(shell, "chatgpt"), ".discovery-row-note")).toContain("also matches claude");
+    // An unambiguous export carries no note at all — the copy must not become wallpaper.
+    const plain = mount({}, { now: (): number => NOW }, scan([finding()]));
+    await plain.panel.scan();
+    expect(section(plain, "chatgpt").querySelector(".discovery-row-note")).toBeNull();
   });
 
   it("re-labels the import to say where the data will land", async () => {
@@ -507,6 +543,7 @@ describe("row actions", () => {
       parent: "C:\\Users\\me",
       summary: "2,043 sessions · 1 hour ago · high confidence",
       detail: "",
+      note: "",
       action: {
         kind: "import",
         label: "Import…",

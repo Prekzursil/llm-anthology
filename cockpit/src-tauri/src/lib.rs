@@ -786,6 +786,18 @@ fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Res
     forward(state.inner(), "conversation.get", params.unwrap_or_else(|| json!({})))
 }
 
+/// The ordered conversation list — the browse pane's own source, independent of threads.
+///
+/// This exists because `graph.roots` is thread-derived, and a DOWNLOADED EXPORT declares no
+/// `thread_id` at all: after importing one, `corpus.stats` reported `conversations: 2,
+/// threads: 0` while `graph.roots` returned `[]`, so the only browse surface rendered empty
+/// and the app looked broken with a fully populated corpus behind it. An empty search query
+/// deliberately returns nothing, so there was no second way in either.
+#[tauri::command]
+fn conversation_list(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
+    forward(state.inner(), "conversation.list", params.unwrap_or_else(|| json!({})))
+}
+
 // -- Phase-3 time-travel + export surface -------------------------------------------
 // Each mirrors the `forward(state, method, params)` pattern above, proxying one
 // `graph.*` / `export.*` JSON-RPC method the sidecar (`llm_anthology/sidecar.py`) serves. The
@@ -958,6 +970,7 @@ pub fn run() {
             search_query,
             thread_get,
             conversation_get,
+            conversation_list,
             graph_rollup,
             graph_timeline,
             graph_at,

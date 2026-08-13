@@ -732,8 +732,8 @@ class Sidecar:
             "export.plan": self._export_plan,
             "export.run": self._export_run,
             "search.query": self._search_query,
-            "thread.get": self._thread_get,
-            "conversation.get": self._conversation_get,
+            "thread.get": self._thread_get, "conversation.get": self._conversation_get,
+            "conversation.list": self._conversation_list,  # why 2/line: the handler
             "research.synthesize": self._research_synthesize,
             "research.extract_entities": self._research_extract_entities,
             "metadata.get": self._metadata_get,
@@ -2303,6 +2303,100 @@ class Sidecar:
             id=row["conversation_id"], title=row["title"], provider=row["provider"],
             turns=turns, created_at=row["created_at"], updated_at=row["updated_at"],
             account=row["account"], meta=meta)
+
+    # -- conversation.list (the browse feed) --------------------------------------
+    #
+    # APPENDED AT THE END OF THE CLASS, and its dispatch entry SHARES a line with its sibling,
+    # for one measured reason. `tests/test_citation_anchors.py` pins seventy-six DISTINCT line
+    # numbers in THIS file — cited from `mock.ts`, `types.ts`, `claude_code.py`, `grok.py`,
+    # `corpus.py` and `discover.py` — and it compares by EXACT line number, so an insertion
+    # anywhere above the highest of them breaks anchors in six files this change may not edit.
+    # That was measured rather than assumed, with a both-states control: as committed the gate
+    # is green, and with ONE blank line inserted above the highest pinned anchor it goes red.
+    # `_read_conversation` above was placed here for the same reason. So the new code lives
+    # below every pin, and the dict entry costs no line at all.
+
+    def _conversation_list(self, params):
+        """The ordered CONVERSATION feed — ``[{id, provider, title, created_at, updated_at,
+        turn_count}]``, newest first, paged by ``limit``/``offset``, optionally narrowed to
+        one ``provider``.
+
+        WHY IT EXISTS. Every browse pane the cockpit has is fed by ``graph.roots``, which
+        serves THREADS — and a downloaded export declares no thread, so the ingest writes no
+        thread row and that feed answers ``[]``. Measured over a CHILD-PROCESS stdio session
+        against a two-conversation ChatGPT export, before this handler existed:
+        ``corpus.stats`` reported ``{"conversations": 2, "threads": 0, "edges": 0}``;
+        ``graph.roots`` returned ``[]`` under BOTH orders; ``search.query`` answers a
+        term-less query with zero hits by design, so it cannot stand in for a browse list
+        either. A successful import was therefore indistinguishable from a failed one — while
+        every record was fully indexed and ``conversation.get`` could open each one by id.
+        Nothing was missing but the LIST VERB.
+
+        NO SCHEMA CHANGE, NO RE-INDEX, NO NEW COLUMN. Every field this reads is already
+        written by the ingest and already sorts correctly, so an index built by an older
+        build gains the pane the moment the engine is upgraded.
+
+        A BARE LIST, exactly like ``graph.roots``, and deliberately NOT an ``{items, total}``
+        envelope. The total is not missing: ``corpus.stats`` already reports ``conversations``
+        plus a per-provider breakdown in ``providers``, so a ``total`` here would be a second
+        answer to a question the caller can already ask, bought with a COUNT query on every
+        page. A client pages until it receives a short page, which is what the cockpit's roots
+        loader already does — reusing that idiom rather than inventing a second one.
+
+        THE ORDER IS TOTAL, which is the property paging depends on rather than a nicety.
+        ``updated_at`` when it is non-empty, else ``created_at``, descending, with
+        ``conversation_id`` breaking ties. The NULLIF inside the COALESCE is load-bearing:
+        every column in ``conversations`` is NOT NULL DEFAULT '', so an "absent" timestamp is
+        an EMPTY STRING, and a plain COALESCE would happily prefer it and sort a dated
+        conversation as though it had no date. An undated row consequently sorts LAST instead
+        of vanishing, which matters because the stats line drawn beside this list still counts
+        it — Codex task exports really do write an empty ``created_at``. Without the id
+        tie-break, two conversations sharing one instant come back in whatever order SQLite
+        happened to scan, and a paged reader then silently drops one row and repeats another.
+
+        ``provider`` IS THE ONLY FACET, and it routes through ``corpus.search_filter_sql``
+        instead of spelling the clause again, so the browse facet and the search facet cannot
+        drift into disagreeing about what "this provider" means. The date bounds that same
+        function supports are NOT offered here, on purpose: accepting ``since``/``until`` and
+        applying only ``provider`` would answer a filtered question with an unfiltered page,
+        which is the plausible-wrong-page failure that function's own docstring exists to
+        prevent. A non-string ``provider`` is refused in the same words the search facet uses,
+        because bound as-is it matches no row and reads as a true negative.
+
+        ``rollout_path`` AND ``account`` ARE NOT SELECTED. The first is a local filesystem
+        path that embeds the owner's username, which this module keeps off the wire
+        everywhere else; the second answers nothing a browse row asks, and unselected is the
+        only form of "not leaked" that survives a later refactor. ``title``, ``created_at``
+        and ``updated_at`` are each copied out of a source file by an adapter, so all three
+        are sanitized here explicitly — ``dispatch`` does not sanitize results globally, which
+        is precisely how a new wire key gets missed. Sanitizing cannot disturb the order,
+        because the ORDER BY runs in SQL over the STORED values. ``provider`` is left as
+        stored, matching every sibling on this wire: it is a label the adapter sets in code,
+        not text lifted out of a file. [RESIDUAL, stated here rather than hidden at the end:
+        ``conversation.get`` still relays ITS ``created_at``/``updated_at`` unsanitized, so
+        the two surfaces can disagree by exactly one hidden-unicode payload. That is a
+        pre-existing asymmetry in a method this change does not own; the settling edit is to
+        route that DTO's two timestamps through the same helper.]
+        """
+        self._require_corpus()
+        limit = _opt_int(params, "limit", 100)
+        offset = _opt_int(params, "offset", 0)
+        provider = params.get("provider")
+        if provider is not None and not isinstance(provider, str):
+            raise RpcError(-32602, "provider must be a string")
+        # `WHERE 1=1` because `search_filter_sql` returns an AND-ed FRAGMENT and this query,
+        # unlike `_run_search`, has no MATCH predicate of its own for it to hang off.
+        clause, bound = corpus.search_filter_sql(provider)
+        rows = self.conn.execute(
+            "SELECT c.conversation_id, c.provider, c.title, c.created_at, c.updated_at, "
+            "c.turn_count FROM conversations c WHERE 1=1" + clause
+            + " ORDER BY COALESCE(NULLIF(c.updated_at,''), c.created_at) DESC, "
+            "c.conversation_id LIMIT ? OFFSET ?", bound + [limit, offset]).fetchall()
+        return [{"id": row["conversation_id"], "provider": row["provider"],
+                 "title": _clean(row["title"]),
+                 "created_at": _clean(row["created_at"]),
+                 "updated_at": _clean(row["updated_at"]),
+                 "turn_count": row["turn_count"]} for row in rows]
 
 
 # -------------------------------------------------------------------- entrypoint

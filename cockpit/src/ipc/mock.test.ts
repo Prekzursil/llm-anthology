@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 // `ui/`; only this test does, to reuse the treatment table that `ui/exportPanel.test.ts`
 // holds to `redact.shareable_thread`.
 import { SHAREABLE_TREATMENT } from "../ui/exportPanel";
-import type { ThreadNode } from "./types";
+import type { BuildParams, ThreadNode } from "./types";
 
 import {
   createMockIpc,
@@ -1764,23 +1764,62 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
       const unc = await mockIpc.createCorpus("\\\\evil.example\\share\\x.db")
         .catch((e: unknown) => e);
       expect(rpcErrorCode(unc)).toBe(RPC_INVALID_PARAMS);
-      expect(String((unc as Error).message)).toMatch(/index_path must not be a UNC path/);
+      expect(String((unc as Error).message))
+        .toContain("index_path must be a local path, not a UNC/network path");
       const relative = await mockIpc.createCorpus("anthology.db").catch((e: unknown) => e);
       expect(rpcErrorCode(relative)).toBe(RPC_INVALID_PARAMS);
+      expect(String((relative as Error).message))
+        .toContain("index_path must be an absolute local path");
       // The CLOBBER check (`CORPUS_EXISTS`) and the parent-directory check stay absent — both
       // genuinely need a filesystem this adapter does not have.
     });
+
+  it("spells the path refusals exactly as the engine does, template and all", async () => {
+    // The mock's guard said `must not be a UNC path: <value>` and `must be an absolute local
+    // path: <value>`; the engine says `must be a local path, not a UNC/network path` and
+    // `must be an absolute local path`, NEITHER with a value suffix
+    // (`llm_anthology/sidecar.py:606`, `:623`). A UI asserting on that text — or a reader
+    // matching a screenshot to the engine — was reading a string the engine never emits.
+    //
+    // Pinned against `sidecar.py?raw` rather than a hand-copied literal, so the engine
+    // rewording its template turns this red instead of letting the mock drift again.
+    expect(SIDECAR_PY).toContain('"%s must be a local path, not a UNC/network path" % label');
+    expect(SIDECAR_PY).toContain('"%s must be an absolute local path" % label');
+
+    const unc = await createMockIpc()
+      .corpusBuild({ sessions_root: "\\\\evil.example\\share" }).catch((e: unknown) => e);
+    expect((unc as Error).message).toBe(
+      'rpc error (id 0): {"code":-32602,"message":"sessions_root must be a local path, not a ' +
+        'UNC/network path"}',
+    );
+    const relative = await createMockIpc()
+      .corpusBuild({ grok_root: "relative/grok" }).catch((e: unknown) => e);
+    expect((relative as Error).message).toBe(
+      'rpc error (id 0): {"code":-32602,"message":"grok_root must be an absolute local path"}',
+    );
+  });
 
   it("corpus.build accepts the job and echoes whichever source root was named", async () => {
     const codex = await createMockIpc().corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
     // "running" reports ACCEPTED, not finished — build_status is the source of truth
     // (`sidecar.py:834-836`).
+    // ALL NINE source keys, unconditionally, unnamed ones empty — `reply.update` at
+    // `sidecar.py:1077` echoes every export key on top of the three roots whether or not it
+    // was named. MEASURED in-process: an export-only handle carries twelve keys with the
+    // eight unnamed sources empty. This asserted six keys, which is the shape that let the
+    // export half of the contract be invisible.
     expect(codex).toEqual({
       job_id: "mock-build-1",
       state: "running",
       sessions_root: "C:\\me\\.codex\\sessions",
       grok_root: "",
       claude_root: "",
+      chatgpt_export: "",
+      chatgpt_projects: "",
+      claude_export: "",
+      codex_export: "",
+      gemini_export: "",
+      gemini_harvest: "",
       started_ms: 1_700_000_000_000,
     });
     // A GROK-ONLY build reports the Grok root AS grok_root, and `sessions_root` EMPTY.
@@ -1795,24 +1834,148 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     const grokOnly = await createMockIpc().corpusBuild({ grok_root: "C:\\me\\grok" });
     expect(grokOnly.sessions_root).toBe("");
     expect(grokOnly.grok_root).toBe("C:\\me\\grok");
-    // With NEITHER root named the engine raises -32602 "name at least one source"
-    // (`sidecar.py:858-861`) — a pure params check needing no filesystem — and the mock now
+    // With NO source named at all the engine raises -32602 "name at least one source"
+    // (`sidecar.py:999-1004`) — a pure params check needing no filesystem — and the mock now
     // does too. Otherwise an empty build form succeeds in every dev run and fails only
     // against the engine.
     const none = await createMockIpc().corpusBuild({}).catch((e: unknown) => e);
     expect(rpcErrorCode(none)).toBe(RPC_INVALID_PARAMS);
-    expect(String((none as Error).message)).toMatch(/name at least one source/);
+    // FULL-STRING. The mock's sentence named only the three roots while the engine's names
+    // the four exports too, and `/name at least one source/` matched both — a prefix regex
+    // over a divergence that lives entirely in the tail.
+    expect((none as Error).message).toBe(
+      'rpc error (id 0): {"code":-32602,"message":"name at least one source: sessions_root ' +
+        '(Codex), grok_root (Grok Build), claude_root (Claude Code) and/or a downloaded ' +
+        'export (chatgpt_export, claude_export, codex_export, gemini_export)"}',
+    );
     // A named root is refused if UNC or relative, per root (`sidecar.py:865-871`). The
     // engine's `os.path.isdir` check is NOT reproduced — that one needs a real disk.
+    // FULL-STRING, not a prefix regex. `/sessions_root must not be a UNC path/` passed while
+    // the mock emitted a template the engine does not have, because a prefix match cannot see
+    // a wrong suffix — and both divergences here were in the suffix (an appended `: <value>`).
     const unc = await createMockIpc()
       .corpusBuild({ sessions_root: "\\\\evil.example\\share" }).catch((e: unknown) => e);
     expect(rpcErrorCode(unc)).toBe(RPC_INVALID_PARAMS);
-    expect(String((unc as Error).message)).toMatch(/sessions_root must not be a UNC path/);
+    expect((unc as Error).message).toBe(
+      'rpc error (id 0): {"code":-32602,"message":"sessions_root must be a local path, not a ' +
+        'UNC/network path"}',
+    );
     const grokRelative = await createMockIpc()
       .corpusBuild({ grok_root: "relative/grok" }).catch((e: unknown) => e);
     expect(rpcErrorCode(grokRelative)).toBe(RPC_INVALID_PARAMS);
-    expect(String((grokRelative as Error).message))
-      .toMatch(/grok_root must be an absolute local path/);
+    expect((grokRelative as Error).message).toBe(
+      'rpc error (id 0): {"code":-32602,"message":"grok_root must be an absolute local path"}',
+    );
+  });
+
+  it("accepts a DOWNLOADED EXPORT as a source on its own, and echoes it as itself",
+    async () => {
+      // The whole point of this unit. The engine has taken the six export params for a
+      // release (`_EXPORT_KEYS`, `sidecar.py:277`; read at `:995`, turned into specs at
+      // `:996-998`) and the mock refused them, so every dev run and preview said the app
+      // could not import an export while the engine could.
+      //
+      // MEASURED in-process against the real engine before this was written:
+      // `corpus.build{chatgpt_export}` alone -> accepted, `state: "done"`.
+      const handle = await createMockIpc()
+        .corpusBuild({ chatgpt_export: "C:\\me\\Downloads\\a\\conversations.json" });
+      expect(handle.chatgpt_export).toBe("C:\\me\\Downloads\\a\\conversations.json");
+      // Named as itself, and the roots stay EMPTY — an export is not a session store and
+      // reporting one in `sessions_root` would say "the Codex tree".
+      expect(handle.sessions_root).toBe("");
+      expect(handle.grok_root).toBe("");
+      expect(handle.claude_root).toBe("");
+      expect(handle.claude_export).toBe("");
+      expect(handle.chatgpt_projects).toBe("");
+      // Each of the other three primaries is equally sufficient alone.
+      for (const key of ["claude_export", "codex_export", "gemini_export"] as const) {
+        const only = await createMockIpc().corpusBuild({ [key]: "C:\\me\\x.json" });
+        expect(only[key]).toBe("C:\\me\\x.json");
+        expect(only.state).toBe("running");
+      }
+      // And the status poll reports the ingest it was started with.
+      const ipc = createMockIpc();
+      await ipc.corpusBuild({ gemini_export: "C:\\me\\transcript.json" });
+      expect((await ipc.corpusBuildStatus()).state).toBe("running");
+    });
+
+  it("counts only the four PRIMARY export paths toward at-least-one-source", async () => {
+    // `specs` is keyed on `<provider>_export` (`sidecar.py:996-998`), so a SECOND path with
+    // no primary beside it names no source at all. MEASURED: `{chatgpt_projects}` alone and
+    // `{gemini_harvest}` alone are each -32602 with the at-least-one-source text.
+    //
+    // This is why U-CA1 does not send either from the UI: discovery never reports one, and
+    // neither counts as a source, so a row offering "Import" for a projects file would fire
+    // an RPC the engine refuses.
+    for (const key of ["chatgpt_projects", "gemini_harvest"] as const) {
+      const err = await createMockIpc()
+        .corpusBuild({ [key]: "C:\\me\\projects.json" }).catch((e: unknown) => e);
+      expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
+      expect(String((err as Error).message)).toContain("name at least one source");
+    }
+    // ...but a second path RIDES a primary happily, and both are echoed.
+    const both = await createMockIpc().corpusBuild({
+      chatgpt_export: "C:\\me\\conversations.json",
+      chatgpt_projects: "C:\\me\\projects.json",
+    });
+    expect(both.chatgpt_projects).toBe("C:\\me\\projects.json");
+  });
+
+  it("path-guards all SIX export params, second paths included", async () => {
+    // `_reject_nonlocal_path` runs over `_EXPORT_KEYS` — every export key, not just the four
+    // primaries (`sidecar.py:1023-1027`). `gemini_harvest` is exempt from the EXISTENCE
+    // check (`_EXPORT_EXISTENCE_EXEMPT`, `sidecar.py:289`) and NOT from the path guard: a UNC
+    // harvest is an outbound SMB/NTLM vector whether or not the file is there.
+    //
+    // THE ORDER MATTERS AND WAS MEASURED, because both refusals are -32602 so the CODE cannot
+    // tell them apart. The first draft of this test asserted the UNC message for a BARE
+    // `chatgpt_projects`, and the engine answers the at-least-one-source refusal there
+    // instead: `specs` is empty, so the guard loop is never reached. A second path therefore
+    // needs a primary beside it for its own guard to be reachable at all — which is why the
+    // `pair` below is not decoration.
+    const pair: Record<string, BuildParams> = {
+      chatgpt_projects: { chatgpt_export: "C:\\me\\conversations.json" },
+      gemini_harvest: { gemini_export: "C:\\me\\transcript.json" },
+    };
+    const keys = ["chatgpt_export", "chatgpt_projects", "claude_export", "codex_export",
+      "gemini_export", "gemini_harvest"] as const;
+    for (const key of keys) {
+      const other = pair[key] ?? {};
+      const unc = await createMockIpc()
+        .corpusBuild({ ...other, [key]: "\\\\evil.example\\share\\x.json" })
+        .catch((e: unknown) => e);
+      expect(rpcErrorCode(unc)).toBe(RPC_INVALID_PARAMS);
+      expect((unc as Error).message).toBe(
+        `rpc error (id 0): {"code":-32602,"message":"${key} must be a local path, not a ` +
+          'UNC/network path"}',
+      );
+      const relative = await createMockIpc()
+        .corpusBuild({ ...other, [key]: "downloads/x.json" }).catch((e: unknown) => e);
+      expect((relative as Error).message).toBe(
+        `rpc error (id 0): {"code":-32602,"message":"${key} must be an absolute local path"}`,
+      );
+    }
+    // ...and the ordering itself, asserted rather than left implicit: a BARE second path is
+    // refused for naming NO SOURCE, not for its shape.
+    const bare = await createMockIpc()
+      .corpusBuild({ gemini_harvest: "\\\\evil.example\\share\\h.json" })
+      .catch((e: unknown) => e);
+    expect(String((bare as Error).message)).toContain("name at least one source");
+  });
+
+  it("keeps the mock's build refusal text identical to the engine's own literal", () => {
+    // Pinned against `sidecar.py?raw`, not a hand-copy: the engine rewording its refusal
+    // makes this red rather than letting the mock drift back to naming three roots. Asserted
+    // as the four adjacent Python literals, because the engine's sentence is line-wrapped in
+    // source and a single `toContain` of the joined form would never match.
+    for (const fragment of [
+      "name at least one source: sessions_root (Codex), ",
+      "grok_root (Grok Build), claude_root (Claude Code) and/or a ",
+      "downloaded export (chatgpt_export, claude_export, ",
+      "codex_export, gemini_export)",
+    ]) {
+      expect(SIDECAR_PY).toContain(fragment);
+    }
   });
 
   it("corpus.build_status reads back idle before any build", async () => {

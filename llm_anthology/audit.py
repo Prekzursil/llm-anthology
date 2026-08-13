@@ -8,7 +8,11 @@ import json
 
 from llm_anthology import sanitize
 
-_STR_KEYS = ("extracted_content", "file_name", "name", "integration_name")
+# "language" (code-fence info string) and "path" (media src/alt) are ATTRIBUTE
+# surfaces in the HTML view. They were absent here, so a payload hidden only in
+# one of them made the sidecar report the conversation CLEAN.
+_STR_KEYS = ("extracted_content", "file_name", "name", "integration_name",
+             "language", "path")
 _BLOB_KEYS = ("input", "content")
 
 

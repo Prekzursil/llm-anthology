@@ -549,6 +549,29 @@ export interface DiscoveryResult {
  * lax: the engine refuses when NO source at all is named (`sidecar.py:999-1004`), and omitting
  * `codex_home` means "no state graph" rather than "go find one", because defaulting it
  * would make the app read the user's live private store without being asked.
+ *
+ * NINE PARAMETERS, IN TWO FAMILIES, and this block used to enumerate only the first.
+ *
+ *   * THREE SESSION-STORE ROOTS — `sessions_root`, `grok_root`, `claude_root` — each a
+ *     directory the engine walks, plus `codex_home` for the Codex state graph.
+ *   * SIX DOWNLOADED-EXPORT PATHS — `chatgpt_export`, `chatgpt_projects`, `claude_export`,
+ *     `codex_export`, `gemini_export`, `gemini_harvest` — read from `_EXPORT_KEYS`
+ *     (`sidecar.py:277`) and turned into ingest specs at `sidecar.py:995-998`.
+ *
+ * The six were MISSING here while the engine had accepted them for a release, and the
+ * absence was not inert: `discoveryPanel` told users "this app cannot import a downloaded
+ * export yet", the mock's refusal text named only the three roots, and a green test pinned
+ * both. The engine's own note at `sidecar.py:265-267` says the seam was added precisely so
+ * the app could import an export; it was never propagated across this boundary. So the
+ * lesson worth keeping is narrow and mechanical: an RPC parity gate that compares method
+ * NAMES cannot see a missing PARAMETER, which is the level a whole capability hid at.
+ *
+ * MEASURED, not read off the source (in-process `dispatch`, synchronous build runner):
+ * `corpus.build{chatgpt_export}` alone is ACCEPTED and reaches `state: "done"`; each SECOND
+ * path alone — `{chatgpt_projects}` or `{gemini_harvest}` with nothing else — is refused
+ * -32602 with the at-least-one-source text, because `specs` is keyed on the PRIMARY
+ * `<provider>_export` (`sidecar.py:996-998`) and a second path with no primary names no
+ * source at all. A caller sending only a projects file has therefore named nothing.
  */
 export interface BuildParams {
   /**
@@ -582,6 +605,40 @@ export interface BuildParams {
    * real sessions; that fallback is gone and omission is now the safe choice.
    */
   codex_home?: string;
+  /**
+   * A downloaded ChatGPT account export — the `conversations.json` file itself, or the
+   * directory holding a sharded one. A FILE is honoured as given: the export guard is
+   * `os.path.exists`, deliberately NOT the roots' `isdir` (`sidecar.py:1018-1032`), because
+   * the single-file case is the one a user actually has.
+   *
+   * Opt-in like every other source, and enough ON ITS OWN — an export-only build names no
+   * root at all and is accepted.
+   */
+  chatgpt_export?: string;
+  /**
+   * The optional companion `projects.json` that groups a ChatGPT export.
+   *
+   * A SECOND path, never a source. `specs` is built from the PRIMARY key
+   * (`sidecar.py:996-998`), so this alone is refused -32602 — measured. Discovery does not
+   * report it either, so nothing in the cockpit sends it today.
+   */
+  chatgpt_projects?: string;
+  /** A downloaded Claude account export (`conversations.json`). Opt-in; sufficient alone. */
+  claude_export?: string;
+  /** A downloaded Codex task export. Opt-in; sufficient alone. */
+  codex_export?: string;
+  /** A Google Takeout "Gemini Apps" transcript. Opt-in; sufficient alone. */
+  gemini_export?: string;
+  /**
+   * The optional Gemini harvest file — a grouping HINT, not a corpus.
+   *
+   * The ONE path the engine does not existence-check (`_EXPORT_EXISTENCE_EXEMPT`,
+   * `sidecar.py:289`): a named-but-absent harvest is reported as an error and the ingest
+   * still falls back to provisional grouping, so hard-failing it would make a documented
+   * path unreachable. It IS still UNC-guarded. Like `chatgpt_projects`, it is a second path
+   * and is refused alone.
+   */
+  gemini_harvest?: string;
 }
 
 /** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:958-960`). */
@@ -589,16 +646,33 @@ export interface BuildHandle {
   job_id: string;
   state: string;
   /**
-   * All three roots, each echoed AS ITSELF, and each `""` when that source was not named
-   * — so a Grok-only build carries `sessions_root: ""` alongside a populated `grok_root`.
-   * MEASURED against the engine rather than assumed, because the mock previously
-   * collapsed them and reported a Grok path in `sessions_root`, which means "the Codex
-   * tree". Unlike {@link BuildStatus}, the start reply emits all three unconditionally;
-   * that asymmetry is the engine's.
+   * ALL NINE SOURCE KEYS — the three roots and the six export paths — each echoed AS ITSELF
+   * and each `""` when that source was not named, so a Grok-only build carries
+   * `sessions_root: ""` alongside a populated `grok_root`, and an export-only build carries
+   * both of those empty alongside a populated `chatgpt_export`.
+   *
+   * UNCONDITIONAL, and that is the load-bearing half. `reply.update(...)` at
+   * `sidecar.py:1077` writes every key of the export dict whether or not it was named, on
+   * top of the three roots — MEASURED: an export-only handle came back with all twelve keys
+   * (nine sources + `job_id`, `state`, `started_ms`), the eight unnamed sources empty.
+   * {@link BuildStatus} does the opposite and omits what was not named. That asymmetry is
+   * the ENGINE's, not a modelling choice here, and it is documented rather than smoothed
+   * over because a client that "helpfully" normalised the two would hide which surface it
+   * was actually reading.
+   *
+   * This said "all three roots" while the engine echoed nine keys. An echo exists exactly so
+   * an accepted-then-ignored parameter cannot be invisible (`sidecar.py:1074-1076` says so),
+   * and a type that omits six of them defeats that on the client side.
    */
   sessions_root: string;
   grok_root: string;
   claude_root: string;
+  chatgpt_export: string;
+  chatgpt_projects: string;
+  claude_export: string;
+  codex_export: string;
+  gemini_export: string;
+  gemini_harvest: string;
   started_ms: number;
 }
 
