@@ -662,7 +662,9 @@ pub fn diagnostics() -> &'static Arc<Diagnostics> {
 // reap + AppContainer network membrane + CREATE_NO_WINDOW) that backs
 // `SidecarClient::spawn` on Windows. Non-Windows falls back to `std::process`.
 #[cfg(windows)]
-mod hardened_spawn;
+pub(crate) mod hardened_spawn;
+#[cfg(windows)]
+pub(crate) mod provision;
 
 /// Perform ONE JSON-RPC 2.0 request/response round trip over an NDJSON stream pair.
 ///
@@ -731,8 +733,7 @@ fn jsonrpc_roundtrip_bounded(
     }
     // `read_line` would have done this validation implicitly, but on failure it leaves
     // the buffer unspecified AND the bytes consumed; doing it here names the fault.
-    let buf =
-        String::from_utf8(raw).map_err(|e| format!("response is not valid UTF-8: {e}"))?;
+    let buf = String::from_utf8(raw).map_err(|e| format!("response is not valid UTF-8: {e}"))?;
     let trimmed = buf.trim_end();
     let response: Value =
         serde_json::from_str(trimmed).map_err(|e| format!("parse response {trimmed:?}: {e}"))?;
@@ -820,6 +821,12 @@ pub struct SidecarClient {
     /// engine (the Job Object close is the hard guarantee).
     #[cfg(windows)]
     _reaper: hardened_spawn::Reaper,
+    /// Windows: the index-directory grants backing THIS engine's membrane —
+    /// revoke-at-close, by construction: dropping the client drops these, and field
+    /// order makes that happen AFTER `_reaper` has reaped the engine, so the ACEs
+    /// never disappear under a still-running process.
+    #[cfg(windows)]
+    _grants: Vec<hardened_spawn::ScopedGrant>,
     /// Non-Windows: the std child, reaped by [`SidecarClient`]'s `Drop`.
     #[cfg(not(windows))]
     _child: std::process::Child,
@@ -864,7 +871,10 @@ pub(crate) fn resolve_engine_in(exe_dir: &Path) -> ResolvedEngine {
             bundled: true,
         };
     }
-    ResolvedEngine { python: "python".to_string(), bundled: false }
+    ResolvedEngine {
+        python: "python".to_string(),
+        bundled: false,
+    }
 }
 
 /// The interpreter this process should spawn. Falls back to `python` if the executable's
@@ -874,7 +884,10 @@ fn engine_python() -> ResolvedEngine {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(resolve_engine_in))
-        .unwrap_or_else(|| ResolvedEngine { python: "python".to_string(), bundled: false })
+        .unwrap_or_else(|| ResolvedEngine {
+            python: "python".to_string(),
+            bundled: false,
+        })
 }
 
 /// Build the argv (everything after the interpreter) for a sidecar spawn.
@@ -936,16 +949,52 @@ pub(crate) fn sidecar_argv<'a>(bundled: bool, index_path: Option<&'a str>) -> Ve
     args
 }
 
+/// The scoped grants an index at `index_path` needs before the SANDBOXED engine can
+/// open it: none when it already lives under a provisioned grant root; otherwise
+/// modify on the file itself plus create-scope on its parent directory — SQLite
+/// writes the `-wal`/`-shm` sidecars NEXT TO the index even for read-only queries,
+/// because `corpus.open_index` sets `PRAGMA journal_mode=WAL` on connect. The grants
+/// are HELD by the returned client (grant-at-open, revoke-at-close/replace), and a
+/// failure is surfaced fail-fast rather than left to become an in-sandbox
+/// access-denied.
+#[cfg(windows)]
+fn index_grants(sid: &str, index_path: &str) -> Result<Vec<hardened_spawn::ScopedGrant>, String> {
+    use hardened_spawn::ScopedGrant;
+    let context = |e: String| format!("cannot grant the sandboxed engine its index: {e}");
+    let locations = crate::app_locations()
+        .map_err(|e| format!("cannot scope the index grant without the app locations: {e}"))?;
+    let index = Path::new(index_path);
+    if locations
+        .grant_roots()
+        .iter()
+        .any(|root| index.starts_with(root))
+    {
+        return Ok(Vec::new()); // covered since provisioning
+    }
+    let parent = index
+        .parent()
+        .ok_or_else(|| format!("index path {index_path} has no parent directory"))?;
+    let mut grants = vec![ScopedGrant::modify_dir(sid, parent).map_err(context)?];
+    if index.is_file() {
+        // A missing file is not an error HERE: `spawn_without_index`-created corpora
+        // arrive later via `open_corpus`, which validates existence first.
+        grants.push(ScopedGrant::modify_file(sid, index).map_err(context)?);
+    }
+    Ok(grants)
+}
+
 impl SidecarClient {
     /// Spawn `<engine-python> -m llm_anthology.sidecar --index <index_path>` with
     /// stdin/stdout/stderr piped, ready to answer JSON-RPC requests.
     ///
     /// Windows: raw `CreateProcessW` under a `KILL_ON_JOB_CLOSE` Job Object +
-    /// `CREATE_NO_WINDOW` — the reliable reap + no-window core. The AppContainer
-    /// network membrane is a first-class, tested spawn mode
-    /// (via `spawn_hardened` with `Membrane::AppContainer`); it is left opt-in HERE because a
-    /// sandboxed engine also needs its export DESTINATION granted to the package
-    /// SID, an export-lifecycle concern rather than a fixed spawn concern.
+    /// `CREATE_NO_WINDOW`, INSIDE the AppContainer network membrane
+    /// (`Membrane::AppContainer` — zero capabilities, so the WFP default rule
+    /// kernel-blocks outbound network). The grants that make a sandboxed engine
+    /// workable are split by lifetime: one-time provisioning
+    /// (`provision::ensure_provisioned` — interpreter tree + the app's grant
+    /// roots), per-open index grants held by this client (`index_grants`), and
+    /// per-call export/store grants managed by the command layer in `lib.rs`.
     pub fn spawn(index_path: &str) -> Result<Self, String> {
         Self::spawn_platform(Some(index_path))
     }
@@ -972,11 +1021,40 @@ impl SidecarClient {
 
     #[cfg(windows)]
     fn spawn_platform(index_path: Option<&str>) -> Result<Self, String> {
-        use hardened_spawn::{spawn_hardened, HardenedSpawn, SpawnOpts};
+        use hardened_spawn::{spawn_hardened, HardenedSpawn, Membrane, SpawnOpts};
         let engine = engine_python();
         let args = sidecar_argv(engine.bundled, index_path);
-        let HardenedSpawn { stdin, stdout, stderr, reaper } =
-            spawn_hardened(&engine.python, &args, &SpawnOpts::job_only())?;
+        // THE MEMBRANE FLIP. The corpus-attached engine (the long-lived one that
+        // reads the owner's archive) runs inside the AppContainer membrane: one-time
+        // provisioning covers the interpreter tree and the app's own roots, and an
+        // index at a NON-default location gets a scoped grant held for this client's
+        // lifetime (SQLite creates WAL sidecars beside the index even for reads).
+        //
+        // The index-LESS throwaway stays JobOnly, deliberately: it exists for
+        // `sources.discover` — which must scan well-known store locations
+        // (`~/.claude`, `%APPDATA%`, browser profiles...) that no fixed grant set can
+        // enumerate — and for `corpus.create` at a user-chosen path; it holds no
+        // corpus, lives for one call, and still gets the Job Object reap +
+        // CREATE_NO_WINDOW core.
+        let (opts, grants) = match index_path {
+            Some(index) => {
+                let sid = provision::ensure_provisioned(&engine)?;
+                (
+                    SpawnOpts {
+                        membrane: Membrane::AppContainer,
+                        kill_on_job_close: true,
+                    },
+                    index_grants(&sid, index)?,
+                )
+            }
+            None => (SpawnOpts::job_only(), Vec::new()),
+        };
+        let HardenedSpawn {
+            stdin,
+            stdout,
+            stderr,
+            reaper,
+        } = spawn_hardened(&engine.python, &args, &opts)?;
         // The drainer thread now OWNS the parent end of stderr: it keeps the handle
         // alive exactly as the old `_stderr` field did, and additionally keeps the pipe
         // from ever filling. See `drain_stderr` for why holding it un-read deadlocks.
@@ -985,6 +1063,7 @@ impl SidecarClient {
             stdin: Box::new(stdin),
             stdout: Box::new(BufReader::new(stdout)),
             _reaper: reaper,
+            _grants: grants,
             next_id: 1,
         })
     }
@@ -1002,7 +1081,9 @@ impl SidecarClient {
             // undrained pipe blocks the child once it fills. See `drain_stderr`.
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("failed to spawn sidecar (python -m llm_anthology.sidecar): {e}"))?;
+            .map_err(|e| {
+                format!("failed to spawn sidecar (python -m llm_anthology.sidecar): {e}")
+            })?;
         let stdin = child
             .stdin
             .take()
@@ -1046,10 +1127,10 @@ impl Drop for SidecarClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        diagnostics, drain_stderr, jsonrpc_roundtrip, jsonrpc_roundtrip_bounded,
-        open_crash_log, resolve_engine_in, scrub_line, sidecar_argv, CrashLog, Diagnostics,
-        PathScrubber, CRASH_FILE_MAX_BYTES, CRASH_FILE_NAME, CRASH_FILE_PREV_NAME,
-        MAX_PENDING_LINE_BYTES, STDERR_RING_BYTES,
+        diagnostics, drain_stderr, jsonrpc_roundtrip, jsonrpc_roundtrip_bounded, open_crash_log,
+        resolve_engine_in, scrub_line, sidecar_argv, CrashLog, Diagnostics, PathScrubber,
+        CRASH_FILE_MAX_BYTES, CRASH_FILE_NAME, CRASH_FILE_PREV_NAME, MAX_PENDING_LINE_BYTES,
+        STDERR_RING_BYTES,
     };
     use serde_json::{json, Value};
     use std::io::Cursor;
@@ -1072,8 +1153,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir()
-            .join(format!("llm_anthology_diag_{tag}_{}_{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "llm_anthology_diag_{tag}_{}_{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).expect("create the scratch dir");
         dir
     }
@@ -1412,7 +1495,10 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec![CRASH_FILE_NAME.to_string(), CRASH_FILE_PREV_NAME.to_string()],
+            vec![
+                CRASH_FILE_NAME.to_string(),
+                CRASH_FILE_PREV_NAME.to_string()
+            ],
             "two files and no more"
         );
 
@@ -1444,10 +1530,7 @@ mod tests {
         let log = open_crash_log(&dir).expect("second run");
         // Home is pointed AT the scratch dir so the relativization assertion below is
         // deterministic on both CI legs rather than depending on the real profile.
-        let sink = Diagnostics::new(
-            PathScrubber::new(dir.to_str(), Some("tester")),
-            Some(log),
-        );
+        let sink = Diagnostics::new(PathScrubber::new(dir.to_str(), Some("tester")), Some(log));
         sink.ingest(b"RuntimeError: boom\n");
 
         let bundle = sink.bundle();
@@ -1460,10 +1543,11 @@ mod tests {
             "bundle: {bundle}"
         );
         assert_eq!(bundle["engine_stderr_cap_bytes"], json!(STDERR_RING_BYTES));
-        assert_eq!(bundle["crash_file"]["cap_bytes"], json!(CRASH_FILE_MAX_BYTES));
-        let path = bundle["crash_file"]["path"]
-            .as_str()
-            .expect("a crash path");
+        assert_eq!(
+            bundle["crash_file"]["cap_bytes"],
+            json!(CRASH_FILE_MAX_BYTES)
+        );
+        let path = bundle["crash_file"]["path"].as_str().expect("a crash path");
         assert!(
             path.starts_with('~'),
             "the crash path must be home-relative: {path}"
@@ -1475,7 +1559,9 @@ mod tests {
             "the previous run's evidence is the whole point of the on-disk half: {bundle}"
         );
         assert!(
-            bundle["previous_run"]["bytes"].as_u64().is_some_and(|n| n > 0),
+            bundle["previous_run"]["bytes"]
+                .as_u64()
+                .is_some_and(|n| n > 0),
             "bundle: {bundle}"
         );
 
@@ -1659,9 +1745,8 @@ mod tests {
         line.push(b'\n');
         let mut written: Vec<u8> = Vec::new();
         let mut reader = Cursor::new(line);
-        let out =
-            jsonrpc_roundtrip_bounded(&mut written, &mut reader, 1, "h", &json!({}), CAP)
-                .expect("a line within the ceiling must parse");
+        let out = jsonrpc_roundtrip_bounded(&mut written, &mut reader, 1, "h", &json!({}), CAP)
+            .expect("a line within the ceiling must parse");
         assert_eq!(out, json!({ "ok": true }));
 
         // OVER the ceiling: the same shape, padded past it.
@@ -1700,7 +1785,10 @@ mod tests {
         let err = jsonrpc_roundtrip(&mut written, &mut reader, 42, "h", &json!({}))
             .expect_err("a null-id error envelope must map to Err");
         assert!(err.contains("Parse error"), "got: {err}");
-        assert!(!err.contains("mismatch"), "it must surface AS the error, not as: {err}");
+        assert!(
+            !err.contains("mismatch"),
+            "it must surface AS the error, not as: {err}"
+        );
 
         // RESULT + null id: refused. Accepting it hands the caller another request's
         // payload as though it were the answer to this one.
@@ -1734,11 +1822,16 @@ mod tests {
     #[test]
     fn engine_python_falls_back_to_path_when_nothing_is_bundled() {
         let dir = std::env::temp_dir().join(format!(
-            "llm_anthology_enginepy_none_{}", std::process::id()));
+            "llm_anthology_enginepy_none_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let resolved = resolve_engine_in(&dir);
         assert_eq!(resolved.python, "python");
-        assert!(!resolved.bundled, "PATH fallback is not a self-contained bundle");
+        assert!(
+            !resolved.bundled,
+            "PATH fallback is not a self-contained bundle"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1750,7 +1843,9 @@ mod tests {
     #[test]
     fn engine_python_prefers_a_bundled_interpreter() {
         let dir = std::env::temp_dir().join(format!(
-            "llm_anthology_enginepy_bundled_{}", std::process::id()));
+            "llm_anthology_enginepy_bundled_{}",
+            std::process::id()
+        ));
         let engine = dir.join("engine");
         std::fs::create_dir_all(&engine).unwrap();
         let exe = if cfg!(windows) {
@@ -1763,14 +1858,20 @@ mod tests {
         std::fs::write(&exe, b"stand-in").unwrap();
 
         let resolved = resolve_engine_in(&dir);
-        assert_ne!(resolved.python, "python", "a bundled interpreter must win over PATH");
+        assert_ne!(
+            resolved.python, "python",
+            "a bundled interpreter must win over PATH"
+        );
         assert_eq!(std::path::Path::new(&resolved.python), exe.as_path());
         // An absolute path is what hardened_spawn::resolve_program accepts directly
         // (it short-circuits the PATH walk for an absolute, existing file).
         assert!(std::path::Path::new(&resolved.python).is_absolute());
         // The kind drives isolation: a bundled interpreter MUST be flagged as such or it
         // ships with the weaker dev flag set and keeps the user-site hole open.
-        assert!(resolved.bundled, "a staged interpreter is the self-contained bundle");
+        assert!(
+            resolved.bundled,
+            "a staged interpreter is the self-contained bundle"
+        );
         assert_eq!(
             sidecar_argv(resolved.bundled, None).first().copied(),
             Some("-I"),
@@ -1784,7 +1885,9 @@ mod tests {
     #[test]
     fn engine_python_ignores_an_empty_engine_directory() {
         let dir = std::env::temp_dir().join(format!(
-            "llm_anthology_enginepy_empty_{}", std::process::id()));
+            "llm_anthology_enginepy_empty_{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(dir.join("engine")).unwrap();
         let resolved = resolve_engine_in(&dir);
         assert_eq!(resolved.python, "python");
@@ -1893,7 +1996,10 @@ mod tests {
                     );
                 }
             }
-            assert!(m >= 1, "at least one isolation flag must precede -m: {args:?}");
+            assert!(
+                m >= 1,
+                "at least one isolation flag must precede -m: {args:?}"
+            );
         }
     }
 
@@ -1947,7 +2053,8 @@ mod tests {
     #[test]
     fn roundtrip_frames_one_newline_terminated_line_and_returns_result() {
         let mut written: Vec<u8> = Vec::new();
-        let mut reader = Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n".to_vec());
+        let mut reader =
+            Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n".to_vec());
 
         let out = jsonrpc_roundtrip(&mut written, &mut reader, 1, "health.ping", &json!({}))
             .expect("happy-path round trip");
@@ -1955,7 +2062,10 @@ mod tests {
 
         // Framing: the request must be exactly ONE line, newline-terminated.
         let text = String::from_utf8(written).unwrap();
-        assert!(text.ends_with('\n'), "request must be newline-terminated: {text:?}");
+        assert!(
+            text.ends_with('\n'),
+            "request must be newline-terminated: {text:?}"
+        );
         assert_eq!(
             text.matches('\n').count(),
             1,
@@ -1979,7 +2089,8 @@ mod tests {
         jsonrpc_roundtrip(&mut written, &mut reader, 7, "graph.subtree", &params)
             .expect("round trip");
 
-        let sent: Value = serde_json::from_str(String::from_utf8(written).unwrap().trim_end()).unwrap();
+        let sent: Value =
+            serde_json::from_str(String::from_utf8(written).unwrap().trim_end()).unwrap();
         assert_eq!(sent["method"], "graph.subtree");
         assert_eq!(sent["params"], params);
     }
@@ -2038,10 +2149,22 @@ mod tests {
 
         // Two calls over the SAME buffers: each writes its own line and consumes
         // exactly one response line (proving the reader stops at the first `\n`).
-        let a = jsonrpc_roundtrip(&mut written, &mut reader, 1, "graph.roots", &json!({ "limit": 10 }))
-            .expect("first round trip");
-        let b = jsonrpc_roundtrip(&mut written, &mut reader, 2, "graph.roots", &json!({ "offset": 5 }))
-            .expect("second round trip");
+        let a = jsonrpc_roundtrip(
+            &mut written,
+            &mut reader,
+            1,
+            "graph.roots",
+            &json!({ "limit": 10 }),
+        )
+        .expect("first round trip");
+        let b = jsonrpc_roundtrip(
+            &mut written,
+            &mut reader,
+            2,
+            "graph.roots",
+            &json!({ "offset": 5 }),
+        )
+        .expect("second round trip");
         assert_eq!(a, json!(1));
         assert_eq!(b, json!(2));
 
@@ -2137,9 +2260,16 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let index = std::env::temp_dir().join(format!("anth_create_{stamp}.sqlite"));
+        // A per-test SUBDIR, not %TEMP% itself: the membrane spawn grants the
+        // index's parent dir to the sandbox and revokes on client drop, and a
+        // grant/revoke on the SHARED temp root would race parallel tests' engines.
+        let work = scratch_dir("create_corpus");
+        let index = work.join(format!("anth_create_{stamp}.sqlite"));
         let index_str = index.to_string_lossy().to_string();
-        assert!(!index.exists(), "precondition: the index must not exist yet");
+        assert!(
+            !index.exists(),
+            "precondition: the index must not exist yet"
+        );
 
         // 1. An engine with NO index must still start and answer.
         let mut engine = SidecarClient::spawn_without_index().expect("index-less spawn");
@@ -2191,7 +2321,7 @@ mod tests {
         );
         drop(opened);
 
-        let _ = std::fs::remove_file(&index);
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     /// END-TO-END over the REAL wire: build a SYNTHETIC corpus index with a committed
@@ -2227,8 +2357,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let index_path =
-            std::env::temp_dir().join(format!("llm_anthology_e2e_{}_{}.db", std::process::id(), nanos));
+        // A per-test SUBDIR, not %TEMP% itself — the membrane spawn's index grant is
+        // revoked on client drop, and revoking on the shared temp root would race
+        // parallel tests' engines.
+        let index_path = scratch_dir("e2e_roundtrip").join(format!(
+            "llm_anthology_e2e_{}_{}.db",
+            std::process::id(),
+            nanos
+        ));
 
         // Build the KNOWN synthetic corpus (3 convs / 3 threads / 2 edges / 1 root).
         let fixture = manifest
@@ -2253,26 +2389,45 @@ mod tests {
         let mut client = SidecarClient::spawn(index_str).expect("spawn real python sidecar");
 
         // 1) health.ping — the corpus IS attached, so corpus_ready must be true.
-        let health = client.call("health.ping", &json!({})).expect("health.ping call");
+        let health = client
+            .call("health.ping", &json!({}))
+            .expect("health.ping call");
         assert_eq!(health["ok"], json!(true), "health payload: {health}");
-        assert_eq!(health["corpus_ready"], json!(true), "corpus must be ready: {health}");
+        assert_eq!(
+            health["corpus_ready"],
+            json!(true),
+            "corpus must be ready: {health}"
+        );
         assert!(
-            health["engine_version"].as_str().is_some_and(|s| !s.is_empty()),
+            health["engine_version"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
             "engine_version must be a non-empty string: {health}"
         );
-        assert!(health["ir_version"].is_number(), "ir_version must be numeric: {health}");
+        assert!(
+            health["ir_version"].is_number(),
+            "ir_version must be numeric: {health}"
+        );
 
         // 2) corpus.stats — must equal the fixture's known aggregates.
-        let stats = client.call("corpus.stats", &json!({})).expect("corpus.stats call");
+        let stats = client
+            .call("corpus.stats", &json!({}))
+            .expect("corpus.stats call");
         assert_eq!(stats["conversations"], json!(3), "stats: {stats}");
         assert_eq!(stats["threads"], json!(3), "stats: {stats}");
         assert_eq!(stats["edges"], json!(2), "stats: {stats}");
-        assert_eq!(stats["records"], json!(6), "records = SUM(turn_count): {stats}");
+        assert_eq!(
+            stats["records"],
+            json!(6),
+            "records = SUM(turn_count): {stats}"
+        );
         assert_eq!(stats["providers"]["codex"], json!(2), "stats: {stats}");
         assert_eq!(stats["providers"]["claude"], json!(1), "stats: {stats}");
 
         // 3) graph.roots — exactly one root (root-a), fan-out 2, provider codex.
-        let roots = client.call("graph.roots", &json!({})).expect("graph.roots call");
+        let roots = client
+            .call("graph.roots", &json!({}))
+            .expect("graph.roots call");
         let arr = roots.as_array().expect("graph.roots returns an array");
         assert_eq!(arr.len(), 1, "exactly one root expected: {roots}");
         assert_eq!(arr[0]["id"], json!("root-a"), "roots: {roots}");
@@ -2281,7 +2436,9 @@ mod tests {
 
         // Dropping the client kills+reaps the process; then best-effort clean the temp.
         drop(client);
-        let _ = std::fs::remove_file(&index_path);
+        if let Some(dir) = index_path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     /// END-TO-END over the REAL wire for the Phase-3 TIME-TRAVEL + EXPORT surface: build
@@ -2318,8 +2475,16 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let index_path = std::env::temp_dir()
-            .join(format!("llm_anthology_e2e_tt_{}_{}.db", std::process::id(), nanos));
+        // Per-test SUBDIR for the same anti-race reason as `e2e_roundtrip...`: the
+        // membrane spawn's index grant covers (and is revoked with) this dir. The
+        // export below lands in the SAME dir, which is also the point: it proves a
+        // destination under the granted index dir needs no extra ceremony.
+        let work = scratch_dir("e2e_timetravel");
+        let index_path = work.join(format!(
+            "llm_anthology_e2e_tt_{}_{}.db",
+            std::process::id(),
+            nanos
+        ));
 
         let fixture = manifest
             .join("tests")
@@ -2363,14 +2528,26 @@ mod tests {
             .collect();
         assert_eq!(at_ids, vec!["child-b", "root-a"], "as-of 1100 nodes: {at}");
         assert_eq!(at_nodes[1]["id"], json!("root-a"), "at: {at}");
-        assert_eq!(at_nodes[1]["child_count"], json!(1), "root-a fan-out as-of 1100: {at}");
+        assert_eq!(
+            at_nodes[1]["child_count"],
+            json!(1),
+            "root-a fan-out as-of 1100: {at}"
+        );
         assert_eq!(at_nodes[1]["depth"], json!(0), "at: {at}");
         assert_eq!(at_nodes[0]["id"], json!("child-b"), "at: {at}");
         assert_eq!(at_nodes[0]["child_count"], json!(0), "at: {at}");
         assert_eq!(at_nodes[0]["depth"], json!(1), "at: {at}");
-        assert_eq!(at_nodes[0]["tokens"], json!(20), "child-b tokens survive the wire: {at}");
+        assert_eq!(
+            at_nodes[0]["tokens"],
+            json!(20),
+            "child-b tokens survive the wire: {at}"
+        );
         let at_edges = at["edges"].as_array().expect("graph.at edges array");
-        assert_eq!(at_edges.len(), 1, "only root-a->child-b is born as-of 1100: {at}");
+        assert_eq!(
+            at_edges.len(),
+            1,
+            "only root-a->child-b is born as-of 1100: {at}"
+        );
         assert_eq!(at_edges[0]["parent"], json!("root-a"), "at: {at}");
         assert_eq!(at_edges[0]["child"], json!("child-b"), "at: {at}");
         assert_eq!(at_edges[0]["status"], json!("completed"), "at: {at}");
@@ -2380,24 +2557,48 @@ mod tests {
         let rollup = client
             .call("graph.rollup", &json!({}))
             .expect("graph.rollup call");
-        assert_eq!(rollup["root-a"]["self_tokens"], json!(100), "rollup: {rollup}");
+        assert_eq!(
+            rollup["root-a"]["self_tokens"],
+            json!(100),
+            "rollup: {rollup}"
+        );
         assert_eq!(
             rollup["root-a"]["subtree_tokens"],
             json!(123),
             "root-a subtree sum = 100+20+3: {rollup}"
         );
-        assert_eq!(rollup["root-a"]["subtree_count"], json!(3), "rollup: {rollup}");
+        assert_eq!(
+            rollup["root-a"]["subtree_count"],
+            json!(3),
+            "rollup: {rollup}"
+        );
         assert_eq!(rollup["root-a"]["max_depth"], json!(1), "rollup: {rollup}");
-        assert_eq!(rollup["root-a"]["child_count"], json!(2), "rollup: {rollup}");
-        assert_eq!(rollup["child-b"]["subtree_tokens"], json!(20), "rollup: {rollup}");
-        assert_eq!(rollup["child-c"]["subtree_tokens"], json!(3), "rollup: {rollup}");
+        assert_eq!(
+            rollup["root-a"]["child_count"],
+            json!(2),
+            "rollup: {rollup}"
+        );
+        assert_eq!(
+            rollup["child-b"]["subtree_tokens"],
+            json!(20),
+            "rollup: {rollup}"
+        );
+        assert_eq!(
+            rollup["child-c"]["subtree_tokens"],
+            json!(3),
+            "rollup: {rollup}"
+        );
 
         // 4) graph.diff(as_of_a=1000, as_of_b=1100) — the time-travel DELTA: child-b was
         //    born (with its edge) between the two moments; nothing removed or changed.
         let diff = client
             .call("graph.diff", &json!({ "as_of_a": 1000, "as_of_b": 1100 }))
             .expect("graph.diff call");
-        assert_eq!(diff["added_nodes"], json!(["child-b"]), "diff delta: {diff}");
+        assert_eq!(
+            diff["added_nodes"],
+            json!(["child-b"]),
+            "diff delta: {diff}"
+        );
         assert_eq!(diff["removed_nodes"], json!([]), "diff: {diff}");
         assert_eq!(
             diff["added_edges"],
@@ -2420,13 +2621,21 @@ mod tests {
         // that predated the graph-only export contract; cross-checked against the
         // artifact the run writes, further down.)
         assert_eq!(plan["conversation_count"], json!(0), "plan: {plan}");
-        let plan_est_bytes = plan["est_bytes"].as_u64().expect("est_bytes must be numeric");
-        assert!(plan_est_bytes > 0, "graph-only est_bytes is a positive size: {plan}");
+        let plan_est_bytes = plan["est_bytes"]
+            .as_u64()
+            .expect("est_bytes must be numeric");
+        assert!(
+            plan_est_bytes > 0,
+            "graph-only est_bytes is a positive size: {plan}"
+        );
 
         // 6a) export.run POSITIVE — writes a real artifact to a temp path and passes both
         //     gates; the file lands on disk and its graph re-parses to the three threads.
-        let export_path = std::env::temp_dir()
-            .join(format!("llm_anthology_e2e_export_{}_{}.json", std::process::id(), nanos));
+        let export_path = work.join(format!(
+            "llm_anthology_e2e_export_{}_{}.json",
+            std::process::id(),
+            nanos
+        ));
         let export_str = export_path.to_str().expect("export path is valid UTF-8");
         let run = client
             .call("export.run", &json!({ "dest_path": export_str }))
@@ -2434,17 +2643,31 @@ mod tests {
         assert_eq!(run["ok"], json!(true), "export.run positive: {run}");
         assert_eq!(run["graph_gate"], json!(true), "export.run: {run}");
         assert_eq!(run["transcript_gate"], json!(true), "export.run: {run}");
-        assert_eq!(run["written_path"], json!(export_str), "written_path echoes dest: {run}");
+        assert_eq!(
+            run["written_path"],
+            json!(export_str),
+            "written_path echoes dest: {run}"
+        );
         assert!(
             export_path.exists(),
             "export.run must write the artifact to disk: {export_path:?}"
         );
         let artifact = std::fs::read_to_string(&export_path).expect("read export artifact");
         let doc: Value = serde_json::from_str(&artifact).expect("artifact is valid JSON");
-        assert_eq!(doc["llm_anthology_export_version"], json!(1), "artifact: {doc}");
-        assert_eq!(doc["conversations"], json!([]), "graph-only export bundles no transcripts");
+        assert_eq!(
+            doc["llm_anthology_export_version"],
+            json!(1),
+            "artifact: {doc}"
+        );
+        assert_eq!(
+            doc["conversations"],
+            json!([]),
+            "graph-only export bundles no transcripts"
+        );
         let graph: Value = serde_json::from_str(
-            doc["graph"].as_str().expect("artifact graph is a JSON string"),
+            doc["graph"]
+                .as_str()
+                .expect("artifact graph is a JSON string"),
         )
         .expect("artifact graph parses");
         // The dry-run est_bytes must equal the EXACT serialized-graph size the run
@@ -2474,15 +2697,17 @@ mod tests {
             rel.is_err(),
             "a relative dest_path must be rejected over the wire, got: {rel:?}"
         );
-        let unc = client.call("export.run", &json!({ "dest_path": r"\\evil\share\out.json" }));
+        let unc = client.call(
+            "export.run",
+            &json!({ "dest_path": r"\\evil\share\out.json" }),
+        );
         assert!(
             unc.is_err(),
             "a UNC dest_path must be rejected over the wire, got: {unc:?}"
         );
 
         drop(client);
-        let _ = std::fs::remove_file(&index_path);
-        let _ = std::fs::remove_file(&export_path);
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     // === Windows hardening proofs (raw CreateProcessW spawn) =====================
@@ -2527,8 +2752,8 @@ mod tests {
             membrane: Membrane::JobOnly,
             kill_on_job_close: false,
         };
-        let mut without_flag = spawn_hardened("python", &sleeper, &opts_off)
-            .expect("spawn sleeper under plain job");
+        let mut without_flag =
+            spawn_hardened("python", &sleeper, &opts_off).expect("spawn sleeper under plain job");
         assert!(
             !without_flag.reaper.wait_exit(500),
             "control child must be alive before the job handle closes"
@@ -2584,13 +2809,19 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let work = std::env::temp_dir()
-            .join(format!("llm_anthology_membrane_{}_{}", std::process::id(), nanos));
+        let work = std::env::temp_dir().join(format!(
+            "llm_anthology_membrane_{}_{}",
+            std::process::id(),
+            nanos
+        ));
         std::fs::create_dir_all(&work).expect("create membrane work dir");
         let index_path = work.join("index.db");
 
         // Build the KNOWN synthetic corpus (same fixture the e2e round-trip uses).
-        let fixture = manifest.join("tests").join("fixtures").join("build_synth_index.py");
+        let fixture = manifest
+            .join("tests")
+            .join("fixtures")
+            .join("build_synth_index.py");
         let built = Command::new("python")
             .arg(&fixture)
             .arg(&index_path)
@@ -2606,7 +2837,8 @@ mod tests {
         //     JUST the stdlib (NOT the ~120k-file site-packages — the sidecar is
         //     pure stdlib + llm_anthology), plus the llm_anthology tree, the repo root (traverse), and
         //     the dedicated work dir. Once (not per-spawn), so the test stays fast. ---
-        let sid = ensure_container_sid(Membrane::AppContainer).expect("ensure AppContainer profile");
+        let sid =
+            ensure_container_sid(Membrane::AppContainer).expect("ensure AppContainer profile");
         grant_stdlib_read(&sid, &python_home);
         grant_read(&sid, &llm_anthology_dir.to_string_lossy(), true);
         grant_read(&sid, &repo_root.to_string_lossy(), false);
@@ -2634,10 +2866,14 @@ mod tests {
         //     third-party packages the engine reaches and nothing else — so the membrane
         //     stays a meaningful assertion instead of becoming a blanket site-packages grant.
         //
-        //     Production never passed `-S` (see `spawn_platform`) and spawns with
-        //     `SpawnOpts::job_only()`, so nothing here changes the shipped app.
+        //     Production never passed `-S` (see `spawn_platform`). Corpus-attached
+        //     production spawns now use this same membrane (index-less creation spawns
+        //     stay JobOnly), so this test exercises the shipped configuration.
         {
-            let opts = SpawnOpts { membrane: Membrane::AppContainer, kill_on_job_close: true };
+            let opts = SpawnOpts {
+                membrane: Membrane::AppContainer,
+                kill_on_job_close: true,
+            };
             let mut sc = spawn_hardened(
                 "python",
                 &["-m", "llm_anthology.sidecar", "--index", index_str],
@@ -2646,29 +2882,47 @@ mod tests {
             .expect("spawn the real sidecar inside a regular AppContainer");
             // ONE persistent reader so pipe buffering carries across both calls.
             let mut reader = BufReader::new(sc.stdout);
-            let health = match jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 1, "health.ping", &json!({})) {
-                Ok(v) => v,
-                Err(e) => {
-                    let mut err = String::new();
-                    let _ = sc.stderr.read_to_string(&mut err);
-                    panic!(
+            let health =
+                match jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 1, "health.ping", &json!({})) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let mut err = String::new();
+                        let _ = sc.stderr.read_to_string(&mut err);
+                        panic!(
                         "sidecar failed health.ping INSIDE the AppContainer ({e}) — CPython could \
                          not run/answer over stdio in a regular AppContainer here.\n\
                          --- child stderr ---\n{err}\n--- end child stderr ---"
                     );
-                }
-            };
-            assert_eq!(health["ok"], json!(true), "health through membrane: {health}");
+                    }
+                };
+            assert_eq!(
+                health["ok"],
+                json!(true),
+                "health through membrane: {health}"
+            );
             assert_eq!(
                 health["corpus_ready"],
                 json!(true),
                 "corpus must be readable through the membrane: {health}"
             );
-            let stats = jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 2, "corpus.stats", &json!({}))
-                .expect("corpus.stats over stdio THROUGH the membrane");
-            assert_eq!(stats["conversations"], json!(3), "corpus read through membrane: {stats}");
-            assert_eq!(stats["threads"], json!(3), "corpus read through membrane: {stats}");
-            assert_eq!(stats["edges"], json!(2), "corpus read through membrane: {stats}");
+            let stats =
+                jsonrpc_roundtrip(&mut sc.stdin, &mut reader, 2, "corpus.stats", &json!({}))
+                    .expect("corpus.stats over stdio THROUGH the membrane");
+            assert_eq!(
+                stats["conversations"],
+                json!(3),
+                "corpus read through membrane: {stats}"
+            );
+            assert_eq!(
+                stats["threads"],
+                json!(3),
+                "corpus read through membrane: {stats}"
+            );
+            assert_eq!(
+                stats["edges"],
+                json!(2),
+                "corpus read through membrane: {stats}"
+            );
             // `reader` (stdout) then `sc` (stdin→EOF, stderr, reaper) drop here → reaped.
         }
 
@@ -2682,7 +2936,10 @@ mod tests {
         let port_str = port.to_string();
 
         let read_probe = |membrane: Membrane| -> String {
-            let opts = SpawnOpts { membrane, kill_on_job_close: true };
+            let opts = SpawnOpts {
+                membrane,
+                kill_on_job_close: true,
+            };
             let mut spawn = spawn_hardened("python", &["-S", &probe_path, &port_str], &opts)
                 .expect("spawn the socket probe");
             let mut out = String::new();
@@ -2714,96 +2971,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
-    /// Grant the AppContainer package `sid` read+execute on JUST the CPython
-    /// standard library (root binaries, DLLs, and every `Lib` child EXCEPT the
-    /// huge `site-packages` tree — the sidecar imports only stdlib + llm_anthology). This
-    /// keeps the AppContainer grant fast (~8k files, not ~130k).
+    // `grant_stdlib_read` (with its ENGINE_WHEELS companion) moved to
+    // `super::provision` when the membrane went from test-only to PRODUCTION: the
+    // provisioning path now owns it, and the membrane test exercises the very same
+    // code instead of a test-local copy that could drift.
     #[cfg(windows)]
-    fn grant_stdlib_read(sid: &str, python_home: &std::path::Path) {
-        use super::hardened_spawn::grant_read;
-        // The engine's third-party wheels are granted BEFORE the fast path, deliberately.
-        // The sentinel below is `python.exe`, which a PRIOR run already granted — so an
-        // early return here would skip the wheel grant forever on any machine that had run
-        // this test once, and the fix would be dead code that looks correct. It cost one
-        // red build to learn that; the grant is two directories, so doing it unconditionally
-        // is cheaper than a second sentinel that can drift out of step with ENGINE_WHEELS.
-        grant_engine_wheels(sid, &python_home.join("Lib").join("site-packages"));
-
-        // Fast path: grants persist for the FIXED container SID, so if a prior run
-        // (or a production installer) already granted the interpreter, skip the slow
-        // ~8k-file re-walk. `python.exe` is the sentinel.
-        let sentinel = python_home.join("python.exe");
-        if let Ok(o) = std::process::Command::new("icacls").arg(&sentinel).output() {
-            if String::from_utf8_lossy(&o.stdout).contains(sid) {
-                return;
-            }
-        }
-        let ph = python_home.to_string_lossy();
-        grant_read(sid, &format!("{ph}\\*"), false); // python.exe + *.dll + immediate folder objects
-        grant_read(sid, &format!("{ph}\\DLLs"), true); // native ext modules (_socket, _sqlite3, ...)
-        let lib = python_home.join("Lib");
-        grant_read(sid, &format!("{}\\*", lib.to_string_lossy()), false); // Lib top-level .py + folders
-        if let Ok(entries) = std::fs::read_dir(&lib) {
-            for e in entries.flatten() {
-                if e.file_name() == std::ffi::OsStr::new("site-packages") {
-                    grant_engine_wheels(sid, &e.path());
-                    continue;
-                }
-                if e.path().is_dir() {
-                    grant_read(sid, &e.path().to_string_lossy(), true);
-                }
-            }
-        }
-    }
-
-    /// The third-party packages the ENGINE'S IMPORT GRAPH reaches, and nothing else.
-    ///
-    /// WHY THIS EXISTS AT ALL. This helper's whole premise used to be "the sidecar is pure
-    /// stdlib + llm_anthology", which is why `site-packages` was skipped outright — granting
-    /// ~120k files would make the membrane meaningless as a statement about what the engine
-    /// may read. That premise was TRUE and is no longer: `07be166` put a top-level
-    /// `import ijson` on the ingest path and `0fc4463` added `from . import archive`, whose
-    /// `archive.py` does a top-level `import zstandard`. Both are now reachable from
-    /// `import llm_anthology.sidecar`, so a stdlib-only grant makes the engine unloadable.
-    ///
-    /// The narrow grant is the honest fix. The membrane exists to block EGRESS, not to block
-    /// dependencies — nothing here opens a network path, and naming two packages keeps the
-    /// grant a meaningful assertion instead of a blanket one.
-    ///
-    /// FAIL-CLOSED BY CONSTRUCTION: this list is not the source of truth for what the engine
-    /// needs — the membrane test is. If a future commit adds a third-party import the engine
-    /// reaches at module scope, that test goes RED with a `ModuleNotFoundError` naming the
-    /// package, and whoever added it decides deliberately whether it belongs in a sandboxed
-    /// engine. That is the same failure that surfaced ijson and zstandard, and it is why the
-    /// list should never be widened to a wildcard to make a red build go away.
-    #[cfg(windows)]
-    const ENGINE_WHEELS: &[&str] = &["ijson", "zstandard"];
-
-    /// Grant read on just {@link ENGINE_WHEELS} inside `site-packages`.
-    ///
-    /// Prefix-matched because a wheel ships more than its import name: `zstandard` carries a
-    /// native `backend_c` extension and `ijson` its `backends/` tree, and both sit under
-    /// directories whose names begin with the package name. Matching the prefix takes the
-    /// package and its siblings without taking the ~120k-file remainder.
-    #[cfg(windows)]
-    fn grant_engine_wheels(sid: &str, site_packages: &std::path::Path) {
-        use super::hardened_spawn::grant_read;
-        let Ok(entries) = std::fs::read_dir(site_packages) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if !ENGINE_WHEELS.iter().any(|w| name.starts_with(w)) {
-                continue;
-            }
-            if e.path().is_dir() {
-                grant_read(sid, &e.path().to_string_lossy(), true);
-            } else {
-                grant_read(sid, &e.path().to_string_lossy(), false);
-            }
-        }
-    }
+    use super::provision::grant_stdlib_read;
 
     /// The PATH directory holding `python.exe` — its interpreter home, which the
     /// AppContainer must be `icacls`-granted so the sandboxed engine can load CPython.
@@ -2841,4 +3014,220 @@ except Exception as e:
     sys.stdout.write("PROBE_ERR %r\n" % (e,))
 sys.stdout.flush()
 "#;
+
+    // === Membrane ACTIVATION (Option D): provisioning, scoped grants, live spawn ====
+
+    /// PROVISIONING IDEMPOTENCE. The interpreter-tree walk is the expensive half of
+    /// provisioning (~8k files), so it must run once per STAMP — not per spawn — and
+    /// a FAILED run must never be recorded as done: a marker over failed grants would
+    /// convert every later launch into the opaque in-sandbox access-denied the
+    /// fail-fast rule exists to prevent.
+    #[cfg(windows)]
+    #[test]
+    fn provisioning_runs_once_per_stamp_and_never_records_a_failure() {
+        use super::provision::provision_gate;
+        let dir = scratch_dir("provision_gate");
+        let marker = dir.join(".membrane-provisioned-v1");
+        let mut runs = 0;
+
+        let ran = provision_gate(&marker, "stamp-A", || {
+            runs += 1;
+            Ok(())
+        })
+        .expect("first provisioning");
+        assert!(ran, "a fresh marker path must run the grants");
+        assert_eq!(runs, 1);
+        assert!(marker.is_file(), "success must be recorded");
+
+        let ran = provision_gate(&marker, "stamp-A", || {
+            runs += 1;
+            Ok(())
+        })
+        .expect("second call");
+        assert!(!ran, "an unchanged stamp must SKIP the walk");
+        assert_eq!(runs, 1, "the grants must not have re-run");
+
+        let ran = provision_gate(&marker, "stamp-B", || {
+            runs += 1;
+            Ok(())
+        })
+        .expect("stamp change");
+        assert!(
+            ran,
+            "a changed stamp (new interpreter / recreated profile) must re-provision"
+        );
+        assert_eq!(runs, 2);
+
+        let recorded = std::fs::read_to_string(&marker).expect("read marker");
+        let failed = provision_gate(&marker, "stamp-C", || Err("icacls exploded".to_string()));
+        assert!(failed.is_err(), "a grant failure must surface, fail-fast");
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("re-read marker"),
+            recorded,
+            "a FAILED provisioning must not overwrite the marker"
+        );
+
+        let ran = provision_gate(&marker, "stamp-C", || {
+            runs += 1;
+            Ok(())
+        })
+        .expect("recovery");
+        assert!(ran, "after a failure the same stamp must try again");
+        assert_eq!(runs, 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SCOPED GRANT LIFECYCLE — the mechanism behind both the export lifecycle
+    /// (grant the destination, write, REVOKE — even when the write fails) and the
+    /// index lifecycle (grant at open, revoke at close/replace). Asserted against
+    /// the REAL ACL, both states, including the inherited copy a child created
+    /// under the grant carries: revoke-after-write must sweep that too, or the
+    /// artifact stays writable to the sandbox after the export finished.
+    #[cfg(windows)]
+    #[test]
+    fn scoped_grant_lands_on_the_acl_and_drop_revokes_it_including_children() {
+        use super::hardened_spawn::{ensure_container_sid, Membrane, ScopedGrant};
+        let sid = ensure_container_sid(Membrane::AppContainer).expect("membrane profile SID");
+        let dir = scratch_dir("scoped_grant");
+        let acl = |p: &std::path::Path| -> String {
+            let o = std::process::Command::new("icacls")
+                .arg(p)
+                .output()
+                .expect("icacls readback");
+            String::from_utf8_lossy(&o.stdout).to_string()
+        };
+        assert!(
+            !acl(&dir).contains(&sid),
+            "precondition: a fresh scratch dir carries no ACE for the membrane SID"
+        );
+
+        let grant = ScopedGrant::modify_dir(&sid, &dir).expect("grant the scratch dir");
+        assert!(
+            acl(&dir).contains(&sid),
+            "the grant must land on the directory ACL"
+        );
+
+        // A child created AFTER the grant inherits it — this is exactly what lets the
+        // sandboxed engine write a NEW export artifact (or WAL sidecar) in the dir.
+        let artifact = dir.join("artifact.json");
+        std::fs::write(&artifact, "x").expect("create a child under the grant");
+        assert!(
+            acl(&artifact).contains(&sid),
+            "a child created under the grant must inherit the ACE"
+        );
+
+        drop(grant);
+        assert!(
+            !acl(&dir).contains(&sid),
+            "drop must revoke the directory ACE"
+        );
+        assert!(
+            !acl(&artifact).contains(&sid),
+            "drop must sweep the INHERITED copy too — revoke-after-write must not \
+             leave the finished artifact writable to the sandbox"
+        );
+
+        // FAIL-FAST: a path that cannot take the grant is an ERROR the caller sees,
+        // never a silent no-op that surfaces later as in-sandbox access-denied.
+        assert!(
+            ScopedGrant::modify_dir(&sid, &dir.join("missing")).is_err(),
+            "granting a nonexistent path must fail loudly"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE ACTIVATION PROOF, BOTH STATES, from the child's own TOKEN — the kernel
+    /// truth, not the spawn options. `SidecarClient::spawn` (the production
+    /// corpus-attached path) must place the engine inside the fixed membrane
+    /// profile AND leave it functional against an index at a NON-DEFAULT location
+    /// (the index-dir grant at open is what makes that work: SQLite creates WAL
+    /// sidecars beside the index even for reads). The JobOnly control and the
+    /// index-less throwaway both show NO AppContainer SID — the throwaway stays
+    /// un-membraned deliberately, because `sources.discover` must scan well-known
+    /// store locations no fixed grant set can enumerate, and it holds no corpus.
+    #[cfg(windows)]
+    #[test]
+    fn production_spawn_places_the_engine_in_the_membrane_both_states() {
+        use super::hardened_spawn::{ensure_container_sid, spawn_hardened, Membrane, SpawnOpts};
+        use super::SidecarClient;
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        // Control 1: an explicit JobOnly spawn carries NO AppContainer SID.
+        let sleeper = ["-c", "import time; time.sleep(60)"];
+        let control = spawn_hardened("python", &sleeper, &SpawnOpts::job_only())
+            .expect("spawn JobOnly control");
+        assert_eq!(
+            control.reaper.appcontainer_sid(),
+            None,
+            "the JobOnly control must not be an AppContainer — otherwise the \
+             membrane assertion below proves nothing"
+        );
+        drop(control);
+
+        // Production spawn against a synthetic index in a PER-TEST subdir (a
+        // non-default location — %TEMP% is not under any grant root; a subdir so
+        // this test's revoke-on-drop cannot race a parallel test's engine).
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root two levels above crate")
+            .to_path_buf();
+        std::env::set_var("PYTHONPATH", &repo_root);
+        let work = scratch_dir("membrane_spawn");
+        let index_path = work.join("index.db");
+        let fixture = manifest
+            .join("tests")
+            .join("fixtures")
+            .join("build_synth_index.py");
+        let built = Command::new("python")
+            .arg(&fixture)
+            .arg(&index_path)
+            .output()
+            .expect("launch python to build the synth index");
+        assert!(
+            built.status.success(),
+            "synth index build failed: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+
+        let index_str = index_path.to_str().expect("index path is UTF-8");
+        let mut client = SidecarClient::spawn(index_str).expect("production spawn");
+        let sid = ensure_container_sid(Membrane::AppContainer).expect("membrane profile SID");
+        assert_eq!(
+            client._reaper.appcontainer_sid().as_deref(),
+            Some(sid.as_str()),
+            "spawn() must place the corpus-attached engine inside the FIXED membrane \
+             profile — this is the flip from SpawnOpts::job_only()"
+        );
+
+        // Functional through the membrane at the non-default index location: the
+        // corpus attaches (WAL sidecars land under the granted index dir).
+        let health = client
+            .call("health.ping", &json!({}))
+            .expect("health.ping through the membrane");
+        assert_eq!(health["ok"], json!(true), "health: {health}");
+        assert_eq!(
+            health["corpus_ready"],
+            json!(true),
+            "the index at a non-default location must attach through the membrane \
+             (the grant-at-open covers the WAL sidecars): {health}"
+        );
+
+        drop(client); // revoke-at-close: the index-dir grant drops with the client
+
+        // Control 2: the index-less THROWAWAY stays un-membraned (documented above).
+        let throwaway = SidecarClient::spawn_without_index().expect("throwaway spawn");
+        assert_eq!(
+            throwaway._reaper.appcontainer_sid(),
+            None,
+            "the index-less throwaway (sources.discover / corpus.create) deliberately \
+             stays JobOnly"
+        );
+
+        let _ = std::fs::remove_dir_all(&work);
+    }
 }

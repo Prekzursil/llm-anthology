@@ -42,6 +42,23 @@ wiring and the wording around it.
 - **Rendered HTML attribute surfaces (U-SEC2).** Hidden-unicode handling now covers
   attribute context, not just text nodes.
 
+### Security
+
+- **The AppContainer membrane is ON for corpus-attached engines.** The membrane existed,
+  was tested, and was never spawned: production used `SpawnOpts::job_only()`, so the
+  engine kept normal user network access. Corpus-attached spawns now run inside an
+  AppContainer with zero capabilities — the OS refuses outbound connections — and a test
+  probes the spawned process token for the AppContainer SID in both states, so the flip
+  cannot silently regress. What unblocked it is the filesystem side: a one-time,
+  marker-stamped provisioning pass grants the interpreter tree (read) and the app's
+  data/export roots (modify) to the package SID, and every path the engine touches
+  outside those roots — export destinations, custom index locations, `corpus.build`
+  source roots, maintenance archive roots — gets a scoped ACL grant that is revoked when
+  the call returns or the corpus closes (`ScopedGrant`, RAII). Grants on the load-bearing
+  roots fail fast with a named path instead of surfacing as an opaque access-denied from
+  inside the sandbox. The transient index-less engine used to create a new corpus file
+  stays Job-Object-only.
+
 ### Changed
 
 - **The cockpit CI job measures coverage (U-GATE1).** It ran `vitest run` with no

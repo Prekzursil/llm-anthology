@@ -12,7 +12,7 @@ in this repository. All examples in this document are synthetic.
 > Markdown out. Six adapters exist now, not the three named above — the other three read
 > live session stores (Codex, Grok, Claude Code) into the corpus index. The corpus and
 > desktop-app planes have their own posture (opt-in-never-defaulted store roots, the Job
-> Object confinement, the built-but-not-enabled AppContainer membrane, the path refusals in
+> Object confinement, the AppContainer membrane (active for corpus-attached engines), the path refusals in
 > gated maintenance and export, and the corpus-blind synthesis plane that no app button can
 > reach and that is slated for removal), and it is summarised in `README.md` under *Security
 > & privacy posture* rather than here. Absence from this document is not a claim of absence.

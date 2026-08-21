@@ -67,6 +67,109 @@ fn app_info() -> Value {
 #[derive(Default)]
 struct EngineState {
     client: Arc<Mutex<Option<SidecarClient>>>,
+    /// Windows: the HELD half of the per-call membrane grants — store roots a build
+    /// ingests from, maintenance roots, a restore manifest. Held HERE rather than
+    /// dropped at command return because the operations behind them OUTLIVE the
+    /// call: `corpus.build` returns a handle immediately while ingest continues on
+    /// a worker thread, and a `maintenance.plan`'s roots are what its later
+    /// `maintenance.execute` moves files under. Cleared — which revokes, via
+    /// `ScopedGrant::drop` — when the corpus session they belong to is replaced
+    /// (`open_corpus`). The EPHEMERAL half (an export destination) never lands
+    /// here; `forward_with_grants` drops it at return.
+    #[cfg(windows)]
+    session_grants: Arc<Mutex<Vec<sidecar::hardened_spawn::ScopedGrant>>>,
+}
+
+/// One directory the SANDBOXED engine must be granted before a forwarded call can
+/// succeed — the runtime (per-call) half of the membrane's grant set, next to the
+/// fixed half provisioned once from `AppLocations::grant_roots`.
+///
+/// Which shape applies is decided by what the engine DOES with the path:
+///   * `ModifyDirOf(file)` — `(OI)(CI)M` on the file's PARENT, no subtree walk. For a
+///     path the engine will CREATE (an export artifact): new children inherit the ACE,
+///     existing siblings stay untouched.
+///   * `ReadTree(dir)` / `ReadTreeOf(file)` — `(OI)(CI)RX` WITH the subtree walk,
+///     because the engine must read files that ALREADY exist (a session store it
+///     ingests; a manifest it restores from) and inheritance alone never reaches them.
+///   * `ModifyTree(dir)` — as above but writable: maintenance MOVES real files.
+#[derive(Debug, PartialEq, Eq)]
+enum PathGrantNeed {
+    ReadTree(PathBuf),
+    ReadTreeOf(PathBuf),
+    /// An archive the engine INGESTS: a file gets a single-object read, an
+    /// extracted directory gets the tree — resolved at apply time, because which
+    /// one it is lives on the filesystem, not in the params.
+    ReadTreeOrFile(PathBuf),
+    ModifyTree(PathBuf),
+    ModifyDirOf(PathBuf),
+    /// Another corpus index the engine will OPEN (`graph.diff` operands): modify on
+    /// the file plus create-scope on its parent, because `corpus.open_index` runs in
+    /// WAL mode and even a read-only SELECT materialises `-shm`/`-wal` sidecars.
+    IndexFile(PathBuf),
+}
+
+/// The per-call grant table: which of `params`' path-valued fields the engine will
+/// touch for `method`, and how. Everything else is a pure pass-through.
+///
+/// A candidate is SKIPPED (returns no need) when it is:
+///   * not a string, or empty — the engine will reject it with its own typed error;
+///   * RELATIVE — same, and there is nothing coherent to grant;
+///   * UNC-shaped — `icacls` against `\\host\...` is itself an outbound SMB touch,
+///     the exact hash-leak vector `reject_unc_spelling` exists to prevent, and the
+///     engine refuses UNC destinations anyway — so the grant layer must refuse to
+///     touch them FIRST;
+///   * already inside one of the provisioned `grant_roots` — covered since first run.
+fn path_grants_for(method: &str, params: &Value, grant_roots: &[PathBuf]) -> Vec<PathGrantNeed> {
+    use PathGrantNeed::{IndexFile, ModifyDirOf, ModifyTree, ReadTree, ReadTreeOf, ReadTreeOrFile};
+    type Wrap = fn(PathBuf) -> PathGrantNeed;
+    let keys: &[(&str, Wrap)] = match method {
+        "export.run" => &[("dest_path", ModifyDirOf as Wrap)],
+        // The store roots are all OPT-IN by explicit naming (the engine never
+        // defaults one — `~/.claude` is the owner's largest store), so per-call
+        // grants on exactly the named params cover the whole ingest surface.
+        "corpus.build" => &[
+            ("sessions_root", ReadTree as Wrap),
+            ("grok_root", ReadTree),
+            ("claude_root", ReadTree),
+            ("codex_home", ReadTree),
+            ("chatgpt_export", ReadTreeOrFile),
+            ("chatgpt_projects", ReadTreeOrFile),
+            ("claude_export", ReadTreeOrFile),
+            ("codex_export", ReadTreeOrFile),
+            ("gemini_export", ReadTreeOrFile),
+            ("gemini_harvest", ReadTreeOrFile),
+        ],
+        "dedup.scan" => &[("codex_home", ReadTree as Wrap)],
+        "maintenance.plan" => &[
+            ("store_root", ModifyTree as Wrap),
+            ("checkpoint_root", ModifyTree),
+            ("destination_root", ModifyTree),
+        ],
+        "maintenance.restore" => &[("manifest_path", ReadTreeOf as Wrap)],
+        "graph.diff" => &[("old_index", IndexFile as Wrap), ("new_index", IndexFile)],
+        _ => &[],
+    };
+    let mut needs = Vec::new();
+    for (key, wrap) in keys {
+        let Some(text) = params.get(*key).and_then(Value::as_str) else {
+            continue;
+        };
+        if text.is_empty() || text.replace('/', "\\").starts_with("\\\\") {
+            continue; // absent/empty, or UNC — see the doc above for why UNC never reaches icacls
+        }
+        let path = PathBuf::from(text);
+        if !path.is_absolute() {
+            continue;
+        }
+        if grant_roots.iter().any(|root| path.starts_with(root)) {
+            continue;
+        }
+        let need = wrap(path);
+        if !needs.contains(&need) {
+            needs.push(need);
+        }
+    }
+    needs
 }
 
 /// Forward one JSON-RPC call to the attached sidecar, or a typed error if none is
@@ -83,6 +186,122 @@ fn forward(state: &EngineState, method: &str, params: Value) -> Result<Value, St
         Some(client) => client.call(method, &params),
         None => Err("no corpus attached: call open_corpus first".to_string()),
     }
+}
+
+/// [`forward`], preceded by the per-call membrane grants the method needs and
+/// followed by the EPHEMERAL half of their revocation.
+///
+/// The export lifecycle lives in the drop at the end of this function: the
+/// destination's parent is granted just before the call and revoked right after it
+/// returns — on success, on gate refusal, and on any engine error alike — so the
+/// sandbox can write exactly one artifact exactly while the export runs. The HELD
+/// half (store roots and friends) is parked in [`EngineState::session_grants`]
+/// instead, because an async ingest outlives this stack frame; see that field.
+///
+/// On non-Windows this IS `forward`: the membrane is a Windows mechanism, and the
+/// grant table compiles (and is tested) everywhere so the ubuntu CI leg still
+/// checks the classification logic.
+fn forward_with_grants(state: &EngineState, method: &str, params: Value) -> Result<Value, String> {
+    #[cfg(windows)]
+    {
+        let params = if params.is_null() { json!({}) } else { params };
+        let ephemeral = apply_path_grants(state, method, &params)?;
+        let out = forward(state, method, params);
+        drop(ephemeral); // revoke-after-write, unconditionally
+        out
+    }
+    #[cfg(not(windows))]
+    forward(state, method, params)
+}
+
+/// Apply [`path_grants_for`]'s verdict: create the [`ScopedGrant`]s, park the held
+/// ones in the state, hand the ephemeral ones back to the caller. FAIL-FAST — any
+/// grant that does not land aborts the call with an error naming the path, before
+/// the engine gets a chance to hit an opaque in-sandbox access-denied. A partial
+/// batch cleans up after itself: the vectors drop on the error path, which revokes.
+#[cfg(windows)]
+fn apply_path_grants(
+    state: &EngineState,
+    method: &str,
+    params: &Value,
+) -> Result<Vec<sidecar::hardened_spawn::ScopedGrant>, String> {
+    use crate::sidecar::hardened_spawn::{ensure_container_sid, Membrane, ScopedGrant};
+    let locations = app_locations()
+        .map_err(|e| format!("cannot scope the membrane grants without the app locations: {e}"))?;
+    let roots: Vec<PathBuf> = locations
+        .grant_roots()
+        .iter()
+        .map(|p| p.to_path_buf())
+        .collect();
+    let needs = path_grants_for(method, params, &roots);
+    if needs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let context = |e: String| format!("the sandboxed engine could not be granted access: {e}");
+    let sid = ensure_container_sid(Membrane::AppContainer)?;
+    // Ephemeral = revoked when the command returns; held = parked for the session.
+    // The split is by METHOD: an export writes one artifact inside this call, and a
+    // diff operand's connection is closed before the reply — everything else backs
+    // an operation that outlives the call.
+    let call_scoped = matches!(method, "export.run" | "graph.diff");
+    let mut grants = Vec::new();
+    for need in needs {
+        match need {
+            PathGrantNeed::ModifyDirOf(file) => {
+                let parent = file
+                    .parent()
+                    .ok_or_else(|| format!("{} has no parent directory", file.display()))?;
+                // Created HERE because the sandbox cannot: outside the grant roots
+                // the engine has no right to make the destination folder itself.
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+                grants.push(ScopedGrant::modify_dir(&sid, parent).map_err(context)?);
+            }
+            PathGrantNeed::ReadTree(dir) => {
+                grants.push(ScopedGrant::read_tree(&sid, &dir).map_err(context)?);
+            }
+            PathGrantNeed::ReadTreeOf(file) => {
+                let parent = file
+                    .parent()
+                    .ok_or_else(|| format!("{} has no parent directory", file.display()))?;
+                grants.push(ScopedGrant::read_tree(&sid, parent).map_err(context)?);
+            }
+            PathGrantNeed::ReadTreeOrFile(path) => {
+                // File-vs-dir resolved against the filesystem; a path that is
+                // NEITHER is skipped so the engine's own typed existence error
+                // (not a grant error) is what the caller sees.
+                if path.is_dir() {
+                    grants.push(ScopedGrant::read_tree(&sid, &path).map_err(context)?);
+                } else if path.is_file() {
+                    grants.push(ScopedGrant::read_file(&sid, &path).map_err(context)?);
+                }
+            }
+            PathGrantNeed::ModifyTree(dir) => {
+                if dir.is_dir() {
+                    grants.push(ScopedGrant::modify_tree(&sid, &dir).map_err(context)?);
+                }
+            }
+            PathGrantNeed::IndexFile(file) => {
+                // Skipped when absent for the same reason as above: `graph.diff`
+                // refuses a missing operand with its own message.
+                if file.is_file() {
+                    if let Some(parent) = file.parent() {
+                        grants.push(ScopedGrant::modify_dir(&sid, parent).map_err(context)?);
+                    }
+                    grants.push(ScopedGrant::modify_file(&sid, &file).map_err(context)?);
+                }
+            }
+        }
+    }
+    if call_scoped {
+        return Ok(grants);
+    }
+    state
+        .session_grants
+        .lock()
+        .map_err(|_| "grants mutex poisoned".to_string())?
+        .extend(grants);
+    Ok(Vec::new())
 }
 
 /// Reject a UNC / network path spelling, judged on the path AS WRITTEN.
@@ -681,6 +900,17 @@ fn open_corpus(state: State<'_, EngineState>, index_path: String) -> Result<Valu
         .lock()
         .map_err(|_| "engine mutex poisoned".to_string())?;
     *guard = Some(client); // assigning here drops + reaps any previous client
+    drop(guard);
+    // The PREVIOUS session's held membrane grants (store roots an ingest read,
+    // maintenance roots) are revoked now that the engine they served is gone —
+    // AFTER the reap above, so an ACE never vanishes under a live process. The new
+    // client's own index grants ride inside it; these are only the per-call ones.
+    #[cfg(windows)]
+    state
+        .session_grants
+        .lock()
+        .map_err(|_| "grants mutex poisoned".to_string())?
+        .clear();
     Ok(json!({ "ok": true, "index": index_path }))
 }
 
@@ -724,7 +954,16 @@ fn discover_sources() -> Result<Value, String> {
 
 #[tauri::command]
 fn corpus_build(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "corpus.build", params.unwrap_or_else(|| json!({})))
+    // `forward_with_grants`: the named store roots (and export archives) must be
+    // readable to the SANDBOXED engine, and because the build is ASYNC — this call
+    // returns a handle while ingest continues on a worker thread — the grants are
+    // held in `EngineState::session_grants` rather than dropped at return. They are
+    // revoked when the corpus session is replaced (`open_corpus`).
+    forward_with_grants(
+        state.inner(),
+        "corpus.build",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 /// Poll an ingest. Safe to call before any build — the engine answers `{"state":"idle"}`
@@ -743,47 +982,83 @@ fn corpus_build_status(
 
 #[tauri::command]
 fn health_ping(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "health.ping", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "health.ping",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn corpus_stats(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "corpus.stats", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "corpus.stats",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_roots(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.roots", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.roots",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_children(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.children", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.children",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_subtree(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.subtree", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.subtree",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn search_query(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "search.query", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "search.query",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn thread_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "thread.get", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "thread.get",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_ancestors(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.ancestors", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.ancestors",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "conversation.get", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "conversation.get",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 /// The ordered conversation list — the browse pane's own source, independent of threads.
@@ -794,8 +1069,15 @@ fn conversation_get(state: State<'_, EngineState>, params: Option<Value>) -> Res
 /// and the app looked broken with a fully populated corpus behind it. An empty search query
 /// deliberately returns nothing, so there was no second way in either.
 #[tauri::command]
-fn conversation_list(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "conversation.list", params.unwrap_or_else(|| json!({})))
+fn conversation_list(
+    state: State<'_, EngineState>,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    forward(
+        state.inner(),
+        "conversation.list",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 // -- Phase-3 time-travel + export surface -------------------------------------------
@@ -804,32 +1086,63 @@ fn conversation_list(state: State<'_, EngineState>, params: Option<Value>) -> Re
 // TS `real.ts` adapter targets these command names.
 #[tauri::command]
 fn graph_rollup(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.rollup", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.rollup",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_timeline(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.timeline", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.timeline",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_at(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.at", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "graph.at",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn graph_diff(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "graph.diff", params.unwrap_or_else(|| json!({})))
+    // `forward_with_grants`: an `old_index`/`new_index` operand is a corpus the
+    // SANDBOXED engine must open (WAL sidecars included); the grants drop at return
+    // because `_diff_operand` closes the connection before replying.
+    forward_with_grants(
+        state.inner(),
+        "graph.diff",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn export_plan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "export.plan", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "export.plan",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "export.run", params.unwrap_or_else(|| json!({})))
+    // `forward_with_grants` is the export half of the membrane's lifecycle work: a
+    // `dest_path` outside the provisioned roots is granted to the sandbox for
+    // exactly the duration of this call and revoked on the way out — success,
+    // gate refusal and engine error alike.
+    forward_with_grants(
+        state.inner(),
+        "export.run",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 // -- dedup / maintenance / metadata / research ---------------------------------------
@@ -852,12 +1165,22 @@ fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
 
 #[tauri::command]
 fn dedup_scan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "dedup.scan", params.unwrap_or_else(|| json!({})))
+    // `forward_with_grants`: `codex_home` is a store the sandboxed engine reads;
+    // the grant is held for the corpus session (see `EngineState::session_grants`).
+    forward_with_grants(
+        state.inner(),
+        "dedup.scan",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn dedup_sessions(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "dedup.sessions", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "dedup.sessions",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 // THE DESTRUCTIVE PLANE. These four archive, quarantine and restore the owner's real
@@ -870,7 +1193,14 @@ fn dedup_sessions(state: State<'_, EngineState>, params: Option<Value>) -> Resul
 // each required field missing, which `_req_str` rejects, and `apply` absent means DRY RUN.
 #[tauri::command]
 fn maintenance_plan(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "maintenance.plan", params.unwrap_or_else(|| json!({})))
+    // `forward_with_grants`, HELD for the session: `plan` itself only previews, but
+    // the roots it names are what a later `maintenance.execute` (handle-only, so it
+    // can carry no grants of its own) moves real files under.
+    forward_with_grants(
+        state.inner(),
+        "maintenance.plan",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
@@ -890,7 +1220,11 @@ fn maintenance_restore(
     state: State<'_, EngineState>,
     params: Option<Value>,
 ) -> Result<Value, String> {
-    forward(
+    // `forward_with_grants`: the manifest's directory must be readable. The roots a
+    // restore MOVES files back under are the ones granted at `maintenance_plan`
+    // time (held for the session); a restore in a LATER session against roots
+    // outside the grant set surfaces the engine's own per-path refusal.
+    forward_with_grants(
         state.inner(),
         "maintenance.restore",
         params.unwrap_or_else(|| json!({})),
@@ -899,32 +1233,56 @@ fn maintenance_restore(
 
 #[tauri::command]
 fn maintenance_runs(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "maintenance.runs", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "maintenance.runs",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn metadata_get(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "metadata.get", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "metadata.get",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn metadata_set(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "metadata.set", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "metadata.set",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn metadata_clear(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "metadata.clear", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "metadata.clear",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn metadata_search(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "metadata.search", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "metadata.search",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 #[tauri::command]
 fn metadata_tags(state: State<'_, EngineState>, params: Option<Value>) -> Result<Value, String> {
-    forward(state.inner(), "metadata.tags", params.unwrap_or_else(|| json!({})))
+    forward(
+        state.inner(),
+        "metadata.tags",
+        params.unwrap_or_else(|| json!({})),
+    )
 }
 
 // `research.synthesize` and `research.extract_entities` are DELIBERATELY not wired, and
@@ -998,10 +1356,11 @@ mod tests {
     #[cfg(windows)]
     use super::drive_type_of;
     use super::{
-        app_info, app_locations_from, base_dirs_with, reject_remote_drive,
-        reject_unc_resolution, validate_index_path, validate_index_path_with, BaseDirs,
-        APP_DISPLAY_NAME, DRIVE_REMOTE, INDEX_FILE_NAME,
+        app_info, app_locations_from, base_dirs_with, reject_remote_drive, reject_unc_resolution,
+        validate_index_path, validate_index_path_with, BaseDirs, APP_DISPLAY_NAME, DRIVE_REMOTE,
+        INDEX_FILE_NAME,
     };
+    use serde_json::json;
     use std::path::{Path, PathBuf};
     // Used only by the POSIX leg; importing it unconditionally is an unused import
     // on Windows, which `-D warnings` correctly refuses.
@@ -1015,7 +1374,11 @@ mod tests {
     fn validate_index_path_accepts_a_real_file_and_rejects_everything_else() {
         // A file that certainly exists: this source file.
         let real = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
-        assert_eq!(validate_index_path(real), Ok(()), "an existing file must pass");
+        assert_eq!(
+            validate_index_path(real),
+            Ok(()),
+            "an existing file must pass"
+        );
 
         // A path that does not exist. Without the guard the engine would CREATE this as an
         // empty index and report corpus_ready = true.
@@ -1123,12 +1486,21 @@ mod tests {
     #[test]
     fn validate_index_path_refuses_the_remaining_network_and_device_spellings() {
         for (spelling, why) in [
-            ("///host/share/index.db", "3 slashes: the form a naive join produces"),
+            (
+                "///host/share/index.db",
+                "3 slashes: the form a naive join produces",
+            ),
             ("////host/share/index.db", "4 slashes"),
             (r"/\host\share\index.db", "mixed, leading forward slash"),
-            (r"\\.\C:\Windows\explorer.exe", "Win32 device namespace, local target"),
+            (
+                r"\\.\C:\Windows\explorer.exe",
+                "Win32 device namespace, local target",
+            ),
             (r"\\.\PhysicalDrive0", "raw device"),
-            (r"\\?\C:\Windows\explorer.exe", "verbatim local: legitimate, but not a spelling this app produces"),
+            (
+                r"\\?\C:\Windows\explorer.exe",
+                "verbatim local: legitimate, but not a spelling this app produces",
+            ),
             (r"\\", "the degenerate UNC prefix alone"),
         ] {
             let err = validate_index_path(spelling)
@@ -1307,7 +1679,10 @@ mod tests {
         // genuinely indistinguishable from a local path without reading the mount table.
         let resolving_to = |c: &str| Ok(std::path::PathBuf::from(c));
         assert_eq!(
-            reject_unc_resolution("/mnt/share/index.db", resolving_to(r"\\?\UNC\host\share\i.db")),
+            reject_unc_resolution(
+                "/mnt/share/index.db",
+                resolving_to(r"\\?\UNC\host\share\i.db")
+            ),
             Ok(()),
             "off Windows this guard cannot speak, and must not pretend to"
         );
@@ -1362,8 +1737,14 @@ mod tests {
         // this list went stale, which matters because the entry doubles as the record of a
         // deferred product decision. Deleting an entry is how you un-defer it.
         const DEFERRED: [(&str, &str); 2] = [
-            ("research.synthesize", "no LLM backend; MockBackend returns \"\""),
-            ("research.extract_entities", "no LLM backend; MockBackend returns \"\""),
+            (
+                "research.synthesize",
+                "no LLM backend; MockBackend returns \"\"",
+            ),
+            (
+                "research.extract_entities",
+                "no LLM backend; MockBackend returns \"\"",
+            ),
         ];
 
         let engine = std::fs::read_to_string(
@@ -1432,7 +1813,9 @@ mod tests {
         let start = me
             .find("tauri::generate_handler![")
             .expect("the invoke_handler list must be findable");
-        let end = me[start..].find("])").expect("the handler list must terminate");
+        let end = me[start..]
+            .find("])")
+            .expect("the handler list must terminate");
         let registered: Vec<&str> = me[start..start + end]
             .lines()
             .map(|l| l.trim().trim_end_matches(','))
@@ -1468,13 +1851,18 @@ mod tests {
                 if registered.contains(&command_for(rpc).as_str()) {
                     Some(format!("{rpc} is DEFERRED ({why}) but IS registered"))
                 } else if !methods.contains(rpc) {
-                    Some(format!("{rpc} is DEFERRED but the engine no longer serves it"))
+                    Some(format!(
+                        "{rpc} is DEFERRED but the engine no longer serves it"
+                    ))
                 } else {
                     None
                 }
             })
             .collect();
-        assert!(stale.is_empty(), "the DEFERRED list is out of date: {stale:#?}");
+        assert!(
+            stale.is_empty(),
+            "the DEFERRED list is out of date: {stale:#?}"
+        );
     }
 
     #[test]
@@ -1603,8 +1991,15 @@ mod tests {
             loc.index_path,
             loc.data_dir
         );
-        assert!(loc.logs_dir.starts_with(&loc.data_dir), "logs: {:?}", loc.logs_dir);
-        assert_eq!(loc.index_path.file_name().and_then(|n| n.to_str()), Some(INDEX_FILE_NAME));
+        assert!(
+            loc.logs_dir.starts_with(&loc.data_dir),
+            "logs: {:?}",
+            loc.logs_dir
+        );
+        assert_eq!(
+            loc.index_path.file_name().and_then(|n| n.to_str()),
+            Some(INDEX_FILE_NAME)
+        );
 
         // The data dir is derived from the LOCAL app-data base, not from Documents and
         // not from the profile root.
@@ -1633,9 +2028,15 @@ mod tests {
             );
             assert_eq!(loc.cache_dir, loc.data_dir.join("cache"));
         } else {
-            assert_eq!(loc.data_dir, PathBuf::from("/home/tester/.local/share/llm-anthology"));
+            assert_eq!(
+                loc.data_dir,
+                PathBuf::from("/home/tester/.local/share/llm-anthology")
+            );
             // XDG keeps the cache under its OWN root so a backup tool can skip it.
-            assert_eq!(loc.cache_dir, PathBuf::from("/home/tester/.cache/llm-anthology"));
+            assert_eq!(
+                loc.cache_dir,
+                PathBuf::from("/home/tester/.cache/llm-anthology")
+            );
             assert!(
                 !loc.cache_dir.starts_with(&loc.data_dir),
                 "on POSIX the cache must NOT be inside the data dir: {:?}",
@@ -1701,7 +2102,10 @@ mod tests {
     #[test]
     fn the_default_index_path_passes_every_pre_filesystem_guard_in_the_open_corpus_chain() {
         let loc = app_locations_from(&synthetic_base(), local_drive).expect("resolve");
-        let index = loc.index_path.to_str().expect("the default index path is UTF-8");
+        let index = loc
+            .index_path
+            .to_str()
+            .expect("the default index path is UTF-8");
 
         let err = validate_index_path_with(index, local_drive)
             .expect_err("the default index does not exist yet, so open must still refuse it");
@@ -1711,9 +2115,18 @@ mod tests {
              means a lexical guard rejected the default itself. Got: {err}"
         );
         // Named individually so a failure says which guard fired.
-        assert!(!err.contains("is a network path"), "default is UNC-shaped: {err}");
-        assert!(!err.contains("is not a full path"), "default is not absolute: {err}");
-        assert!(!err.contains("mapped network drive"), "default is on a remote drive: {err}");
+        assert!(
+            !err.contains("is a network path"),
+            "default is UNC-shaped: {err}"
+        );
+        assert!(
+            !err.contains("is not a full path"),
+            "default is not absolute: {err}"
+        );
+        assert!(
+            !err.contains("mapped network drive"),
+            "default is on a remote drive: {err}"
+        );
 
         // And the resolver REFUSES to hand back a default that the chain would reject,
         // rather than leaving that to be discovered at open time.
@@ -1820,7 +2233,13 @@ mod tests {
 
         // COVERAGE: every default path must be under some granted root, or a sandboxed
         // engine would fail to write it.
-        for path in [&loc.data_dir, &loc.index_path, &loc.logs_dir, &loc.cache_dir, &loc.exports_dir] {
+        for path in [
+            &loc.data_dir,
+            &loc.index_path,
+            &loc.logs_dir,
+            &loc.cache_dir,
+            &loc.exports_dir,
+        ] {
             assert!(
                 roots.iter().any(|root| path.starts_with(root)),
                 "{path:?} is not covered by any grant root: {roots:?}"
@@ -1840,9 +2259,181 @@ mod tests {
         // The COUNT is platform-specific and pinned, because "minimal" is only meaningful
         // against a known layout. Windows folds logs+cache inside the one %LOCALAPPDATA%
         // folder, so two roots suffice; XDG puts the cache under its own root, so three.
-        assert_eq!(roots.len(), if cfg!(windows) { 2 } else { 3 }, "roots: {roots:?}");
+        assert_eq!(
+            roots.len(),
+            if cfg!(windows) { 2 } else { 3 },
+            "roots: {roots:?}"
+        );
         assert!(roots.contains(&loc.data_dir.as_path()));
         assert!(roots.contains(&loc.exports_dir.as_path()));
+    }
+
+    /// THE PER-CALL GRANT TABLE — the runtime half of the membrane's grant set.
+    /// `grant_roots` (above) pins the fixed half; this pins which forwarded params
+    /// name paths the SANDBOXED engine will touch, with what access, and which
+    /// candidates the grant layer must REFUSE to touch at all (relative, UNC,
+    /// already-covered). A UNC skip is load-bearing security, not tidiness: an
+    /// `icacls \\host\...` is an outbound SMB connection to a caller-named host —
+    /// the same hash-leak vector `reject_unc_spelling` documents — so the grant
+    /// layer must never precede the engine's refusal with its own network touch.
+    #[test]
+    fn path_grants_cover_the_forwarded_write_surfaces_and_skip_unsafe_candidates() {
+        use super::{path_grants_for, PathGrantNeed};
+        let p = |s: &str| {
+            PathBuf::from(if cfg!(windows) {
+                format!("C:{}", s.replace('/', "\\"))
+            } else {
+                s.to_string()
+            })
+        };
+        let roots = vec![p("/app/data"), p("/docs/LLM Anthology")];
+
+        // export.run: the artifact's PARENT gets a create-scope grant...
+        let dest = p("/elsewhere/out.json");
+        assert_eq!(
+            path_grants_for(
+                "export.run",
+                &json!({ "dest_path": dest.to_str().unwrap() }),
+                &roots
+            ),
+            vec![PathGrantNeed::ModifyDirOf(dest.clone())]
+        );
+        // ...unless the destination is already inside a provisioned root,
+        assert_eq!(
+            path_grants_for(
+                "export.run",
+                &json!({ "dest_path": p("/docs/LLM Anthology/out.json").to_str().unwrap() }),
+                &roots
+            ),
+            vec![]
+        );
+        // or relative / UNC-shaped / absent — none of which may reach icacls.
+        for bad in [
+            json!({ "dest_path": "relative/out.json" }),
+            json!({ "dest_path": r"\\evil\share\out.json" }),
+            json!({ "dest_path": "//evil/share/out.json" }),
+            json!({ "dest_path": "" }),
+            json!({ "dest_path": 7 }),
+            json!({}),
+        ] {
+            assert_eq!(
+                path_grants_for("export.run", &bad, &roots),
+                vec![],
+                "bad: {bad}"
+            );
+        }
+
+        // corpus.build: every named store root becomes READABLE (ingest is a read),
+        // skipping the covered one; the async build outlives the command, so the
+        // caller HOLDS these until the corpus closes rather than dropping at return.
+        let sessions = p("/stores/codex-sessions");
+        let claude = p("/stores/claude");
+        let got = path_grants_for(
+            "corpus.build",
+            &json!({
+                "sessions_root": sessions.to_str().unwrap(),
+                "claude_root": claude.to_str().unwrap(),
+                "codex_home": p("/app/data/codex").to_str().unwrap(),
+            }),
+            &roots,
+        );
+        assert_eq!(
+            got,
+            vec![
+                PathGrantNeed::ReadTree(sessions.clone()),
+                PathGrantNeed::ReadTree(claude)
+            ]
+        );
+
+        // dedup reads the same store shape,
+        assert_eq!(
+            path_grants_for(
+                "dedup.scan",
+                &json!({ "codex_home": sessions.to_str().unwrap() }),
+                &roots
+            ),
+            vec![PathGrantNeed::ReadTree(sessions.clone())]
+        );
+        // and a DUPLICATE candidate collapses to one grant.
+        assert_eq!(
+            path_grants_for(
+                "corpus.build",
+                &json!({
+                    "sessions_root": sessions.to_str().unwrap(),
+                    "codex_home": sessions.to_str().unwrap(),
+                }),
+                &roots
+            ),
+            vec![PathGrantNeed::ReadTree(sessions.clone())]
+        );
+
+        // maintenance.plan names the three roots its EXECUTE will move files under.
+        let store = p("/stores/codex-sessions");
+        let checkpoint = p("/stores/checkpoints");
+        let dest_root = p("/stores/archive");
+        assert_eq!(
+            path_grants_for(
+                "maintenance.plan",
+                &json!({
+                    "store_root": store.to_str().unwrap(),
+                    "checkpoint_root": checkpoint.to_str().unwrap(),
+                    "destination_root": dest_root.to_str().unwrap(),
+                }),
+                &roots
+            ),
+            vec![
+                PathGrantNeed::ModifyTree(store),
+                PathGrantNeed::ModifyTree(checkpoint),
+                PathGrantNeed::ModifyTree(dest_root),
+            ]
+        );
+        // maintenance.restore reads a manifest that ALREADY exists.
+        let manifest = p("/stores/checkpoints/run-1/manifest.json");
+        assert_eq!(
+            path_grants_for(
+                "maintenance.restore",
+                &json!({ "manifest_path": manifest.to_str().unwrap() }),
+                &roots
+            ),
+            vec![PathGrantNeed::ReadTreeOf(manifest)]
+        );
+
+        // A downloaded export archive rides along on corpus.build — file-vs-dir is a
+        // filesystem fact, so the table defers it (ReadTreeOrFile) to apply time.
+        let archive = p("/downloads/chatgpt-export.zip");
+        assert_eq!(
+            path_grants_for(
+                "corpus.build",
+                &json!({ "chatgpt_export": archive.to_str().unwrap() }),
+                &roots
+            ),
+            vec![PathGrantNeed::ReadTreeOrFile(archive.clone())]
+        );
+
+        // graph.diff operands are corpus OPENS (WAL sidecars beside the file), and a
+        // covered operand is skipped like any other candidate.
+        let old_index = p("/elsewhere/old.sqlite");
+        assert_eq!(
+            path_grants_for(
+                "graph.diff",
+                &json!({
+                    "old_index": old_index.to_str().unwrap(),
+                    "new_index": p("/app/data/anthology.sqlite").to_str().unwrap(),
+                }),
+                &roots
+            ),
+            vec![PathGrantNeed::IndexFile(old_index)]
+        );
+
+        // A method with no path-valued params grants nothing.
+        assert_eq!(
+            path_grants_for(
+                "graph.roots",
+                &json!({ "dest_path": dest.to_str().unwrap() }),
+                &roots
+            ),
+            vec![]
+        );
     }
 
     /// The ENVIRONMENT half, on Windows. Injected `var` lookup rather than
@@ -1867,7 +2458,10 @@ mod tests {
             ("USERPROFILE", r"C:\Users\tester"),
         ]))
         .expect("a normal Windows environment must resolve");
-        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+        assert_eq!(
+            base.local_data,
+            PathBuf::from(r"C:\Users\tester\AppData\Local")
+        );
         assert_eq!(base.documents, PathBuf::from(r"C:\Users\tester\Documents"));
 
         // 2. %LOCALAPPDATA% ABSENT — the case that produces the defect. %APPDATA% is
@@ -1878,9 +2472,16 @@ mod tests {
             ("USERPROFILE", r"C:\Users\tester"),
         ]))
         .expect("USERPROFILE alone must be enough");
-        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+        assert_eq!(
+            base.local_data,
+            PathBuf::from(r"C:\Users\tester\AppData\Local")
+        );
         assert!(
-            !base.local_data.to_string_lossy().to_lowercase().contains("roaming"),
+            !base
+                .local_data
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("roaming"),
             "APPDATA (Roaming) must never become the app-data base: {:?}",
             base.local_data
         );
@@ -1892,12 +2493,18 @@ mod tests {
             ("USERPROFILE", r"C:\Users\tester"),
         ]))
         .expect("a blank LOCALAPPDATA must fall back, not be used");
-        assert_eq!(base.local_data, PathBuf::from(r"C:\Users\tester\AppData\Local"));
+        assert_eq!(
+            base.local_data,
+            PathBuf::from(r"C:\Users\tester\AppData\Local")
+        );
 
         // 4. Nothing to go on: fail LOUDLY rather than invent a relative default.
         let err = base_dirs_with(env(&[("APPDATA", r"C:\Users\tester\AppData\Roaming")]))
             .expect_err("with no LOCALAPPDATA and no USERPROFILE there is no honest answer");
-        assert!(err.contains("LOCALAPPDATA"), "the error must name what is missing: {err}");
+        assert!(
+            err.contains("LOCALAPPDATA"),
+            "the error must name what is missing: {err}"
+        );
     }
 
     /// The ENVIRONMENT half, on POSIX — the real counterpart, not a skipped test.
@@ -1946,7 +2553,10 @@ mod tests {
         // 4. No HOME: fail loudly rather than resolve to a relative default.
         let err = base_dirs_with(env(&[("XDG_DATA_HOME", "/data/tester")]))
             .expect_err("without HOME there is no honest answer for Documents");
-        assert!(err.contains("HOME"), "the error must name what is missing: {err}");
+        assert!(
+            err.contains("HOME"),
+            "the error must name what is missing: {err}"
+        );
     }
 
     /// The resolution is REACHABLE, and reachable against the REAL environment — which
@@ -1967,9 +2577,18 @@ mod tests {
         match info["locations"].as_object() {
             Some(loc) => {
                 assert!(info["locations_error"].is_null(), "{info}");
-                for key in ["data_dir", "index_path", "logs_dir", "cache_dir", "exports_dir"] {
+                for key in [
+                    "data_dir",
+                    "index_path",
+                    "logs_dir",
+                    "cache_dir",
+                    "exports_dir",
+                ] {
                     let value = loc.get(key).and_then(|v| v.as_str()).unwrap_or_default();
-                    assert!(!value.is_empty(), "{key} must be a non-empty string: {info}");
+                    assert!(
+                        !value.is_empty(),
+                        "{key} must be a non-empty string: {info}"
+                    );
                     assert!(
                         Path::new(value).is_absolute(),
                         "{key} must be absolute on this platform, got {value:?}"
@@ -1985,10 +2604,136 @@ mod tests {
             None => {
                 assert!(info["locations"].is_null(), "{info}");
                 assert!(
-                    info["locations_error"].as_str().is_some_and(|e| !e.is_empty()),
+                    info["locations_error"]
+                        .as_str()
+                        .is_some_and(|e| !e.is_empty()),
                     "a failed resolution must carry a reason: {info}"
                 );
             }
+        }
+    }
+
+    /// THE EXPORT LIFECYCLE THROUGH THE COMMAND LAYER, both halves, against the
+    /// real ACLs and a real sandboxed engine.
+    ///
+    /// POSITIVE: with a corpus attached, `forward_with_grants("export.run", ...)`
+    /// to a destination OUTSIDE every grant root succeeds — the lazy scoped grant
+    /// is the only thing that lets the membraned engine write there — and after
+    /// the call returns, neither the destination directory NOR the artifact it
+    /// just wrote carries an ACE for the membrane SID (revoke-after-write, swept
+    /// inherited copies included).
+    ///
+    /// FAILURE PATH: when the forwarded call fails (here: no corpus attached — one
+    /// concrete member of the gate-refusal/engine-error family the drop covers
+    /// unconditionally), the revoke still happens and nothing leaks.
+    #[cfg(windows)]
+    #[test]
+    fn export_grants_are_revoked_after_the_call_on_success_and_on_failure() {
+        use super::{forward_with_grants, EngineState};
+        use crate::sidecar::SidecarClient;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let scratch = |tag: &str| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "llm_anthology_grant_{tag}_{}_{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            dir
+        };
+        let acl = |p: &Path| -> String {
+            let o = Command::new("icacls")
+                .arg(p)
+                .output()
+                .expect("icacls readback");
+            String::from_utf8_lossy(&o.stdout).to_string()
+        };
+        let sid = crate::sidecar::hardened_spawn::ensure_container_sid(
+            crate::sidecar::hardened_spawn::Membrane::AppContainer,
+        )
+        .expect("membrane profile SID");
+
+        // A real corpus, in its own granted-with-the-client subdir.
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root two levels above the crate")
+            .to_path_buf();
+        std::env::set_var("PYTHONPATH", &repo_root);
+        let corpus_dir = scratch("corpus");
+        let index_path = corpus_dir.join("index.db");
+        let fixture = manifest
+            .join("tests")
+            .join("fixtures")
+            .join("build_synth_index.py");
+        let built = Command::new("python")
+            .arg(&fixture)
+            .arg(&index_path)
+            .output()
+            .expect("launch python to build the synth index");
+        assert!(
+            built.status.success(),
+            "synth index build failed: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let client =
+            SidecarClient::spawn(index_path.to_str().expect("utf-8 index path")).expect("spawn");
+        let state = EngineState::default();
+        *state.client.lock().expect("fresh mutex") = Some(client);
+
+        // POSITIVE HALF. The destination dir is fresh and ungranted — under the
+        // membrane, only the per-call grant can make this write succeed.
+        let dest_dir = scratch("dest");
+        assert!(
+            !acl(&dest_dir).contains(&sid),
+            "precondition: the destination dir must start with no membrane ACE"
+        );
+        let dest = dest_dir.join("artifact.json");
+        let out = forward_with_grants(
+            &state,
+            "export.run",
+            json!({ "dest_path": dest.to_str().expect("utf-8 dest") }),
+        )
+        .expect("export.run through the membrane to an outside-root destination");
+        assert_eq!(out["ok"], json!(true), "export must pass both gates: {out}");
+        assert!(dest.is_file(), "the artifact must actually be on disk");
+        assert!(
+            !acl(&dest_dir).contains(&sid),
+            "the destination dir ACE must be revoked once the call returns"
+        );
+        assert!(
+            !acl(&dest).contains(&sid),
+            "the artifact's inherited ACE copy must be swept too"
+        );
+
+        // FAILURE HALF: no corpus attached — the grant is applied, the forward
+        // fails, and the revoke still runs on the way out.
+        let empty = EngineState::default();
+        let orphan_dir = scratch("orphan");
+        let orphan = orphan_dir.join("never-written.json");
+        let refused = forward_with_grants(
+            &empty,
+            "export.run",
+            json!({ "dest_path": orphan.to_str().expect("utf-8 dest") }),
+        );
+        assert!(
+            refused.is_err(),
+            "no corpus attached must refuse the export"
+        );
+        assert!(
+            !acl(&orphan_dir).contains(&sid),
+            "a FAILED call must revoke its grant too — the failure path must not leak"
+        );
+
+        drop(state);
+        for dir in [corpus_dir, dest_dir, orphan_dir] {
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

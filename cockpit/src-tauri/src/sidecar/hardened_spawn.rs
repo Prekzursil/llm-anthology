@@ -52,9 +52,9 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, STARTUPINFOEXW,
+    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, ResumeThread,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, STARTUPINFOEXW,
 };
 
 // --- flags/consts defined locally so this module never depends on a specific
@@ -121,7 +121,10 @@ pub(crate) struct SpawnOpts {
 
 impl SpawnOpts {
     pub fn job_only() -> Self {
-        SpawnOpts { membrane: Membrane::JobOnly, kill_on_job_close: true }
+        SpawnOpts {
+            membrane: Membrane::JobOnly,
+            kill_on_job_close: true,
+        }
     }
 }
 
@@ -171,13 +174,67 @@ impl Reaper {
     /// True iff the child has exited within `timeout_ms`.
     #[cfg(test)]
     pub(crate) fn wait_exit(&self, timeout_ms: u32) -> bool {
-        unsafe { WaitForSingleObject(self.process.as_raw_handle() as _, timeout_ms) == WAIT_OBJECT_0 }
+        unsafe {
+            WaitForSingleObject(self.process.as_raw_handle() as _, timeout_ms) == WAIT_OBJECT_0
+        }
     }
     /// Close the job handle NOW (drops it). This reproduces exactly what the OS
     /// does to the app's job handle when the app process dies abruptly.
     #[cfg(test)]
     pub(crate) fn close_job(&mut self) {
         self.job = None;
+    }
+
+    /// The AppContainer package SID of the CHILD's token, or `None` when the child
+    /// runs un-sandboxed. This is the direct, kernel-truth probe the both-states
+    /// spawn test uses: a membrane claim is only proven by the token the child
+    /// actually received, not by which options the spawn call was handed.
+    #[cfg(test)]
+    pub(crate) fn appcontainer_sid(&self) -> Option<String> {
+        use windows_sys::Win32::Security::GetTokenInformation;
+        use windows_sys::Win32::System::Threading::OpenProcessToken;
+        // Local consts, per this module's convention (functions/structs only from
+        // windows-sys): TOKEN_QUERY access right; TokenAppContainerSid info class.
+        const TOKEN_QUERY: u32 = 0x0008;
+        const TOKEN_APPCONTAINER_SID_CLASS: i32 = 31;
+        unsafe {
+            let mut token: windows_sys::Win32::Foundation::HANDLE = null_mut();
+            if OpenProcessToken(self.process.as_raw_handle() as _, TOKEN_QUERY, &mut token) == 0 {
+                return None;
+            }
+            let token = OwnedHandle::from_raw_handle(token as RawHandle);
+            // TOKEN_APPCONTAINER_INFORMATION is one PSID — but like every
+            // SID-returning token class, the buffer must ALSO hold the SID bytes the
+            // pointer refers to, so this is the standard two-call size-then-fetch.
+            let mut needed: u32 = 0;
+            GetTokenInformation(
+                token.as_raw_handle() as _,
+                TOKEN_APPCONTAINER_SID_CLASS,
+                null_mut(),
+                0,
+                &mut needed,
+            );
+            if needed == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; needed as usize];
+            if GetTokenInformation(
+                token.as_raw_handle() as _,
+                TOKEN_APPCONTAINER_SID_CLASS,
+                buf.as_mut_ptr() as *mut c_void,
+                needed,
+                &mut needed,
+            ) == 0
+            {
+                return None;
+            }
+            // First pointer-size bytes are the PSID, pointing into `buf`.
+            let psid = *(buf.as_ptr() as *const *mut c_void);
+            if psid.is_null() {
+                return None;
+            }
+            sid_to_string(psid).ok()
+        }
     }
 }
 
@@ -426,6 +483,146 @@ fn icacls_grant(sid_string: &str, path: &str, perms: &str, tree: bool) {
     }
 }
 
+// ------------------------------------------------------- scoped (revocable) grants
+
+/// Run one prepared `icacls` invocation and RETURN its failure — the fallible core
+/// under [`ScopedGrant`] and the provisioning grants that must fail FAST (an export
+/// destination, an index directory, the app's own grant roots), where "the grant did
+/// not land" has to surface as a clear command error instead of an opaque
+/// access-denied inside the sandboxed engine. The big interpreter-tree walks stay on
+/// the best-effort [`grant_read`]/[`grant_modify`] deliberately: one locked file in a
+/// ~8k-file walk is survivable there, and the launch that follows is the real proof.
+fn run_icacls(mut cmd: std::process::Command, what: &str) -> Result<(), String> {
+    // `icacls` is a console tool and the app is a windowed process: without
+    // CREATE_NO_WINDOW every runtime grant would flash a console at the user.
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("icacls could not be launched for {what}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // icacls reports the interesting error on stdout more often than stderr.
+    Err(format!(
+        "icacls {what} failed (exit {:?}): {} {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
+}
+
+/// Fallible grant: `icacls <path> /grant *<sid>:[(OI)(CI)]<perms> [/T]`.
+pub(crate) fn try_grant(
+    sid_string: &str,
+    path: &Path,
+    perms: &str,
+    inherit: bool,
+    tree: bool,
+) -> Result<(), String> {
+    let spec = if inherit {
+        format!("*{sid_string}:(OI)(CI){perms}")
+    } else {
+        format!("*{sid_string}:{perms}")
+    };
+    let mut cmd = std::process::Command::new("icacls");
+    cmd.arg(path).arg("/grant").arg(&spec);
+    if tree {
+        cmd.arg("/T");
+    }
+    cmd.arg("/C").arg("/Q");
+    run_icacls(cmd, &format!("grant {perms} on {}", path.display()))
+}
+
+/// Revoke every ACE for `sid` on `path` (`/remove`), optionally sweeping the
+/// subtree: NTFS COPIES inherited ACEs into children at creation time, so a child
+/// created under a scoped grant keeps its copy unless the revoke walks (`/T`).
+pub(crate) fn revoke_grant(sid_string: &str, path: &Path, tree: bool) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("icacls");
+    cmd.arg(path).arg("/remove").arg(format!("*{sid_string}"));
+    if tree {
+        cmd.arg("/T");
+    }
+    cmd.arg("/C").arg("/Q");
+    run_icacls(cmd, &format!("revoke on {}", path.display()))
+}
+
+/// A grant that is REVOKED when this value drops — the mechanism behind the
+/// export-lifecycle and index-lifecycle halves of the membrane activation: a
+/// destination outside the provisioned roots is granted for exactly as long as
+/// the operation that needs it, then swept (INCLUDING the inherited copies on
+/// children created meanwhile — see `revoke_tree`).
+pub(crate) struct ScopedGrant {
+    sid: String,
+    path: PathBuf,
+    /// Whether the revoke must walk the subtree. True for every inheriting grant,
+    /// even the no-`/T` ones: the artifact written UNDER the grant carries an
+    /// inherited ACE copy, and revoke-after-write must not leave the finished
+    /// artifact writable to the sandbox.
+    revoke_tree: bool,
+}
+
+impl ScopedGrant {
+    fn new(
+        sid: &str,
+        path: &Path,
+        perms: &str,
+        inherit: bool,
+        grant_tree: bool,
+    ) -> Result<Self, String> {
+        // Checked HERE because `icacls /C` exits 0 for a missing target (measured:
+        // the fail-fast test in `sidecar.rs` caught it) — and a "grant" that landed
+        // on nothing would surface later as an in-sandbox access-denied.
+        if !path.exists() {
+            return Err(format!(
+                "cannot grant the sandbox access to {}: the path does not exist",
+                path.display()
+            ));
+        }
+        try_grant(sid, path, perms, inherit, grant_tree)?;
+        Ok(ScopedGrant {
+            sid: sid.to_string(),
+            path: path.to_path_buf(),
+            revoke_tree: inherit || grant_tree,
+        })
+    }
+    /// `(OI)(CI)M` on a DIRECTORY, no subtree walk: covers the directory object and
+    /// every child CREATED AFTER the grant (an export artifact, SQLite WAL sidecars)
+    /// while leaving existing siblings untouched.
+    pub(crate) fn modify_dir(sid: &str, dir: &Path) -> Result<Self, String> {
+        Self::new(sid, dir, "(M)", true, false)
+    }
+    /// `M` on ONE existing file (an index file the engine must open read-write).
+    pub(crate) fn modify_file(sid: &str, file: &Path) -> Result<Self, String> {
+        Self::new(sid, file, "(M)", false, false)
+    }
+    /// `RX` on ONE existing file (an export archive the engine ingests).
+    pub(crate) fn read_file(sid: &str, file: &Path) -> Result<Self, String> {
+        Self::new(sid, file, "(RX)", false, false)
+    }
+    /// `(OI)(CI)RX` with `/T` — a whole EXISTING tree readable (an opt-in session
+    /// store root the engine ingests from).
+    pub(crate) fn read_tree(sid: &str, dir: &Path) -> Result<Self, String> {
+        Self::new(sid, dir, "(RX)", true, true)
+    }
+    /// `(OI)(CI)M` with `/T` — a whole EXISTING tree writable (maintenance moves
+    /// real files under the roots it is handed).
+    pub(crate) fn modify_tree(sid: &str, dir: &Path) -> Result<Self, String> {
+        Self::new(sid, dir, "(M)", true, true)
+    }
+}
+
+impl Drop for ScopedGrant {
+    fn drop(&mut self) {
+        // Best-effort: the value dropping (call finished, corpus closed, app dying)
+        // must not be interrupted by a revoke hiccup — but it IS worth a log line,
+        // because a lingering ACE is exactly what this type exists to prevent.
+        if let Err(e) = revoke_grant(&self.sid, &self.path, self.revoke_tree) {
+            eprintln!("[hardened_spawn] scoped grant revoke failed: {e}");
+        }
+    }
+}
+
 /// Build a heap SECURITY_DESCRIPTOR from SDDL; caller `LocalFree`s it.
 unsafe fn make_security_descriptor(sddl: &str) -> Result<*mut c_void, String> {
     let wsddl = wide(sddl);
@@ -437,7 +634,9 @@ unsafe fn make_security_descriptor(sddl: &str) -> Result<*mut c_void, String> {
         null_mut(),
     ) == 0
     {
-        return Err(last_error("ConvertStringSecurityDescriptorToSecurityDescriptorW"));
+        return Err(last_error(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+        ));
     }
     Ok(sd)
 }
@@ -467,7 +666,10 @@ pub(crate) fn spawn_hardened(
         // ensure_container_sid + grant_read) — NOT per spawn — because granting a
         // large interpreter tree is slow and only needs doing once.
         let container = if opts.membrane.is_appcontainer() {
-            let name = opts.membrane.profile_name().expect("appcontainer has a name");
+            let name = opts
+                .membrane
+                .profile_name()
+                .expect("appcontainer has a name");
             Some(ensure_appcontainer(name)?)
         } else {
             None
@@ -500,7 +702,11 @@ pub(crate) fn spawn_hardened(
         let handle_list = [child_in_h, child_out_h, child_err_h];
 
         // --- proc-thread attribute list (1 attr = handle list; +1 for caps) --
-        let attr_count: u32 = if opts.membrane.is_appcontainer() { 2 } else { 1 };
+        let attr_count: u32 = if opts.membrane.is_appcontainer() {
+            2
+        } else {
+            1
+        };
         let mut attr_size: usize = 0;
         InitializeProcThreadAttributeList(null_mut(), attr_count, 0, &mut attr_size);
         let mut attr_buf = vec![0u8; attr_size];
@@ -542,7 +748,9 @@ pub(crate) fn spawn_hardened(
             ) == 0
             {
                 DeleteProcThreadAttributeList(attr_list);
-                return Err(last_error("UpdateProcThreadAttribute(SECURITY_CAPABILITIES)"));
+                return Err(last_error(
+                    "UpdateProcThreadAttribute(SECURITY_CAPABILITIES)",
+                ));
             }
         }
 
