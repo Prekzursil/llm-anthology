@@ -27,7 +27,7 @@ tauri-plugin-dialog = "2"
 # Windows-only: raw CreateProcess sidecar hardening (Job Object reap +
 # AppContainer network membrane + no-window). See src/sidecar/hardened_spawn.rs.
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.59"
+version = "0.61"
 features = [
     "Win32_Foundation",
     "Win32_System_Threading",
