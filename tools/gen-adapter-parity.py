@@ -62,7 +62,8 @@ def claude_cases():
         if not os.path.isfile(p):
             continue
         try:
-            data = json.load(open(p, encoding="utf-8"))
+            with open(p, encoding="utf-8") as fh:
+                data = json.load(fh)
         except Exception:
             continue
         for conv in data[:25]:

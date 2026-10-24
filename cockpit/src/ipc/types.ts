@@ -312,7 +312,7 @@ export interface CorpusDiffDto {
  *
  * ABSENT means `full` — the mode that changes nothing. Anything ELSE unrecognized is a
  * -32602, INCLUDING `""` and `null`: the engine deliberately does NOT use `_opt_str`'s
- * empty-collapses-to-unspecified convention here (`sidecar.py:1277`), because a client bug
+ * empty-collapses-to-unspecified convention here (`sidecar.py:1275`), because a client bug
  * that sent an empty string would otherwise be answered with archive-of-record bytes while
  * its user believed they had asked for the shareable projection.
  */
@@ -359,7 +359,7 @@ export interface CredentialScan {
 
 /**
  * `export.plan` result: a dry-run tally of what `export.run` would write (no write, no
- * filesystem access) — `sidecar.py:1306`.
+ * filesystem access) — `sidecar.py:1304`.
  *
  * This is the PRE-WRITE WARNING SURFACE. A dry run is the only moment the user can still
  * choose a different mode or opt into a scrub, so the warning has to live here and not
@@ -384,7 +384,7 @@ export interface ExportPlan {
  * `export.run` result: the verdict of an actual export. `ok` is the overall success (a
  * write happened AND both fidelity gates passed); `written_path` is present only when a
  * file was written; `graph_gate` / `transcript_gate` are the independent structural /
- * token-fidelity gate verdicts (`sidecar.py:2039`).
+ * token-fidelity gate verdicts (`sidecar.py:2037`).
  *
  * `credential_scan` is forwarded on FAILURE too. A blocked export is exactly the moment
  * the user is about to retry, and dropping the warning there would make them retry blind.
@@ -421,7 +421,7 @@ export interface OpenCorpusResult {
  * `corpus.create` result: an EMPTY index was initialised at `index_path`.
  *
  * A different shape from {@link OpenCorpusResult} on purpose — the engine returns
- * `{index_path, created}` here (`llm_anthology/sidecar.py:914`) and `{ok, index}` there —
+ * `{index_path, created}` here (`llm_anthology/sidecar.py:912`) and `{ok, index}` there —
  * so the two are not interchangeable. Creating does NOT attach; `openCorpus` still has to
  * follow (`cockpit/src-tauri/src/lib.rs:91-107`).
  */
@@ -457,7 +457,7 @@ export interface DiscoveryFinding {
   /** `built_index` | `session_store` | `export_file` (`discover.py:68-70`). */
   kind: string;
   /** ABSOLUTE local path. Not redacted on the wire — the sidecar only strips hidden
-   *  unicode (`_sanitize_tree` -> `_clean`, `sidecar.py:357-369`) — so it is usable as an
+   *  unicode (`_sanitize_tree` -> `_clean`, `sidecar.py:355-367`) — so it is usable as an
    *  engine argument, and it embeds the local layout, so it is display-sensitive. */
   path: string;
   count: number;
@@ -545,8 +545,8 @@ export interface DiscoveryResult {
 
 /**
  * `corpus.build` parameters. EVERY ONE is optional and none is defaulted by the engine —
- * each is read with `_opt_str` (`llm_anthology/sidecar.py:990-1037`). Optional is not
- * lax: the engine refuses when NO source at all is named (`sidecar.py:999-1004`), and omitting
+ * each is read with `_opt_str` (`llm_anthology/sidecar.py:988-1035`). Optional is not
+ * lax: the engine refuses when NO source at all is named (`sidecar.py:997-1002`), and omitting
  * `codex_home` means "no state graph" rather than "go find one", because defaulting it
  * would make the app read the user's live private store without being asked.
  */
@@ -584,7 +584,7 @@ export interface BuildParams {
   codex_home?: string;
 }
 
-/** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:958-960`). */
+/** `corpus.build` result: the job was ACCEPTED, not finished (`sidecar.py:956-958`). */
 export interface BuildHandle {
   job_id: string;
   state: string;
@@ -603,7 +603,7 @@ export interface BuildHandle {
 }
 
 /**
- * `corpus.build_status` result (`llm_anthology/sidecar.py:1154-1157`).
+ * `corpus.build_status` result (`llm_anthology/sidecar.py:1152-1155`).
  *
  * Poll-safe at any time, INCLUDING before any build has ever started — that answers
  * `{state: "idle", indexed_conversations, errors: []}` rather than erroring, which is why
@@ -638,17 +638,17 @@ export interface BuildStatus {
 // ---------------------------------------------------------------------------
 //
 // `research.synthesize` and `research.extract_entities` are registered by the engine
-// (`llm_anthology/sidecar.py:737-738`) and deliberately have NO binding here, no Tauri
+// (`llm_anthology/sidecar.py:735-736`) and deliberately have NO binding here, no Tauri
 // command (`cockpit/src-tauri/src/lib.rs:322-333`) and no mock. They are deferred out of v1.
 //
 // THE REASON IS STRUCTURAL, NOT SCHEDULING. The research plane has no backend at all:
 // `main()` constructs `Sidecar(conn)` with no backend arguments, so `research_backend` and
-// `local_backend` both fall back to `research.MockBackend()` (`sidecar.py:702-705`), whose
-// `synthesize` returns its `response` — default `""` (`llm_anthology/research.py:88-97`). The
+// `local_backend` both fall back to `research.MockBackend()` (`sidecar.py:700-703`), whose
+// `synthesize` returns its `response` — default `""` (`llm_anthology/research.py:91-100`). The
 // only two `synthesize` implementations in the package are that mock and the Protocol stub
-// (`research.py:76`). So BOTH methods return an empty result in the shipped app BY
+// (`research.py:78`). So BOTH methods return an empty result in the shipped app BY
 // CONSTRUCTION — including extraction, which routes through the same
-// `self.research_backend` (`sidecar.py:1543`).
+// `self.research_backend` (`sidecar.py:1541`).
 //
 // Typing them would hand a panel a contract for a feature that cannot produce output, and
 // wiring a real LLM backend touches a standing privacy rule about this corpus. Do NOT add
@@ -659,14 +659,14 @@ export interface BuildStatus {
 // ---------------------------------------------------------------------------
 
 /**
- * One owner-authored annotation (`llm_anthology/sidecar.py:1576-1582`).
+ * One owner-authored annotation (`llm_anthology/sidecar.py:1574-1580`).
  *
  * LOCAL-ONLY BY DESIGN. Alias/tags/notes are deliberately absent from
  * `redact.MetadataView`, so they can never ride the cloud research plane
- * (`sidecar.py:1564-1570`) — they cross only the stdio wire to this UI.
+ * (`sidecar.py:1562-1568`) — they cross only the stdio wire to this UI.
  *
  * Every field is always present. An un-annotated conversation reads back as an EMPTY
- * annotation with `is_empty: true` rather than an error (`sidecar.py:1585-1586`), so a
+ * annotation with `is_empty: true` rather than an error (`sidecar.py:1583-1584`), so a
  * panel can render it unconditionally without a null check.
  */
 export interface Annotation {
@@ -680,9 +680,9 @@ export interface Annotation {
 }
 
 /**
- * `metadata.set` parameters (`llm_anthology/sidecar.py:1591-1611`).
+ * `metadata.set` parameters (`llm_anthology/sidecar.py:1589-1609`).
  *
- * PARTIAL UPDATE, and the tri-state is the whole point (`sidecar.py:1592-1594`):
+ * PARTIAL UPDATE, and the tri-state is the whole point (`sidecar.py:1590-1592`):
  *
  *   * field OMITTED (`undefined`) -> left UNCHANGED;
  *   * field present but EMPTY (`""` / `[]`) -> CLEARED.
@@ -690,7 +690,7 @@ export interface Annotation {
  * The cockpit edits one field at a time, so a per-field call that sent `{alias}` alone
  * must not blank tags and notes — pinned by `tests/test_sidecar_metadata.py:89-97`. Never
  * send `null`: the engine type-checks with `isinstance(str)` / `isinstance(list)` and a
- * null fails as -32602 (`sidecar.py:1598-1603`).
+ * null fails as -32602 (`sidecar.py:1596-1601`).
  */
 export interface MetadataSetParams {
   conversation_id: string;
@@ -700,11 +700,11 @@ export interface MetadataSetParams {
 }
 
 /**
- * `metadata.search` parameters (`llm_anthology/sidecar.py:1622-1631`).
+ * `metadata.search` parameters (`llm_anthology/sidecar.py:1620-1629`).
  *
  * The two filters are ANDed, not ORed, and with NEITHER supplied the result is EMPTY — a
  * blank query deliberately does not dump the whole catalogue into the UI
- * (`sidecar.py:1624-1625`, `llm_anthology/metadata.py:501-502`).
+ * (`sidecar.py:1622-1623`, `llm_anthology/metadata.py:501-502`).
  */
 export interface MetadataSearchParams {
   /** Free text over the annotation, never over message bodies. */
@@ -714,7 +714,7 @@ export interface MetadataSearchParams {
 
 /**
  * One `metadata.search` row: the matching annotation JOINED to its display columns
- * (`llm_anthology/sidecar.py:1634-1648`).
+ * (`llm_anthology/sidecar.py:1632-1646`).
  *
  * Nothing here is nullable. The join reads `conversations`, whose every column is
  * `NOT NULL DEFAULT ''` / `DEFAULT 0` (`llm_anthology/corpus.py:179-191`), so an absent
@@ -738,7 +738,7 @@ export interface MetadataSearchRow {
 }
 
 /**
- * One entry of the tag facet (`llm_anthology/sidecar.py:1654-1655`).
+ * One entry of the tag facet (`llm_anthology/sidecar.py:1652-1653`).
  *
  * Counts collapse CASE-INSENSITIVELY — 'Beta' and 'beta' are one entry with count 2 — and
  * `tag` is the lexicographically-first display form among the variants, ordered by the
@@ -755,10 +755,10 @@ export interface TagCount {
 // ---------------------------------------------------------------------------
 
 /**
- * `dedup.scan` result (`llm_anthology/sidecar.py:1699-1706`).
+ * `dedup.scan` result (`llm_anthology/sidecar.py:1697-1704`).
  *
  * A scan is a READ: `dedup` contains no write/delete/move call, so nothing here can remove
- * one of the owner's files (`sidecar.py:1657-1662`). It does persist the derived view into
+ * one of the owner's files (`sidecar.py:1655-1660`). It does persist the derived view into
  * the attached index.
  *
  * `errors` is one string per store location that could not be read; a MISSING `codex_home`
@@ -780,7 +780,7 @@ export interface DedupScanResult {
 }
 
 /**
- * One logical session and its physical copies (`llm_anthology/sidecar.py:1673-1683`).
+ * One logical session and its physical copies (`llm_anthology/sidecar.py:1671-1681`).
  *
  * `store_kind` is a PLAIN STRING here — `dedup.PhysicalCopy.store_kind` is a `str`
  * (`llm_anthology/dedup.py:117`), one of `live` | `backup` | `mirror` | `other` | `unknown`
@@ -790,7 +790,7 @@ export interface DedupScanResult {
  *
  * `canonical_path` and `duplicate_paths` are LOCAL filesystem paths that embed the owner's
  * username. They travel only over this stdio wire and are absent from
- * `redact.MetadataView` (`sidecar.py:1660-1662`) — display-sensitive.
+ * `redact.MetadataView` (`sidecar.py:1658-1660`) — display-sensitive.
  */
 export interface DedupSession {
   session_id: string;
@@ -824,20 +824,20 @@ export interface DedupSession {
 // ---------------------------------------------------------------------------
 
 /** `maintenance.plan` action (`llm_anthology/maintenance.py:141-147`). Closed: any other
- *  value is -32602 (`llm_anthology/sidecar.py:1793-1798`). */
+ *  value is -32602 (`llm_anthology/sidecar.py:1791-1796`). */
 export type MaintenanceActionName = "delete" | "archive" | "move" | "reconcile";
 
 /**
  * A target's store classification (`llm_anthology/maintenance.py:158-165`), serialized from
- * a real `enum` via `.value` (`llm_anthology/sidecar.py:1731`).
+ * a real `enum` via `.value` (`llm_anthology/sidecar.py:1729`).
  *
- * Every target the RPC edge builds is forced to `UNKNOWN` (`sidecar.py:1813`) — the client
+ * Every target the RPC edge builds is forced to `UNKNOWN` (`sidecar.py:1811`) — the client
  * cannot assert a store kind — so a plan's `allowed` entries read `"unknown"` unless the
  * engine itself classified them. Do not render this as "we could not tell".
  */
 export type MaintenanceStoreKind = "unknown" | "live" | "backup" | "mirror" | "other";
 
-/** One session file inside a plan (`llm_anthology/sidecar.py:1730-1732`,
+/** One session file inside a plan (`llm_anthology/sidecar.py:1728-1730`,
  *  `llm_anthology/maintenance.py:182-190`). */
 export interface MaintenanceCopy {
   session_id: string;
@@ -850,7 +850,7 @@ export interface MaintenanceCopy {
   is_hot: boolean;
 }
 
-/** A target the safety model REFUSED, with the reason (`llm_anthology/sidecar.py:1742-1743`). */
+/** A target the safety model REFUSED, with the reason (`llm_anthology/sidecar.py:1740-1741`). */
 export interface MaintenanceBlocked {
   target: MaintenanceCopy;
   reason: string;
@@ -858,7 +858,7 @@ export interface MaintenanceBlocked {
 }
 
 /**
- * One preview warning (`llm_anthology/sidecar.py:1744-1745`).
+ * One preview warning (`llm_anthology/sidecar.py:1742-1743`).
  *
  * A CLEAN PLAN IS NOT A QUIET PLAN. The engine emits a DANGEROUS warning for EVERY allowed
  * target plus a closing INFO summary (`llm_anthology/maintenance.py:558-560`, `:576-579`), so a 2-file
@@ -872,30 +872,30 @@ export interface MaintenanceWarning {
   message: string;
 }
 
-/** One planned source -> destination move (`llm_anthology/sidecar.py:1746-1747`). */
+/** One planned source -> destination move (`llm_anthology/sidecar.py:1744-1745`). */
 export interface PlannedMove {
   session_id: string;
   source: string;
   destination: string;
 }
 
-/** One target offered to `maintenance.plan` (`llm_anthology/sidecar.py:1803-1814`). */
+/** One target offered to `maintenance.plan` (`llm_anthology/sidecar.py:1801-1812`). */
 export interface MaintenanceTarget {
-  /** REQUIRED and non-empty, else -32602 (`sidecar.py:1807-1809`). */
+  /** REQUIRED and non-empty, else -32602 (`sidecar.py:1805-1807`). */
   file_path: string;
-  /** Defaults to `""` when omitted (`sidecar.py:1811`). */
+  /** Defaults to `""` when omitted (`sidecar.py:1809`). */
   session_id?: string;
-  /** Defaults to 0 when omitted (`sidecar.py:1814`). */
+  /** Defaults to 0 when omitted (`sidecar.py:1812`). */
   size_bytes?: number;
 }
 
 /**
- * `maintenance.plan` parameters (`llm_anthology/sidecar.py:1777-1818`).
+ * `maintenance.plan` parameters (`llm_anthology/sidecar.py:1775-1816`).
  *
  * `store_root` and `checkpoint_root` are REQUIRED non-empty strings; every root is rejected
- * at the RPC edge if UNC or relative (`sidecar.py:1787-1791`), because merely resolving
+ * at the RPC edge if UNC or relative (`sidecar.py:1785-1789`), because merely resolving
  * `\\host\share` on Windows initiates an outbound SMB/NTLM authentication. `targets` must
- * be a NON-EMPTY array (`sidecar.py:1801-1802`).
+ * be a NON-EMPTY array (`sidecar.py:1799-1800`).
  */
 export interface MaintenancePlanParams {
   store_root: string;
@@ -908,14 +908,14 @@ export interface MaintenancePlanParams {
 
 /**
  * `maintenance.plan` result: a PURE preview under a single-use handle
- * (`llm_anthology/sidecar.py:1734-1751`). No filesystem mutation happens
- * (`tests/test_sidecar_maintenance.py:154-167`).
+ * (`llm_anthology/sidecar.py:1732-1749`). No filesystem mutation happens
+ * (`tests/test_sidecar_maintenance.py:155-168`).
  *
  * THE CLIENT NEVER SENDS THIS BACK. `maintenance` validates paths against the roots carried
  * INSIDE the preview, so a forged preview rebuilt from client JSON could name its own
  * store/checkpoint/destination root and be honoured. The server therefore keeps its OWN
  * preview object and `maintenance.execute` takes only the opaque `plan_id`
- * (`sidecar.py:1714-1726`). Treat every field here as DISPLAY-ONLY.
+ * (`sidecar.py:1712-1724`). Treat every field here as DISPLAY-ONLY.
  */
 export interface MaintenancePreview {
   /** The single-use handle to pass to `maintenance.execute`. Ids are `plan-1`, `plan-2`, … */
@@ -947,13 +947,13 @@ export interface MaintenancePreview {
 }
 
 /**
- * `maintenance.execute` parameters (`llm_anthology/sidecar.py:1826-1843`).
+ * `maintenance.execute` parameters (`llm_anthology/sidecar.py:1824-1841`).
  *
  * `apply` DEFAULTS TO FALSE, so the destructive act is always an explicit second step
- * (`tests/test_sidecar_maintenance.py:209-219`). The handle is consumed once the engine
+ * (`tests/test_sidecar_maintenance.py:210-220`). The handle is consumed once the engine
  * ACCEPTS the run, so a completed plan cannot be replayed — but a REFUSED confirmation
- * leaves it usable, so a typo is correctable without re-planning (`sidecar.py:1844-1846`,
- * `tests/test_sidecar_maintenance.py:194-206`).
+ * leaves it usable, so a typo is correctable without re-planning (`sidecar.py:1842-1844`,
+ * `tests/test_sidecar_maintenance.py:195-207`).
  */
 export interface MaintenanceExecuteParams {
   plan_id: string;
@@ -963,10 +963,10 @@ export interface MaintenanceExecuteParams {
 }
 
 /**
- * `maintenance.restore` parameters (`llm_anthology/sidecar.py:1851-1862`).
+ * `maintenance.restore` parameters (`llm_anthology/sidecar.py:1849-1860`).
  *
  * `apply` defaults to false here too, so a caller can see what a restore would do first.
- * `manifest_path` is rejected at the edge if UNC or relative (`sidecar.py:1856`).
+ * `manifest_path` is rejected at the edge if UNC or relative (`sidecar.py:1854`).
  */
 export interface MaintenanceRestoreParams {
   /** A `manifest_path` the engine itself issued from a prior `maintenance.execute`. */
@@ -981,10 +981,10 @@ export interface MaintenanceRestoreParams {
 }
 
 /**
- * `maintenance.execute` / `maintenance.restore` result (`llm_anthology/sidecar.py:1755-1761`).
+ * `maintenance.execute` / `maintenance.restore` result (`llm_anthology/sidecar.py:1753-1759`).
  *
  * `manifest_path` is `""` — NOT null and NOT absent — on a dry run
- * (`llm_anthology/maintenance.py:670`, `tests/test_sidecar_maintenance.py:216-217`), so
+ * (`llm_anthology/maintenance.py:670`, `tests/test_sidecar_maintenance.py:217-218`), so
  * truthiness is the correct test for "did this write a checkpoint".
  */
 export interface MaintenanceResult {
@@ -1002,7 +1002,7 @@ export interface MaintenanceResult {
  * schema at `:823-836`). Newest first; `manifest_path` breaks ties (`maintenance.py:870-871`).
  *
  * Only an APPLIED run lands here — a dry run does not
- * (`tests/test_sidecar_maintenance.py:305-312`).
+ * (`tests/test_sidecar_maintenance.py:307-314`).
  */
 export interface MaintenanceRun {
   manifest_path: string;
@@ -1020,7 +1020,7 @@ export interface MaintenanceRun {
 // ---------------------------------------------------------------------------
 //
 // THE CODE ARRIVES AS TEXT, NOT AS A FIELD. The sidecar answers a failure with a JSON-RPC
-// envelope `{code, message}` (`llm_anthology/sidecar.py:350-354`), but the Rust bridge
+// envelope `{code, message}` (`llm_anthology/sidecar.py:348-352`), but the Rust bridge
 // flattens the whole envelope into a STRING —
 // `Err(format!("rpc error (id {id}): {err}"))` (`cockpit/src-tauri/src/sidecar.rs:161`) —
 // and Tauri's `invoke` rejects with that string. So there is no typed error object to
@@ -1028,9 +1028,9 @@ export interface MaintenanceRun {
 // that parser, and it is the ONLY sanctioned way to read a code — do not hand-roll a
 // second regex.
 
-/** A well-formed request whose params were wrong (`llm_anthology/sidecar.py:799`). */
+/** A well-formed request whose params were wrong (`llm_anthology/sidecar.py:797`). */
 export const RPC_INVALID_PARAMS = -32602;
-/** An unhandled engine fault (`llm_anthology/sidecar.py:792`), carrying `{detail}`. */
+/** An unhandled engine fault (`llm_anthology/sidecar.py:790`), carrying `{detail}`. */
 export const RPC_INTERNAL_ERROR = -32603;
 /** No corpus attached — call `openCorpus` first (`llm_anthology/sidecar.py:293`). */
 export const RPC_CORPUS_NOT_INDEXED = -32000;
@@ -1184,7 +1184,7 @@ export interface IpcClient {
    *
    * `mode` omitted means `full`; `scrub` omitted means false (WARN only, bytes untouched).
    * `scrub: true` opts into replacing each reported credential shape — an opt-in because an
-   * archive of record must not be altered behind the owner's back (`sidecar.py:1295`).
+   * archive of record must not be altered behind the owner's back (`sidecar.py:1293`).
    */
   exportRun?(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<ExportResult>;
 
@@ -1222,7 +1222,7 @@ export interface IpcClient {
    *
    * `codexHome` is REQUIRED and must never be defaulted or guessed by the UI. That is a
    * safety choice, not ceremony: an automated probe really did read the owner's live Codex
-   * sessions through a similar fallback (`llm_anthology/sidecar.py:1686-1691`). A scan of
+   * sessions through a similar fallback (`llm_anthology/sidecar.py:1684-1689`). A scan of
    * private data has to be something the operator named.
    */
   dedupScan(codexHome: string): Promise<DedupScanResult>;

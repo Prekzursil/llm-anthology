@@ -106,7 +106,7 @@ export const realIpc: IpcClient = {
   corpusBuildStatus(jobId?: string): Promise<BuildStatus> {
     // `job_id` is OPTIONAL and proves the poll is reading the job it started; a poll that
     // raced a newer build gets -32602 rather than another job's progress
-    // (`llm_anthology/sidecar.py:809-827`). Omitted entirely when absent, because an
+    // (`llm_anthology/sidecar.py:807-825`). Omitted entirely when absent, because an
     // explicit null would fail the string check there.
     const params: Record<string, unknown> = {};
     if (jobId !== undefined) params.job_id = jobId;
@@ -167,7 +167,7 @@ export const realIpc: IpcClient = {
     // a stale comment: it made the shareable projection UNREACHABLE from the shipped app,
     // because this is the production adapter and mock.ts is only the browser preview. Send
     // the key ONLY when the caller named a mode — the engine treats ABSENT as "full", and
-    // an explicit `undefined`/`""` is a -32602 rather than a default (sidecar.py:1125).
+    // an explicit `undefined`/`""` is a -32602 rather than a default (sidecar.py:1123).
     const params: Record<string, unknown> = {};
     if (mode !== undefined) params.mode = mode;
     return cmd<ExportPlan>("export_plan", params);
@@ -175,7 +175,7 @@ export const realIpc: IpcClient = {
   exportRun(destPath: string, mode?: ExportMode, scrub?: boolean): Promise<ExportResult> {
     // Same absent-vs-empty rule for both privacy params: omit the key entirely rather than
     // sending a falsy placeholder. `scrub` must be a REAL boolean or the engine answers
-    // -32602 instead of guessing at truthiness (sidecar.py:1143) — the difference between
+    // -32602 instead of guessing at truthiness (sidecar.py:1141) — the difference between
     // the two values is whether the artifact gets modified, so a guess is not acceptable.
     const params: Record<string, unknown> = { dest_path: destPath };
     if (mode !== undefined) params.mode = mode;
@@ -209,7 +209,7 @@ export const realIpc: IpcClient = {
    * The params object is forwarded AS-IS, which is what preserves the partial-update
    * tri-state: a field absent from `MetadataSetParams` is absent on the wire and the engine
    * leaves it unchanged, while an explicit `""` / `[]` clears it
-   * (`llm_anthology/sidecar.py:1335-1337`). Normalising the undefined fields to null or ""
+   * (`llm_anthology/sidecar.py:1333-1335`). Normalising the undefined fields to null or ""
    * here would silently blank the other two on every per-field edit.
    */
   metadataSet(params: MetadataSetParams): Promise<Annotation> {
@@ -243,7 +243,7 @@ export const realIpc: IpcClient = {
   },
   maintenanceRuns(limit?: number): Promise<MaintenanceRun[]> {
     // `_opt_int` rejects a non-int (and a bool) with -32602, so an absent limit is omitted
-    // and the engine applies its own default of 50 (`llm_anthology/sidecar.py:1614`).
+    // and the engine applies its own default of 50 (`llm_anthology/sidecar.py:1612`).
     const params: Record<string, unknown> = {};
     if (limit !== undefined) params.limit = limit;
     return cmd<MaintenanceRun[]>("maintenance_runs", params);

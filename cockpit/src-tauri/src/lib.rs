@@ -105,7 +105,7 @@ fn forward(state: &EngineState, method: &str, params: Value) -> Result<Value, St
 /// action for minutes with no cancel and no timeout to bound it.
 ///
 /// ORDER IS LOAD-BEARING, and this mirrors the engine's `_reject_unc_spelling`
-/// (`llm_anthology/sidecar.py:484-497`) deliberately, including its reason for existing as a
+/// (`llm_anthology/sidecar.py:482-495`) deliberately, including its reason for existing as a
 /// separate step: the check must run on the RAW string, before any resolution. A caller that
 /// canonicalises first destroys the evidence on POSIX, where `\\host\share` contains no
 /// separator at all and so reads as an ordinary relative filename that `abspath` happily turns
@@ -270,7 +270,7 @@ fn drive_type_of(_index_path: &str) -> Option<u32> {
 ///
 /// The two lexical guards run FIRST and in this order, because `is_file()` is itself the
 /// dangerous operation — see `reject_unc_spelling` for the measurement. Requiring an absolute
-/// path is the second half of the engine's `_reject_nonlocal_path` (`sidecar.py:500-514`) and
+/// path is the second half of the engine's `_reject_nonlocal_path` (`sidecar.py:498-512`) and
 /// costs nothing legitimate: every path that reaches `open_corpus` is either a native
 /// file-picker result, an `os.path`-derived finding from `sources.discover`, or a previously
 /// accepted path echoed back out of Web Storage — all absolute. It is marginally STRICTER than
@@ -834,7 +834,7 @@ fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
 // vitest — it throws only when a user presses the button.
 //
 // All 13 forward through `forward`, so all 13 require an attached corpus (verified: each
-// handler calls `_require_corpus`, llm_anthology/sidecar.py:1262-1611). That is why they
+// handler calls `_require_corpus`, llm_anthology/sidecar.py:1260-1609). That is why they
 // take `state`, unlike `create_corpus` / `discover_sources`, which run on a throwaway
 // index-less engine precisely because no corpus exists yet.
 
@@ -918,15 +918,15 @@ fn metadata_tags(state: State<'_, EngineState>, params: Option<Value>) -> Result
 // `research.synthesize` and `research.extract_entities` are DELIBERATELY not wired, and
 // the omission is enforced by `every_engine_rpc_has_a_registered_tauri_command` rather than
 // left to memory. Both return empty output in the shipped app BY CONSTRUCTION: `main` builds
-// `Sidecar(conn)` with no backend arguments (llm_anthology/sidecar.py:1933, the module's only
+// `Sidecar(conn)` with no backend arguments (llm_anthology/sidecar.py:1931, the module's only
 // construction site), so `research_backend` and `local_backend` both fall back to
 // `research.MockBackend()` (`:587-590`), whose `synthesize` returns its `response` — default
-// `""` (llm_anthology/research.py:88-97). The only two `synthesize` implementations in the
-// package are that mock and the Protocol stub (`research.py:76`).
+// `""` (llm_anthology/research.py:91-100). The only two `synthesize` implementations in the
+// package are that mock and the Protocol stub (`research.py:78`).
 //
 // Note this holds for BOTH methods, including extraction: `_research_extract_entities` is not
 // a local deterministic pass that would work without a model — it routes through the same
-// `self.research_backend` (`sidecar.py:1286`).
+// `self.research_backend` (`sidecar.py:1284`).
 //
 // A command here would therefore make a guaranteed-empty feature reachable. The owner
 // deferred the feature rather than wire a backend, because it touches a standing privacy

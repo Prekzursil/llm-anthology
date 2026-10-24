@@ -318,8 +318,6 @@ CORPUS_EXISTS = -32006
 # upgrade; a stack trace is the least survivable form that can take.
 INDEX_REBUILD_REQUIRED = -32007
 
-_ROOT_ORDERS = ("created", "recent", "title")
-
 # The LOCAL synthesis tier's instruction. This tier reads RAW transcript text and feeds
 # a LOCAL backend only, so the prompt never leaves the machine — it is deliberately NOT
 # the sanitized-metadata prompt the cloud research plane builds.
@@ -868,7 +866,7 @@ class Sidecar:
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
     # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
     # (loaders.py:461), and `ingest_exports` accepts one too. True now, and narrower:
-    # NEITHER worker call passes one (sidecar.py:1107, :1110), a call-site gap and not an
+    # NEITHER worker call passes one (sidecar.py:1105, :1108), a call-site gap and not an
     # architectural one — TWO of them since the export half was wired, so a cancel means
     # threading it through both; doing only the first would leave the export ingest
     # uncancellable while the UI claimed otherwise. What still holds: the phase BEFORE it,
@@ -959,7 +957,7 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1037) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1035) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
         LIVE Codex store (codex_state.py:127-130), and an automated probe really did read
@@ -1092,7 +1090,7 @@ class Sidecar:
         returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
-        conversation ingest (loaders.py:454-445), so a FAILED build can still have changed
+        conversation ingest (loaders.py:454-454), so a FAILED build can still have changed
         the index and the live view must follow it.
 
         BOTH HALVES, ONE ERROR LIST. The session ingest and the DOWNLOADED-export ingest
@@ -1129,7 +1127,7 @@ class Sidecar:
         WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
         Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
         loaders.py:394), while ``_persist_graph`` UPSERTS that run into the tables a previous
-        build already populated (loaders.py:788-686, INSERT OR REPLACE). The in-app flow is "open an existing
+        build already populated (loaders.py:788-788, INSERT OR REPLACE). The in-app flow is "open an existing
         corpus, then ingest more sessions into it", so taking the returned object would drop
         every previously-ingested thread from the live view while the index on disk still
         held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].

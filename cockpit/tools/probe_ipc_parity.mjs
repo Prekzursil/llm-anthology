@@ -694,7 +694,7 @@ async function observations(engine, mockIpc, ws, rows) {
 
   // FALSIFICATION of "give the target a real mtime". The engine builds its `SessionCopy` from
   // ONLY session_id / file_path / size_bytes and hardcodes `store_kind=UNKNOWN`
-  // (`llm_anthology/sidecar.py:1553-1557`); it never stats the file and never reads a
+  // (`llm_anthology/sidecar.py:1551-1555`); it never stats the file and never reads a
   // client-supplied `last_write_ms` or `is_hot`. If that reading is wrong, the values below
   // come back echoed and this line disproves it.
   const echo = await engine.result("maintenance.plan", {

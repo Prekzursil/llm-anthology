@@ -79,7 +79,7 @@ export function renderConversationMd(conv: Conversation): string {
     for (const b of t.blocks) out.push(blockMd(b), "");
     out.push("---", "");
   }
-  return out.join("\n").replace(/\s+$/, "") + "\n";
+  return out.join("\n").trimEnd() + "\n";
 }
 
 function blockMd(b: Block): string {

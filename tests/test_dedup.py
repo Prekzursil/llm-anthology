@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 import sqlite3
+from pathlib import Path
 
 from llm_anthology import corpus, dedup
 
@@ -406,7 +407,7 @@ def test_consolidate_never_touches_the_files_on_disk(tmp_path):
                           _rollout_lines(UUID_A, n_extra=3))
     bak = _write_rollout(bak_root, "rollout-1-%s.jsonl" % UUID_A,
                          _rollout_lines(UUID_A, n_extra=3))
-    bak_bytes = open(bak, "rb").read()
+    bak_bytes = Path(bak).read_bytes()
 
     copies, _ = dedup.scan_stores([(live_root, dedup.STORE_LIVE),
                                    (bak_root, dedup.STORE_BACKUP)])
@@ -415,7 +416,8 @@ def test_consolidate_never_touches_the_files_on_disk(tmp_path):
     assert len(sessions) == 1
     assert sessions[0].canonical.file_path == live
     assert os.path.exists(bak)
-    assert open(bak, "rb").read() == bak_bytes
+    after = Path(bak).read_bytes()
+    assert after == bak_bytes
     assert os.path.exists(live)
 
 

@@ -32,7 +32,7 @@ def audit_texts(conv):
                     try:
                         yield json.dumps(v, ensure_ascii=False)
                     except (TypeError, ValueError):
-                        pass
+                        pass  # not JSON-serialisable: no text form to scan, so nothing to yield
             for c in (b.citations or []):
                 if isinstance(c, dict):
                     for k in ("title", "url"):

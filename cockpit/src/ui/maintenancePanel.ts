@@ -319,7 +319,7 @@ export function confirmationState(
  *
  * -32003 IS NOT ONE CONDITION, and the difference decides whether the operator's work is
  * lost. The engine raises it both for a spent/unknown plan handle
- * (`llm_anthology/sidecar.py:1581-1583`) and for every refusal that `execute_maintenance`
+ * (`llm_anthology/sidecar.py:1579-1581`) and for every refusal that `execute_maintenance`
  * itself produces — a mismatched confirmation, a protected target, a colliding restore
  * (`:1518`). Only the FIRST means the plan is gone: the handle is deleted at `:1589`, AFTER
  * the call that raises, so a refused confirmation leaves it usable and the engine's own
@@ -402,7 +402,7 @@ export function deriveOutcome(
 /**
  * A courtesy pre-check on a `manifest_path`, mirroring the engine's edge rule: absolute and
  * local only, because merely resolving `\\host\share` on Windows initiates an outbound
- * SMB/NTLM authentication (`llm_anthology/sidecar.py:1599` -> `:500-514`).
+ * SMB/NTLM authentication (`llm_anthology/sidecar.py:1597` -> `:498-512`).
  *
  * NOT A SECURITY BOUNDARY — the engine's check is, and it runs regardless. This exists only
  * so the operator learns immediately instead of after a round trip. Returns null when the
@@ -473,7 +473,7 @@ export function renderMaintenanceView(view: MaintenanceView): string[] {
  * engine's dry-run default is never the thing standing between the operator and their files.
  *
  * NOTE ON WHY THERE IS NO "dry-run execute" STEP: `maintenance.execute` consumes the plan
- * handle on ANY accepted run, dry or not (`llm_anthology/sidecar.py:1589` deletes it after
+ * handle on ANY accepted run, dry or not (`llm_anthology/sidecar.py:1587` deletes it after
  * the call succeeds). A plan -> dry-execute -> apply-execute flow would therefore burn the
  * handle on the dry run and earn "already-used plan_id; re-plan" on the apply. The pure
  * `maintenance.plan` IS the dry run, and it is a better one: it reports what was REFUSED,
