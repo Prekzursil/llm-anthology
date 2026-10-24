@@ -60,9 +60,11 @@ def _is_digit(cp):
 
 
 def fmt_ranges(name, ranges, comment):
-    body = ",".join("[%d,%d]" % (s, n) for s, n in ranges)
+    # One element per line with a trailing comma: the layout biome (biome.json) prints, so
+    # a regenerated table passes the lean gate's format check as written.
+    body = "".join("  [%d, %d],\n" % (s, n) for s, n in ranges)
     return ("/** %s (%d ranges, generated) */\nexport const %s: ReadonlyArray<readonly "
-            "[number, number]> = [%s];\n" % (comment, len(ranges), name, body))
+            "[number, number]> = [\n%s];\n" % (comment, len(ranges), name, body))
 
 
 def main():
@@ -82,7 +84,7 @@ def main():
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
     total = sum(n for _, n in flagged)
 
-    names_body = ",".join('%d:"%s"' % (cp, nm) for cp, nm in sorted(names.items()))
+    names_body = "".join('  %d: "%s",\n' % (cp, nm) for cp, nm in sorted(names.items()))
     src = [
         "// GENERATED FILE - do not edit by hand.\n",
         "// Produced by tools/gen-unicode-data.py from CPython's unicodedata, so the JS\n",
@@ -102,7 +104,7 @@ def main():
         fmt_ranges("ND_RANGES", digit, "Python re \\\\d for str patterns: category Nd"),
         "\n",
         "/** unicodedata.name() for flagged codepoints that have one; miss => \"unnamed\". */\n",
-        "export const FLAGGED_NAMES: Readonly<Record<number, string>> = {%s};\n" % names_body,
+        "export const FLAGGED_NAMES: Readonly<Record<number, string>> = {\n%s};\n" % names_body,
     ]
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
