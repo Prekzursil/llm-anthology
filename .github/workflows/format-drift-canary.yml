@@ -101,8 +101,17 @@ jobs:
         with:
           node-version: "22"
 
-      # No `pip install`: every generator puts the repo root on sys.path itself and the whole
-      # import chain is stdlib-only -- the same reasoning ci.yml's `js` job records.
+      # The generators put the repo root on sys.path themselves, but their import chain is
+      # NOT stdlib-only: tools/gen-render-parity.py renders through llm_anthology.render_html,
+      # which imports markdown-it-py, a declared runtime dependency. This job used to skip
+      # the install on the opposite premise and died on `ModuleNotFoundError: markdown_it`
+      # at the regenerate step on every scheduled run from 2026-08-13 on, before checking
+      # anything. Installing the package installs exactly what pyproject.toml declares, so
+      # the renderer here is the one a user gets -- floating within the declared range, the
+      # same way the interpreter floats above.
+      - name: install the python rail's declared runtime dependencies
+        run: python -m pip install .
+
       - name: install the js rail (it consumes the fixtures regenerated below)
         working-directory: js
         run: npm ci
