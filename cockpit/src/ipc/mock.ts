@@ -644,7 +644,7 @@ function cleanText(value: string): string {
  * run, preview and design review — the exact invisible-dead-path class `ipc/index.ts`
  * documents. The wire text is reproduced literally: the Rust bridge flattens the envelope
  * with `format!("rpc error (id {id}): {err}")` (`cockpit/src-tauri/src/sidecar.rs:161`) over
- * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:350-354`). The id is a
+ * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:348-352`). The id is a
  * fixed constant; no caller parses it (rpcErrorCode matches on the code, not the id).
  */
 function rpcError(code: number, message: string): Error {
@@ -662,7 +662,7 @@ function rpcError(code: number, message: string): Error {
  * this offline-only tool forbids. A mock that accepted a UNC root would let a path-handling
  * bug reach the engine untested. Note that `C:/store/../evil` passes here exactly as it
  * passes the real edge: parent-traversal is the ENGINE's refusal, not the edge's
- * (`tests/test_sidecar_maintenance.py:103-119`).
+ * (`tests/test_sidecar_maintenance.py:104-120`).
  */
 function requireLocalPath(value: string, label: string): void {
   if (value.startsWith("\\\\") || value.startsWith("//")) {
@@ -1316,7 +1316,7 @@ export function createMockIpc(
    * The in-flight/last mock ingest, or null before any `corpusBuild`.
    *
    * `sessionsRoot` is REMEMBERED rather than re-derived because `build_status` reports the
-   * root the job was started with (`llm_anthology/sidecar.py:1182` reads it off the job
+   * root the job was started with (`llm_anthology/sidecar.py:1180` reads it off the job
    * snapshot). A status that invented its own path would let a panel read the ingest source
    * off the poll and show somewhere the build never touched.
    */
@@ -1482,7 +1482,7 @@ export function createMockIpc(
      *
      * The PATH GUARD is reproduced, though, because it is not a filesystem question. The
      * engine rejects a UNC or relative `index_path` before touching the disk
-     * (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:905`), and a mock that accepted
+     * (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:903`), and a mock that accepted
      * `\\host\share\x.db` would let a UI offer a network destination that every dev run
      * blesses and the engine then refuses. The clobber check (`CORPUS_EXISTS`) and the
      * parent-directory check stay absent — those genuinely need a filesystem.
@@ -1494,11 +1494,11 @@ export function createMockIpc(
 
     /**
      * Accept an ingest and hand back a handle. `state` is always `"running"`: the reply
-     * reports that the job was ACCEPTED, not that it finished (`sidecar.py:958-960`).
+     * reports that the job was ACCEPTED, not that it finished (`sidecar.py:956-958`).
      *
      * The PARAMS CHECKS are the engine's, because they need no filesystem. Every source is
-     * opt-in by naming its root and at least one must be named (`sidecar.py:999-1004`), and
-     * each named root is refused if UNC or relative (`sidecar.py:1010-1017`). What is NOT
+     * opt-in by naming its root and at least one must be named (`sidecar.py:997-1002`), and
+     * each named root is refused if UNC or relative (`sidecar.py:1008-1015`). What is NOT
      * reproduced is the engine's `os.path.isdir` on each root — that one is a real disk
      * question this adapter cannot answer.
      */
@@ -1549,10 +1549,10 @@ export function createMockIpc(
      * correct.
      *
      * An UNNAMED poll before any build reads back `idle` rather than erroring, so the UI can
-     * render unconditionally (`llm_anthology/sidecar.py:1177`). A poll that NAMES a `job_id`
+     * render unconditionally (`llm_anthology/sidecar.py:1175`). A poll that NAMES a `job_id`
      * is the opposite case and both engine branches are reproduced: naming a job when none
-     * has started (`sidecar.py:1173-1176`), or naming one that is not the job in flight
-     * (`sidecar.py:1178-1180`), is -32602. The whole point of the optional argument is to let a
+     * has started (`sidecar.py:1171-1174`), or naming one that is not the job in flight
+     * (`sidecar.py:1176-1178`), is -32602. The whole point of the optional argument is to let a
      * client prove it is reading the job it started, which a mock that ignored it would
      * quietly defeat — a stale handle after a restart would read "idle" here and take a param
      * error from the engine.
@@ -1748,7 +1748,7 @@ export function createMockIpc(
 
     async exportPlan(_dest?: string, mode: ExportMode = "full"): Promise<ExportPlan> {
       // A dry run over the loaded corpus. No filesystem access, and `_dest` is ignored
-      // exactly as the engine ignores it (`sidecar.py:1306`).
+      // exactly as the engine ignores it (`sidecar.py:1304`).
       //
       // est_bytes IS THE SERIALIZED GRAPH, NOT A CONTENT SUM. This used to add up
       // `char_count` and assert equality with `corpus.stats` bytes — the very quantity the
@@ -1815,7 +1815,7 @@ export function createMockIpc(
 
     // NO `research.*` HERE, DELIBERATELY. A canned non-empty summary would be the worst
     // possible mock: the shipped app returns `""` from `MockBackend` by construction
-    // (`llm_anthology/sidecar.py:702-705`, `research.py:88-97`), so a mock that invented prose
+    // (`llm_anthology/sidecar.py:700-703`, `research.py:91-100`), so a mock that invented prose
     // would make a research panel look FINISHED in every dev run and screenshot while being
     // permanently blank for the user. See the NOT BOUND note in `./types.ts`.
 
@@ -1827,7 +1827,7 @@ export function createMockIpc(
 
     /**
      * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
-     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1592-1594`).
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1590-1592`).
      * Getting this wrong here would make a per-field editor look correct in preview while
      * blanking the other two fields against the real engine.
      */
@@ -1930,7 +1930,7 @@ export function createMockIpc(
      * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
      * argument being required is a safety property of this call — an automated probe once
      * read the owner's live Codex store through a defaulted home
-     * (`llm_anthology/sidecar.py:1686-1678`) — so a UI that forgot to collect it must fail
+     * (`llm_anthology/sidecar.py:1684-1684`) — so a UI that forgot to collect it must fail
      * here too, not only against the engine.
      *
      * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
@@ -2011,7 +2011,7 @@ export function createMockIpc(
           throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
         }
         // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
-        // kind (`llm_anthology/sidecar.py:1813`).
+        // kind (`llm_anthology/sidecar.py:1811`).
         const copy: MaintenanceCopy = {
           session_id: target.session_id ?? "",
           file_path: target.file_path,
@@ -2163,7 +2163,7 @@ export function createMockIpc(
       if (confirmation.trim() === "") throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation is required.");
       if (confirmation !== preview.required_typed_confirmation) {
         // Deliberately NOT consuming the handle: a typo must be correctable without forcing
-        // a re-plan (`tests/test_sidecar_maintenance.py:194-206`).
+        // a re-plan (`tests/test_sidecar_maintenance.py:195-207`).
         throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation does not match the preview.");
       }
       plans.delete(planId); // accepted -> consumed, so a run can never be replayed
@@ -2179,7 +2179,7 @@ export function createMockIpc(
       );
       nextManifest += 1;
       manifests.set(manifestPath, { moves: [...preview.plan], restored: false });
-      // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:305-312`).
+      // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:307-314`).
       // `recorded_at_ms` steps by a fixed minute per run rather than reading the clock, so
       // the newest-first order is deterministic and testable.
       runs.push({
@@ -2272,7 +2272,7 @@ export function createMockIpc(
       }
       if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
-      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1847-1848`), so a
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1845-1846`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: apply,

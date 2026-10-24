@@ -19,6 +19,7 @@ Every path is a tmp_path; no test touches a real session store, and no test emit
 """
 import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -254,7 +255,7 @@ def test_plan_ids_are_distinct_per_plan(tmp_path):
 def test_apply_then_restore_round_trips_the_file(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
-    original = open(paths[0], encoding="utf-8").read()
+    original = Path(paths[0]).read_text(encoding="utf-8")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
 
     done = srv.dispatch("maintenance.execute", {
@@ -272,7 +273,8 @@ def test_apply_then_restore_round_trips_the_file(tmp_path):
     back = srv.dispatch("maintenance.restore",
                         {"manifest_path": done["manifest_path"], "apply": True})
     assert back["executed"] is True
-    assert open(paths[0], encoding="utf-8").read() == original
+    restored = Path(paths[0]).read_text(encoding="utf-8")
+    assert restored == original
 
 
 def test_restore_rejects_a_unc_manifest_path_and_bad_flags(tmp_path):
@@ -364,7 +366,7 @@ def test_maintenance_action_enum_values_are_all_plannable(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     dest = str(tmp_path / "dst")
-    for action in maintenance.MaintenanceAction:
+    for action in list(maintenance.MaintenanceAction):
         out = _plan(srv, tmp_path, action.value, paths, store_root,
                     destination_root=dest)
         assert out["action"] == action.value

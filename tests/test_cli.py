@@ -7,11 +7,11 @@ schema but contain no real conversation content.
 import json
 import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-import llm_anthology
-from llm_anthology import cli, corpus, index, loaders
+from llm_anthology import __version__, cli, corpus, index, loaders
 
 
 def _write(path, obj):
@@ -57,7 +57,7 @@ def test_no_command_returns_usage_exit_code():
 def test_demo_writes_a_self_contained_html(tmp_path):
     out = str(tmp_path / "demo.html")
     assert cli.main(["demo", out]) == 0
-    doc = open(out, encoding="utf-8").read()
+    doc = Path(out).read_text(encoding="utf-8")
     assert doc.lstrip().lower().startswith("<!doctype html")
 
 
@@ -69,7 +69,7 @@ def test_claude_end_to_end(tmp_path):
     assert os.path.isfile(os.path.join(out, "index.html"))
     assert len(os.listdir(os.path.join(out, "html"))) == 1
     md = os.listdir(os.path.join(out, "md"))
-    body = open(os.path.join(out, "md", md[0]), encoding="utf-8").read()
+    body = Path(os.path.join(out, "md", md[0])).read_text(encoding="utf-8")
     assert "hello" in body and "hi there" in body
 
 
@@ -103,7 +103,7 @@ def test_claude_directory_skips_metadata_but_keeps_design_chats(tmp_path):
     assert cli.main(["claude", str(tmp_path), out]) == 0
     names = sorted(os.listdir(os.path.join(out, "html")))
     assert len(names) == 2                                   # conversation + design chat
-    bodies = "".join(open(os.path.join(out, "html", n), encoding="utf-8").read() for n in names)
+    bodies = "".join(Path(os.path.join(out, "html", n)).read_text(encoding="utf-8") for n in names)
     assert "design me" in bodies and "hi there" in bodies
     assert "a project" not in bodies and "someone" not in bodies
 
@@ -124,7 +124,8 @@ def test_chatgpt_end_to_end(tmp_path):
     out = str(tmp_path / "site")
     assert cli.main(["chatgpt", src, out]) == 0
     md = os.listdir(os.path.join(out, "md"))
-    assert "hi there" in open(os.path.join(out, "md", md[0]), encoding="utf-8").read()
+    text = Path(os.path.join(out, "md", md[0])).read_text(encoding="utf-8")
+    assert "hi there" in text
 
 
 def test_wrong_provider_export_is_not_a_silent_success(tmp_path):
@@ -166,7 +167,8 @@ def test_chatgpt_project_tag_reaches_the_index(tmp_path):
     _write(src, data)
     out = str(tmp_path / "site")
     assert cli.main(["chatgpt", src, out]) == 0
-    assert "g-p-XYZ" in open(os.path.join(out, "index.html"), encoding="utf-8").read()
+    index_html = Path(os.path.join(out, "index.html")).read_text(encoding="utf-8")
+    assert "g-p-XYZ" in index_html
 
 
 def test_chatgpt_dedupes_a_conversation_seen_twice(tmp_path):
@@ -183,7 +185,7 @@ def test_gemini_provisional_grouping_is_labelled_as_such(tmp_path):
     _write(src, _gemini_records())
     out = str(tmp_path / "site")
     assert cli.main(["gemini", src, out]) == 0
-    rep = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
+    rep = json.loads(Path(os.path.join(out, "_fidelity-report.json")).read_text(encoding="utf-8"))
     assert "PROVISIONAL" in rep["grouping_mode"]
 
 
@@ -195,7 +197,7 @@ def test_gemini_harvest_grouping_is_labelled_true(tmp_path):
                       "turns": [{"role": "user", "text": "hello"}]}])
     out = str(tmp_path / "site")
     assert cli.main(["gemini", src, out, "--harvest", harvest]) == 0
-    rep = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
+    rep = json.loads(Path(os.path.join(out, "_fidelity-report.json")).read_text(encoding="utf-8"))
     assert "TRUE" in rep["grouping_mode"] and rep["harvest_matched_records"] == 1
 
 
@@ -256,7 +258,7 @@ def test_malformed_json_is_reported_not_fatal(tmp_path):
     out = str(tmp_path / "site")
     rc = cli.main(["claude", src, out])
     assert rc == 0                                     # reported, not a crash
-    rep = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
+    rep = json.loads(Path(os.path.join(out, "_fidelity-report.json")).read_text(encoding="utf-8"))
     assert any(e["stage"] == "parse" for e in rep["errors"])
 
 
@@ -555,7 +557,7 @@ def test_version_flag_reports_the_installed_version(capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == f"llm-anthology {llm_anthology.__version__}"
+    assert capsys.readouterr().out.strip() == f"llm-anthology {__version__}"
 
 
 def test_version_flag_is_not_confused_with_a_subcommand(capsys):

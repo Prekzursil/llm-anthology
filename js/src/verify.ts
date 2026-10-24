@@ -17,9 +17,16 @@ import { decodeHTML } from "entities";
 import { WORD_RANGES } from "./generated/unicode-data.js";
 import type { Conversation } from "./ir.js";
 
-const BADGE_SPAN = /<span class="cp-badge"[\s\S]*?<\/span>/gi;
-const STYLE = /<style[\s\S]*?<\/style>/gi;
-const HEAD = /<head[\s\S]*?<\/head>/gi;
+// The three spans dropped before tokenizing (verify.py's `_BADGE_SPAN`, `_STYLE`, `_HEAD`).
+// Each is an opener plus everything up to the FIRST closer after it. They are cut by
+// `dropSpans` rather than by a lazy `[\s\S]*?` regex: on input holding many openers and
+// no closer, the regex re-scanned from every opener to the end (quadratic time).
+const BADGE_OPEN = /<span class="cp-badge"/gi;
+const SPAN_CLOSE = /<\/span>/gi;
+const STYLE_OPEN = /<style/gi;
+const STYLE_CLOSE = /<\/style>/gi;
+const HEAD_OPEN = /<head/gi;
+const HEAD_CLOSE = /<\/head>/gi;
 const TAG = /<[^>]+>/g;
 // Source words can legitimately land in an ATTRIBUTE rather than visible text: a
 // markdown link's URL -> href, an image -> src/alt, a code fence's language ->
@@ -82,11 +89,30 @@ export function proseTokens(conv: Conversation): string[] {
   return toks;
 }
 
+/** Replace every `open ... first close` span with one space, in a single pass.
+ *
+ *  The same spans `s.replace(/open[\s\S]*?close/gi, " ")` matches: a span runs from an
+ *  opener to the first closer after it, and the search resumes after that closer. Once no
+ *  closer follows an opener, none follows any later opener either, so the scan stops. */
+function dropSpans(s: string, open: RegExp, close: RegExp): string {
+  let out = "";
+  let from = 0;
+  open.lastIndex = 0;
+  for (let o = open.exec(s); o !== null; o = open.exec(s)) {
+    close.lastIndex = open.lastIndex;
+    const c = close.exec(s);
+    if (c === null) break;
+    out += `${s.slice(from, o.index)} `;
+    from = close.lastIndex;
+    open.lastIndex = from;
+  }
+  return out + s.slice(from);
+}
+
 export function htmlVisibleTokens(h: string): string[] {
-  let s = (h ?? "")
-    .replace(BADGE_SPAN, " ") // badges replace invisibles — not content words
-    .replace(STYLE, " ")
-    .replace(HEAD, " "); // drop CSS + <title> so they cannot mask a real drop
+  let s = dropSpans(h ?? "", BADGE_OPEN, SPAN_CLOSE); // badges replace invisibles — not content words
+  s = dropSpans(s, STYLE_OPEN, STYLE_CLOSE);
+  s = dropSpans(s, HEAD_OPEN, HEAD_CLOSE); // drop CSS + <title> so they cannot mask a real drop
   const attrs = [
     ...[...s.matchAll(ATTR_VALS)].map((m) => m[1]!),
     ...[...s.matchAll(LANG_CLASS)].map((m) => m[1]!),

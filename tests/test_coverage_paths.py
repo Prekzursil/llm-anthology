@@ -207,7 +207,7 @@ def test_md_skips_non_dict_citation():
     conv = ir.Conversation(id="c", title="t", provider="claude", turns=[ir.Turn("assistant", [
         ir.Block("text", text="a", citations=["not a dict", {"url": "https://ok.example", "title": "T"}])])])
     md = render_md.render_conversation_md(conv)
-    assert "https://ok.example" in md
+    assert "[T](https://ok.example)" in md
 
 
 # ------------------------------------------------------------------------ audit

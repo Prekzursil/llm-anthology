@@ -16,6 +16,7 @@ snapshot whose bodies live one nesting level below `contents`.
 """
 import json
 import os
+from pathlib import Path
 
 from llm_anthology import build, cli, ir, loaders, render_html, render_md
 from llm_anthology.adapters import codex
@@ -663,9 +664,9 @@ def test_codex_end_to_end_through_the_cli(tmp_path):
     assert os.path.isfile(os.path.join(out, "index.html"))
     names = os.listdir(os.path.join(out, "html"))
     assert len(names) == 1
-    page = open(os.path.join(out, "html", names[0]), encoding="utf-8").read()
+    page = Path(os.path.join(out, "html", names[0])).read_text(encoding="utf-8")
     assert "task FAILED" in page
-    rep = json.load(open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8"))
+    rep = json.loads(Path(os.path.join(out, "_fidelity-report.json")).read_text(encoding="utf-8"))
     assert rep["rendered"] == 1 and rep["errors"] == []
 
 

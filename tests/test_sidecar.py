@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -768,7 +769,7 @@ def test_export_run_writes_graph_artifact_and_passes_gates(tmp_path):
     assert res["written_path"] == dest
     assert os.path.isfile(dest)
     # the written artifact round-trips to the same spawn graph (sanitized)
-    doc = json.loads(open(dest, encoding="utf-8").read())
+    doc = json.loads(Path(dest).read_text(encoding="utf-8"))
     reparsed = sidecar.export.parse_graph(doc["graph"])
     assert sorted(reparsed.threads) == ["t1", "t2", "t3", "t4"]
     assert reparsed.threads["t1"].title == "root alpha"   # ZW stripped in the artifact

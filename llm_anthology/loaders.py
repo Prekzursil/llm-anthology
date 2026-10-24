@@ -583,9 +583,9 @@ def _turn_key(turn):
     so those fall back to their own content: role, stamp and block text.
     """
     if turn.uuid:
-        return ("id", turn.uuid)
-    return ("body", turn.role, turn.timestamp,
-            tuple((b.type, b.text) for b in turn.blocks))
+        return ("id", (turn.uuid,))
+    return ("body", (turn.role, turn.timestamp,
+                     tuple((b.type, b.text) for b in turn.blocks)))
 
 
 def _turn_weight(turn):

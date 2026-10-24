@@ -54,7 +54,7 @@ def test_html_citation_link_hardened():
     h = render_html.render_conversation_html(_conv([
         ir.Turn("assistant", [ir.Block("text", text="see", citations=[{"url": "https://ex.com", "title": "Ex"}])]),
     ]))
-    assert "https://ex.com" in h and "noopener" in h
+    assert '<a href="https://ex.com" rel="noopener noreferrer"' in h
 
 
 def test_html_dangerous_link_defanged():

@@ -11,7 +11,7 @@
  * WHAT THESE TESTS CANNOT SETTLE, stated here rather than implied: no test here runs a real
  * `dedup.scan`, so they prove the panel reasons correctly GIVEN the wire shape — not that
  * the wire shape is right. The shape is pinned by reading `llm_anthology/dedup.py`,
- * `llm_anthology/sidecar.py:1407-1455` and `tests/test_sidecar_dedup.py`, and is cited at
+ * `llm_anthology/sidecar.py:1405-1453` and `tests/test_sidecar_dedup.py`, and is cited at
  * each place it matters.
  */
 import { describe, expect, it, vi } from "vitest";
@@ -195,7 +195,7 @@ describe("checkCodexHome", () => {
   it("refuses a UNC path with the reason the engine would give", () => {
     // Refused BEFORE the call, because the engine's own refusal is a -32602 the user cannot
     // read, and because a UNC root makes the scan emit outbound SMB/NTLM
-    // (`tests/test_sidecar_dedup.py:90-96`, `sidecar.py:496-497`).
+    // (`tests/test_sidecar_dedup.py:90-96`, `sidecar.py:494-495`).
     for (const bad of ["\\\\evil.example\\share\\codex", "//evil.example/share/codex"]) {
       const verdict = checkCodexHome(bad);
       expect(verdict.ok).toBe(false);
@@ -384,7 +384,7 @@ describe("partitionSessions", () => {
   });
 
   it("claims no size or date for a non-canonical copy, because the wire carries none", () => {
-    // `duplicate_paths` is paths ONLY (`sidecar.py:1423`, `dedup.py:138-141`) — no size, no
+    // `duplicate_paths` is paths ONLY (`sidecar.py:1421`, `dedup.py:138-141`) — no size, no
     // mtime, no store kind. A row that formatted those would be inventing them.
     const out = partitionSessions([pair()], { nowMs: NOW });
     expect(out.duplicates[0].others[0].detail).toBe("");
@@ -556,7 +556,7 @@ describe("scanNotes", () => {
 
 describe("REPORT_ONLY_NOTE", () => {
   it("says plainly that this panel removes nothing", () => {
-    // `dedup` contains no write/delete/move call (`sidecar.py:1400-1405`), and the only
+    // `dedup` contains no write/delete/move call (`sidecar.py:1398-1403`), and the only
     // destructive surface on the wire is `maintenance.execute` (`ipc/types.ts:986-992`).
     // A panel that merely omitted a delete button would still read as one that has not
     // grown one yet.

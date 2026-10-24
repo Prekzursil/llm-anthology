@@ -31,7 +31,7 @@
  */
 import { createServer } from "node:http";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, extname, dirname } from "node:path";
+import { join, extname, dirname, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -98,9 +98,12 @@ const MIME = {
 function serveDist(policy) {
   const server = createServer((req, res) => {
     const requested = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    let file = join(DIST, requested === "/" ? "index.html" : requested);
+    // Resolved, then CONTAINED: a `..` segment in the URL must not reach a file outside
+    // dist/. Anything that escapes gets the SPA fallback, like any other unknown path.
+    let file = resolve(DIST, `.${requested === "/" ? "/index.html" : requested}`);
     let body;
     try {
+      if (!file.startsWith(resolve(DIST) + sep)) throw new Error("outside dist/");
       body = readFileSync(file);
     } catch {
       file = join(DIST, "index.html"); // SPA fallback

@@ -829,15 +829,15 @@ describe("export.plan / export.run", () => {
 // `research.*` is absent on purpose and is pinned NEGATIVELY below — see the NOT BOUND note
 // in `./types.ts`.
 
-/** The engine's annotation key set (`llm_anthology/sidecar.py:1319-1325`). */
+/** The engine's annotation key set (`llm_anthology/sidecar.py:1317-1323`). */
 const ANNOTATION_KEYS = ["alias", "conversation_id", "is_empty", "notes", "tags"];
 
 describe("the research plane is NOT bound", () => {
   it("exposes no research method on the mock", () => {
     // A negative pin, not a formality. The research plane has no backend: both
     // `research_backend` and `local_backend` fall back to `MockBackend()`
-    // (`llm_anthology/sidecar.py:587-590`) whose `synthesize` returns `""`
-    // (`research.py:88-97`), so the shipped app can never produce output. If someone
+    // (`llm_anthology/sidecar.py:585-588`) whose `synthesize` returns `""`
+    // (`research.py:91-100`), so the shipped app can never produce output. If someone
     // re-adds a mock that returns canned prose, a research panel will look finished in
     // every dev run and screenshot and be permanently blank for the user — this test is
     // what makes that regression loud instead of invisible.
@@ -942,7 +942,7 @@ describe("metadata.* annotations", () => {
     const rows = await ipc.metadataSearch({ tag: "rust" });
     // The seed puts 'Rust' on orch and 'rust' on ipc: a whole-tag match is case-insensitive.
     expect(rows.map((r) => r.conversation_id)).toEqual(["ipc", "orch"]);
-    // sidecar.py:1378-1389 — the exact row shape a listing renders.
+    // sidecar.py:1376-1387 — the exact row shape a listing renders.
     expect(Object.keys(rows[0]).sort()).toEqual([
       "account",
       "annotation",
@@ -1014,7 +1014,7 @@ describe("dedup.scan / dedup.sessions", () => {
   it("tallies the scan consistently with the sessions it then serves", async () => {
     const ipc = createMockIpc();
     const scan = await ipc.dedupScan("C:\\Users\\preview\\.codex");
-    // sidecar.py:1442-1449.
+    // sidecar.py:1440-1447.
     expect(Object.keys(scan).sort()).toEqual([
       "copy_count",
       "duplicate_count",
@@ -1052,7 +1052,7 @@ describe("dedup.scan / dedup.sessions", () => {
     await ipc.dedupScan("C:\\Users\\preview\\.codex");
     const rows = await ipc.dedupSessions();
     expect(rows).toHaveLength(MOCK_DEDUP_SESSIONS.length);
-    // sidecar.py:1416-1426.
+    // sidecar.py:1414-1424.
     expect(Object.keys(rows[0]).sort()).toEqual([
       "canonical_path",
       "copy_count",
@@ -1084,7 +1084,7 @@ describe("dedup.scan / dedup.sessions", () => {
   });
 
   it("requires a codex_home and refuses a UNC or relative one", async () => {
-    // sidecar.py:1429-1437: never defaulted, because a defaulted home once made a probe
+    // sidecar.py:1427-1435: never defaulted, because a defaulted home once made a probe
     // read the owner's live Codex store.
     const ipc = createMockIpc();
     await expect(ipc.dedupScan("")).rejects.toThrow(/codex_home/);
@@ -1130,7 +1130,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     const preview = await ipc.maintenancePlan(
       planParams([`${STORE}\\a.jsonl`, `${STORE}\\b.jsonl`]),
     );
-    // sidecar.py:1477-1494.
+    // sidecar.py:1475-1492.
     expect(Object.keys(preview).sort()).toEqual([
       "action",
       "allowed",
@@ -1153,7 +1153,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     expect(preview.requires_typed_confirmation).toBe(true);
     // maintenance.py:414-419 — derived from the ALLOWED count, plural-aware.
     expect(preview.required_typed_confirmation).toBe("DELETE 2 FILES");
-    // sidecar.py:1473-1475 — every RPC-built target is forced to UNKNOWN (sidecar.py:1556).
+    // sidecar.py:1471-1473 — every RPC-built target is forced to UNKNOWN (sidecar.py:1554).
     expect(Object.keys(preview.allowed[0]).sort()).toEqual([
       "file_path",
       "is_hot",
@@ -1315,7 +1315,7 @@ describe("maintenance.* (the only destructive surface)", () => {
       plan_id: preview.plan_id,
       confirmation: preview.required_typed_confirmation,
     });
-    // sidecar.py:1498-1504.
+    // sidecar.py:1496-1502.
     expect(Object.keys(out).sort()).toEqual([
       "executed",
       "manifest_path",
@@ -1342,7 +1342,7 @@ describe("maintenance.* (the only destructive surface)", () => {
 
   it("leaves the handle usable after a REFUSED confirmation, and consumes it on accept", async () => {
     // A typo must be correctable without forcing a re-plan; a completed run cannot be
-    // replayed (sidecar.py:1587-1589, tests/test_sidecar_maintenance.py:194-206).
+    // replayed (sidecar.py:1585-1587, tests/test_sidecar_maintenance.py:195-207).
     const ipc = createMockIpc();
     const preview = await ipc.maintenancePlan(planParams([`${STORE}\\a.jsonl`]));
     await expect(
@@ -1375,7 +1375,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     const ipc = createMockIpc();
     expect(await ipc.maintenanceRuns()).toEqual([]);
 
-    // A dry run does not enter the ledger (tests/test_sidecar_maintenance.py:305-312).
+    // A dry run does not enter the ledger (tests/test_sidecar_maintenance.py:307-314).
     const dry = await ipc.maintenancePlan(planParams([`${STORE}\\a.jsonl`]));
     await ipc.maintenanceExecute({
       plan_id: dry.plan_id,
@@ -1494,7 +1494,7 @@ describe("maintenance.* (the only destructive surface)", () => {
   });
 
   it("refuses an empty store_root / checkpoint_root as a PARAM error", async () => {
-    // The engine requires both as non-empty strings at the RPC edge (`sidecar.py:1524-1534`).
+    // The engine requires both as non-empty strings at the RPC edge (`sidecar.py:1522-1532`).
     // The code matters as much as the refusal: -32602 says "your form is incomplete" while
     // -32003 says "the engine declined a valid request", and a panel routes them differently.
     const ipc = createMockIpc();
@@ -1658,7 +1658,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     // Verified engine roughness, reproduced deliberately: `read_checkpoint` opens the file
     // directly (`llm_anthology/maintenance.py:577`), so a bad path raises FileNotFoundError,
     // which is neither MaintenanceRefused nor ValueError and therefore escapes
-    // `_maintenance_call`'s mapping into the -32603 catch-all (`sidecar.py:676-677`).
+    // `_maintenance_call`'s mapping into the -32603 catch-all (`sidecar.py:674-675`).
     // A panel that treats "missing manifest" as a refusal will mislabel it.
     const ipc = createMockIpc();
     const missing = await ipc
@@ -1757,7 +1757,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
         created: true,
       });
       // The engine rejects a UNC or relative `index_path` before touching the disk
-      // (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:781`), and the mock now does the
+      // (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:779`), and the mock now does the
       // same. It has to carry a JSON-RPC code, because a UI that lets the user name a network
       // destination must fail the SAME WAY in a dev run as against the engine — resolving
       // `\\host\share` on Windows initiates an outbound SMB/NTLM authentication.
@@ -1774,7 +1774,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
   it("corpus.build accepts the job and echoes whichever source root was named", async () => {
     const codex = await createMockIpc().corpusBuild({ sessions_root: "C:\\me\\.codex\\sessions" });
     // "running" reports ACCEPTED, not finished — build_status is the source of truth
-    // (`sidecar.py:834-836`).
+    // (`sidecar.py:832-834`).
     expect(codex).toEqual({
       job_id: "mock-build-1",
       state: "running",
@@ -1796,13 +1796,13 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     expect(grokOnly.sessions_root).toBe("");
     expect(grokOnly.grok_root).toBe("C:\\me\\grok");
     // With NEITHER root named the engine raises -32602 "name at least one source"
-    // (`sidecar.py:858-861`) — a pure params check needing no filesystem — and the mock now
+    // (`sidecar.py:856-859`) — a pure params check needing no filesystem — and the mock now
     // does too. Otherwise an empty build form succeeds in every dev run and fails only
     // against the engine.
     const none = await createMockIpc().corpusBuild({}).catch((e: unknown) => e);
     expect(rpcErrorCode(none)).toBe(RPC_INVALID_PARAMS);
     expect(String((none as Error).message)).toMatch(/name at least one source/);
-    // A named root is refused if UNC or relative, per root (`sidecar.py:865-871`). The
+    // A named root is refused if UNC or relative, per root (`sidecar.py:863-869`). The
     // engine's `os.path.isdir` check is NOT reproduced — that one needs a real disk.
     const unc = await createMockIpc()
       .corpusBuild({ sessions_root: "\\\\evil.example\\share" }).catch((e: unknown) => e);
@@ -1817,7 +1817,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
 
   it("corpus.build_status reads back idle before any build", async () => {
     // Poll-safe at any time — the engine answers idle rather than erroring so the UI can
-    // render unconditionally (`sidecar.py:973-975`, `:995`).
+    // render unconditionally (`sidecar.py:971-973`, `:993`).
     expect(await createMockIpc().corpusBuildStatus()).toEqual({
       state: "idle",
       indexed_conversations: 0,
@@ -1826,7 +1826,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
   });
 
   it("refuses a job_id supplied before any build has started", async () => {
-    // `sidecar.py:991-994` raises -32602 "unknown job_id ...: no build has been started" for
+    // `sidecar.py:989-992` raises -32602 "unknown job_id ...: no build has been started" for
     // exactly this call. Ignoring the argument and answering "idle" would tell a client that
     // polls with a stale handle after a restart that all is well, where the engine returns a
     // param error — so the poll-safe `idle` answer is for an UNNAMED poll only.
@@ -1850,7 +1850,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
       expect(first.finished_ms).toBeUndefined();
       expect(first.job_id).toBe("mock-build-1");
       // `sessions_root` is the root the build NAMED, matching the handle above. The engine
-      // reads it off the job snapshot (`sidecar.py:1000`); a hardcoded stand-in would show a
+      // reads it off the job snapshot (`sidecar.py:998`); a hardcoded stand-in would show a
       // panel that reads the ingest source off the STATUS a path that exists nowhere.
       expect(first.sessions_root).toBe("C:\\me\\.codex\\sessions");
 
@@ -1875,7 +1875,7 @@ describe("corpus.create / corpus.build / corpus.build_status", () => {
     const err = await ipc.corpusBuildStatus("other-job").catch((e: unknown) => e);
     expect(String((err as Error).message)).toMatch(/unknown job_id 'other-job'/);
     // Thrown through `rpcError`, so it carries a JSON-RPC envelope and `rpcErrorCode` finds
-    // the engine's code (`sidecar.py:996-998`). A bare `Error` here would read `null` and
+    // the engine's code (`sidecar.py:994-996`). A bare `Error` here would read `null` and
     // leave a panel's RPC_INVALID_PARAMS branch dead in every dev run — the exact
     // invisible-dead-path class `rpcError` was introduced (mock.ts:645-649) to prevent.
     expect(rpcErrorCode(err)).toBe(RPC_INVALID_PARAMS);
@@ -1896,7 +1896,7 @@ describe("MockGraph walks not otherwise exercised", () => {
   });
 
   it("graph.subtree honours a depth cap on the WALK", async () => {
-    // Mirrors `_collect_subtree` (`sidecar.py:1677-1687`): the cap bounds how far the frontier
+    // Mirrors `_collect_subtree` (`sidecar.py:1675-1685`): the cap bounds how far the frontier
     // expands, and depth 0 is a real value meaning "this node only" — not "no cap".
     expect((await mockIpc.graphSubtree("orch", 0)).nodes.map((n) => n.id)).toEqual(["orch"]);
     const d1 = await mockIpc.graphSubtree("orch", 1);
@@ -1916,7 +1916,7 @@ describe("MockGraph walks not otherwise exercised", () => {
   it("the ancestor walk reports a shared ancestor ONCE, nearest first", () => {
     // `review` is reached from three parents and `repro` sits above two of them, so an
     // un-deduped BFS would list it twice and a panel would draw the same thread as two
-    // ancestors (`_collect_ancestors`, `sidecar.py:1689-1698`).
+    // ancestors (`_collect_ancestors`, `sidecar.py:1687-1696`).
     //
     // Driven through `MockGraph.collectAncestors` rather than an IPC method: DECISION G-17
     // removed `graphAncestors` from the contract (no caller), but the BFS-dedup property is
@@ -1935,7 +1935,7 @@ describe("MockGraph walks not otherwise exercised", () => {
 
 describe("graph.roots ordering", () => {
   it("orders by RECENCY, falling back created -> 0 for a node with neither", async () => {
-    // `_order_nodes` "recent" (`sidecar.py:1670-1672`) keys on updated_at_ms OR created_at_ms
+    // `_order_nodes` "recent" (`sidecar.py:1668-1670`) keys on updated_at_ms OR created_at_ms
     // OR 0. All three arms are live in the built-in forest: `orch` has an update, `repro` and
     // `research` have only a birth date, and the dangling `pruned-parent` has neither — so it
     // sinks to the bottom instead of being dropped or thrown at.

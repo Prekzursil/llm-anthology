@@ -543,7 +543,7 @@ describe("DedupPanel rows", () => {
   }
 
   it("shows the kept copy's measurements and gives the other copies NONE", async () => {
-    // `duplicate_paths` is paths only (`sidecar.py:1423`), so the other rows must carry no
+    // `duplicate_paths` is paths only (`sidecar.py:1421`), so the other rows must carry no
     // detail ELEMENT at all — an empty one would still be a place for a future guess to land.
     const container = await withSessions([pair()]);
     const row = must(container, ".dedup-row");

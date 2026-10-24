@@ -51,7 +51,7 @@ def test_md_includes_citations():
         ir.Turn("assistant", [ir.Block("text", text="answer",
                                        citations=[{"url": "https://ex.com", "title": "Ex"}])]),
     ]))
-    assert "https://ex.com" in md and "Ex" in md
+    assert "[Ex](https://ex.com)" in md
 
 
 def test_md_unsafe_citation_url_not_a_link():
