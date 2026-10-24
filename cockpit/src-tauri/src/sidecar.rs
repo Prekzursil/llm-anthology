@@ -1445,7 +1445,7 @@ mod tests {
             "import sys\n",
             "sys.stderr.write('Traceback (most recent call last):\\n')\n",
             "sys.stderr.write('  File \"/x/adapters/grok.py\", line 7, in load\\n')\n",
-            "sys.stderr.write(\"KeyError: 'SYNTHETIC-CANARY-9f3a'\\n\")\n",
+            "sys.stderr.write(\"KeyError: 'SYNTHETIC-CANARY-9f3a'\\n\")\n", // gitleaks:allow -- synthetic test canary, not a credential
             "sys.stderr.flush()\n",
         );
 

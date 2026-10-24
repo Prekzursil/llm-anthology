@@ -103,6 +103,11 @@ include = [
 # inferred from requires-python.
 line-length = 100
 
+[tool.basedpyright]
+# QZP lean gate, gate 2: the standard bar, zero errors. The environment it resolves
+# imports against is requirements.txt (pinned runtime deps + the test toolchain).
+typeCheckingMode = "standard"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

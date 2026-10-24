@@ -273,7 +273,7 @@ describe("capFanOut", () => {
     // of sorting between them — deterministic, but not canonical, and it means two modules
     // in the same folder disagree about what their output ordering means.
     const out = capFanOut(twoWideParents(), 10);
-    expect(out.nodes.map((n) => n.id)).toEqual([...out.nodes.map((n) => n.id)].sort());
+    expect(out.nodes.map((n) => n.id)).toEqual(out.nodes.map((n) => n.id).sort());
     const keys = out.edges.map((e) => `${e.parent} ${e.child}`);
     expect(keys).toEqual([...keys].sort());
   });

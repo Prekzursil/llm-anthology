@@ -53,7 +53,11 @@ const USAGE = `llm_anthology — render ChatGPT / Claude / Gemini session export
   llm-anthology demo     <out.html>
 `;
 
-const ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
+// build.py's `_ILLEGAL` is `[<>:"/\\|?*\x00-\x1f]`: the Windows-reserved punctuation
+// below, plus every C0 control, each replaced by a space. The controls are matched by
+// code point in `blankControls` rather than by a regex range, which oxlint's
+// no-control-regex rejects however the range is escaped.
+const ILLEGAL = /[<>:"/\\|?*]/g;
 const WS = /\s+/g;
 
 const THEMES: Record<
@@ -90,8 +94,14 @@ const FALLBACK_THEME = {
   muted: "#999999",
 };
 
+function blankControls(s: string): string {
+  let out = "";
+  for (const ch of s) out += ch.charCodeAt(0) < 0x20 ? " " : ch;
+  return out;
+}
+
 function safeName(title: string | undefined, idx: number): string {
-  let base = sanitizeForCopy(title || "untitled").replace(ILLEGAL, " ");
+  let base = blankControls(sanitizeForCopy(title || "untitled").replace(ILLEGAL, " "));
   base =
     base
       .replace(WS, " ")
