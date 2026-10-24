@@ -150,7 +150,9 @@ describe("the export privacy plane", () => {
     const preview = derivePreview(
       planFixture({ credential_scan: scanFixture({ findings: [FINDING] }) }),
     );
-    expect(preview.scan.findings).toEqual(["api-key in thread t-7 field preview: sk-a… (34 chars)"]);
+    expect(preview.scan.findings).toEqual([
+      "api-key in thread t-7 field preview: sk-a… (34 chars)",
+    ]);
     // The whole point of the mask: a report is rendered, logged and pasted into bug threads,
     // so a finding that echoed the secret to prove it found one would be the worst possible bug.
     expect(preview.scan.findings.join()).not.toContain("sk-abcdefghijklmnop");
@@ -193,7 +195,11 @@ describe("the export privacy plane", () => {
     // Forwarded on failure deliberately: a blocked export is exactly when the user is about
     // to retry, and dropping the warning there would make them retry blind.
     const blocked = deriveVerdict(
-      runResult({ ok: false, graph_gate: false, credential_scan: scanFixture({ findings: [FINDING] }) }),
+      runResult({
+        ok: false,
+        graph_gate: false,
+        credential_scan: scanFixture({ findings: [FINDING] }),
+      }),
     );
     expect(blocked.scan.findings).toHaveLength(1);
     const lines = renderView({ kind: "done", preview: null, verdict: blocked });
@@ -204,7 +210,9 @@ describe("the export privacy plane", () => {
     // The first draft of this case asserted /replaced/ on a scrub with ZERO findings, which
     // was wrong: nothing was replaced, and saying so would be the opposite lie. Both facts
     // matter to someone about to hand the file over, so both are asserted.
-    const nothingToDo = deriveVerdict(runResult({ credential_scan: scanFixture({ scrubbed: true }) }));
+    const nothingToDo = deriveVerdict(
+      runResult({ credential_scan: scanFixture({ scrubbed: true }) }),
+    );
     expect(nothingToDo.scan.scrubbed).toBe(true);
     expect(nothingToDo.scan.headline).toMatch(/scrub was ON/i);
     expect(nothingToDo.scan.headline).not.toMatch(/REPLACED/);
@@ -213,8 +221,9 @@ describe("the export privacy plane", () => {
       runResult({ credential_scan: scanFixture({ scrubbed: true, findings: [FINDING] }) }),
     );
     expect(replaced.scan.headline).toMatch(/REPLACED in the written bytes/);
-    expect(renderView({ kind: "done", preview: null, verdict: replaced }).join("\n"))
-      .toMatch(/REPLACED/);
+    expect(renderView({ kind: "done", preview: null, verdict: replaced }).join("\n")).toMatch(
+      /REPLACED/,
+    );
   });
 
   it("ADAPTS a client into ExportIpc while preserving mode and scrub", async () => {
@@ -370,12 +379,14 @@ describe("derivePreview", () => {
 
 describe("deriveVerdict", () => {
   it("reports a written path on a successful export", () => {
-    const verdict = deriveVerdict(runResult({
-      ok: true,
-      graph_gate: true,
-      transcript_gate: true,
-      written_path: "C:/out/export.json",
-    }));
+    const verdict = deriveVerdict(
+      runResult({
+        ok: true,
+        graph_gate: true,
+        transcript_gate: true,
+        written_path: "C:/out/export.json",
+      }),
+    );
     expect(verdict).toEqual({
       status: "ok",
       graphGate: true,
@@ -400,7 +411,9 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks on the structural gate with no diff detail (lean wire)", () => {
-    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: false, transcript_gate: true }));
+    const verdict = deriveVerdict(
+      runResult({ ok: false, graph_gate: false, transcript_gate: true }),
+    );
     expect(verdict).toEqual({
       status: "blocked",
       graphGate: false,
@@ -423,12 +436,14 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks on the transcript gate and surfaces the sorted missing tokens", () => {
-    const verdict = deriveVerdict(runResult({
-      ok: false,
-      graph_gate: true,
-      transcript_gate: false,
-      missing_tokens: ["zeta", "alpha", "alpha"],
-    }));
+    const verdict = deriveVerdict(
+      runResult({
+        ok: false,
+        graph_gate: true,
+        transcript_gate: false,
+        missing_tokens: ["zeta", "alpha", "alpha"],
+      }),
+    );
     expect(verdict.status).toBe("blocked");
     if (verdict.status !== "blocked") throw new Error("unreachable");
     expect(verdict.headline).toBe("Blocked: transcript fidelity gate failed");
@@ -465,7 +480,9 @@ describe("deriveVerdict", () => {
   });
 
   it("blocks with an honest headline when neither gate names the failure", () => {
-    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: true, transcript_gate: true }));
+    const verdict = deriveVerdict(
+      runResult({ ok: false, graph_gate: true, transcript_gate: true }),
+    );
     expect(verdict.status).toBe("blocked");
     if (verdict.status !== "blocked") throw new Error("unreachable");
     expect(verdict.headline).toBe("Blocked: export did not complete");
@@ -479,9 +496,7 @@ describe("deriveVerdict", () => {
 
 describe("renderView", () => {
   it("renders the transient states", () => {
-    expect(renderView({ kind: "idle" })).toEqual([
-      "Export idle. Choose a destination to preview.",
-    ]);
+    expect(renderView({ kind: "idle" })).toEqual(["Export idle. Choose a destination to preview."]);
     expect(renderView({ kind: "planning" })).toEqual(["Planning export…"]);
     expect(renderView({ kind: "running", preview: null })).toEqual(["Exporting…"]);
   });
@@ -500,12 +515,14 @@ describe("renderView", () => {
   });
 
   it("renders an ok verdict as a single headline", () => {
-    const verdict = deriveVerdict(runResult({
-      ok: true,
-      graph_gate: true,
-      transcript_gate: true,
-      written_path: "/out/export.json",
-    }));
+    const verdict = deriveVerdict(
+      runResult({
+        ok: true,
+        graph_gate: true,
+        transcript_gate: true,
+        written_path: "/out/export.json",
+      }),
+    );
     expect(renderView({ kind: "done", preview: null, verdict })).toEqual([
       "Export written to /out/export.json",
       // Carried on SUCCESS too: a clean write is still an artifact about to be handed over.
@@ -532,7 +549,9 @@ describe("renderView", () => {
   });
 
   it("renders a clean-but-blocked verdict with a no-difference note and PASS gates", () => {
-    const verdict = deriveVerdict(runResult({ ok: false, graph_gate: true, transcript_gate: true }));
+    const verdict = deriveVerdict(
+      runResult({ ok: false, graph_gate: true, transcript_gate: true }),
+    );
     expect(renderView({ kind: "done", preview: null, verdict })).toEqual([
       "Blocked: export did not complete",
       "gates: structural PASS · transcript PASS",
@@ -634,7 +653,12 @@ describe("ExportPanel", () => {
       fakeIpc({
         exportRun: async (dest) => {
           seenPath = dest;
-          return runResult({ ok: true, graph_gate: true, transcript_gate: true, written_path: dest });
+          return runResult({
+            ok: true,
+            graph_gate: true,
+            transcript_gate: true,
+            written_path: dest,
+          });
         },
       }),
       (v) => views.push(v),
@@ -730,7 +754,12 @@ describe("ExportPanel", () => {
     expect(views.map((v) => v.kind)).toEqual(["running"]);
 
     gate.resolve(
-      runResult({ ok: true, graph_gate: true, transcript_gate: true, written_path: "/out/export.json" }),
+      runResult({
+        ok: true,
+        graph_gate: true,
+        transcript_gate: true,
+        written_path: "/out/export.json",
+      }),
     );
     await first;
     expect(views.map((v) => v.kind)).toEqual(["running", "done"]);
@@ -779,7 +808,9 @@ describe("shareable treatment parity with redact.shareable_thread", () => {
    * rather than being silently filed under something plausible.
    */
   function engineTreatments(source: string): Record<string, string> {
-    const block = /def shareable_thread\([\s\S]*?return ThreadMeta\(([\s\S]*?)\n {4}\)/.exec(source);
+    const block = /def shareable_thread\([\s\S]*?return ThreadMeta\(([\s\S]*?)\n {4}\)/.exec(
+      source,
+    );
     if (block === null) throw new Error("shareable_thread's ThreadMeta(...) block not found");
     const out: Record<string, string> = {};
     for (const line of block[1].split("\n")) {
@@ -787,11 +818,15 @@ describe("shareable treatment parity with redact.shareable_thread", () => {
       if (m === null) continue; // comment or blank
       const [, field, expr] = m;
       out[field] =
-        expr === `meta.${field}` ? "kept"
-        : expr.startsWith("scrub_home_mentions(") ? "scrubbed"
-        : expr.startsWith("relativize_home(") ? "relativized"
-        : expr === `""` ? "dropped"
-        : "unknown";
+        expr === `meta.${field}`
+          ? "kept"
+          : expr.startsWith("scrub_home_mentions(")
+            ? "scrubbed"
+            : expr.startsWith("relativize_home(")
+              ? "relativized"
+              : expr === `""`
+                ? "dropped"
+                : "unknown";
     }
     return out;
   }
@@ -818,7 +853,7 @@ describe("shareable treatment parity with redact.shareable_thread", () => {
       '    """doc"""',
       "    return ThreadMeta(",
       "        agent_nickname=meta.agent_nickname,",
-      "        preview=\"\",",
+      '        preview="",',
       "        title=scrub_home_mentions(meta.title, home=home),",
       "    )",
     ].join("\n");

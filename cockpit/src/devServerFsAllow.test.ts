@@ -79,9 +79,7 @@ describe("dev server file-serving boundary", () => {
     for (const allowed of config.server.fs.allow) {
       // Equal to the cockpit root, or nested inside it. A parent would mean the repo
       // root (or higher) is reachable.
-      expect(
-        allowed === COCKPIT_DIR || allowed.startsWith(`${COCKPIT_DIR}/`),
-      ).toBe(true);
+      expect(allowed === COCKPIT_DIR || allowed.startsWith(`${COCKPIT_DIR}/`)).toBe(true);
     }
   });
 
@@ -109,8 +107,6 @@ describe("dev server file-serving boundary", () => {
     ["dotenv", ".env"],
   ])("refuses %s above the cockpit root", async (_label, relativePath) => {
     const config = await resolveDevConfig();
-    expect(isFileServingAllowed(config, fsUrl(`${REPO_ROOT}/${relativePath}`))).toBe(
-      false,
-    );
+    expect(isFileServingAllowed(config, fsUrl(`${REPO_ROOT}/${relativePath}`))).toBe(false);
   });
 });

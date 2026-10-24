@@ -22,7 +22,7 @@
  * returns `[]`, which reads exactly like a broken search.
  *
  * With NEITHER filter, `metadata.search` returns `[]` ON PURPOSE, so a blank query cannot
- * dump the whole catalogue into the UI (`sidecar.py:1365-1366`, `metadata.py:501-502`). An
+ * dump the whole catalogue into the UI (`sidecar.py:1425-1426`, `metadata.py:533-534`). An
  * empty result from a blank query is therefore NOT "no matches", and this panel says so in
  * different words — see {@link searchOutcome}.
  *
@@ -31,8 +31,8 @@
  * changed; sending all three would blank the two the user never touched.
  *
  * AND ONE THING IT DOES NOT ATTEMPT. The store dedups tags with Python `casefold()`
- * (`llm_anthology/metadata.py:236`) and strips hidden codepoints with
- * `sanitize.sanitize_for_copy` (`llm_anthology/sanitize.py:140-147`). Neither is reproduced
+ * (`llm_anthology/metadata.py:241`) and strips hidden codepoints with
+ * `sanitize.sanitize_for_copy` (`llm_anthology/sanitize.py:143-150`). Neither is reproduced
  * here. JS has no `casefold`, and MEASURED, `toLowerCase()` disagrees with it: `Straße` folds
  * to `strasse` but lowercases to `straße`; likewise the `ﬁ` ligature, and `ΣΣ` (`σσ` vs
  * `σς`). Re-implementing a security-relevant sanitiser in a second language would drift from
@@ -72,8 +72,8 @@ export interface MetadataIpc {
  * own corpus is unsearchable.
  */
 export const ANNOTATION_SCOPE_NOTE =
-  "Searches your annotations — aliases, tags and notes — not the message text. "
-  + "Use search for transcripts.";
+  "Searches your annotations — aliases, tags and notes — not the message text. " +
+  "Use search for transcripts.";
 
 /** The three editable annotation fields, in the order the panel shows them. */
 export type AnnotationField = "alias" | "tags" | "notes";
@@ -86,7 +86,7 @@ export interface Draft {
 }
 
 /**
- * A raw tag list -> the canonical form, mirroring `clean_tags` (`metadata.py:214-240`) as
+ * A raw tag list -> the canonical form, mirroring `clean_tags` (`metadata.py:219-245`) as
  * closely as JS allows.
  *
  * Each tag has its whitespace RUNS collapsed to one space, which trims it, drops a blank and
@@ -110,7 +110,7 @@ export function normalizeTags(raw: readonly string[]): string[] {
     const key = tag.toLowerCase();
     if (!seen.has(key)) seen.set(key, tag);
   }
-  // The engine's sort key is `(casefold, exact)` (`metadata.py:240`), but the exact-string
+  // The engine's sort key is `(casefold, exact)` (`metadata.py:245`), but the exact-string
   // tiebreak is UNREACHABLE after a fold-keyed dedup and so is not reproduced: `seen` is keyed
   // by `toLowerCase()` and holds one value per key, so two survivors always differ in their
   // folded form. Carrying the branch anyway would be dead code with a permanent coverage hole.
@@ -242,20 +242,17 @@ export function changedSetParams(stored: Annotation, draft: Draft): MetadataSetP
  * Biggest first by default, because a facet is for finding the tags actually in use; ties
  * break on the tag so two renders of one corpus are identical. `"tag"` keeps the store's own
  * ordering instead — `metadata.tags` already sorts by the casefolded tag
- * (`metadata.py:544`) — so choosing count-first is a UI decision layered on top rather than a
+ * (`metadata.py:578`) — so choosing count-first is a UI decision layered on top rather than a
  * second rule that disagrees with the store.
  *
  * Copies rather than sorting in place: the array belongs to the caller's last response.
  */
-export function facetOrder(
-  counts: readonly TagCount[],
-  by: "count" | "tag" = "count",
-): TagCount[] {
+export function facetOrder(counts: readonly TagCount[], by: "count" | "tag" = "count"): TagCount[] {
   const out = [...counts];
   if (by === "tag") {
     return out.sort((a, b) => (a.tag.toLowerCase() < b.tag.toLowerCase() ? -1 : 1));
   }
-  return out.sort((a, b) => (b.count - a.count) || (a.tag < b.tag ? -1 : 1));
+  return out.sort((a, b) => b.count - a.count || (a.tag < b.tag ? -1 : 1));
 }
 
 /**
@@ -358,9 +355,7 @@ export class MetadataController {
   /** Apply an editor edit and recompute what is unsaved. */
   editDraft(patch: Partial<Draft>): void {
     const draft = { ...this.view.draft, ...patch };
-    const dirty = this.view.annotation === null
-      ? []
-      : dirtyFields(this.view.annotation, draft);
+    const dirty = this.view.annotation === null ? [] : dirtyFields(this.view.annotation, draft);
     this.emit({ draft, dirty });
   }
 
@@ -505,8 +500,15 @@ export class MetadataPanel {
     this.resultsEl = document.createElement("div");
     this.resultsEl.className = "metadata-results";
 
-    container.append(editor, actions, this.errorEl, search, this.facetEl,
-                     this.statusEl, this.resultsEl);
+    container.append(
+      editor,
+      actions,
+      this.errorEl,
+      search,
+      this.facetEl,
+      this.statusEl,
+      this.resultsEl,
+    );
     this.paint();
   }
 
@@ -546,24 +548,28 @@ export class MetadataPanel {
     this.statusEl.textContent = s.outcome.message;
     this.statusEl.dataset.kind = s.outcome.kind;
 
-    this.facetEl.replaceChildren(...s.facet.map((entry) => {
-      const b = button(`${entry.tag} (${entry.count})`, "metadata-tag", () => {
-        this.toggleTag(entry.tag);
-      });
-      b.setAttribute("aria-pressed", String(this.searchTag === entry.tag));
-      return b;
-    }));
+    this.facetEl.replaceChildren(
+      ...s.facet.map((entry) => {
+        const b = button(`${entry.tag} (${entry.count})`, "metadata-tag", () => {
+          this.toggleTag(entry.tag);
+        });
+        b.setAttribute("aria-pressed", String(this.searchTag === entry.tag));
+        return b;
+      }),
+    );
 
-    this.resultsEl.replaceChildren(...s.rows.map((r) => {
-      const b = button("", "metadata-row", () => this.onPick(r.conversation_id));
-      // textContent, never innerHTML: a title and an alias are arbitrary text off disk.
-      b.textContent = r.annotation.alias !== "" ? r.annotation.alias : r.title;
-      const sub = document.createElement("span");
-      sub.className = "metadata-row-sub";
-      sub.textContent = annotationSummary(r.annotation);
-      b.append(sub);
-      return b;
-    }));
+    this.resultsEl.replaceChildren(
+      ...s.rows.map((r) => {
+        const b = button("", "metadata-row", () => this.onPick(r.conversation_id));
+        // textContent, never innerHTML: a title and an alias are arbitrary text off disk.
+        b.textContent = r.annotation.alias !== "" ? r.annotation.alias : r.title;
+        const sub = document.createElement("span");
+        sub.className = "metadata-row-sub";
+        sub.textContent = annotationSummary(r.annotation);
+        b.append(sub);
+        return b;
+      }),
+    );
   }
 }
 

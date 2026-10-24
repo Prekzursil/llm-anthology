@@ -14,11 +14,7 @@
 import type { RollupTable } from "../ipc/types";
 import { DIFF_STYLES, edgeKey, type DiffOverlay } from "./diffOverlay";
 import type { LayoutEdge, LayoutNode, PositionedGraph } from "./layout";
-import {
-  CROSS_EDGE_COLOR,
-  EDGE_COLOR,
-  providerTint,
-} from "./palette";
+import { CROSS_EDGE_COLOR, EDGE_COLOR, providerTint } from "./palette";
 
 export type SelectHandler = (nodeId: string | null, node: LayoutNode | null) => void;
 
@@ -146,10 +142,7 @@ export class SpawnTreeCanvas {
       MIN_SCALE,
       Math.min(
         MAX_SCALE,
-        Math.min(
-          (this.cssWidth - padding * 2) / width,
-          (this.cssHeight - padding * 2) / height,
-        ),
+        Math.min((this.cssWidth - padding * 2) / width, (this.cssHeight - padding * 2) / height),
       ),
     );
     this.tf = {
@@ -301,11 +294,7 @@ export class SpawnTreeCanvas {
     ctx.globalAlpha = 1;
   }
 
-  private drawArrowHead(
-    ctx: CanvasRenderingContext2D,
-    edge: LayoutEdge,
-    color: string,
-  ): void {
+  private drawArrowHead(ctx: CanvasRenderingContext2D, edge: LayoutEdge, color: string): void {
     const n = edge.points.length;
     const tip = edge.points[n - 1];
     const prev = edge.points[n - 2];
@@ -326,11 +315,7 @@ export class SpawnTreeCanvas {
     ctx.fill();
   }
 
-  private drawNode(
-    ctx: CanvasRenderingContext2D,
-    node: LayoutNode,
-    showLabels: boolean,
-  ): void {
+  private drawNode(ctx: CanvasRenderingContext2D, node: LayoutNode, showLabels: boolean): void {
     const tint = providerTint(node.node.provider);
     const selected = node.id === this.selectedId;
     const diffKind = this.diffOverlay?.nodeClass[node.id];

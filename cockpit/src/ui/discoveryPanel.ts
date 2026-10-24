@@ -13,15 +13,15 @@
  *   * `built_index`   -> OPEN it. `open_corpus` takes exactly this path.
  *   * `session_store` -> IMPORT it, but ONLY when the finding actually supplies both
  *     parameters `corpus.build` requires. The engine defaults NEITHER `sessions_root` nor
- *     `codex_home` (`llm_anthology/sidecar.py:836-841` states the rule and names the
+ *     `codex_home` (`llm_anthology/sidecar.py:851-858` states the rule and names the
  *     measured reason; `:856-861` enforces that at least one source is named),
  *     deliberately, because defaulting the latter would read the user's live private store
  *     unasked. So a store whose finding names only one of them gets a stated reason, not a
  *     guessed default.
  *   * `export_file`   -> NOTHING but the fact it exists. There is no import RPC for a
- *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:600-605`) has one
+ *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:608-613`) has one
  *     ingest verb, `corpus.build`, and it runs `loaders.load_corpus`, which is Codex
- *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:280`).
+ *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:307`).
  *     Offering an "Import" button here would be inventing a capability.
  *
  * THE SPLIT. Same shape as `ui/corpusBar` and `ui/exportPanel`: pure derivations carry
@@ -34,14 +34,14 @@
  *
  *   * It does NOT gate the import on `detail.ingestable`, because that counter is a
  *     HAND-MAINTAINED capability flag in the engine's spec table and it has already been
- *     wrong once. `ItemPattern.ingestable` defaults to True (`discover.py:225`) and
- *     `detail.ingestable` is just the sum over the patterns that carry it (`discover.py:572`),
+ *     wrong once. `ItemPattern.ingestable` defaults to True (`discover.py:268`) and
+ *     `detail.ingestable` is just the sum over the patterns that carry it (`discover.py:652`),
  *     so today BOTH Codex rollout shapes count and the number equals the total. It read 0
- *     for months while `.zst` was flagged unreadable, and `discover.py:285-295` records both
+ *     for months while `.zst` was flagged unreadable, and `discover.py:332-343` records both
  *     the flip and the damage: the shipped panel told users their entire Codex history could
  *     not be imported, of a store the reader had just been fixed to glob whole
- *     (`adapters/codex_rollout.py:416-419`, measured 2043 `.zst` against 0 plain `.jsonl` at
- *     `adapters/codex_rollout.py:357-359`). A UI that gates on the flag inherits that
+ *     (`adapters/codex_rollout.py:469-472`, measured 2043 `.zst` against 0 plain `.jsonl` at
+ *     `adapters/codex_rollout.py:411-413`). A UI that gates on the flag inherits that
  *     staleness and understates the product as confidently as a wrong flag overstates it, so
  *     the counter is displayed — generically, with the rest of `detail` — and never obeyed.
  *     (The mock's discovery fixture still hardcodes `ingestable: 0` for its Codex store,
@@ -109,8 +109,8 @@ export const UNKNOWN_KIND_REASON = "Detected. This app has no action for this ki
  *
  * Two conversions in one, and both have bitten this codebase's neighbours: discovery is
  * the only surface here that reports seconds while every other timestamp is `_ms`, and it
- * reports `0.0` — never null — when nothing datable was seen (`discover.py:583` for a store,
- * and `_mtime`'s own fallback at `discover.py:788`). Passing
+ * reports `0.0` — never null — when nothing datable was seen (`discover.py:663` for a store,
+ * and `_mtime`'s own fallback at `discover.py:886`). Passing
  * that 0 to `new Date()` yields 1 January 1970, which reads as a real (and very wrong)
  * date rather than as "no date".
  */
@@ -208,7 +208,7 @@ export function kindLabel(kind: string): string {
  * One `detail` value as display text, or null to omit the key entirely.
  *
  * Omission is meaningful, not tidying: the engine writes `state_db: ""` for a marker file
- * it did NOT find (`discover.py:564`), so rendering the empty string would assert the
+ * it did NOT find (`discover.py:644`), so rendering the empty string would assert the
  * opposite of what it means. A path value is shortened to its final segment because the
  * row already carries the full location.
  */
@@ -265,7 +265,11 @@ export interface DiscoveryAction {
 
 /** Windows paths are case-insensitive and may differ only by a trailing separator. */
 function samePath(a: string, b: string): boolean {
-  const norm = (p: string): string => p.replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+  const norm = (p: string): string =>
+    p
+      .replace(/[\\/]+$/, "")
+      .replace(/\//g, "\\")
+      .toLowerCase();
   return norm(a) === norm(b);
 }
 
@@ -280,7 +284,7 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * have them.
  *
  * The derivation is STRUCTURAL rather than a provider name-check, because the structure is
- * exactly what encodes the difference. `discover.py:582` names a store finding's `path`
+ * exactly what encodes the difference. `discover.py:662` names a store finding's `path`
  * from its spec's `report` field, and `:578` carries the item tree alongside it: a
  * `report="base"` store (Codex) names its BASE, with the item tree separate in
  * `detail.items_root` — so `path` is the Codex home and
@@ -290,13 +294,13 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  *
  * That second case is not a gap worth papering over with a default: `corpus.build` would
  * then be pointed at a Claude Code transcript directory, where `ingest_sessions` globs
- * `rollout-*.jsonl` (`adapters/codex_rollout.py:416-419`) and matches nothing — a build
+ * `rollout-*.jsonl` (`adapters/codex_rollout.py:469-472`) and matches nothing — a build
  * that reports complete success having imported zero conversations — the exact outcome the
  * engine's own docstring calls out, having added an existing-directory check to stop it
- * (`sidecar.py:843-845`).
+ * (`sidecar.py:862-870`).
  *
  * KNOWN LIMIT, stated rather than hidden: this reads a base-reporting store as
- * Codex-shaped. That is true of every store in the shipped table (`discover.py:271-333`
+ * Codex-shaped. That is true of every store in the shipped table (`discover.py:318-392`
  * has exactly one of each), but a future base-reporting NON-Codex store would be offered an
  * import it cannot satisfy. The settling check is a new `StoreSpec` row: if one is ever
  * added with `report="base"`, this rule needs a capability field from the engine instead.
@@ -327,7 +331,7 @@ const CLAUDE_CODE_PROVIDER = "claude-code";
 /**
  * The subdir-reporting stores the ENGINE can actually ingest, each mapped to the
  * `corpus.build` parameter that names it. Both take the finding's `path` verbatim, because
- * `discover.py:644` sets `path = scan_root` for `report="subdir"` and that IS the root the
+ * `discover.py:724` sets `path = scan_root` for `report="subdir"` and that IS the root the
  * adapter's `ingest_sessions` takes — so neither needs derivation beyond being named.
  *
  * This is the stopgap the block above describes, and it is now visibly one: what was a
@@ -351,7 +355,8 @@ export function deriveBuildParams(
   if (itemsRoot === "") {
     return {
       build: null,
-      missing: "the scan reported no item root for this store, so there is nothing to point an import at",
+      missing:
+        "the scan reported no item root for this store, so there is nothing to point an import at",
     };
   }
 
@@ -402,7 +407,13 @@ export function deriveAction(finding: DiscoveryFinding, ctx: ActionContext): Dis
   if (finding.kind === "session_store") {
     const derived = deriveBuildParams(finding);
     if (derived.build === null) {
-      return { kind: "none", label: "", enabled: false, reason: `Detected, but ${derived.missing}.`, build: null };
+      return {
+        kind: "none",
+        label: "",
+        enabled: false,
+        reason: `Detected, but ${derived.missing}.`,
+        build: null,
+      };
     }
     return {
       kind: "import",
@@ -413,7 +424,13 @@ export function deriveAction(finding: DiscoveryFinding, ctx: ActionContext): Dis
     };
   }
   if (finding.kind === "export_file") {
-    return { kind: "none", label: "", enabled: false, reason: EXPORT_NO_IMPORT_REASON, build: null };
+    return {
+      kind: "none",
+      label: "",
+      enabled: false,
+      reason: EXPORT_NO_IMPORT_REASON,
+      build: null,
+    };
   }
   return { kind: "none", label: "", enabled: false, reason: UNKNOWN_KIND_REASON, build: null };
 }
@@ -425,9 +442,9 @@ export function deriveAction(finding: DiscoveryFinding, ctx: ActionContext): Dis
 /**
  * Presentation rank by kind: openable now, then importable, then merely present.
  *
- * Mirrors the engine's own `_KIND_RANK` (`discover.py:77`) — but it is re-stated here
+ * Mirrors the engine's own `_KIND_RANK` (`discover.py:78`) — but it is re-stated here
  * rather than relied upon, because the engine sorts survivors by `(kind, provider, path)`
- * (`discover.py:819-820`) whereas a person wants the NEWEST first within a group. The two
+ * (`discover.py:920-922`) whereas a person wants the NEWEST first within a group. The two
  * orderings genuinely differ, so the UI re-sorts instead of rendering wire order.
  */
 function kindRank(kind: string): number {
@@ -482,7 +499,7 @@ export interface DiscoveryGroup {
  *   and one click away.
  *
  *   `capNote` -> a SENTENCE, never a button. The ENGINE capped the group at
- *   `DEFAULT_MAX_PER_GROUP` before the UI saw anything (`discover.py:106`, `:785`), so
+ *   `DEFAULT_MAX_PER_GROUP` before the UI saw anything (`discover.py:107`, `:883`), so
  *   items exist on disk that are in NO list here and that no click can reveal. Putting
  *   that text on a control would promise a reveal that cannot happen; folding it into
  *   "+20 more" would report an unknown shortfall as a known one.
@@ -638,7 +655,7 @@ export type PollOutcome = "continue" | "terminal" | "timeout";
  *
  * Anything that is not `running` is terminal — `done` and `failed` obviously, but also
  * `idle`, which `corpus.build_status` reports when it holds no job at all
- * (`llm_anthology/sidecar.py:971-973`). Treating `idle` as "keep waiting" would spin forever
+ * (`llm_anthology/sidecar.py:1000-1002`). Treating `idle` as "keep waiting" would spin forever
  * against an engine that has nothing to report.
  */
 export function pollOutcome(state: string, elapsedMs: number, limits: PollLimits): PollOutcome {
@@ -764,7 +781,7 @@ function initialView(): DiscoveryView {
  * re-entrant call while one is in flight is ignored rather than queued, so a double-click
  * on "Import" cannot start two builds — which the engine would refuse anyway, with a
  * BUILD_IN_PROGRESS naming a job id the user never knew existed
- * (`llm_anthology/sidecar.py:890-894`).
+ * (`llm_anthology/sidecar.py:915-919`).
  */
 export class DiscoveryPanelController {
   private view: DiscoveryView = initialView();
@@ -853,7 +870,11 @@ export class DiscoveryPanelController {
   async scan(): Promise<void> {
     if (this.busy || this.disposed) return;
     this.busy = true;
-    this.emit({ phase: "scanning", status: "Looking for AI session data on this computer…", busy: true });
+    this.emit({
+      phase: "scanning",
+      status: "Looking for AI session data on this computer…",
+      busy: true,
+    });
     try {
       const result = await this.ipc.discoverSources();
       if (this.disposed) return;
@@ -921,8 +942,8 @@ export class DiscoveryPanelController {
    *
    * That first step is not optional: `corpus.build` is forwarded only when a corpus is
    * already attached (`cockpit/src-tauri/src/lib.rs:35-45`), the engine re-checks that
-   * itself (`sidecar.py:846` calling `_require_corpus`, `sidecar.py:699-701`), and it
-   * additionally refuses an index it cannot reopen from disk (`sidecar.py:885-887`).
+   * itself (`sidecar.py:871` calling `_require_corpus`, `sidecar.py:709-712`), and it
+   * additionally refuses an index it cannot reopen from disk (`sidecar.py:910-912`).
    * Firing the build anyway
    * on a fresh install would surface the engine's internal "no corpus attached: call
    * open_corpus first" — the exact leak `ui/errors` exists to stop.
@@ -931,7 +952,11 @@ export class DiscoveryPanelController {
     this.busy = true;
     try {
       if (this.attached === null) {
-        this.emit({ phase: "working", status: "Choose where to keep the new corpus index…", busy: true });
+        this.emit({
+          phase: "working",
+          status: "Choose where to keep the new corpus index…",
+          busy: true,
+        });
         const dest = await this.deps.chooseDestination();
         if (this.disposed) return;
         if (dest === null) {

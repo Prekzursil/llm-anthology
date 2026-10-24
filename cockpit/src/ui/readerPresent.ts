@@ -126,9 +126,11 @@ export function readerTitle(conv: { id: string; title?: string }): string {
  * the session contained; saying "3 lines could not be parsed" costs nothing and makes the
  * gap visible where it matters.
  */
-export function readerSubtitle(
-  info: { provider: string; turns: number; parseErrors: number },
-): string {
+export function readerSubtitle(info: {
+  provider: string;
+  turns: number;
+  parseErrors: number;
+}): string {
   const turns = `${info.turns} turn${info.turns === 1 ? "" : "s"}`;
   if (info.parseErrors <= 0) return `${info.provider} · ${turns}`;
   const lines = `${info.parseErrors} line${info.parseErrors === 1 ? "" : "s"}`;
@@ -146,14 +148,18 @@ export function stubExplanation(stub: ConversationStub): string {
   const reason = (stub.reason ?? "").trim();
   const noReader = /^no reader for provider '?"?([^'"]*)'?"?$/.exec(reason);
   if (noReader !== null) {
-    return `This conversation came from a ${noReader[1]} export, and an export holds many `
-      + "conversations in one file — so its transcript cannot be re-read from the index "
-      + "alone. Its metadata and search text are still indexed.";
+    return (
+      `This conversation came from a ${noReader[1]} export, and an export holds many ` +
+      "conversations in one file — so its transcript cannot be re-read from the index " +
+      "alone. Its metadata and search text are still indexed."
+    );
   }
   if (reason === "rollout unavailable") {
-    return "The session file this conversation was indexed from is no longer where the "
-      + "index recorded it. It may have been moved, deleted, or written to a drive that "
-      + "is not mounted.";
+    return (
+      "The session file this conversation was indexed from is no longer where the " +
+      "index recorded it. It may have been moved, deleted, or written to a drive that " +
+      "is not mounted."
+    );
   }
   const rejected = /^rollout rejected: (.+)$/s.exec(reason);
   if (rejected !== null) {
@@ -162,9 +168,11 @@ export function stubExplanation(stub: ConversationStub): string {
     // the user hunting for a file that is sitting right where they left it. The engine's own
     // wording is appended rather than paraphrased — it names which rule was broken, and a
     // future rule added engine-side must not silently render as this one.
-    return "This conversation was indexed from a location the engine refused to read, so "
-      + "its transcript was not loaded. This protects you: opening a network path can leak "
-      + `your Windows credentials to whoever controls it. Reason given: ${rejected[1]}`;
+    return (
+      "This conversation was indexed from a location the engine refused to read, so " +
+      "its transcript was not loaded. This protects you: opening a network path can leak " +
+      `your Windows credentials to whoever controls it. Reason given: ${rejected[1]}`
+    );
   }
   if (reason === "") return "This conversation has no readable transcript.";
   return `This conversation has no readable transcript: ${reason}`;

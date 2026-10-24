@@ -25,6 +25,7 @@ cannot be altered in place — so for those, the row is re-inserted under a fres
 stale posting is left orphaned, which is invisible to search because every query INNER JOINs
 `conversations` on rowid. Both paths are asserted below; neither may return stale text.
 """
+
 import sqlite3
 
 import pytest
@@ -34,15 +35,20 @@ from llm_anthology import corpus, ir
 
 def _conv(cid, title, texts, provider="codex"):
     return ir.Conversation(
-        id=cid, title=title, provider=provider,
-        turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=t)]) for t in texts])
+        id=cid,
+        title=title,
+        provider=provider,
+        turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=t)]) for t in texts],
+    )
 
 
 def _hits(conn, term):
     return conn.execute(
         "SELECT COUNT(*) FROM conversations_fts "
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ?", ('"%s"' % term,)).fetchone()[0]
+        "WHERE conversations_fts MATCH ?",
+        ('"%s"' % term,),
+    ).fetchone()[0]
 
 
 def _legacy_index():
@@ -51,8 +57,9 @@ def _legacy_index():
     conn.row_factory = sqlite3.Row
     corpus.init_index(conn)
     conn.execute("DROP TABLE conversations_fts")
-    conn.execute("CREATE VIRTUAL TABLE conversations_fts USING fts5("
-                 "title, body, content='', detail=none)")
+    conn.execute(
+        "CREATE VIRTUAL TABLE conversations_fts USING fts5(title, body, content='', detail=none)"
+    )
     return conn
 
 
@@ -69,7 +76,8 @@ def test_new_text_in_a_grown_session_becomes_searchable(conn):
     corpus.add_conversation(conn, _conv("c1", "t", ["alpha the first message"]))
     assert _hits(conn, "alpha") == 1
     corpus.add_conversation(
-        conn, _conv("c1", "t", ["alpha the first message", "bravo a brand new message"]))
+        conn, _conv("c1", "t", ["alpha the first message", "bravo a brand new message"])
+    )
     assert _hits(conn, "bravo") == 1, "text added after the first ingest is unsearchable"
 
 
@@ -104,10 +112,13 @@ def test_a_moved_session_updates_its_rollout_path(conn):
     pointing at the old location, so the reader said 'rollout unavailable' for a file that
     exists."""
     corpus.add_conversation(conn, _conv("c1", "t", ["x"]), rollout_path="/live/s.jsonl")
-    corpus.add_conversation(conn, _conv("c1", "t", ["x"]),
-                            rollout_path="/archived_sessions/s.jsonl")
-    assert conn.execute(
-        "SELECT rollout_path FROM conversations").fetchone()[0] == "/archived_sessions/s.jsonl"
+    corpus.add_conversation(
+        conn, _conv("c1", "t", ["x"]), rollout_path="/archived_sessions/s.jsonl"
+    )
+    assert (
+        conn.execute("SELECT rollout_path FROM conversations").fetchone()[0]
+        == "/archived_sessions/s.jsonl"
+    )
 
 
 def test_a_retitled_conversation_is_findable_by_its_NEW_title(conn):
@@ -163,7 +174,7 @@ def test_the_current_param_really_does_get_the_deleting_schema_on_this_build(con
     """Why the two tests above branch on the CAPABILITY and not on the param name.
 
     `init_index` adds `contentless_delete=1` only when
-    `_CONTENTLESS_DELETE = sqlite3.sqlite_version_info >= (3, 43)` (`corpus.py:253,263-265`).
+    `_CONTENTLESS_DELETE = sqlite3.sqlite_version_info >= (3, 43)` (`corpus.py:278,288-290`).
     Below 3.43 the "current" fixture therefore produces a table that is structurally
     LEGACY, and a test branching on the param name would demand in-place update from an
     index that cannot delete — red on an old-SQLite runner for a purely environmental
@@ -182,11 +193,13 @@ def test_the_current_param_really_does_get_the_deleting_schema_on_this_build(con
     if sqlite3.sqlite_version_info >= (3, 43):
         assert can_delete == (request.node.callspec.params["conn"] == "current"), (
             "on SQLite %s the 'current' fixture must get contentless_delete and 'legacy' "
-            "must not" % sqlite3.sqlite_version)
+            "must not" % sqlite3.sqlite_version
+        )
     else:
         assert not can_delete, (
             "SQLite %s predates contentless_delete, so NEITHER fixture can retract a "
-            "posting and both must take the move path" % sqlite3.sqlite_version)
+            "posting and both must take the move path" % sqlite3.sqlite_version
+        )
 
 
 def test_a_legacy_move_never_lands_on_a_rowid_the_stale_posting_owns(conn):
@@ -195,7 +208,9 @@ def test_a_legacy_move_never_lands_on_a_rowid_the_stale_posting_owns(conn):
     missing hit into a FALSE one — strictly worse than the bug being fixed. Repeated updates
     on a single-row index are the exact shape that triggers it."""
     for i in range(5):
-        corpus.add_conversation(conn, _conv("c1", "t", ["word%d and some padding %s" % (i, "x" * i)]))
+        corpus.add_conversation(
+            conn, _conv("c1", "t", ["word%d and some padding %s" % (i, "x" * i)])
+        )
     assert _hits(conn, "word4") == 1
     for stale in ("word0", "word1", "word2", "word3"):
         assert _hits(conn, stale) == 0, "%s still matches after four re-indexes" % stale
@@ -211,25 +226,28 @@ def test_a_same_length_body_edit_is_re_indexed_on_the_CURRENT_schema(conn):
     `add_conversation` rather than papered over here.
     """
     corpus.add_conversation(conn, _conv("c1", "t", ["alpha"]))
-    corpus.add_conversation(conn, _conv("c1", "t", ["bravo"]))     # same length, exactly
+    corpus.add_conversation(conn, _conv("c1", "t", ["bravo"]))  # same length, exactly
     if corpus._fts_can_delete(conn):
         assert _hits(conn, "bravo") == 1 and _hits(conn, "alpha") == 0
     else:
         assert _hits(conn, "alpha") == 1, (
             "legacy behaviour changed; if this now re-indexes, delete the documented "
-            "residual in add_conversation rather than leaving a stale caveat")
+            "residual in add_conversation rather than leaving a stale caveat"
+        )
 
 
 def test_a_fresh_index_is_created_with_contentless_delete():
     """Pin the schema choice itself, so a later edit to the DDL cannot quietly remove it and
     send every user down the orphaning path."""
     if sqlite3.sqlite_version_info < (3, 43):
-        pytest.skip("contentless_delete needs SQLite >= 3.43; this build has %s"
-                    % sqlite3.sqlite_version)
+        pytest.skip(
+            "contentless_delete needs SQLite >= 3.43; this build has %s" % sqlite3.sqlite_version
+        )
     c = corpus.open_index(":memory:")
     try:
-        sql = c.execute(
-            "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+        sql = c.execute("SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[
+            0
+        ]
         assert "contentless_delete" in sql, sql
     finally:
         c.close()

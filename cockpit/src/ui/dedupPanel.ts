@@ -2,12 +2,12 @@
  * DEDUP: which of the owner's session files are redundant copies of each other.
  *
  * The engine side has worked for a long time with nothing able to reach it — `dedup.scan`
- * and `dedup.sessions` are both fully implemented (`llm_anthology/sidecar.py:1426-1453`)
+ * and `dedup.sessions` are both fully implemented (`llm_anthology/sidecar.py:1490-1517`)
  * and, until this panel, had no caller outside the Python tests.
  *
  * WHAT THIS PANEL DOES, and the boundary it does not cross: it REPORTS. `dedup` contains no
  * write, delete or move call, so nothing it can be asked to do removes one of the owner's
- * files (`sidecar.py:1398-1403`). The only destructive surface on this wire is
+ * files (`sidecar.py:1460-1465`). The only destructive surface on this wire is
  * `maintenance.execute` (`cockpit/src/ipc/types.ts:986-992`), which is a separate plane with
  * a server-issued single-use handle and a typed confirmation. Acting on these results
  * therefore belongs to that plane, not here, and this file grows no delete button —
@@ -20,7 +20,7 @@
  * byte-equal session id and nothing else, `dedup.py:14-19`), which copy is being put
  * forward, and which copies merely also exist. Where the wire does not carry a fact, the row
  * says nothing rather than formatting a guess — a non-canonical copy travels as a PATH ONLY
- * (`sidecar.py:1421`), with no size, mtime or store kind, so no row may imply otherwise.
+ * (`sidecar.py:1485`), with no size, mtime or store kind, so no row may imply otherwise.
  *
  * THE EMPTY STATE IS FOUR STATES, not one, and conflating them is the defect this panel most
  * has to avoid. See {@link emptyReading}: a never-scanned panel, a scan that found no files
@@ -85,8 +85,8 @@ export const NEVER_SCANNED_LABEL =
  * Why the list can hold more sessions than the last scan reported.
  *
  * `save_sessions` is INSERT-OR-REPLACE keyed on file path and never deletes a row
- * (`dedup.py:302-311`), while `load_sessions` re-consolidates every row in the table
- * (`dedup.py:313-317`). So the list is everything ever scanned into this index and the scan
+ * (`dedup.py:317-331`), while `load_sessions` re-consolidates every row in the table
+ * (`dedup.py:333-337`). So the list is everything ever scanned into this index and the scan
  * tally is only the run that just finished. That divergence is correct behaviour, and
  * without saying so it reads as a miscount.
  */
@@ -121,7 +121,7 @@ const DAY_MS = 24 * HOUR_MS;
  * assertable; the shell passes `Date.now()`.
  *
  * null is REPORTED, never formatted: `PhysicalCopy.last_write_ms` is `Optional[int]`
- * (`dedup.py:118`) and `new Date(null)` is 1 January 1970, which reads as a real — and very
+ * (`dedup.py:123`) and `new Date(null)` is 1 January 1970, which reads as a real — and very
  * wrong — date rather than as "nothing datable was recorded".
  */
 export function relativeAge(ms: number | null, nowMs: number): string {
@@ -165,9 +165,9 @@ export function pathSummary(path: string): PathSummary {
  * Whether a path may be sent as `codex_home`, and if not, why — in the user's terms.
  *
  * Checked HERE as well as in the engine, not instead of it. The engine's refusal is a
- * JSON-RPC -32602 with internal wording (`tests/test_sidecar_dedup.py:90-96`), and for the
+ * JSON-RPC -32602 with internal wording (`tests/test_sidecar_dedup.py:111-116`), and for the
  * UNC case the point of refusing is to refuse BEFORE any filesystem access: a UNC root makes
- * the scan emit outbound SMB/NTLM, the Windows hash-leak class (`sidecar.py:485-495`). A
+ * the scan emit outbound SMB/NTLM, the Windows hash-leak class (`sidecar.py:493-503`). A
  * client-side check is a courtesy, never the guarantee — the engine's is the one that counts.
  *
  * The absoluteness rule is deliberately PERMISSIVE where this side cannot be certain: it
@@ -218,7 +218,11 @@ function detailString(detail: Record<string, unknown>, key: string): string {
 
 /** Windows paths are case-insensitive and may differ only by a trailing separator. */
 function samePath(a: string, b: string): boolean {
-  const norm = (p: string): string => p.replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+  const norm = (p: string): string =>
+    p
+      .replace(/[\\/]+$/, "")
+      .replace(/\//g, "\\")
+      .toLowerCase();
   return norm(a) === norm(b);
 }
 
@@ -227,16 +231,16 @@ function samePath(a: string, b: string): boolean {
  * come from" when the user should not have to know the path.
  *
  * THE PROVIDER CHECK IS LOAD-BEARING, not tidiness. `dedup.known_store_roots` builds exactly
- * `<home>/sessions` and `<home>/sessions_backup` (`dedup.py:105-106`) — the Codex layout and
+ * `<home>/sessions` and `<home>/sessions_backup` (`dedup.py:106-109`) — the Codex layout and
  * no other. Pointed at a Grok or Claude Code home, those two directories do not exist, the
- * scan returns a clean empty result (`tests/test_sidecar_dedup.py:101-107` proves a missing
+ * scan returns a clean empty result (`tests/test_sidecar_dedup.py:122-128` proves a missing
  * root is empty, not an error), and the panel would report "no redundant copies" about a
  * store it never looked inside. A false clean bill of health on the owner's irreplaceable
  * data is exactly the claim this module must not make, so a non-Codex store is not offered.
  *
- * THE SHAPE CHECK. `discover.py:298-302` gives the Codex `StoreSpec` `report="base"`, so its
+ * THE SHAPE CHECK. `discover.py:346-350` gives the Codex `StoreSpec` `report="base"`, so its
  * finding's `path` is the BASE — the codex home — and `detail.items_root` is the sessions
- * tree beneath it (`discover.py:578`). That is the same fact `discoveryPanel.deriveBuildParams`
+ * tree beneath it (`discover.py:658`). That is the same fact `discoveryPanel.deriveBuildParams`
  * relies on to fill `corpus.build`'s `codex_home`. A finding whose `items_root` is missing or
  * equal to `path` named the item tree ITSELF, so nothing in it identifies a home and
  * offering it would be a guess. KNOWN LIMIT: this reads shape plus provider name because the
@@ -244,7 +248,7 @@ function samePath(a: string, b: string): boolean {
  * providers its dedup layout covers.
  *
  * Nothing here scans, stats or opens anything: `known_store_roots` is pure path arithmetic,
- * so naming a home never reads the owner's sessions (`dedup.py:101-106`). The scan itself
+ * so naming a home never reads the owner's sessions (`dedup.py:102-109`). The scan itself
  * still only happens when the user picks one.
  */
 export function codexHomeCandidates(result: DiscoveryResult, nowMs: number): CodexHomeCandidate[] {
@@ -256,7 +260,7 @@ export function codexHomeCandidates(result: DiscoveryResult, nowMs: number): Cod
     if (!checkCodexHome(finding.path).ok) continue;
     const { name, parent } = pathSummary(finding.path);
     // `newest_mtime` is UNIX SECONDS here — discovery is the one surface on this wire that
-    // reports seconds — and 0 means nothing datable was seen (`discover.py:552`).
+    // reports seconds — and 0 means nothing datable was seen (`discover.py:632`).
     const ms = finding.newest_mtime > 0 ? Math.round(finding.newest_mtime * 1000) : null;
     out.push({
       mtime: finding.newest_mtime,
@@ -290,13 +294,13 @@ export interface DedupEmptyReading {
  * of them are EMPTY LISTS that mean different things, and only one is good news.
  *
  *   `never-scanned`  — no scan has run. `dedup.sessions` returns `[]` here
- *     (`tests/test_sidecar_dedup.py:170-171`), and that is the absence of a measurement.
+ *     (`tests/test_sidecar_dedup.py:192-193`), and that is the absence of a measurement.
  *     Reporting it as "no duplicates" would assert something about the owner's files that
  *     nothing has looked at.
  *
  *   `no-files`       — a scan ran and found zero session files. A MISSING home produces
  *     EXACTLY this tally — `session_count: 0`, `copy_count: 0`, `errors: []`
- *     (`tests/test_sidecar_dedup.py:101-107`) — so it is indistinguishable from a real but
+ *     (`tests/test_sidecar_dedup.py:122-128`) — so it is indistinguishable from a real but
  *     empty store, and the likelier cause by far is the wrong folder. It names the folder it
  *     looked in so the user can see whether it is the one they meant.
  *
@@ -345,7 +349,7 @@ export interface DedupCopyLine {
    * "live store · 403.2 KB · 5 minutes ago" for the kept copy; ALWAYS "" for the others.
    *
    * Not an oversight — the wire carries `store_kind`, `size_bytes` and `last_write_ms` for
-   * the CANONICAL copy only (`sidecar.py:1414-1424`); `duplicate_paths` is a list of strings
+   * the CANONICAL copy only (`sidecar.py:1476-1488`); `duplicate_paths` is a list of strings
    * (`:1423`). Filling this in for a non-canonical copy would mean inventing it.
    */
   detail: string;
@@ -371,7 +375,7 @@ export interface DedupRow {
  * something the owner has.
  *
  * `has_larger_copy` means the canonical copy is SMALLER than one it demoted
- * (`dedup.py:149-164`): store rank outranks size, correctly, so a crash-truncated LIVE
+ * (`dedup.py:155-171`): store rank outranks size, correctly, so a crash-truncated LIVE
  * rollout legitimately beats a complete backup, and the conversation shown is a prefix of
  * the one on disk. Reported rather than resolved, because reversing the canonical rule would
  * let a stale mirror outrank the authoritative store.
@@ -477,7 +481,7 @@ function byUrgency(a: DedupSession, b: DedupSession): number {
  * Every hidden row is present and one click away, which is what makes this a button. It is
  * NOT the same kind of fact as an engine-side cap — see `ui/discoveryPanel`'s note on its two
  * truncations — and `dedup.sessions` returns the whole persisted view with no cap of its own
- * (`sidecar.py:1449-1453`), so this UI's collapsing is the only truncation on this surface.
+ * (`sidecar.py:1513-1517`), so this UI's collapsing is the only truncation on this surface.
  */
 export function expandLabel(hiddenCount: number, expanded: boolean): string {
   if (hiddenCount > 0) return `+${groupDigits(hiddenCount)} more`;
@@ -489,7 +493,7 @@ export function expandLabel(hiddenCount: number, expanded: boolean): string {
  *
  * The three buckets are not a display preference. A single-copy session is not redundant, so
  * listing it among duplicates would pad the answer with non-answers; an unidentified file was
- * keyed by PATH precisely so it could never merge (`dedup.py:38-44`, `:174-180`), so calling
+ * keyed by PATH precisely so it could never merge (`dedup.py:38-44`, `:182-188`), so calling
  * it a duplicate reports the one thing it is not.
  */
 export function partitionSessions(
@@ -635,13 +639,13 @@ function initialView(): DedupView {
  * Single-flight throughout, like the discovery panel's controller: a re-entrant call while
  * one is in flight is IGNORED rather than queued, so a double-click cannot run two scans.
  * That matters more than usual here — a scan writes the derived view into the attached index
- * (`sidecar.py:1438-1439`), so two overlapping scans of different homes would interleave
+ * (`sidecar.py:1502-1503`), so two overlapping scans of different homes would interleave
  * their writes.
  *
  * NO SCAN IS EVER AUTOMATIC. There is no boot-time scan and no default home: `dedup.scan`
  * requires `codex_home` and never defaults it, deliberately, because an automated probe
  * really did read the owner's live Codex sessions through a similar fallback
- * (`sidecar.py:1427-1432`). The user names the folder; this class only carries it.
+ * (`sidecar.py:1491-1496`). The user names the folder; this class only carries it.
  */
 export class DedupPanelController {
   private view: DedupView = initialView();
@@ -732,7 +736,7 @@ export class DedupPanelController {
    *
    * Two calls, in this order, because they answer different questions: `dedup.scan` returns
    * the tally for THIS run and `dedup.sessions` returns the whole persisted view
-   * (`sidecar.py:1440-1453`). Both are needed — the tally is what distinguishes an empty
+   * (`sidecar.py:1504-1517`). Both are needed — the tally is what distinguishes an empty
    * store from a clean one, and the list is what the user reads.
    */
   async scan(codexHome: string): Promise<void> {
@@ -812,7 +816,7 @@ export class DedupPanelController {
  * That last point is not boilerplate here. Every string this paints is either a local
  * filesystem path off the wire or an engine error, and paths are display-sensitive in their
  * own right: `canonical_path` embeds the owner's username and is absent from
- * `redact.MetadataView` (`sidecar.py:1401-1403`). It reaches the DOM as text and never as
+ * `redact.MetadataView` (`sidecar.py:1463-1465`). It reaches the DOM as text and never as
  * markup, and it must not leave the app.
  */
 export class DedupPanel {
@@ -932,7 +936,8 @@ export class DedupPanel {
     const pick = document.createElement("button");
     pick.type = "button";
     pick.className = "dedup-pick";
-    pick.textContent = view.candidates.length === 0 ? "Choose Codex folder…" : "Scan another folder…";
+    pick.textContent =
+      view.candidates.length === 0 ? "Choose Codex folder…" : "Scan another folder…";
     pick.disabled = view.busy;
     pick.addEventListener("click", () => void this.controller.pickHome());
     out.push(pick);
@@ -975,7 +980,8 @@ export class DedupPanel {
       heading.className = "dedup-subtitle";
       heading.textContent = "Files with no readable session id";
       out.push(heading);
-      for (const row of view.unidentified) out.push(this.renderRow(row, "dedup-row dedup-row-unidentified"));
+      for (const row of view.unidentified)
+        out.push(this.renderRow(row, "dedup-row dedup-row-unidentified"));
     }
     return out;
   }

@@ -20,6 +20,7 @@ stamp changes and the parity tests re-lock both rails.
 
     python tools/gen-unicode-data.py
 """
+
 import hashlib
 import os
 import sys
@@ -27,11 +28,16 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from llm_anthology.sanitize import _is_flagged            # noqa: E402  the REAL predicate
+from llm_anthology.sanitize import _is_flagged  # noqa: E402  the REAL predicate
 
 MAX_CP = 0x110000
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "js", "src", "generated", "unicode-data.ts")
+OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "js",
+    "src",
+    "generated",
+    "unicode-data.ts",
+)
 
 
 def ranges_for(predicate):
@@ -63,8 +69,10 @@ def fmt_ranges(name, ranges, comment):
     # One element per line with a trailing comma: the layout biome (biome.json) prints, so
     # a regenerated table passes the lean gate's format check as written.
     body = "".join("  [%d, %d],\n" % (s, n) for s, n in ranges)
-    return ("/** %s (%d ranges, generated) */\nexport const %s: ReadonlyArray<readonly "
-            "[number, number]> = [\n%s];\n" % (comment, len(ranges), name, body))
+    return (
+        "/** %s (%d ranges, generated) */\nexport const %s: ReadonlyArray<readonly "
+        "[number, number]> = [\n%s];\n" % (comment, len(ranges), name, body)
+    )
 
 
 def main():
@@ -78,7 +86,7 @@ def main():
             try:
                 names[cp] = unicodedata.name(chr(cp))
             except ValueError:
-                pass                              # Python's own fallback is "unnamed"
+                pass  # Python's own fallback is "unnamed"
 
     canon = ";".join("%d:%d" % (s, n) for s, n in flagged)
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
@@ -93,17 +101,21 @@ def main():
         'export const UNIDATA_VERSION = "%s";\n' % unicodedata.unidata_version,
         'export const GENERATED_BY_PYTHON = "%s";\n' % sys.version.split()[0],
         "export const FLAGGED_CODEPOINT_COUNT = %d;\n" % total,
-        '/** sha256 over the canonical range list; the table self-tests against this. */\n',
+        "/** sha256 over the canonical range list; the table self-tests against this. */\n",
         'export const BITMAP_SHA256 = "%s";\n\n' % digest,
-        fmt_ranges("FLAGGED_RANGES", flagged,
-                   "Every codepoint llm_anthology.sanitize._is_flagged() calls invisible/dangerous"),
+        fmt_ranges(
+            "FLAGGED_RANGES",
+            flagged,
+            "Every codepoint llm_anthology.sanitize._is_flagged() calls invisible/dangerous",
+        ),
         "\n",
-        fmt_ranges("WORD_RANGES", word,
-                   "Python re \\\\w for str patterns: str.isalnum() or underscore"),
+        fmt_ranges(
+            "WORD_RANGES", word, "Python re \\\\w for str patterns: str.isalnum() or underscore"
+        ),
         "\n",
         fmt_ranges("ND_RANGES", digit, "Python re \\\\d for str patterns: category Nd"),
         "\n",
-        "/** unicodedata.name() for flagged codepoints that have one; miss => \"unnamed\". */\n",
+        '/** unicodedata.name() for flagged codepoints that have one; miss => "unnamed". */\n',
         "export const FLAGGED_NAMES: Readonly<Record<number, string>> = {\n%s};\n" % names_body,
     ]
 

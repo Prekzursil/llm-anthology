@@ -188,7 +188,7 @@ export function isSafeUrl(u: unknown): boolean {
 export function isLocalMediaPath(p: unknown): boolean {
   const s = typeof p === "string" ? p : "";
   if (!s) return false;
-  const norm = s.replace(/\\/g, "/");                    // normalise BEFORE deciding
+  const norm = s.replace(/\\/g, "/"); // normalise BEFORE deciding
   if (norm.includes("://") || norm.startsWith("/")) return false;
   if (norm.startsWith("data:") || norm.split("/")[0].includes(":")) return false;
   return !norm.split("/").some((seg) => seg === "..");

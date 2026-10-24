@@ -186,7 +186,8 @@ function platformLine(platform: DiagnosticsPlatform | null): string {
 }
 
 function engineLine(health: HealthInfo | null): string {
-  if (health === null) return "engine: (not reached — no corpus attached, or the engine failed to start)";
+  if (health === null)
+    return "engine: (not reached — no corpus attached, or the engine failed to start)";
   const corpus = health.corpus_ready ? "corpus attached" : "NO corpus attached";
   return `engine: ${health.engine_version} (IR ${health.ir_version}), ${corpus}`;
 }
@@ -228,7 +229,11 @@ export function formatDiagnosticsBundle(input: BundleInput): string {
     engineLine(input.health),
     `corpus index: ${indexLabel(input.indexPath)}`,
     ...statsLines(input.stats),
-    fileLine("crash file", diagnostics?.crash_file ?? null, diagnostics?.crash_file?.cap_bytes ?? null),
+    fileLine(
+      "crash file",
+      diagnostics?.crash_file ?? null,
+      diagnostics?.crash_file?.cap_bytes ?? null,
+    ),
     fileLine("previous run", diagnostics?.previous_run ?? null, null),
   ];
 
@@ -433,7 +438,10 @@ export class DiagnosticsButton {
  * bar's error line, and the reason it matters more here is that the whole interaction is one
  * invisible clipboard write.
  */
-export function mountDiagnosticsButton(host: HTMLElement, deps: DiagnosticsDeps): DiagnosticsButton {
+export function mountDiagnosticsButton(
+  host: HTMLElement,
+  deps: DiagnosticsDeps,
+): DiagnosticsButton {
   const button = host.ownerDocument.createElement("button");
   button.type = "button";
   button.id = "btn-diagnostics";

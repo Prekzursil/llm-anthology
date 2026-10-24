@@ -26,6 +26,7 @@ WHAT IS PINNED HERE, and why each one is load-bearing:
     relativized, and structure + title + repo/branch are kept — the owner's accepted
     residual, asserted here so nobody reads "shareable" as "safe".
 """
+
 import os
 from dataclasses import fields
 
@@ -36,32 +37,33 @@ from llm_anthology import corpus, redact
 # --- synthetic credential-shaped probes (nonsense; none of these authenticate) -------
 OPENAI = "sk-" + "S" * 40
 ANTHROPIC = "sk-ant-api03-" + "A" * 32
-AWS = "AKIA" + "SYNTHETIC0000000"      # EXAMPLE placeholder — authenticates nothing
+AWS = "AKIA" + "SYNTHETIC0000000"  # EXAMPLE placeholder — authenticates nothing
 GITHUB = "ghp_" + "G" * 36
 GITHUB_FINE = "github_pat_" + "P" * 30
 GOOGLE = "AIza" + "Z" * 35
-SLACK = "xoxb-" + "1234567890-SYNTHETICSLACK"   # EXAMPLE placeholder, not a real token
+SLACK = "xoxb-" + "1234567890-SYNTHETICSLACK"  # EXAMPLE placeholder, not a real token
 JWT = "eyJhbGciOi.eyJzdWIiOi.SflKxwRJSMsynth"
-PEM = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"   # EXAMPLE header only, no key material
+PEM = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"  # EXAMPLE header only, no key material
 BEARER = "Authorization: Bearer SYNTHETICBEARER00000"
 
-ALL_PROBES = (OPENAI, ANTHROPIC, AWS, GITHUB, GITHUB_FINE, GOOGLE, SLACK, JWT, PEM,
-              BEARER)
+ALL_PROBES = (OPENAI, ANTHROPIC, AWS, GITHUB, GITHUB_FINE, GOOGLE, SLACK, JWT, PEM, BEARER)
 
 # a personal / medical probe — the risk class this scanner is BLIND to, by design
-MEDICAL = ("Patient Jane Q. Doe, DOB 1970-01-01, asked about tapering sertraline 50mg "
-           "after the pharmacy at 14 Elm Street refused the refill.")
+MEDICAL = (
+    "Patient Jane Q. Doe, DOB 1970-01-01, asked about tapering sertraline 50mg "
+    "after the pharmacy at 14 Elm Street refused the refill."
+)
 
 
 # ------------------------------------------------------------------ shape detection
+
 
 @pytest.mark.parametrize("probe", ALL_PROBES)
 def test_every_pinned_credential_shape_is_detected(probe):
     text = "prose before " + probe + " prose after"
     hits = redact.scan_credential_shapes(text)
     assert len(hits) == 1, hits
-    assert hits[0]["offset"] == text.index(probe.split(": ")[-1] if probe is BEARER
-                                          else probe)
+    assert hits[0]["offset"] == text.index(probe.split(": ")[-1] if probe is BEARER else probe)
     assert hits[0]["shape"] in redact.CREDENTIAL_SHAPE_NAMES
 
 
@@ -81,9 +83,9 @@ def test_a_finding_reports_a_masked_preview_and_never_the_value():
     hits = redact.scan_credential_shapes("here: " + OPENAI)
     assert len(hits) == 1
     preview = hits[0]["preview"]
-    assert OPENAI not in preview                       # the value itself never travels
-    assert preview.startswith(OPENAI[:4])              # enough to locate it by eye
-    assert str(len(OPENAI)) in preview                 # ... and to know how long it was
+    assert OPENAI not in preview  # the value itself never travels
+    assert preview.startswith(OPENAI[:4])  # enough to locate it by eye
+    assert str(len(OPENAI)) in preview  # ... and to know how long it was
 
 
 def test_findings_are_sorted_by_offset_and_deduped_across_overlapping_shapes():
@@ -93,17 +95,19 @@ def test_findings_are_sorted_by_offset_and_deduped_across_overlapping_shapes():
     text = OPENAI + " ... Authorization: Bearer " + JWT
     hits = redact.scan_credential_shapes(text)
     assert [h["offset"] for h in hits] == sorted(h["offset"] for h in hits)
-    assert len(hits) == 2                              # openai key + bearer (JWT nested)
+    assert len(hits) == 2  # openai key + bearer (JWT nested)
     assert hits[1]["shape"] == "bearer-token"
 
 
 def test_ordinary_prose_and_near_misses_are_not_flagged():
-    for benign in ("the sk- prefix is what an OpenAI key starts with",
-                   "AKIA is the AWS prefix",
-                   "Bearer with no token",
-                   "eyJ is how a JWT starts",
-                   "ghp_short",
-                   ""):
+    for benign in (
+        "the sk- prefix is what an OpenAI key starts with",
+        "AKIA is the AWS prefix",
+        "Bearer with no token",
+        "eyJ is how a JWT starts",
+        "ghp_short",
+        "",
+    ):
         assert redact.scan_credential_shapes(benign) == [], benign
 
 
@@ -114,6 +118,7 @@ def test_scan_tolerates_a_non_string():
 
 # ----------------------------------------------------- THE stated-coverage-limit test
 
+
 def test_a_medical_and_personal_probe_is_invisible_and_the_stated_limit_says_so():
     """THE MOST IMPORTANT TEST HERE. The scanner sees credential SHAPES and nothing else,
     so a name, a date of birth, a diagnosis, a drug and an address are all invisible to
@@ -122,20 +127,23 @@ def test_a_medical_and_personal_probe_is_invisible_and_the_stated_limit_says_so(
     assert redact.scan_credential_shapes(MEDICAL) == []
 
     limit = redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT.lower()
-    assert "shape" in limit                             # names WHAT it detects
-    assert "personal" in limit and "medical" in limit    # names what it is BLIND to
+    assert "shape" in limit  # names WHAT it detects
+    assert "personal" in limit and "medical" in limit  # names what it is BLIND to
     assert "blind" in limit
-    assert "does not mean" in limit                     # kills the "clean == safe" read
+    assert "does not mean" in limit  # kills the "clean == safe" read
     # NOT described as a personal-information tool anywhere on this surface
-    for text in (redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT,
-                 redact.scan_credential_shapes.__doc__,
-                 redact.scrub_credential_shapes.__doc__):
+    for text in (
+        redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT,
+        redact.scan_credential_shapes.__doc__,
+        redact.scrub_credential_shapes.__doc__,
+    ):
         assert "pii" not in text.lower()
         assert "personally identifiable" not in text.lower()
 
 
 # ------------------------------------------------------------- scrub is OPT-IN, never
 #                                                               a side effect of scanning
+
 
 def test_scanning_never_mutates_and_scrubbing_is_a_separate_call():
     text = "before " + AWS + " after"
@@ -150,33 +158,40 @@ def test_scrub_placeholder_names_the_shape_and_the_scan_goes_quiet_afterwards():
     """BOTH STATES: the same scanner FIRES on the raw text and is SILENT on the scrubbed
     text. A detector silent in both states would prove nothing."""
     text = "k=" + GITHUB + " j=" + JWT
-    assert len(redact.scan_credential_shapes(text)) == 2        # fires BEFORE
+    assert len(redact.scan_credential_shapes(text)) == 2  # fires BEFORE
     scrubbed = redact.scrub_credential_shapes(text)
-    assert redact.scan_credential_shapes(scrubbed) == []        # silent AFTER
+    assert redact.scan_credential_shapes(scrubbed) == []  # silent AFTER
     assert "[redacted:github-token]" in scrubbed
     assert "[redacted:jwt]" in scrubbed
 
 
 def test_scrub_tolerates_a_non_string_and_leaves_clean_text_byte_identical():
     assert redact.scrub_credential_shapes(None) == ""
-    assert redact.scrub_credential_shapes(MEDICAL) == MEDICAL   # nothing to scrub
+    assert redact.scrub_credential_shapes(MEDICAL) == MEDICAL  # nothing to scrub
 
 
 # --------------------------------------------------------------- path relativization
 
-@pytest.mark.parametrize("raw,home,expected", [
-    (r"C:\Users\someone\.codex\sessions\r.jsonl", r"C:\Users\someone",
-     "~/.codex/sessions/r.jsonl"),
-    ("/home/someone/work/repo", "/home/someone", "~/work/repo"),
-    (r"c:\users\SOMEONE\x", r"C:\Users\someone", "~/x"),          # case-insensitive
-    (r"C:\Users\someone", r"C:\Users\someone", "~"),              # home itself
-    (r"C:\Users\someone\\", r"C:\Users\someone", "~"),            # trailing separator
-    (r"D:\work\client\repo", r"C:\Users\someone", r"D:\work\client\repo"),  # not under
-    ("", r"C:\Users\someone", ""),
-    # an EMPTY home root relativizes nothing — rewriting every absolute path to `~/...`
-    # would be a lie, so the path is returned verbatim
-    ("/etc/passwd", "", "/etc/passwd"),
-])
+
+@pytest.mark.parametrize(
+    "raw,home,expected",
+    [
+        (
+            r"C:\Users\someone\.codex\sessions\r.jsonl",
+            r"C:\Users\someone",
+            "~/.codex/sessions/r.jsonl",
+        ),
+        ("/home/someone/work/repo", "/home/someone", "~/work/repo"),
+        (r"c:\users\SOMEONE\x", r"C:\Users\someone", "~/x"),  # case-insensitive
+        (r"C:\Users\someone", r"C:\Users\someone", "~"),  # home itself
+        (r"C:\Users\someone\\", r"C:\Users\someone", "~"),  # trailing separator
+        (r"D:\work\client\repo", r"C:\Users\someone", r"D:\work\client\repo"),  # not under
+        ("", r"C:\Users\someone", ""),
+        # an EMPTY home root relativizes nothing — rewriting every absolute path to `~/...`
+        # would be a lie, so the path is returned verbatim
+        ("/etc/passwd", "", "/etc/passwd"),
+    ],
+)
 def test_relativize_home(raw, home, expected):
     assert redact.relativize_home(raw, home=home) == expected
 
@@ -184,8 +199,10 @@ def test_relativize_home(raw, home, expected):
 def test_relativize_home_does_not_match_a_sibling_directory_by_prefix():
     """`C:\\Users\\someone2` starts with `C:\\Users\\someone` as a STRING but is a
     different directory; a naive startswith would rewrite it to `~2`."""
-    assert redact.relativize_home(r"C:\Users\someone2\x", home=r"C:\Users\someone") == \
-        r"C:\Users\someone2\x"
+    assert (
+        redact.relativize_home(r"C:\Users\someone2\x", home=r"C:\Users\someone")
+        == r"C:\Users\someone2\x"
+    )
 
 
 def test_relativize_home_defaults_to_the_process_home():
@@ -199,19 +216,28 @@ def test_relativize_home_tolerates_a_non_string():
 
 # -------------------------------------------------------- shareable thread projection
 
+
 def _full_thread():
     return corpus.ThreadMeta(
-        id="t1", title="Refactor the parser", model_provider="openai", tokens_used=17,
-        created_at_ms=1000, updated_at_ms=2000, git_branch="feature/x",
-        cwd=r"C:\Users\someone\src\repo", agent_role="impl", agent_nickname="brisk-heron",
+        id="t1",
+        title="Refactor the parser",
+        model_provider="openai",
+        tokens_used=17,
+        created_at_ms=1000,
+        updated_at_ms=2000,
+        git_branch="feature/x",
+        cwd=r"C:\Users\someone\src\repo",
+        agent_role="impl",
+        agent_nickname="brisk-heron",
         preview="I need help tapering my prescription, my doctor said",
         rollout_path=r"C:\Users\someone\.codex\sessions\rollout-1.jsonl",
-        adapter="codex")
+        adapter="codex",
+    )
 
 
 def test_shareable_thread_drops_preview_entirely_and_relativizes_paths():
     out = redact.shareable_thread(_full_thread(), home=r"C:\Users\someone")
-    assert out.preview == ""                                    # DROPPED, not truncated
+    assert out.preview == ""  # DROPPED, not truncated
     assert out.cwd == "~/src/repo"
     assert out.rollout_path == "~/.codex/sessions/rollout-1.jsonl"
     assert "someone" not in out.cwd and "someone" not in out.rollout_path
@@ -342,7 +368,7 @@ def test_FULL_mode_still_carries_the_nickname():
     quietly lose a field — this is the control that stops the fix over-reaching."""
     meta = _full_thread()
     meta.agent_nickname = "someone@desktop"
-    assert meta.agent_nickname == "someone@desktop"      # untouched by the projection
+    assert meta.agent_nickname == "someone@desktop"  # untouched by the projection
     redact.shareable_thread(meta, home=r"C:\Users\someone")
     assert meta.agent_nickname == "someone@desktop", "shareable_thread must stay pure"
 

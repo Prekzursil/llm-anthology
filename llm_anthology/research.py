@@ -35,6 +35,7 @@ records every prompt, so a test can inspect EXACTLY what would cross.
 The prompt is fully deterministic -- histograms are key-sorted and views keep
 input order; there is no clock, randomness, or corpus access anywhere here.
 """
+
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -51,18 +52,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing-only; keeps the plane corpus-blin
 # deliberately NO free-text family here (no title / notes / tags / aliases) and nothing
 # derived from raw message content -- see the module docstring (owner decision
 # 2026-07-25). Re-adding one re-opens a CONFIRMED medical-PII leak.
-_ID_FIELDS = ("conversation_id", "provider", "account", "thread_id",
-              "created_at", "updated_at")
+_ID_FIELDS = ("conversation_id", "provider", "account", "thread_id", "created_at", "updated_at")
 # Integer aggregates.
 _COUNT_FIELDS = ("turn_count", "char_count")
 
 _SUMMARY_INSTRUCTION = (
-    "Summarize the themes and activity across the following AI-chat "
-    "conversations."
+    "Summarize the themes and activity across the following AI-chat conversations."
 )
 _ENTITY_INSTRUCTION = (
-    "List the salient topics/entities across the following AI-chat "
-    "conversations, one per line."
+    "List the salient topics/entities across the following AI-chat conversations, one per line."
 )
 
 
@@ -102,6 +100,7 @@ class MockBackend:
 
 # --- coercion helpers (all total: never raise, never leak) ---------------------
 
+
 def _as_text(value):
     """A metadata identifier/timestamp as display text."""
     if isinstance(value, str):
@@ -119,6 +118,7 @@ def _as_int(value):
 
 
 # --- projection: read ONLY the allowlist ---------------------------------------
+
 
 def _project(view: "MetadataView") -> dict:
     """Project ONE view onto the strict, STRUCTURAL allowlist.
@@ -167,16 +167,18 @@ def _render_view(p):
     Adding a free-text line here re-opens the CONFIRMED leak — the mutation check
     (_p4_mutation_check.py) exists to make that turn the suite red.
     """
-    return "\n".join((
-        "- conversation_id: %s" % p["conversation_id"],
-        "  provider: %s" % p["provider"],
-        "  account: %s" % p["account"],
-        "  thread_id: %s" % p["thread_id"],
-        "  created_at: %s" % p["created_at"],
-        "  updated_at: %s" % p["updated_at"],
-        "  turn_count: %d" % p["turn_count"],
-        "  char_count: %d" % p["char_count"],
-    ))
+    return "\n".join(
+        (
+            "- conversation_id: %s" % p["conversation_id"],
+            "  provider: %s" % p["provider"],
+            "  account: %s" % p["account"],
+            "  thread_id: %s" % p["thread_id"],
+            "  created_at: %s" % p["created_at"],
+            "  updated_at: %s" % p["updated_at"],
+            "  turn_count: %d" % p["turn_count"],
+            "  char_count: %d" % p["char_count"],
+        )
+    )
 
 
 def _build_prompt(views: "Iterable[MetadataView]", instruction: str) -> str:
@@ -186,9 +188,11 @@ def _build_prompt(views: "Iterable[MetadataView]", instruction: str) -> str:
     lines = [
         instruction,
         "",
-        ("You are given ONLY sanitized, STRUCTURAL conversation METADATA -- no message "
-         "bodies, no titles, no free text, no personal data. Base your answer solely on "
-         "the identifiers, timestamps, and counts below."),
+        (
+            "You are given ONLY sanitized, STRUCTURAL conversation METADATA -- no message "
+            "bodies, no titles, no free text, no personal data. Base your answer solely on "
+            "the identifiers, timestamps, and counts below."
+        ),
         "",
         "## Aggregate",
         "conversations: %d" % stats["conversations"],
@@ -216,14 +220,13 @@ def _parse_entities(raw):
 
 # --- public API: consumes ONLY MetadataView ------------------------------------
 
-def synthesize_over_metadata(views: "Iterable[MetadataView]",
-                             backend: LLMBackend) -> str:
+
+def synthesize_over_metadata(views: "Iterable[MetadataView]", backend: LLMBackend) -> str:
     """Summarize a set of conversations from ONLY their structural metadata."""
     return backend.synthesize(_build_prompt(views, _SUMMARY_INSTRUCTION))
 
 
-def extract_entities(views: "Iterable[MetadataView]",
-                     backend: LLMBackend) -> "list[str]":
+def extract_entities(views: "Iterable[MetadataView]", backend: LLMBackend) -> "list[str]":
     """Extract salient entities/topics from ONLY structural metadata.
 
     Returns the ordered, de-duplicated list of entity strings the backend

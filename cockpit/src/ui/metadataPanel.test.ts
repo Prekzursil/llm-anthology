@@ -5,8 +5,8 @@
  *
  *  1. `metadata.set` takes `tags` (a LIST); `metadata.search` takes `tag` (a SINGULAR STRING).
  *     Passing the wrong one silently returns `[]` and reads as "search is broken".
- *  2. With NEITHER filter, `metadata.search` returns `[]` BY DESIGN (`sidecar.py:1365-1366`,
- *     `metadata.py:501-502`) so a blank query cannot dump the catalogue. An empty result from a
+ *  2. With NEITHER filter, `metadata.search` returns `[]` BY DESIGN (`sidecar.py:1425-1426`,
+ *     `metadata.py:533-534`) so a blank query cannot dump the catalogue. An empty result from a
  *     blank query is therefore NOT "no matches", and saying "0 results" there reports a working
  *     engine as broken.
  *  3. `metadata.set` is a PARTIAL update: an omitted field is left alone, `""`/`[]` CLEARS
@@ -14,7 +14,7 @@
  *     not touch.
  *
  * And one measured fact shapes the tag rules: the engine dedups with Python `casefold()`
- * (`llm_anthology/metadata.py:214-240`), which JS `toLowerCase()` does NOT reproduce —
+ * (`llm_anthology/metadata.py:219-245`), which JS `toLowerCase()` does NOT reproduce —
  * `Straße`/`STRASSE` casefold to one tag but lowercase to two; likewise `ﬁle`, and `ΣΣ`
  * (`σσ` vs `σς`). So the client normalization is a conservative PREVIEW and the engine is
  * authoritative; the panel re-renders from the response, never from its own guess.
@@ -41,7 +41,11 @@ import type { Annotation, MetadataSearchRow, TagCount } from "../ipc/types";
 
 function annotation(over: Partial<Annotation> = {}): Annotation {
   const base: Annotation = {
-    conversation_id: "c1", alias: "", tags: [], notes: "", is_empty: true,
+    conversation_id: "c1",
+    alias: "",
+    tags: [],
+    notes: "",
+    is_empty: true,
   };
   const merged = { ...base, ...over };
   merged.is_empty = merged.alias === "" && merged.tags.length === 0 && merged.notes === "";
@@ -50,8 +54,14 @@ function annotation(over: Partial<Annotation> = {}): Annotation {
 
 function row(id: string, over: Partial<MetadataSearchRow> = {}): MetadataSearchRow {
   return {
-    conversation_id: id, provider: "codex", account: "", title: id,
-    created_at: "2026-01-01", updated_at: "2026-01-02", turn_count: 3, thread_id: "t1",
+    conversation_id: id,
+    provider: "codex",
+    account: "",
+    title: id,
+    created_at: "2026-01-01",
+    updated_at: "2026-01-02",
+    turn_count: 3,
+    thread_id: "t1",
     annotation: annotation({ conversation_id: id, tags: ["x"] }),
     ...over,
   };
@@ -87,15 +97,18 @@ function fakeIpc(over: Partial<MetadataIpc> = {}) {
 
 describe("normalizeTags", () => {
   it("collapses every whitespace RUN to a single space, and drops blanks", () => {
-    // Mirrors `" ".join(clean_text(raw).split())` (`metadata.py:233`). The newline part is
+    // Mirrors `" ".join(clean_text(raw).split())` (`metadata.py:238`). The newline part is
     // load-bearing: `\n` is the store's wire separator, so a tag carrying one would split
     // into two on the round trip.
-    expect(normalizeTags(["  spaced   out  ", "", "   ", "two\nlines", "tab\there"]))
-      .toEqual(["spaced out", "tab here", "two lines"]);
+    expect(normalizeTags(["  spaced   out  ", "", "   ", "two\nlines", "tab\there"])).toEqual([
+      "spaced out",
+      "tab here",
+      "two lines",
+    ]);
   });
 
   it("dedups case-insensitively, keeping the FIRST-SEEN casing", () => {
-    // `metadata.py:236-239`: so a facet can never show 'Renderer' and 'renderer' as two
+    // `metadata.py:241-244`: so a facet can never show 'Renderer' and 'renderer' as two
     // tags, and re-adding one in other casing does not rewrite what the owner typed.
     expect(normalizeTags(["Beta", "alpha", "BETA", "Alpha"])).toEqual(["alpha", "Beta"]);
   });
@@ -240,10 +253,14 @@ describe("changedSetParams — the tri-state write", () => {
   });
 
   it("sends an EMPTY value to clear a field the user emptied", () => {
-    expect(changedSetParams(stored, { ...draftFrom(stored), notes: "" }))
-      .toEqual({ conversation_id: "c1", notes: "" });
-    expect(changedSetParams(stored, { ...draftFrom(stored), tagText: "" }))
-      .toEqual({ conversation_id: "c1", tags: [] });
+    expect(changedSetParams(stored, { ...draftFrom(stored), notes: "" })).toEqual({
+      conversation_id: "c1",
+      notes: "",
+    });
+    expect(changedSetParams(stored, { ...draftFrom(stored), tagText: "" })).toEqual({
+      conversation_id: "c1",
+      tags: [],
+    });
   });
 
   it("never emits null for any field", () => {
@@ -279,8 +296,11 @@ describe("dirtyFields", () => {
   });
 
   it("names each edited field, in a stable order", () => {
-    expect(dirtyFields(stored, { alias: "b", tagText: "u", notes: "m" }))
-      .toEqual(["alias", "tags", "notes"]);
+    expect(dirtyFields(stored, { alias: "b", tagText: "u", notes: "m" })).toEqual([
+      "alias",
+      "tags",
+      "notes",
+    ]);
   });
 
   it("trims the free-text fields, so trailing whitespace is not an edit", () => {
@@ -290,7 +310,9 @@ describe("dirtyFields", () => {
 
 describe("facetOrder", () => {
   const counts: TagCount[] = [
-    { tag: "alpha", count: 2 }, { tag: "beta", count: 9 }, { tag: "gamma", count: 2 },
+    { tag: "alpha", count: 2 },
+    { tag: "beta", count: 9 },
+    { tag: "gamma", count: 2 },
   ];
 
   it("puts the biggest tag first by default, tie-broken by tag for determinism", () => {
@@ -298,7 +320,7 @@ describe("facetOrder", () => {
   });
 
   it("can keep the engine's own alphabetical order instead", () => {
-    // `metadata.tags` already orders by the CASEFOLDED tag (`metadata.py:544`); count-first
+    // `metadata.tags` already orders by the CASEFOLDED tag (`metadata.py:578`); count-first
     // is a UI choice layered on top, not a disagreement with the store.
     expect(facetOrder(counts, "tag").map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
   });
@@ -314,7 +336,10 @@ describe("facetOrder", () => {
     // already-sorted run without ever needing a positive-then-negative pair, so the `-1` arm
     // of each comparator was never executed and a comparator inverted to `? 1 : -1` would
     // have passed every test above. Reversed input is what actually exercises it.
-    const descending: TagCount[] = [{ tag: "gamma", count: 2 }, { tag: "alpha", count: 9 }];
+    const descending: TagCount[] = [
+      { tag: "gamma", count: 2 },
+      { tag: "alpha", count: 9 },
+    ];
     expect(facetOrder(descending, "tag").map((c) => c.tag)).toEqual(["alpha", "gamma"]);
     expect(facetOrder(descending).map((c) => c.tag)).toEqual(["alpha", "gamma"]);
   });
@@ -323,7 +348,9 @@ describe("facetOrder", () => {
     // The tie-break is the half of `(b.count - a.count) || (a.tag < b.tag ? -1 : 1)` that
     // makes two renders of one corpus identical, so it has to hold for either input order.
     const tied: TagCount[] = [
-      { tag: "gamma", count: 4 }, { tag: "alpha", count: 4 }, { tag: "beta", count: 4 },
+      { tag: "gamma", count: 4 },
+      { tag: "alpha", count: 4 },
+      { tag: "beta", count: 4 },
     ];
     expect(facetOrder(tied).map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
     expect(facetOrder([...tied].reverse()).map((c) => c.tag)).toEqual(["alpha", "beta", "gamma"]);
@@ -340,8 +367,9 @@ describe("annotationSummary", () => {
     expect(annotationSummary(annotation({ alias: "boot" }))).toBe("“boot”");
     expect(annotationSummary(annotation({ tags: ["a", "b"] }))).toBe("2 tags");
     expect(annotationSummary(annotation({ tags: ["a"], notes: "x" }))).toBe("1 tag · notes");
-    expect(annotationSummary(annotation({ alias: "boot", tags: ["a"], notes: "x" })))
-      .toBe("“boot” · 1 tag · notes");
+    expect(annotationSummary(annotation({ alias: "boot", tags: ["a"], notes: "x" }))).toBe(
+      "“boot” · 1 tag · notes",
+    );
   });
 });
 
@@ -368,9 +396,9 @@ describe("MetadataController", () => {
     const ctl = new MetadataController(ipc, () => {});
     await ctl.load("c1");
     ctl.editDraft({ tagText: "Straße, STRASSE" });
-    expect(parseTagInput(ctl.state.draft.tagText)).toHaveLength(2);   // the client's guess
+    expect(parseTagInput(ctl.state.draft.tagText)).toHaveLength(2); // the client's guess
     await ctl.save();
-    expect(ctl.state.annotation?.tags).toEqual(["Straße"]);            // the engine's answer
+    expect(ctl.state.annotation?.tags).toEqual(["Straße"]); // the engine's answer
     expect(ctl.state.draft.tagText).toBe("Straße");
     expect(ctl.state.dirty).toEqual([]);
   });
@@ -607,7 +635,10 @@ describe("MetadataController", () => {
 
   it("refreshes the tag facet, ordered biggest-first", async () => {
     const ipc = fakeIpc({
-      metadataTags: async () => [{ tag: "a", count: 1 }, { tag: "b", count: 7 }],
+      metadataTags: async () => [
+        { tag: "a", count: 1 },
+        { tag: "b", count: 7 },
+      ],
     });
     const ctl = new MetadataController(ipc, () => {});
     await ctl.refreshFacet();

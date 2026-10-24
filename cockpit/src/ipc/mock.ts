@@ -18,11 +18,7 @@
  * All timestamps are literals — nothing here reads the clock, so tests are stable.
  */
 
-import {
-  RPC_INTERNAL_ERROR,
-  RPC_INVALID_PARAMS,
-  RPC_MAINTENANCE_REFUSED,
-} from "./types";
+import { RPC_INTERNAL_ERROR, RPC_INVALID_PARAMS, RPC_MAINTENANCE_REFUSED } from "./types";
 import type {
   Annotation,
   AppInfo,
@@ -113,7 +109,7 @@ const VENDOR_OF_ADAPTER: Record<string, string> = {
 };
 
 function vendorOf(adapter: string | undefined): string {
-  return adapter === undefined ? "" : VENDOR_OF_ADAPTER[adapter] ?? "";
+  return adapter === undefined ? "" : (VENDOR_OF_ADAPTER[adapter] ?? "");
 }
 
 const T0 = 1_700_000_000_000; // fixed epoch base (2023-11-14T22:13:20Z)
@@ -344,7 +340,7 @@ const HOME = "C:\\Users\\preview";
  *
  * A REAL census on the author's machine returned 25 of them (against 7 Claude, 2 Codex and
  * 1 Gemini export), which is also the engine's per-group cap — `DEFAULT_MAX_PER_GROUP`
- * (`llm_anthology/discover.py:108`). So this group is simultaneously the worst case for
+ * (`llm_anthology/discover.py:109`). So this group is simultaneously the worst case for
  * the UI's own collapsing AND a group the ENGINE truncated, and it exists here so a
  * preview shows both at once rather than either in isolation.
  */
@@ -365,7 +361,7 @@ function chatgptExports(): DiscoveryFinding[] {
  * A whole scan, shaped like the measured one: a built index, both STORE shapes, and the
  * long export tail. The two store shapes differ in the way the ingest derivation depends
  * on — `StoreSpec.report`, `"base"` | `"subdir"` — and that difference is the whole reason
- * both are here (`llm_anthology/discover.py:248`, applied at `:653`):
+ * both are here (`llm_anthology/discover.py:293`, applied at `:735`):
  *
  *   * codex reports its BASE (`report="base"`), so `path` is the Codex home and
  *     `detail.items_root` is the distinct sessions tree -> both `corpus.build` parameters
@@ -394,9 +390,9 @@ const DISCOVERY: DiscoveryResult = {
       confidence: "high",
       detail: {
         // The measured live store: thousands of COMPRESSED rollouts and zero plain ones
-        // (`llm_anthology/adapters/codex_rollout.py:357-359`). `ingestable` counts only
+        // (`llm_anthology/adapters/codex_rollout.py:411-413`). `ingestable` counts only
         // the plain form, so it reads 0 here even though `ingest_sessions` globs both
-        // (`codex_rollout.py:416-419`) — see `ui/discoveryPanel`'s note on why the panel
+        // (`codex_rollout.py:469-472`) — see `ui/discoveryPanel`'s note on why the panel
         // does not gate the ingest on that field.
         rollouts_jsonl: 0,
         rollouts_zst: 2_043,
@@ -433,7 +429,7 @@ const DISCOVERY: DiscoveryResult = {
       kind: "export_file",
       path: `${HOME}\\Downloads\\Takeout\\Gemini Apps\\_converted\\transcript.json`,
       count: 1,
-      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:654`),
+      // Nothing datable was seen. The engine reports 0.0, NOT null (`discover.py:737`),
       // so a renderer that treated this as a timestamp would print 1970.
       newest_mtime: 0,
       confidence: "low",
@@ -477,7 +473,7 @@ const MOCK_BUILD_POLLS = 3;
  *   * `orch` carries `Rust` and `ipc` carries `rust` — DIFFERENT casings on DIFFERENT
  *     conversations. `metadata.tags` collapses those case-insensitively into ONE facet
  *     entry with count 2, labelled with the lexicographically-first form
- *     (`llm_anthology/metadata.py:529-544`). A panel that grouped by the raw tag string
+ *     (`llm_anthology/metadata.py:564-578`). A panel that grouped by the raw tag string
  *     would show two entries of count 1 here and look correct against any fixture that
  *     conveniently used one casing.
  *   * `ipc` has an EMPTY alias but non-empty tags, so `is_empty` is false for a row with
@@ -487,7 +483,14 @@ const MOCK_BUILD_POLLS = 3;
  *     annotation rather than throw.
  */
 const SEED_ANNOTATIONS: Array<[string, { alias: string; tags: string[]; notes: string }]> = [
-  ["orch", { alias: "Cockpit orchestration", tags: ["Rust", "shipped"], notes: "the run that produced the IPC layer" }],
+  [
+    "orch",
+    {
+      alias: "Cockpit orchestration",
+      tags: ["Rust", "shipped"],
+      notes: "the run that produced the IPC layer",
+    },
+  ],
   ["ipc", { alias: "", tags: ["rust"], notes: "needle: revisit the mock fixture" }],
   ["repro", { alias: "Build failure repro", tags: ["triage"], notes: "" }],
 ];
@@ -503,11 +506,11 @@ const SEED_ANNOTATIONS: Array<[string, { alias: string; tags: string[]; notes: s
  *   2. `has_larger_copy: true` — the canonical LIVE copy is SMALLER than the backup it
  *      demoted (a crash-truncated live rollout). The flag exists because the view would
  *      otherwise silently show the shorter conversation
- *      (`llm_anthology/dedup.py:149-164`); a panel that ignores it hides data the owner has;
+ *      (`llm_anthology/dedup.py:155-171`); a panel that ignores it hides data the owner has;
  *   3. `is_identified: false` with `session_id: ""` — an unidentifiable file, kept as a
  *      path-keyed singleton and never merged;
  *   4. `last_write_ms: null` — `PhysicalCopy.last_write_ms` is `Optional[int]`
- *      (`dedup.py:118`), so a renderer that formats it unconditionally throws here.
+ *      (`dedup.py:123`), so a renderer that formats it unconditionally throws here.
  */
 const MOCK_DEDUP_SESSIONS: DedupSession[] = [
   {
@@ -517,9 +520,7 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
     size_bytes: 412_880,
     last_write_ms: T0 + 300_000,
     copy_count: 2,
-    duplicate_paths: [
-      `${HOME}\\.codex\\sessions_backup\\2026\\08\\01\\rollout-018f3a2c.jsonl`,
-    ],
+    duplicate_paths: [`${HOME}\\.codex\\sessions_backup\\2026\\08\\01\\rollout-018f3a2c.jsonl`],
     is_identified: true,
     has_larger_copy: false,
   },
@@ -532,9 +533,7 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
     size_bytes: 1_204,
     last_write_ms: T0 + 320_000,
     copy_count: 2,
-    duplicate_paths: [
-      `${HOME}\\.codex\\sessions_backup\\2026\\08\\02\\rollout-018f3a2d.jsonl`,
-    ],
+    duplicate_paths: [`${HOME}\\.codex\\sessions_backup\\2026\\08\\02\\rollout-018f3a2d.jsonl`],
     is_identified: true,
     has_larger_copy: true,
   },
@@ -569,7 +568,7 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
  * ONE entry, ALWAYS — the fixture models a store holding one rollout whose last line is torn,
  * which is exactly what a real scan reports: `scan_store` passes
  * `codex_rollout.ingest_sessions`' errors through verbatim and skips-and-logs a torn last line
- * (`llm_anthology/dedup.py:244-252`). The copy is lost from the tally, not the whole scan.
+ * (`llm_anthology/dedup.py:255-263`). The copy is lost from the tally, not the whole scan.
  *
  * WHY ALWAYS, and the trade-off. The mock has no filesystem, so it cannot DETECT an unreadable
  * file — the choice is between never populating `errors` and always populating it. Never was
@@ -582,7 +581,7 @@ const MOCK_DEDUP_SESSIONS: DedupSession[] = [
  * the engine still covers it against a clean store.
  *
  * NOTE this is a partial-parse error, NOT a missing store: a missing root is explicitly "an
- * empty result, not an error" (`dedup.py:249-250`), so a UI must not present this as "store not
+ * empty result, not an error" (`dedup.py:260-261`), so a UI must not present this as "store not
  * found".
  */
 const MOCK_DEDUP_ERRORS = [
@@ -610,7 +609,7 @@ function dedupTally(sessions: DedupSession[], errors: string[]): DedupScanResult
 }
 
 /**
- * The engine's tag canonicalisation (`llm_anthology/metadata.py:214-240`): collapse every
+ * The engine's tag canonicalisation (`llm_anthology/metadata.py:219-245`): collapse every
  * whitespace RUN to a single space (which trims, drops blanks and neutralises an embedded
  * newline — the wire separator — in one step), dedup CASE-INSENSITIVELY keeping the
  * FIRST-SEEN casing, then order by (casefold, exact string) so two callers who add the same
@@ -619,20 +618,25 @@ function dedupTally(sessions: DedupSession[], errors: string[]): DedupScanResult
 function cleanTags(tags: string[]): string[] {
   const seen = new Map<string, string>();
   for (const raw of tags) {
-    const tag = raw.split(/\s+/).filter((p) => p !== "").join(" ");
+    const tag = raw
+      .split(/\s+/)
+      .filter((p) => p !== "")
+      .join(" ");
     if (tag === "") continue;
     const key = tag.toLowerCase();
     if (!seen.has(key)) seen.set(key, tag);
   }
   return [...seen.entries()]
-    .sort(([ka, va], [kb, vb]) =>
-      ka < kb ? -1 : ka > kb ? 1 : va < vb ? -1 : va > vb ? 1 : 0)
+    .sort(([ka, va], [kb, vb]) => (ka < kb ? -1 : ka > kb ? 1 : va < vb ? -1 : va > vb ? 1 : 0))
     .map(([, v]) => v);
 }
 
 /** Collapse whitespace runs in a free-text field, as `metadata.clean_text` does. */
 function cleanText(value: string): string {
-  return value.split(/\s+/).filter((p) => p !== "").join(" ");
+  return value
+    .split(/\s+/)
+    .filter((p) => p !== "")
+    .join(" ");
 }
 
 /**
@@ -644,13 +648,11 @@ function cleanText(value: string): string {
  * run, preview and design review — the exact invisible-dead-path class `ipc/index.ts`
  * documents. The wire text is reproduced literally: the Rust bridge flattens the envelope
  * with `format!("rpc error (id {id}): {err}")` (`cockpit/src-tauri/src/sidecar.rs:161`) over
- * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:348-352`). The id is a
+ * the sidecar's `{code, message}` (`llm_anthology/sidecar.py:356-360`). The id is a
  * fixed constant; no caller parses it (rpcErrorCode matches on the code, not the id).
  */
 function rpcError(code: number, message: string): Error {
-  return new Error(
-    `rpc error (id 0): {"code":${code},"message":${JSON.stringify(message)}}`,
-  );
+  return new Error(`rpc error (id 0): {"code":${code},"message":${JSON.stringify(message)}}`);
 }
 
 /**
@@ -662,7 +664,7 @@ function rpcError(code: number, message: string): Error {
  * this offline-only tool forbids. A mock that accepted a UNC root would let a path-handling
  * bug reach the engine untested. Note that `C:/store/../evil` passes here exactly as it
  * passes the real edge: parent-traversal is the ENGINE's refusal, not the edge's
- * (`tests/test_sidecar_maintenance.py:104-120`).
+ * (`tests/test_sidecar_maintenance.py:109-125`).
  */
 function requireLocalPath(value: string, label: string): void {
   if (value.startsWith("\\\\") || value.startsWith("//")) {
@@ -692,7 +694,7 @@ function normPath(path: string): string {
   return path.replace(/\//g, "\\").toLowerCase();
 }
 
-/** The engine's protected-store markers, verbatim (`llm_anthology/maintenance.py:295-299`). */
+/** The engine's protected-store markers, verbatim (`llm_anthology/maintenance.py:309-313`). */
 const PROTECTED_PATH_MARKERS = [
   "\\.codex\\sessions\\",
   "\\.codex\\state_5.sqlite",
@@ -701,7 +703,7 @@ const PROTECTED_PATH_MARKERS = [
 
 /**
  * Does this path name the LIVE Codex store? A port of the engine's `_spells_protected`
- * (`llm_anthology/maintenance.py:384-406`): separators unified, lowercased, trailing
+ * (`llm_anthology/maintenance.py:399-421`): separators unified, lowercased, trailing
  * separators stripped and ONE appended, so a marker matches the directory it names and not
  * merely a prefix of a longer name (`...\sessionsfoo` must not match `\sessions\`).
  *
@@ -722,28 +724,23 @@ const PROTECTED_PATH_MARKERS = [
  * path is safe.
  */
 function spellsProtected(filePath: string): boolean {
-  const normalized =
-    filePath.replace(/\//g, "\\").toLowerCase().replace(/\\+$/, "") + "\\";
+  const normalized = filePath.replace(/\//g, "\\").toLowerCase().replace(/\\+$/, "") + "\\";
   return PROTECTED_PATH_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 /**
- * The effective destination root (`llm_anthology/maintenance.py:452-461`): a `delete`
+ * The effective destination root (`llm_anthology/maintenance.py:468-477`): a `delete`
  * quarantines under `<checkpoint_root>/deleted` (which is what makes a delete recoverable)
  * and a `reconcile` under `<destination_root>/reconciled`; `archive` and `move` go to the
  * requested destination as-is.
  */
-function effectiveRoot(
-  action: string,
-  checkpointRoot: string,
-  destinationRoot: string,
-): string {
+function effectiveRoot(action: string, checkpointRoot: string, destinationRoot: string): string {
   if (action === "delete") return winJoin(checkpointRoot, "deleted");
   if (action === "reconcile") return winJoin(destinationRoot, "reconciled");
   return destinationRoot;
 }
 
-/** The phrase the operator must type (`llm_anthology/maintenance.py:463-470`), e.g.
+/** The phrase the operator must type (`llm_anthology/maintenance.py:479-485`), e.g.
  *  `"DELETE 2 FILES"` / `"ARCHIVE 1 FILE"`. A function of the ALLOWED count, never of what
  *  the caller offered, so a plan that changed changes the phrase too. */
 function confirmationPhrase(action: string, allowedCount: number): string {
@@ -963,7 +960,8 @@ export class MockGraph {
     let undated = 0;
     for (const id of this.nodeIds()) {
       const ms = this.byId.get(id)?.created_at_ms;
-      if (ms === undefined) undated += 1; // a dangling edge endpoint has no row/date
+      if (ms === undefined)
+        undated += 1; // a dangling edge endpoint has no row/date
       else dated.add(ms);
     }
     const events = [...dated].sort((a, b) => a - b);
@@ -1044,8 +1042,7 @@ function orderNodes(nodes: ThreadNode[], order: RootsParams["order"]): ThreadNod
   if (order === "recent") {
     return copy.sort(
       (a, b) =>
-        (b.updated_at_ms ?? b.created_at_ms ?? 0) -
-        (a.updated_at_ms ?? a.created_at_ms ?? 0),
+        (b.updated_at_ms ?? b.created_at_ms ?? 0) - (a.updated_at_ms ?? a.created_at_ms ?? 0),
     );
   }
   // "title"
@@ -1163,7 +1160,7 @@ function bucketCounts(matches: RawThread[], bucket: SearchBucket): SearchHistogr
 // semantics, not a convenient approximation of them.
 
 /**
- * The engine's coverage-limit sentence, VERBATIM from `redact.py:203`.
+ * The engine's coverage-limit sentence, VERBATIM from `redact.py:205`.
  *
  * IT IS A HAND-COPY ACROSS A LANGUAGE BOUNDARY, AND IT IS CHECKED. `mock.test.ts` parses
  * the constant out of `redact.py?raw` and asserts this string equals it byte-for-byte, so a
@@ -1191,7 +1188,7 @@ export const CREDENTIAL_SHAPE_COVERAGE_LIMIT =
  *
  * That reduction is safe ONLY because `coverage_limit` travels with every result and says
  * an empty list is not a safety verdict. It would NOT be safe if this were the shipped
- * scanner. It is not: the real scan runs in the engine (`export.py:276`).
+ * scanner. It is not: the real scan runs in the engine (`export.py:300`).
  */
 const MOCK_CREDENTIAL_SHAPES: ReadonlyArray<readonly [string, RegExp]> = [
   ["api-key", /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g],
@@ -1199,12 +1196,12 @@ const MOCK_CREDENTIAL_SHAPES: ReadonlyArray<readonly [string, RegExp]> = [
   ["private-key", /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/g],
 ];
 
-/** `redact.py:249`'s mask: first 4 characters and the length, never the whole run. */
+/** `redact.py:250`'s mask: first 4 characters and the length, never the whole run. */
 function maskRun(run: string): string {
   return `${run.slice(0, 4)}… (${run.length} chars)`;
 }
 
-/** Every shape hit in one field, LOCATED — the engine's `_located` (`export.py:255`). */
+/** Every shape hit in one field, LOCATED — the engine's `_located` (`export.py:276`). */
 function scanField(
   text: string | undefined,
   scope: "thread" | "edge",
@@ -1224,15 +1221,21 @@ function scanField(
   return out;
 }
 
-/** The engine's `_TEXT_NODE_FIELDS` (`export.py:114`), less the two a ThreadNode lacks. */
+/** The engine's `_TEXT_NODE_FIELDS` (`export.py:115`), less the two a ThreadNode lacks. */
 const SCANNED_NODE_FIELDS = [
-  "title", "model_provider", "git_branch", "cwd", "agent_role", "agent_nickname", "preview",
+  "title",
+  "model_provider",
+  "git_branch",
+  "cwd",
+  "agent_role",
+  "agent_nickname",
+  "preview",
 ] as const;
 
 /**
  * The G-6 projection, applied BEFORE the tally and the scan so both answer "what is in the
  * file you are about to hand over" rather than "what is in memory" — the engine's ordering
- * (`export.py:232`). SHAREABLE drops `preview` outright (a shorter excerpt is the same
+ * (`export.py:250`). SHAREABLE drops `preview` outright (a shorter excerpt is the same
  * leak) and relativizes `cwd` to `~` (an absolute path carries the OS username).
  */
 export function projectNode(node: ThreadNode, mode: ExportMode): ThreadNode {
@@ -1290,12 +1293,14 @@ function scanGraph(nodes: ThreadNode[], graphEdges: SpawnEdge[]): CredentialFind
   for (const e of graphEdges) {
     found.push(...scanField(e.status, "edge", `${e.parent}->${e.child}`, "status"));
   }
-  // `_sorted_findings` (`export.py:248`): scope, id, field, offset — so two runs over the
+  // `_sorted_findings` (`export.py:270`): scope, id, field, offset — so two runs over the
   // same corpus produce the same list and a report is diffable.
   return found.sort(
     (a, b) =>
-      a.scope.localeCompare(b.scope) || a.id.localeCompare(b.id) ||
-      a.field.localeCompare(b.field) || a.offset - b.offset,
+      a.scope.localeCompare(b.scope) ||
+      a.id.localeCompare(b.id) ||
+      a.field.localeCompare(b.field) ||
+      a.offset - b.offset,
   );
 }
 
@@ -1316,16 +1321,20 @@ export function createMockIpc(
    * The in-flight/last mock ingest, or null before any `corpusBuild`.
    *
    * `sessionsRoot` is REMEMBERED rather than re-derived because `build_status` reports the
-   * root the job was started with (`llm_anthology/sidecar.py:1180` reads it off the job
+   * root the job was started with (`llm_anthology/sidecar.py:1236` reads it off the job
    * snapshot). A status that invented its own path would let a panel read the ingest source
    * off the poll and show somewhere the build never touched.
    */
   // All three roots are held SEPARATELY rather than collapsed into one field: the engine
   // reports each as itself, and a single `sessionsRoot` is what let a Grok path be echoed
   // as the Codex tree.
-  let buildJob:
-    | { id: string; polls: number; sessionsRoot: string; grokRoot: string; claudeRoot: string }
-    | null = null;
+  let buildJob: {
+    id: string;
+    polls: number;
+    sessionsRoot: string;
+    grokRoot: string;
+    claudeRoot: string;
+  } | null = null;
 
   // -- annotation / dedup / maintenance state -------------------------------------
   //
@@ -1367,7 +1376,7 @@ export function createMockIpc(
 
   /**
    * The engine's `_req_str` + `metadata._check_id` guard: an empty or whitespace-only id is
-   * a param error (`tests/test_sidecar_metadata.py:124-128`), not a silent no-op on a key
+   * a param error (`tests/test_sidecar_metadata.py:147-151`), not a silent no-op on a key
    * that could never be stored.
    */
   function requireConversationId(cid: string): string {
@@ -1402,8 +1411,7 @@ export function createMockIpc(
     // makes the order TOTAL, so LIMIT/OFFSET paging partitions the result set instead of
     // depending on sort stability. The engine used to say `ORDER BY rank`, which sorts by
     // nothing under a `detail=none` contentless index; this mock was already right.
-    matches.sort((a, b) =>
-      b.created_at_ms - a.created_at_ms || a.id.localeCompare(b.id));
+    matches.sort((a, b) => b.created_at_ms - a.created_at_ms || a.id.localeCompare(b.id));
     const page = matches.slice(offset, offset + limit);
     // ROLLED UP OVER `matches`, NOT `page`, deliberately: the histogram's entire job is to
     // say where the OTHER pages are, so its counts sum to `total` rather than to the rows
@@ -1482,7 +1490,7 @@ export function createMockIpc(
      *
      * The PATH GUARD is reproduced, though, because it is not a filesystem question. The
      * engine rejects a UNC or relative `index_path` before touching the disk
-     * (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:903`), and a mock that accepted
+     * (`_reject_nonlocal_path`, `llm_anthology/sidecar.py:928`), and a mock that accepted
      * `\\host\share\x.db` would let a UI offer a network destination that every dev run
      * blesses and the engine then refuses. The clobber check (`CORPUS_EXISTS`) and the
      * parent-directory check stay absent — those genuinely need a filesystem.
@@ -1494,11 +1502,11 @@ export function createMockIpc(
 
     /**
      * Accept an ingest and hand back a handle. `state` is always `"running"`: the reply
-     * reports that the job was ACCEPTED, not that it finished (`sidecar.py:956-958`).
+     * reports that the job was ACCEPTED, not that it finished (`sidecar.py:985-987`).
      *
      * The PARAMS CHECKS are the engine's, because they need no filesystem. Every source is
-     * opt-in by naming its root and at least one must be named (`sidecar.py:997-1002`), and
-     * each named root is refused if UNC or relative (`sidecar.py:1008-1015`). What is NOT
+     * opt-in by naming its root and at least one must be named (`sidecar.py:1028-1035`), and
+     * each named root is refused if UNC or relative (`sidecar.py:1042-1052`). What is NOT
      * reproduced is the engine's `os.path.isdir` on each root — that one is a real disk
      * question this adapter cannot answer.
      */
@@ -1549,10 +1557,10 @@ export function createMockIpc(
      * correct.
      *
      * An UNNAMED poll before any build reads back `idle` rather than erroring, so the UI can
-     * render unconditionally (`llm_anthology/sidecar.py:1175`). A poll that NAMES a `job_id`
+     * render unconditionally (`llm_anthology/sidecar.py:1228`). A poll that NAMES a `job_id`
      * is the opposite case and both engine branches are reproduced: naming a job when none
-     * has started (`sidecar.py:1171-1174`), or naming one that is not the job in flight
-     * (`sidecar.py:1176-1178`), is -32602. The whole point of the optional argument is to let a
+     * has started (`sidecar.py:1225-1227`), or naming one that is not the job in flight
+     * (`sidecar.py:1229-1232`), is -32602. The whole point of the optional argument is to let a
      * client prove it is reading the job it started, which a mock that ignored it would
      * quietly defeat — a stale handle after a restart would read "idle" here and take a param
      * error from the engine.
@@ -1740,15 +1748,12 @@ export function createMockIpc(
     async graphDiff(asOfA?: number, asOfB?: number): Promise<CorpusDiffDto> {
       // An omitted operand is "now" (the full corpus), mirroring the sidecar's
       // graph.diff, so graphDiff() is the empty self-diff.
-      return graph.diffAsOf(
-        asOfA ?? Number.POSITIVE_INFINITY,
-        asOfB ?? Number.POSITIVE_INFINITY,
-      );
+      return graph.diffAsOf(asOfA ?? Number.POSITIVE_INFINITY, asOfB ?? Number.POSITIVE_INFINITY);
     },
 
     async exportPlan(_dest?: string, mode: ExportMode = "full"): Promise<ExportPlan> {
       // A dry run over the loaded corpus. No filesystem access, and `_dest` is ignored
-      // exactly as the engine ignores it (`sidecar.py:1304`).
+      // exactly as the engine ignores it (`sidecar.py:1363`).
       //
       // est_bytes IS THE SERIALIZED GRAPH, NOT A CONTENT SUM. This used to add up
       // `char_count` and assert equality with `corpus.stats` bytes — the very quantity the
@@ -1775,7 +1780,7 @@ export function createMockIpc(
         credential_scan: {
           findings: scanGraph(nodes, edges),
           coverage_limit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
-          // A dry run changes nothing by definition (`export.py:286`).
+          // A dry run changes nothing by definition (`export.py:310`).
           scrubbed: false,
         },
       };
@@ -1815,7 +1820,7 @@ export function createMockIpc(
 
     // NO `research.*` HERE, DELIBERATELY. A canned non-empty summary would be the worst
     // possible mock: the shipped app returns `""` from `MockBackend` by construction
-    // (`llm_anthology/sidecar.py:700-703`, `research.py:91-100`), so a mock that invented prose
+    // (`llm_anthology/sidecar.py:710-713`, `research.py:89-98`), so a mock that invented prose
     // would make a research panel look FINISHED in every dev run and screenshot while being
     // permanently blank for the user. See the NOT BOUND note in `./types.ts`.
 
@@ -1827,7 +1832,7 @@ export function createMockIpc(
 
     /**
      * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
-     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1590-1592`).
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1651-1653`).
      * Getting this wrong here would make a per-field editor look correct in preview while
      * blanking the other two fields against the real engine.
      */
@@ -1855,11 +1860,11 @@ export function createMockIpc(
      * each is separately easy to get wrong in a panel:
      *
      *   * with NEITHER filter the result is EMPTY — a blank query must not dump the
-     *     catalogue (`llm_anthology/metadata.py:501-502`);
+     *     catalogue (`llm_anthology/metadata.py:533-534`);
      *   * `tag` is a WHOLE-TAG exact match (the engine probes a sentinel-delimited
-     *     `\ntag\n` needle, never a LIKE — `metadata.py:243-269`, `:456-463`), so `"rus"`
+     *     `\ntag\n` needle, never a LIKE — `metadata.py:248-274`, `:488-495`), so `"rus"`
      *     does NOT find `"rust"`;
-     *   * `text` IS a substring match, over the alias + tags + notes key (`metadata.py:470-480`).
+     *   * `text` IS a substring match, over the alias + tags + notes key (`metadata.py:502-512`).
      *
      * It is an INNER JOIN, so an annotation whose conversation is not in the index does not
      * appear; ordered by conversation_id.
@@ -1885,16 +1890,15 @@ export function createMockIpc(
         rows.push({
           conversation_id: cid,
           provider: raw.provider,
-          // `conversations.account` is NOT NULL DEFAULT '' (`llm_anthology/corpus.py:183`),
+          // `conversations.account` is NOT NULL DEFAULT '' (`llm_anthology/corpus.py:208`),
           // so an unknown account is the EMPTY STRING on this surface — note that
           // `conversationGet` above reports the same fact as `null`, because that DTO's
           // field really is nullable. Two shapes, one underlying blank.
           account: "",
           title: raw.title,
           created_at: iso,
-          updated_at: raw.updated_at_ms === undefined
-            ? iso
-            : new Date(raw.updated_at_ms).toISOString(),
+          updated_at:
+            raw.updated_at_ms === undefined ? iso : new Date(raw.updated_at_ms).toISOString(),
           turn_count: raw.turn_count ?? 0,
           // The fixture's conversation id doubles as its thread id, as elsewhere in this mock.
           thread_id: raw.id,
@@ -1905,7 +1909,7 @@ export function createMockIpc(
     },
 
     /** The tag facet, case-collapsed with the lexicographically-first display form and
-     *  ordered by the casefolded tag (`llm_anthology/metadata.py:529-544`). */
+     *  ordered by the casefolded tag (`llm_anthology/metadata.py:564-578`). */
     async metadataTags(): Promise<TagCount[]> {
       const counts = new Map<string, number>();
       const display = new Map<string, string>();
@@ -1930,11 +1934,11 @@ export function createMockIpc(
      * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
      * argument being required is a safety property of this call — an automated probe once
      * read the owner's live Codex store through a defaulted home
-     * (`llm_anthology/sidecar.py:1684-1684`) — so a UI that forgot to collect it must fail
+     * (`llm_anthology/sidecar.py:1745-1745`) — so a UI that forgot to collect it must fail
      * here too, not only against the engine.
      *
      * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
-     * behaviour (`tests/test_sidecar_dedup.py:101-107`). The mock has no filesystem to
+     * behaviour (`tests/test_sidecar_dedup.py:122-128`). The mock has no filesystem to
      * miss, so any accepted path yields the fixture.
      */
     async dedupScan(codexHome: string): Promise<DedupScanResult> {
@@ -1948,7 +1952,7 @@ export function createMockIpc(
 
     /**
      * The persisted view — EMPTY until a scan has run, exactly as the engine answers before
-     * any `dedup.scan` (`tests/test_sidecar_dedup.py:170-171`).
+     * any `dedup.scan` (`tests/test_sidecar_dedup.py:192-193`).
      *
      * This one IS gated, unlike `openCorpus` above, and the difference is not an
      * inconsistency: `openCorpus` cannot be gated because attaching needs the native file
@@ -1992,7 +1996,10 @@ export function createMockIpc(
       const destinationRoot = params.destination_root ?? "";
       if (destinationRoot !== "") requireLocalPath(destinationRoot, "destination_root");
       if (!["delete", "archive", "move", "reconcile"].includes(params.action)) {
-        throw rpcError(RPC_INVALID_PARAMS, "action must be one of delete, archive, move, reconcile");
+        throw rpcError(
+          RPC_INVALID_PARAMS,
+          "action must be one of delete, archive, move, reconcile",
+        );
       }
       if (!Array.isArray(params.targets) || params.targets.length === 0) {
         throw rpcError(RPC_INVALID_PARAMS, "targets must be a non-empty list");
@@ -2011,7 +2018,7 @@ export function createMockIpc(
           throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
         }
         // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
-        // kind (`llm_anthology/sidecar.py:1811`).
+        // kind (`llm_anthology/sidecar.py:1892`).
         const copy: MaintenanceCopy = {
           session_id: target.session_id ?? "",
           file_path: target.file_path,
@@ -2023,7 +2030,7 @@ export function createMockIpc(
         const key = normPath(target.file_path);
 
         // `outside-store-root`: the LEXICAL half of the engine's `_classify`
-        // (`llm_anthology/maintenance.py:345-347`). The realpath/symlink half needs a
+        // (`llm_anthology/maintenance.py:358-360`). The realpath/symlink half needs a
         // filesystem and is deliberately absent here.
         if (!key.startsWith(normPath(storeRoot).replace(/\\+$/, "") + "\\")) {
           blocked.push({
@@ -2041,7 +2048,7 @@ export function createMockIpc(
         // `protected`: the LIVE-STORE guard. Checked BEFORE the duplicate rule and in this
         // order deliberately — the engine checks duplicate LAST so that a target which is
         // both a duplicate AND protected is reported as `protected`, "the more dangerous
-        // reason ... worth recording" (`llm_anthology/maintenance.py:536-537`). Reversing
+        // reason ... worth recording" (`llm_anthology/maintenance.py:553-554`). Reversing
         // these two would mislabel exactly the worst case.
         if (spellsProtected(target.file_path)) {
           blocked.push({
@@ -2050,7 +2057,7 @@ export function createMockIpc(
             detail: `protected store path: '${target.file_path}'`,
           });
           // Not the `duplicate-target` REVIEW branch: every other block reason raises
-          // DANGEROUS with this same wording (`maintenance.py:549-551`).
+          // DANGEROUS with this same wording (`maintenance.py:570-575`).
           warnings.push({
             severity: 2,
             severity_name: "DANGEROUS",
@@ -2061,7 +2068,7 @@ export function createMockIpc(
         // `duplicate-target`: two entries naming ONE physical file. The likeliest real UI
         // bug on this surface — feeding `dedup.sessions`' canonical AND duplicate paths
         // straight into a plan does exactly this — and the engine blocks the second rather
-        // than planning one file twice (`maintenance.py:529-540`).
+        // than planning one file twice (`maintenance.py:546-559`).
         if (plannedSources.has(key)) {
           blocked.push({
             target: copy,
@@ -2080,7 +2087,7 @@ export function createMockIpc(
 
         plannedSources.add(key);
         // `size_bytes` on an ALLOWED target is MEASURED FROM DISK by the engine, never taken
-        // from the caller (`llm_anthology/maintenance.py:419-449`, `_measured_size`) — the
+        // from the caller (`llm_anthology/maintenance.py:434-464`, `_measured_size`) — the
         // maintenance panel sums it onto the confirm screen, so a client-dictated figure was
         // the one number on the dialog authorising a delete that a caller could inflate. The
         // mock has no filesystem to measure, so it reports the engine's OWN fallback for an
@@ -2091,7 +2098,7 @@ export function createMockIpc(
         // A BLOCKED target keeps the caller's value, because the engine deliberately leaves a
         // refused target unmeasured rather than stat-ing a path it declined.
         allowed.push({ ...copy, size_bytes: 0 });
-        // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:558-560`), so a
+        // EVERY allowed target raises a DANGEROUS warning (`maintenance.py:582-587`), so a
         // perfectly healthy plan is never warning-free.
         warnings.push({
           severity: 2,
@@ -2099,7 +2106,7 @@ export function createMockIpc(
           message: `Dangerous maintenance target: ${target.file_path}`,
         });
         // A deterministic `-N` suffix, not a GUID, so the destination can be SHOWN in the
-        // preview and verified later (`maintenance.py:472-486`).
+        // preview and verified later (`maintenance.py:487-502`).
         const base = winBasename(target.file_path);
         const dot = base.lastIndexOf(".");
         const stem = dot > 0 ? base.slice(0, dot) : base;
@@ -2131,7 +2138,7 @@ export function createMockIpc(
         action: params.action,
         store_root: storeRoot,
         // The EFFECTIVE root, not the requested one — a delete reports
-        // `<checkpoint_root>\deleted` (`maintenance.py:457`).
+        // `<checkpoint_root>\deleted` (`maintenance.py:473`).
         destination_root: root,
         checkpoint_root: checkpointRoot,
         allowed,
@@ -2153,33 +2160,34 @@ export function createMockIpc(
       }
       const preview = plans.get(planId);
       if (preview === undefined) {
-        throw rpcError(RPC_MAINTENANCE_REFUSED, `unknown or already-used plan_id '${planId}'; re-plan`);
+        throw rpcError(
+          RPC_MAINTENANCE_REFUSED,
+          `unknown or already-used plan_id '${planId}'; re-plan`,
+        );
       }
       const confirmation = params.confirmation ?? "";
       const apply = params.apply ?? false;
       // The confirmation is checked BEFORE the apply branch, so a DRY RUN needs the phrase
-      // too (`llm_anthology/maintenance.py:645-648` runs ahead of `:669`). A panel that offers a
+      // too (`llm_anthology/maintenance.py:689-692` runs ahead of `:713`). A panel that offers a
       // preview button without collecting the phrase is refused, not answered.
-      if (confirmation.trim() === "") throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation is required.");
+      if (confirmation.trim() === "")
+        throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation is required.");
       if (confirmation !== preview.required_typed_confirmation) {
         // Deliberately NOT consuming the handle: a typo must be correctable without forcing
-        // a re-plan (`tests/test_sidecar_maintenance.py:195-207`).
+        // a re-plan (`tests/test_sidecar_maintenance.py:205-224`).
         throw rpcError(RPC_MAINTENANCE_REFUSED, "Typed confirmation does not match the preview.");
       }
       plans.delete(planId); // accepted -> consumed, so a run can never be replayed
       if (!apply) {
         // A dry run returns the PLANNED MOVES, not an empty list
-        // (`llm_anthology/maintenance.py:670`) — that is how a UI shows the destinations —
+        // (`llm_anthology/maintenance.py:714`) — that is how a UI shows the destinations —
         // with an empty `manifest_path` because nothing was written.
         return { executed: false, manifest_path: "", moves: [...preview.plan], unaccounted: [] };
       }
-      const manifestPath = winJoin(
-        preview.checkpoint_root,
-        `manifest-${nextManifest}.json`,
-      );
+      const manifestPath = winJoin(preview.checkpoint_root, `manifest-${nextManifest}.json`);
       nextManifest += 1;
       manifests.set(manifestPath, { moves: [...preview.plan], restored: false });
-      // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:307-314`).
+      // Only an APPLIED run enters the ledger (`tests/test_sidecar_maintenance.py:345-353`).
       // `recorded_at_ms` steps by a fixed minute per run rather than reading the clock, so
       // the newest-first order is deterministic and testable.
       runs.push({
@@ -2207,17 +2215,14 @@ export function createMockIpc(
       requireLocalPath(manifestPath, "manifest_path");
       const record = manifests.get(manifestPath);
       if (record === undefined) {
-        throw rpcError(
-          RPC_INTERNAL_ERROR,
-          `no checkpoint manifest at '${manifestPath}'`,
-        );
+        throw rpcError(RPC_INTERNAL_ERROR, `no checkpoint manifest at '${manifestPath}'`);
       }
       const skip = params.skip_unaccounted ?? false;
       if (typeof skip !== "boolean") {
         throw rpcError(RPC_INVALID_PARAMS, "skip_unaccounted must be a boolean");
       }
       const apply = params.apply ?? false;
-      // The engine's FIRST check (`llm_anthology/maintenance.py:750-752`): a checkpoint that
+      // The engine's FIRST check (`llm_anthology/maintenance.py:799-801`): a checkpoint that
       // was already restored cannot be restored again.
       if (record.restored) {
         throw rpcError(
@@ -2226,7 +2231,7 @@ export function createMockIpc(
         );
       }
 
-      // THE ENGINE'S PER-ENTRY RULE, ported (`llm_anthology/maintenance.py:784-793`), applied
+      // THE ENGINE'S PER-ENTRY RULE, ported (`llm_anthology/maintenance.py:838-849`), applied
       // to a MODELLED filesystem state instead of a real one:
       //
       //   checkpoint copy MISSING + original PRESENT -> skipped (never moved / already back);
@@ -2242,7 +2247,7 @@ export function createMockIpc(
       // marked "exactly one" entry unaccounted, which was an invented number: the probe
       // measured engine 2 / mock 1 on the same input.
       //
-      // NOT the duplicate-entry guards (`maintenance.py:776-781`). Those refuse a manifest
+      // NOT the duplicate-entry guards (`maintenance.py:826-835`). Those refuse a manifest
       // whose entries repeat an original or a checkpoint copy, and they are unreachable here:
       // this mock's own `plan` already blocks `duplicate-target` and de-dupes destinations, so
       // a manifest it issued can never contain a repeat. Porting them would add a branch no
@@ -2272,7 +2277,7 @@ export function createMockIpc(
       }
       if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
-      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1845-1846`), so a
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1934-1935`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: apply,

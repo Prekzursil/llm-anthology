@@ -1,8 +1,8 @@
 """DECISION D-5, the half that ships: PERSIST `model_id` as a first-class fact.
 
-WHAT THE ADAPTERS ALREADY CAPTURE. `adapters/claude_code.py:698` puts the model the
+WHAT THE ADAPTERS ALREADY CAPTURE. `adapters/claude_code.py:738` puts the model the
 assistant actually answered with into `Conversation.meta["model_id"]`, and
-`adapters/grok.py:556` puts `summary.current_model_id` in the same key. Two adapters, one
+`adapters/grok.py:590` puts `summary.current_model_id` in the same key. Two adapters, one
 agreed spelling, and nothing in `corpus.py` had ever heard of it.
 
 THE PREMISE THIS UNIT WAS GIVEN WAS STALE, AND THE CORRECTION IS THE REASON THESE TESTS
@@ -16,7 +16,7 @@ index):
     load_conversation_body(...)[1]    -> {"model_id": "claude-opus-4-20250514", ...}
     json_extract(meta,'$.model_id')   -> matches the row
 
-So `conv.meta` IS written — G-4's `set_conversation_body` (`corpus.py:394`) stores it as
+So `conv.meta` IS written — G-4's `set_conversation_body` (`corpus.py:424`) stores it as
 compact JSON beside the archive, and `model_id` round-trips. **There is no unrecoverable
 loss on a schema-version-2 index, and this file does not claim one.** What was actually
 wrong is narrower, and all four parts are still worth fixing:
@@ -37,9 +37,9 @@ wrong is narrower, and all four parts are still worth fixing:
      it. `test_the_model_survives_a_body_that_is_GONE` pins that it no longer does.
 
 SHAPE: one additive TABLE, `conversation_models`, never a column on `conversations` — the
-schema's own migration rule at `corpus.py:249-256`. So it simply appears, EMPTY, the first
+schema's own migration rule at `corpus.py:274-281`. So it simply appears, EMPTY, the first
 time this build opens an index that predates it, and "no row" means "not recorded yet",
-exactly as `rollout_legs` documents at `corpus.py:288-291`.
+exactly as `rollout_legs` documents at `corpus.py:313-316`.
 `test_an_index_built_BEFORE_this_table_still_works` is that migration, end to end.
 
 NOT BUILT, DELIBERATELY: the cost ledger and model-reliance reporting on top of this. D-5
@@ -52,7 +52,7 @@ whichever unit adds a `conversation.model` RPC and finds out whether one string 
 conversation is enough.
 
 DISTINCT FROM `threads.model_provider`, which is the VENDOR — measured 'openai' on 92.8% of
-real Codex rollouts and never a model name (`corpus.py:73-76`).
+real Codex rollouts and never a model name (`corpus.py:76-79`).
 `test_the_model_id_is_not_the_vendor_in_threads` keeps the two from being conflated again.
 
 THESE TESTS WERE MUTATION-CHECKED, because a green suite is not evidence that it protects a
@@ -78,6 +78,7 @@ reproducible by hand, which is the part that has to survive.
 PRIVACY: synthetic fixtures only. Every model name below was invented for this file; none
 was read off the owner's corpus.
 """
+
 import sqlite3
 from pathlib import Path
 
@@ -112,24 +113,35 @@ def _conv(cid="c1", model_id="synth-model-1", **extra_meta):
     if model_id is not None:
         meta["model_id"] = model_id
     return ir.Conversation(
-        id=cid, title="a synthetic title", provider="claude-code",
-        turns=[ir.Turn(role="human", uuid="u-1", timestamp="2026-01-01T00:00:01Z",
-                       blocks=[ir.Block(type="text", text="alpha bravo")])],
-        created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:02Z",
-        account="", meta=meta)
+        id=cid,
+        title="a synthetic title",
+        provider="claude-code",
+        turns=[
+            ir.Turn(
+                role="human",
+                uuid="u-1",
+                timestamp="2026-01-01T00:00:01Z",
+                blocks=[ir.Block(type="text", text="alpha bravo")],
+            )
+        ],
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:02Z",
+        account="",
+        meta=meta,
+    )
 
 
 # ------------------------------------------------------------------- the schema
 
+
 def test_the_models_table_is_created_by_init_index():
     conn = _open()
-    names = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "conversation_models" in names
 
 
 def test_the_model_is_a_new_TABLE_and_conversations_gained_no_column():
-    """The schema's own migration rule (`corpus.py:249-256`), asserted rather than trusted.
+    """The schema's own migration rule (`corpus.py:274-281`), asserted rather than trusted.
 
     A new COLUMN on `conversations` would be silently ABSENT on every existing index and
     every INSERT naming it would raise — a migration, not a no-op. So `_CONV_COLS` must be
@@ -154,11 +166,12 @@ def test_one_row_per_conversation():
 
 # -------------------------------------------------------------- the write path
 
+
 def test_add_conversation_persists_the_model_the_adapter_captured():
     """The whole unit in one assertion: the real ingest path now keeps the fact.
 
     Via `add_conversation` rather than the writer directly, because that is the only
-    function both production callers reach — `index.py:164` and `loaders.py:1147`.
+    function both production callers reach — `index.py:179` and `loaders.py:1205`.
     """
     conn = _open()
     corpus.add_conversation(conn, _conv(model_id="synth-opus-9"))
@@ -230,10 +243,11 @@ def test_a_None_meta_writes_nothing():
 
 # ------------------------------------------------------------- the read contract
 
+
 def test_no_row_reads_as_None_meaning_NOT_RECORDED_YET():
     """None is BOTH "this id is not in the index" and "this index predates the table". The
     caller must treat it as "not recorded", never as "this conversation had no model" — the
-    same contract `rollout_legs` states at `corpus.py:288-291`."""
+    same contract `rollout_legs` states at `corpus.py:313-316`."""
     conn = _open()
     assert corpus.conversation_model(conn, "never-indexed") is None
 
@@ -298,21 +312,28 @@ def test_the_recorded_model_is_queryable_by_plain_SQL():
     corpus.add_conversation(conn, _conv(cid="a2", model_id="synth-opus-9"))
     corpus.add_conversation(conn, _conv(cid="a3", model_id="synth-haiku-3"))
     corpus.add_conversation(conn, _conv(cid="a4", model_id=None))
-    hits = sorted(r[0] for r in conn.execute(
-        "SELECT conversation_id FROM conversation_models WHERE model_id=?",
-        ("synth-opus-9",)))
+    hits = sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT conversation_id FROM conversation_models WHERE model_id=?", ("synth-opus-9",)
+        )
+    )
     assert hits == ["a1", "a2"]
     # `tuple(row)` explicitly rather than `dict(cursor)`: the row_factory here is
     # `sqlite3.Row`, and relying on dict() unpacking it is a cross-version bet this suite
     # runs on a python matrix and cannot check locally.
-    counts = dict(tuple(row) for row in conn.execute(
-        "SELECT model_id, COUNT(*) FROM conversation_models GROUP BY model_id"))
+    counts = dict(
+        tuple(row)
+        for row in conn.execute(
+            "SELECT model_id, COUNT(*) FROM conversation_models GROUP BY model_id"
+        )
+    )
     assert counts == {"synth-opus-9": 2, "synth-haiku-3": 1}
 
 
 def test_the_model_id_is_not_the_vendor_in_threads():
     """`threads.model_provider` is the VENDOR ('openai' on 92.8% of measured Codex rollouts)
-    and is explicitly NOT a model name (`corpus.py:73-76`). Conflating them is what made
+    and is explicitly NOT a model name (`corpus.py:76-79`). Conflating them is what made
     every Codex node render as the palette's unknown grey, so the two facts are asserted to
     live in different tables with different values."""
     conn = _open()
@@ -323,6 +344,7 @@ def test_the_model_id_is_not_the_vendor_in_threads():
 
 
 # -------------------------------------------------------- replay and re-ingest
+
 
 def test_a_replay_of_the_same_ingest_is_a_no_op():
     """Idempotent, like every other writer here: the PK dedupes and a resumed build leaves
@@ -370,6 +392,7 @@ def test_a_reingest_that_LOST_the_model_does_not_erase_the_recorded_one(lost):
 
 # ------------------------------------------------------ an index built BEFORE this
 
+
 def test_an_index_built_BEFORE_this_table_still_works():
     """The migration, end to end — the brief's explicit requirement.
 
@@ -385,11 +408,10 @@ def test_an_index_built_BEFORE_this_table_still_works():
     conn = _open()
     corpus.add_conversation(conn, _conv(model_id="synth-opus-9"))
     conn.executescript("DROP TABLE conversation_models;")
-    assert corpus.conversation_model is not None       # the module still imports fine
+    assert corpus.conversation_model is not None  # the module still imports fine
 
-    corpus.init_index(conn)                            # what re-opening the index does
-    names = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
+    corpus.init_index(conn)  # what re-opening the index does
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "conversation_models" in names
     assert conn.execute("SELECT COUNT(*) FROM conversation_models").fetchone()[0] == 0
     assert corpus.conversation_model(conn, "c1") is None, "no row means NOT RECORDED yet"
@@ -419,7 +441,7 @@ def test_the_ddl_carries_no_percent_so_init_index_can_format_it():
 def test_the_composed_schema_still_contains_every_block():
     """`init_index` was changed to format ONE composed constant instead of concatenating two
     inline, so that a third block could be added without splitting a line whose position is
-    cited (`corpus.py:303`, `corpus.py:347`). If a later edit drops a block from `_SCHEMA`,
+    cited (`corpus.py:328`, `corpus.py:377`). If a later edit drops a block from `_SCHEMA`,
     the table it creates disappears silently — every statement is `IF NOT EXISTS`, so nothing
     raises; the index just quietly stops having it."""
     assert corpus.INDEX_SCHEMA in corpus._SCHEMA
@@ -428,6 +450,7 @@ def test_the_composed_schema_still_contains_every_block():
 
 
 # ----------------------------------------------------- the key is a CONTRACT now
+
 
 def test_both_capturing_adapters_use_the_contracted_key():
     """Reason (1) from the header, and the test that makes it stop being true.
@@ -449,12 +472,14 @@ def test_both_capturing_adapters_use_the_contracted_key():
         path = root / name
         # Not `pytest.skip`: a skip on a missing input is a green build proving nothing.
         assert path.exists(), (
-            "cannot find %s — this pin verifies nothing until the path is re-pointed" % path)
+            "cannot find %s — this pin verifies nothing until the path is re-pointed" % path
+        )
         assert spelling in path.read_text(encoding="utf-8"), (
             "%s no longer writes %s into Conversation.meta. Either it stopped capturing the "
             "model (then corpus.MODEL_ID_KEY has one producer, not two, and this test should "
             "say so) or it renamed the key (then the fact is being dropped on the floor — "
-            "point it back at corpus.MODEL_ID_KEY)." % (name, spelling))
+            "point it back at corpus.MODEL_ID_KEY)." % (name, spelling)
+        )
 
 
 def test_the_contracted_key_is_the_spelling_the_adapters_shipped():

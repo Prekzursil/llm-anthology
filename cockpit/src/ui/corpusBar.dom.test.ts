@@ -12,7 +12,7 @@
  *
  * Split into its OWN file rather than added to `corpusBar.test.ts` because that file asserts
  * `globalThis.localStorage` is undefined "under the node runner" on purpose
- * (`corpusBar.test.ts:228-236`); `vitest.config.ts` names that exact test as the reason a
+ * (`corpusBar.test.ts:219-227`); `vitest.config.ts` names that exact test as the reason a
  * global DOM flip is not an option. A per-file `@vitest-environment` docblock is the seam the
  * config documents, and `scrubber.test.ts` and `virtualList.test.ts` already use it.
  */
@@ -49,7 +49,7 @@ function enterTauriWebview(): void {
 /**
  * Let the click handler's fire-and-forget chain finish.
  *
- * `CorpusBar` binds `() => void this.pick()` (`corpusBar.ts:381`), so `click()` returns before
+ * `CorpusBar` binds `() => void this.pick()` (`corpusBar.ts:378`), so `click()` returns before
  * anything has been awaited and there is no promise for a test to hold. ONE macrotask boundary
  * is enough and is not a magic number: every link in that chain — the mocked picker, the fake
  * IPC — resolves as a microtask, and the microtask queue is drained to exhaustion before a

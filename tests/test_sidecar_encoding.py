@@ -19,6 +19,7 @@ Curly quotes and em-dashes deliberately do NOT appear below — cp1252 encodes t
 cannot reproduce the failure. The characters used here are the ones agentic transcripts are
 actually full of: box drawing, arrows, check marks, CJK, emoji.
 """
+
 import io
 import json
 import os
@@ -47,11 +48,23 @@ def _repo_root():
 
 def _index_with(path, text):
     conn = corpus.open_index(str(path))
-    index.build_index(conn, [index.IndexSource(
-        file="f.jsonl", content_hash=index.hash_content("v1"),
-        records=[ir.Conversation(
-            id="c1", title=text, provider="codex",
-            turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=text)])])])])
+    index.build_index(
+        conn,
+        [
+            index.IndexSource(
+                file="f.jsonl",
+                content_hash=index.hash_content("v1"),
+                records=[
+                    ir.Conversation(
+                        id="c1",
+                        title=text,
+                        provider="codex",
+                        turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=text)])],
+                    )
+                ],
+            )
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -70,9 +83,15 @@ def _spawn(index_path, request, ansi_stdio):
         env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, "-m", "llm_anthology.sidecar", "--index", str(index_path)],
-        input=request, capture_output=True, text=True,
-        encoding="utf-8", errors="replace",
-        cwd=str(_repo_root()), env=env, timeout=120)
+        input=request,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(_repo_root()),
+        env=env,
+        timeout=120,
+    )
 
 
 @pytest.mark.parametrize("name,text", sorted(NON_ANSI.items()))
@@ -83,17 +102,20 @@ def test_the_engine_answers_non_ansi_text_on_a_stock_windows_box(tmp_path, name,
     proc = _spawn(
         path,
         '{"jsonrpc":"2.0","id":1,"method":"search.query","params":{"q":"alpha"}}\n',
-        ansi_stdio=True)
+        ansi_stdio=True,
+    )
     assert proc.returncode == 0, (
         "engine died on %s with PYTHONIOENCODING unset; stderr tail: %s"
-        % (name, (proc.stderr or "").strip().splitlines()[-1:]))
+        % (name, (proc.stderr or "").strip().splitlines()[-1:])
+    )
     assert proc.stdout.strip(), "engine wrote nothing"
     reply = json.loads(proc.stdout.strip().splitlines()[0])
     assert "error" not in reply, reply
     # The characters must SURVIVE, not be replaced with "?" — a mojibake transcript is a
     # different bug wearing the same green tick.
     assert text in json.dumps(reply, ensure_ascii=False), (
-        "%s was mangled in transit rather than preserved" % name)
+        "%s was mangled in transit rather than preserved" % name
+    )
 
 
 def test_the_control_passes_when_the_variable_IS_set(tmp_path):
@@ -104,7 +126,8 @@ def test_the_control_passes_when_the_variable_IS_set(tmp_path):
     proc = _spawn(
         path,
         '{"jsonrpc":"2.0","id":1,"method":"search.query","params":{"q":"alpha"}}\n',
-        ansi_stdio=False)
+        ansi_stdio=False,
+    )
     assert proc.returncode == 0 and proc.stdout.strip()
 
 
@@ -145,19 +168,21 @@ def test_an_explicitly_passed_stream_is_left_alone(monkeypatch):
 
 
 @pytest.mark.parametrize("attr", [None, "raises"])
-def test_a_stream_that_cannot_be_reconfigured_does_not_become_a_startup_crash(
-        monkeypatch, attr):
+def test_a_stream_that_cannot_be_reconfigured_does_not_become_a_startup_crash(monkeypatch, attr):
     """Hardening must not introduce a new failure mode. Both shapes are real: a stream with
     no usable `reconfigure` (a plain StringIO, a stdout another tool replaced), and one that
     has the method but rejects the call (already detached from its buffer)."""
+
     class Awkward(io.StringIO):
         pass
 
     if attr is None:
-        Awkward.reconfigure = None            # present but not callable
+        Awkward.reconfigure = None  # present but not callable
     else:
+
         def _raise(self, **kw):
             raise ValueError("underlying buffer has been detached")
+
         Awkward.reconfigure = _raise
 
     monkeypatch.setattr(sidecar.sys, "argv", ["prog"])

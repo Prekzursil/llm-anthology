@@ -6,6 +6,7 @@ suite still passes, that claim has no test behind it.
 
 Run:  python tools/mutcheck.py
 """
+
 import pathlib
 import subprocess
 import sys

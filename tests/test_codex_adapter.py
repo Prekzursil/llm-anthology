@@ -14,6 +14,7 @@ The measured traps each get a named test: the leaked enum repr in turn_status, t
 reach ir.Turn.branch, the citation parts that carry no 'text' key, and the repo
 snapshot whose bodies live one nesting level below `contents`.
 """
+
 import json
 import os
 from pathlib import Path
@@ -24,29 +25,62 @@ from llm_anthology.adapters import codex
 
 # --------------------------------------------------------------------- fixtures
 
+
 def _user_turn(tid="task_u1", parts=None, items=None, custom_instructions=None):
     if items is None:
-        items = [{"type": "message", "role": "user",
-                  "content": parts if parts is not None else [
-                      {"content_type": "text", "text": "the question"}]}]
-    return {"id": tid, "role": "user", "custom_instructions": custom_instructions,
-            "input_items": items}
+        items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": parts
+                if parts is not None
+                else [{"content_type": "text", "text": "the question"}],
+            }
+        ]
+    return {
+        "id": tid,
+        "role": "user",
+        "custom_instructions": custom_instructions,
+        "input_items": items,
+    }
 
 
-def _asst_turn(tid="task_a1", items=None, status="TaskTurnStatusEnum.COMPLETED",
-               pr_status="not_created", branch="codex/feature", branch_name=None):
+def _asst_turn(
+    tid="task_a1",
+    items=None,
+    status="TaskTurnStatusEnum.COMPLETED",
+    pr_status="not_created",
+    branch="codex/feature",
+    branch_name=None,
+):
     if items is None:
-        items = [{"type": "message", "role": "assistant",
-                  "content": [{"content_type": "text", "text": "the answer"}]}]
-    return {"id": tid, "role": "assistant", "output_items": items,
-            "turn_status": status, "pull_request_status": pr_status,
-            "branch": branch, "branch_name": branch_name,
-            "previous_turn_id": "task_u1", "external_pull_request_id": "abcd"}
+        items = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"content_type": "text", "text": "the answer"}],
+            }
+        ]
+    return {
+        "id": tid,
+        "role": "assistant",
+        "output_items": items,
+        "turn_status": status,
+        "pull_request_status": pr_status,
+        "branch": branch,
+        "branch_name": branch_name,
+        "previous_turn_id": "task_u1",
+        "external_pull_request_id": "abcd",
+    }
 
 
 def _thread(turns=None, tid="task_t1", title="A task", archived=False):
-    return {"archived": archived, "id": tid, "title": title,
-            "turns": turns if turns is not None else [_user_turn(), _asst_turn()]}
+    return {
+        "archived": archived,
+        "id": tid,
+        "title": title,
+        "turns": turns if turns is not None else [_user_turn(), _asst_turn()],
+    }
 
 
 def _blocks(conv):
@@ -59,31 +93,59 @@ def _kinds(conv):
 
 def _snapshot(path="src/app.py", lrcs=None, missing_reason=None, contents=None):
     if lrcs is None:
-        lrcs = [{"line_range_start": 1, "line_range_end": 2,
-                 "contains_end_of_file": False, "content": ["line one", "line two"]}]
-    return {"type": "partial_repo_snapshot",
-            "files": [{"path": path, "contents": contents,
-                       "missing_reason": missing_reason, "line_range_contents": lrcs}]}
+        lrcs = [
+            {
+                "line_range_start": 1,
+                "line_range_end": 2,
+                "contains_end_of_file": False,
+                "content": ["line one", "line two"],
+            }
+        ]
+    return {
+        "type": "partial_repo_snapshot",
+        "files": [
+            {
+                "path": path,
+                "contents": contents,
+                "missing_reason": missing_reason,
+                "line_range_contents": lrcs,
+            }
+        ],
+    }
 
 
-def _pr(output_diff=None, pre_apply_patch=None, title="Add a thing",
-        message="This PR adds a thing."):
+def _pr(
+    output_diff=None, pre_apply_patch=None, title="Add a thing", message="This PR adds a thing."
+):
     if output_diff is None:
         output_diff = _output_diff()
-    return {"type": "pr", "pr_title": title, "pr_message": message,
-            "pre_apply_patch": pre_apply_patch, "output_diff": output_diff}
+    return {
+        "type": "pr",
+        "pr_title": title,
+        "pr_message": message,
+        "pre_apply_patch": pre_apply_patch,
+        "output_diff": output_diff,
+    }
 
 
 def _output_diff(diff=None, external=None, commit_message="commit the thing"):
-    return {"diff": diff, "external_storage_diff": external,
-            "commit_message": commit_message, "base_commit_sha": "deadbeef",
-            "repo_id": "r-1", "type": "OutputDiffType.GIT", "files_modified": 2,
-            "lines_added": 10, "lines_removed": 3,
-            "additional_parent_commit_shas": None,
-            "preapply_patch_base_commit_sha": None}
+    return {
+        "diff": diff,
+        "external_storage_diff": external,
+        "commit_message": commit_message,
+        "base_commit_sha": "deadbeef",
+        "repo_id": "r-1",
+        "type": "OutputDiffType.GIT",
+        "files_modified": 2,
+        "lines_added": 10,
+        "lines_removed": 3,
+        "additional_parent_commit_shas": None,
+        "preapply_patch_base_commit_sha": None,
+    }
 
 
 # ------------------------------------------------------- conversation-level shape
+
 
 def test_thread_becomes_one_conversation_with_the_codex_provider():
     c = codex.parse_conversation(_thread())
@@ -128,16 +190,23 @@ def test_git_branch_string_never_reaches_turn_branch():
     # asserts nothing about meta["branch"] itself.
     assert c.meta["branch"] == "codex/feature"
     assert [m["branch"] for m in c.meta["turn_meta"]] == ["codex/feature"]
-    render_html.render_conversation_html(c)               # must not raise
+    render_html.render_conversation_html(c)  # must not raise
 
 
 def test_conversation_branch_is_the_first_non_empty_turn_branch():
     """The first assistant turn deliberately carries NO branch, so only a
     first-NON-EMPTY selection can produce the asserted value — a first-element or a
     constant-empty implementation both fail here."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(tid="a1", branch=""),
-        _user_turn(tid="u2"), _asst_turn(tid="a2", branch="codex/second")]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(tid="a1", branch=""),
+                _user_turn(tid="u2"),
+                _asst_turn(tid="a2", branch="codex/second"),
+            ]
+        )
+    )
     assert c.meta["branch"] == "codex/second"
     assert [m["branch"] for m in c.meta["turn_meta"]] == ["", "codex/second"]
 
@@ -172,11 +241,13 @@ def test_non_dict_turn_is_skipped_not_fatal():
 
 # ----------------------------------------------------------------- turn_status
 
+
 def test_enum_prefixed_status_is_normalised_not_compared_raw():
     """The literal JSON value is 'TaskTurnStatusEnum.FAILED'. `status == "FAILED"`
     matches 0 of 102 turns, so all 16 failed tasks would render as successes."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])
+    )
     b = c.turns[1].blocks[0]
     assert b.type == "tool_result"
     assert b.data["name"] == "task FAILED" and b.data["is_error"] is True
@@ -186,17 +257,21 @@ def test_failed_turn_with_zero_output_items_still_emits_its_turn():
     """22 assistant turns (16 FAILED + 4 IN_PROGRESS + 2 CANCELLED) have
     output_items == []. chatgpt.py's `if not blocks: continue` idiom would delete
     22 of 204 turns and leave 22 of 97 threads showing a prompt with no reply."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])
+    )
     assert [t.role for t in c.turns] == ["human", "assistant"]
     assert len(c.turns[1].blocks) >= 1
 
 
 def test_in_progress_and_cancelled_are_labelled_but_are_not_errors():
-    for status, name in (("TaskTurnStatusEnum.IN_PROGRESS", "task IN_PROGRESS"),
-                         ("TaskTurnStatusEnum.CANCELLED", "task CANCELLED")):
-        c = codex.parse_conversation(_thread(turns=[
-            _user_turn(), _asst_turn(status=status, items=[])]))
+    for status, name in (
+        ("TaskTurnStatusEnum.IN_PROGRESS", "task IN_PROGRESS"),
+        ("TaskTurnStatusEnum.CANCELLED", "task CANCELLED"),
+    ):
+        c = codex.parse_conversation(
+            _thread(turns=[_user_turn(), _asst_turn(status=status, items=[])])
+        )
         b = c.turns[1].blocks[0]
         assert b.data["name"] == name and b.data["is_error"] is False
 
@@ -209,8 +284,9 @@ def test_completed_turn_carries_no_status_block():
 def test_an_unprefixed_status_value_also_normalises():
     """The prefix is a leaked enum repr; a future export emitting a bare value
     must not start reporting every task as an unknown state."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(status="FAILED", items=[])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(status="FAILED", items=[])])
+    )
     assert c.turns[1].blocks[0].data["name"] == "task FAILED"
 
 
@@ -220,15 +296,17 @@ def test_the_provenance_copy_of_the_status_is_normalised_too_not_just_the_header
     only the header leaves the second call site blind, and a raw read there prints
     the literal 'TaskTurnStatusEnum.FAILED' on the page: the exact leak this
     module's trap exists to kill, with the header still reading correctly."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])
+    )
     assert c.meta["turn_meta"][0]["turn_status"] == "FAILED"
     html = render_html.render_conversation_html(c)
-    assert '"turn_status": "FAILED"' in html               # not merely absent
+    assert '"turn_status": "FAILED"' in html  # not merely absent
     assert "TaskTurnStatusEnum" not in html
 
 
 # ------------------------------------------------------------------ user inputs
+
 
 def test_message_text_parts_become_text_blocks():
     c = codex.parse_conversation(_thread(turns=[_user_turn()]))
@@ -237,29 +315,43 @@ def test_message_text_parts_become_text_blocks():
 
 
 def test_whitespace_only_text_part_is_skipped():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "text", "text": "   "},
-        {"content_type": "text", "text": "real"}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {"content_type": "text", "text": "   "},
+                        {"content_type": "text", "text": "real"},
+                    ]
+                )
+            ]
+        )
+    )
     assert [b.text for b in _blocks(c)] == ["real"]
 
 
 def test_non_list_message_content_is_tolerated():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "message", "role": "user", "content": "not a list"}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[_user_turn(items=[{"type": "message", "role": "user", "content": "not a list"}])]
+        )
+    )
     assert _blocks(c) == []
 
 
 def test_non_dict_content_part_is_skipped():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(
-        parts=["a bare string", {"content_type": "text", "text": "real"}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[_user_turn(parts=["a bare string", {"content_type": "text", "text": "real"}])]
+        )
+    )
     assert [b.text for b in _blocks(c)] == ["real"]
 
 
 def test_custom_instructions_are_preserved_but_not_attributed_as_user_prose():
     """A system preamble is real content, but rendering it as text would
     misattribute it to something the user typed into this thread."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(custom_instructions="always use tabs")]))
+    c = codex.parse_conversation(_thread(turns=[_user_turn(custom_instructions="always use tabs")]))
     b = c.turns[0].blocks[0]
     assert b.type == "unknown" and b.data["orig_type"] == "custom_instructions"
     assert b.data["x_raw"] == "always use tabs"
@@ -271,9 +363,24 @@ def test_null_custom_instructions_emit_nothing():
 
 
 def test_pull_request_info_yields_prose_plus_a_structural_tool_use():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "pull_request_info", "title": "PR title", "body": "PR body",
-         "base_ref": "main", "head_ref": "codex/x", "merge_commit_sha": None}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    items=[
+                        {
+                            "type": "pull_request_info",
+                            "title": "PR title",
+                            "body": "PR body",
+                            "base_ref": "main",
+                            "head_ref": "codex/x",
+                            "merge_commit_sha": None,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
     blocks = _blocks(c)
     assert [b.type for b in blocks] == ["text", "text", "tool_use"]
     assert [b.text for b in blocks[:2]] == ["PR title", "PR body"]
@@ -281,17 +388,33 @@ def test_pull_request_info_yields_prose_plus_a_structural_tool_use():
 
 
 def test_pull_request_info_without_prose_still_emits_its_refs():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "pull_request_info", "title": "", "body": None,
-         "base_ref": "main", "head_ref": "h", "merge_commit_sha": None}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    items=[
+                        {
+                            "type": "pull_request_info",
+                            "title": "",
+                            "body": None,
+                            "base_ref": "main",
+                            "head_ref": "h",
+                            "merge_commit_sha": None,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
     assert _kinds(c) == ["tool_use"]
 
 
 def test_ide_context_string_is_preserved_verbatim():
     """context is a plain STRING (n=1) with unclear semantics — preserve it under a
     truthful label rather than guess a render."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "ide_context", "context": "open file: a.py"}])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(items=[{"type": "ide_context", "context": "open file: a.py"}])])
+    )
     b = c.turns[0].blocks[0]
     assert b.type == "unknown" and b.data["orig_type"] == "ide_context"
     assert b.data["x_raw"]["context"] == "open file: a.py"
@@ -301,20 +424,39 @@ def test_prior_conversation_is_preserved_not_spliced_into_this_threads_turns():
     """It holds 354 messages of a DIFFERENT thread quoted as context. Splicing them
     into Conversation.turns would fabricate this thread's history; dropping them
     would lose the largest embedded prose payload."""
-    quoted = [{"role": "assistant", "type": "message",
-               "content": [{"content_type": "text", "text": "earlier reply"}]}]
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "prior_conversation", "conversation": quoted, "diff": None,
-         "prior_task_id": None}])]))
-    assert len(c.turns) == 1                          # not turned into extra turns
+    quoted = [
+        {
+            "role": "assistant",
+            "type": "message",
+            "content": [{"content_type": "text", "text": "earlier reply"}],
+        }
+    ]
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    items=[
+                        {
+                            "type": "prior_conversation",
+                            "conversation": quoted,
+                            "diff": None,
+                            "prior_task_id": None,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
+    assert len(c.turns) == 1  # not turned into extra turns
     b = c.turns[0].blocks[0]
     assert b.type == "unknown" and b.data["orig_type"] == "prior_conversation"
     assert b.data["x_raw"]["conversation"] == quoted
 
 
 def test_unknown_input_item_type_is_preserved():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(items=[
-        {"type": "some_future_item", "payload": 1}])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(items=[{"type": "some_future_item", "payload": 1}])])
+    )
     assert _kinds(c) == ["unknown"]
 
 
@@ -325,22 +467,49 @@ def test_non_dict_input_item_is_skipped():
 
 # -------------------------------------------------------------------- citations
 
+
 def test_repo_file_citation_annotates_the_preceding_text_block():
     """477 repo_file_citation parts carry NO 'text' key; reading part['text'] with a
     default drops every one of them. Measured order is text|cite|cite|text|cite."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "text", "text": "see this"},
-        {"content_type": "repo_file_citation", "path": "src/a.py",
-         "line_range_start": 10, "line_range_end": 20}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {"content_type": "text", "text": "see this"},
+                        {
+                            "content_type": "repo_file_citation",
+                            "path": "src/a.py",
+                            "line_range_start": 10,
+                            "line_range_end": 20,
+                        },
+                    ]
+                )
+            ]
+        )
+    )
     blocks = _blocks(c)
     assert [b.type for b in blocks] == ["text"]
     assert blocks[0].citations == [{"title": "src/a.py:L10-L20"}]
 
 
 def test_repo_file_citation_with_no_preceding_prose_becomes_a_named_chip():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "repo_file_citation", "path": "src/a.py",
-         "line_range_start": 1, "line_range_end": 2}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {
+                            "content_type": "repo_file_citation",
+                            "path": "src/a.py",
+                            "line_range_start": 1,
+                            "line_range_end": 2,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
     b = _blocks(c)[0]
     assert b.type == "file" and b.data["file_name"] == "src/a.py:L1-L2"
 
@@ -348,17 +517,43 @@ def test_repo_file_citation_with_no_preceding_prose_becomes_a_named_chip():
 def test_terminal_chunk_citation_annotates_the_preceding_text_block():
     """The referenced terminal output is NOT in the export — a title-only pill
     states that honestly instead of fabricating the content."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "text", "text": "ran it"},
-        {"content_type": "terminal_chunk_citation", "terminal_chunk_id": "ab12cd",
-         "line_range_start": 3, "line_range_end": 9}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {"content_type": "text", "text": "ran it"},
+                        {
+                            "content_type": "terminal_chunk_citation",
+                            "terminal_chunk_id": "ab12cd",
+                            "line_range_start": 3,
+                            "line_range_end": 9,
+                        },
+                    ]
+                )
+            ]
+        )
+    )
     assert _blocks(c)[0].citations == [{"title": "terminal ab12cd:L3-L9"}]
 
 
 def test_terminal_chunk_citation_with_no_preceding_prose_becomes_a_chip():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "terminal_chunk_citation", "terminal_chunk_id": "z9",
-         "line_range_start": 1, "line_range_end": 4}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {
+                            "content_type": "terminal_chunk_citation",
+                            "terminal_chunk_id": "z9",
+                            "line_range_start": 1,
+                            "line_range_end": 4,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
     assert _blocks(c)[0].type == "file"
 
 
@@ -367,9 +562,23 @@ def test_image_citation_keeps_the_full_pointer_so_no_broken_img_is_emitted():
     <img src="../media/NAME"> for media this corpus does not ship — 6 broken loads.
     A pointer with a scheme keeps it on the inert chip branch."""
     ptr = "sediment://file_00001"
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "image_asset_pointer_citation", "asset_pointer": ptr,
-         "width": 100, "height": 50, "size_bytes": 999}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(
+                    parts=[
+                        {
+                            "content_type": "image_asset_pointer_citation",
+                            "asset_pointer": ptr,
+                            "width": 100,
+                            "height": 50,
+                            "size_bytes": 999,
+                        }
+                    ]
+                )
+            ]
+        )
+    )
     b = _blocks(c)[0]
     assert b.type == "media" and b.data["path"] == ptr and b.data["width"] == 100
     html = render_html.render_conversation_html(c)
@@ -377,23 +586,47 @@ def test_image_citation_keeps_the_full_pointer_so_no_broken_img_is_emitted():
 
 
 def test_unknown_content_part_type_is_preserved():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(parts=[
-        {"content_type": "some_future_part", "x": 1}])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(parts=[{"content_type": "some_future_part", "x": 1}])])
+    )
     b = _blocks(c)[0]
     assert b.type == "unknown" and b.data["orig_type"] == "some_future_part"
 
 
 # ------------------------------------------------------------- output: snapshots
 
+
 def test_repo_snapshot_becomes_a_collapsed_attachment_with_range_markers():
     """file.line_range_contents[].content is a LIST of line strings — 274,077 lines
     / 10.8 MB, roughly half the export. A snapshot is a set of DISJOINT excerpts, so
     each range keeps its own marker; concatenating bare implies contiguous code."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _snapshot(lrcs=[{"line_range_start": 1, "line_range_end": 2,
-                         "contains_end_of_file": False, "content": ["aa", "bb"]},
-                        {"line_range_start": 40, "line_range_end": 41,
-                         "contains_end_of_file": True, "content": ["yy", "zz"]}])])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(
+                    items=[
+                        _snapshot(
+                            lrcs=[
+                                {
+                                    "line_range_start": 1,
+                                    "line_range_end": 2,
+                                    "contains_end_of_file": False,
+                                    "content": ["aa", "bb"],
+                                },
+                                {
+                                    "line_range_start": 40,
+                                    "line_range_end": 41,
+                                    "contains_end_of_file": True,
+                                    "content": ["yy", "zz"],
+                                },
+                            ]
+                        )
+                    ]
+                ),
+            ]
+        )
+    )
     b = c.turns[1].blocks[0]
     assert b.type == "attachment" and b.data["file_name"] == "src/app.py"
     assert b.data["file_type"] == "py"
@@ -408,8 +641,7 @@ def test_attachment_file_size_measures_its_body_so_md_prints_real_byte_counts():
     that does not measure the body puts '? bytes' on all 296 attachments — the
     symptom the field exists to prevent. Pinned RELATIONALLY to the body rather than
     to a magic number, so it rejects any constant and survives fixture edits."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(items=[_snapshot()])]))
+    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[_snapshot()])]))
     b = c.turns[1].blocks[0]
     assert b.data["file_size"] == len(b.data["extracted_content"]) > 0
     md = render_md.render_conversation_md(c)
@@ -418,12 +650,32 @@ def test_attachment_file_size_measures_its_body_so_md_prints_real_byte_counts():
 
 
 def test_snapshot_body_survives_a_non_string_line_and_a_non_list_content():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _snapshot(lrcs=[{"line_range_start": 1, "line_range_end": 3,
-                         "content": ["ok", 12345, "fine"]},
-                        {"line_range_start": 5, "line_range_end": 5,
-                         "content": "already flat"},
-                        "not a dict"])])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(
+                    items=[
+                        _snapshot(
+                            lrcs=[
+                                {
+                                    "line_range_start": 1,
+                                    "line_range_end": 3,
+                                    "content": ["ok", 12345, "fine"],
+                                },
+                                {
+                                    "line_range_start": 5,
+                                    "line_range_end": 5,
+                                    "content": "already flat",
+                                },
+                                "not a dict",
+                            ]
+                        )
+                    ]
+                ),
+            ]
+        )
+    )
     body = c.turns[1].blocks[0].data["extracted_content"]
     assert "ok\nfine" in body and "already flat" in body
 
@@ -431,15 +683,17 @@ def test_snapshot_body_survives_a_non_string_line_and_a_non_list_content():
 def test_snapshot_prefers_an_explicit_contents_string_when_a_future_export_has_one():
     """contents is null 298/298 today, so this branch is unexercised by the corpus —
     but a future export that populates it must not render an empty attachment."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _snapshot(contents="WHOLE FILE BODY")])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(items=[_snapshot(contents="WHOLE FILE BODY")])])
+    )
     assert c.turns[1].blocks[0].data["extracted_content"] == "WHOLE FILE BODY"
 
 
 def test_snapshot_missing_reason_becomes_a_visible_error_not_a_silent_gap():
     """`file` would print a fixed '(no bytes in export)' and lose the actual reason."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _snapshot(missing_reason="unknown_error")])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(items=[_snapshot(missing_reason="unknown_error")])])
+    )
     b = c.turns[1].blocks[0]
     assert b.type == "tool_result" and b.data["is_error"] is True
     assert b.data["content"] == "unknown_error"
@@ -447,18 +701,26 @@ def test_snapshot_missing_reason_becomes_a_visible_error_not_a_silent_gap():
 
 
 def test_extensionless_snapshot_path_yields_an_empty_file_type():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _snapshot(path=".gitignore")])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(items=[_snapshot(path=".gitignore")])])
+    )
     assert c.turns[1].blocks[0].data["file_type"] == ""
 
 
 def test_non_dict_snapshot_file_entry_is_skipped():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        {"type": "partial_repo_snapshot", "files": ["junk"]}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(items=[{"type": "partial_repo_snapshot", "files": ["junk"]}]),
+            ]
+        )
+    )
     assert c.turns[1].blocks == []
 
 
 # ------------------------------------------------------------------- output: pr
+
 
 def test_pr_emits_title_message_commit_message_and_stats():
     c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[_pr()])]))
@@ -484,15 +746,22 @@ def test_pr_metadata_input_dict_is_pinned_key_for_key():
     reads. Exact-dict equality compares KEY SETS as well as values, so any rename,
     addition or drop among the five fails. Non-default values throughout, so no
     hardcoded constant and no value read from the wrong field can satisfy it."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(items=[_pr()], pr_status="created",
-                                 branch_name="codex/bn")]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(items=[_pr()], pr_status="created", branch_name="codex/bn"),
+            ]
+        )
+    )
     meta = [b for b in c.turns[1].blocks if b.data.get("name") == "pull_request"][0]
-    assert meta.data["input"] == {"pull_request_status": "created",
-                                  "external_pull_request_id": "abcd",
-                                  "branch": "codex/feature",
-                                  "branch_name": "codex/bn",
-                                  "previous_turn_id": "task_u1"}
+    assert meta.data["input"] == {
+        "pull_request_status": "created",
+        "external_pull_request_id": "abcd",
+        "branch": "codex/feature",
+        "branch_name": "codex/bn",
+        "previous_turn_id": "task_u1",
+    }
     html = render_html.render_conversation_html(c)
     assert '"pull_request_status": "created"' in html
 
@@ -500,8 +769,16 @@ def test_pr_metadata_input_dict_is_pinned_key_for_key():
 def test_pr_without_prose_fields_still_emits_its_structure():
     """Empty title/message/commit_message and no diff of either kind: the PR must
     still surface as its two structural blocks, not vanish."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(title="", message=None, output_diff=_output_diff(commit_message=""))])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(
+                    items=[_pr(title="", message=None, output_diff=_output_diff(commit_message=""))]
+                ),
+            ]
+        )
+    )
     blocks = c.turns[1].blocks
     assert [b.type for b in blocks] == ["tool_use", "tool_use"]
     assert [b.data["name"] for b in blocks] == ["pr_diff_stats", "pull_request"]
@@ -510,8 +787,14 @@ def test_pr_without_prose_fields_still_emits_its_structure():
 def test_inline_diff_becomes_a_code_block_not_prose():
     """Routing a diff to `text` would let the markdown pass mangle leading +/-/#
     AND drag every diff token into the prose fidelity gate."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(output_diff=_output_diff(diff="--- a\n+++ b\n+added"))])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(items=[_pr(output_diff=_output_diff(diff="--- a\n+++ b\n+added"))]),
+            ]
+        )
+    )
     code = [b for b in c.turns[1].blocks if b.type == "code"][0]
     assert code.data["language"] == "diff" and "+added" in code.text
 
@@ -519,17 +802,30 @@ def test_inline_diff_becomes_a_code_block_not_prose():
 def test_externalised_diff_is_declared_absent_not_rendered_as_empty():
     """58 of 62 PR diffs were OFFLOADED — no diff text is in the export at all. An
     empty code block would instead imply 'no changes'."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(output_diff=_output_diff(
-            external={"file_id": "f-77", "ttl": 3600}))])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(
+                    items=[_pr(output_diff=_output_diff(external={"file_id": "f-77", "ttl": 3600}))]
+                ),
+            ]
+        )
+    )
     f = [b for b in c.turns[1].blocks if b.type == "file"][0]
     assert "f-77" in f.data["file_name"] and "3600" in f.data["file_name"]
     assert "no bytes in export" in render_html.render_conversation_html(c)
 
 
 def test_diff_absent_entirely_emits_neither_code_nor_a_file_chip():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(output_diff=_output_diff(diff=None, external=None))])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(items=[_pr(output_diff=_output_diff(diff=None, external=None))]),
+            ]
+        )
+    )
     kinds = [b.type for b in c.turns[1].blocks]
     assert "code" not in kinds and "file" not in kinds
 
@@ -537,14 +833,16 @@ def test_diff_absent_entirely_emits_neither_code_nor_a_file_chip():
 def test_pre_apply_patch_becomes_a_diff_code_block_when_populated():
     """Null 62/62 today; the branch must exist so a populated future export is
     not dropped."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(pre_apply_patch="--- x\n+++ y")])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(items=[_pr(pre_apply_patch="--- x\n+++ y")])])
+    )
     assert any(b.type == "code" and "+++ y" in b.text for b in c.turns[1].blocks)
 
 
 def test_output_diff_that_is_not_a_dict_is_preserved_as_unknown():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(output_diff="a flat diff string")])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(items=[_pr(output_diff="a flat diff string")])])
+    )
     unk = [b for b in c.turns[1].blocks if b.type == "unknown"][0]
     assert unk.data["orig_type"] == "output_diff"
     assert unk.data["x_raw"] == "a flat diff string"
@@ -553,29 +851,50 @@ def test_output_diff_that_is_not_a_dict_is_preserved_as_unknown():
 def test_a_not_created_status_does_not_suppress_a_pr_item():
     """28 'not_created' turns DO carry a pr item and 1 'externally_created' turn does
     not — the status does not predict presence, so presence decides."""
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(pr_status="not_created", items=[_pr()])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(pr_status="not_created", items=[_pr()])])
+    )
     assert any(b.type == "text" and b.text == "Add a thing" for b in c.turns[1].blocks)
 
 
 # ---------------------------------------------------------------- output: order
 
+
 def test_output_items_keep_their_source_order():
     """Observed orders include pr|message|snapshot — the reply text must keep its
     position relative to the PR rather than be re-sorted."""
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        _pr(title="PRTITLE", message=""),
-        {"type": "message", "role": "assistant",
-         "content": [{"content_type": "text", "text": "REPLYTEXT"}]},
-        _snapshot()])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(
+                    items=[
+                        _pr(title="PRTITLE", message=""),
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"content_type": "text", "text": "REPLYTEXT"}],
+                        },
+                        _snapshot(),
+                    ]
+                ),
+            ]
+        )
+    )
     texts = [b.text for b in c.turns[1].blocks if b.type == "text"]
     assert texts.index("PRTITLE") < texts.index("REPLYTEXT")
     assert c.turns[1].blocks[-1].type == "attachment"
 
 
 def test_unknown_output_item_type_is_preserved():
-    c = codex.parse_conversation(_thread(turns=[_user_turn(), _asst_turn(items=[
-        {"type": "some_future_output", "payload": [1, 2]}])]))
+    c = codex.parse_conversation(
+        _thread(
+            turns=[
+                _user_turn(),
+                _asst_turn(items=[{"type": "some_future_output", "payload": [1, 2]}]),
+            ]
+        )
+    )
     assert c.turns[1].blocks[0].data["orig_type"] == "some_future_output"
 
 
@@ -586,9 +905,11 @@ def test_non_dict_output_item_is_skipped():
 
 # ----------------------------------------------------------------- end-to-end
 
+
 def test_a_failed_task_is_visibly_distinguishable_in_both_renderers():
-    c = codex.parse_conversation(_thread(turns=[
-        _user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])]))
+    c = codex.parse_conversation(
+        _thread(turns=[_user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])
+    )
     html = render_html.render_conversation_html(c)
     assert 'class="tool err"' in html and "task FAILED" in html
     md = render_md.render_conversation_md(c)
@@ -601,13 +922,34 @@ def test_a_completed_task_is_not_flagged_as_an_error():
 
 
 def test_full_thread_survives_the_fidelity_gate(tmp_path):
-    convs = codex.parse_export([_thread(turns=[
-        _user_turn(custom_instructions="be brief"), _asst_turn(items=[
-            {"type": "message", "role": "assistant",
-             "content": [{"content_type": "text", "text": "prose that must survive"},
-                         {"content_type": "repo_file_citation", "path": "a.py",
-                          "line_range_start": 1, "line_range_end": 2}]},
-            _snapshot(), _pr()])])])
+    convs = codex.parse_export(
+        [
+            _thread(
+                turns=[
+                    _user_turn(custom_instructions="be brief"),
+                    _asst_turn(
+                        items=[
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {"content_type": "text", "text": "prose that must survive"},
+                                    {
+                                        "content_type": "repo_file_citation",
+                                        "path": "a.py",
+                                        "line_range_start": 1,
+                                        "line_range_end": 2,
+                                    },
+                                ],
+                            },
+                            _snapshot(),
+                            _pr(),
+                        ]
+                    ),
+                ]
+            )
+        ]
+    )
     rep = build.render_corpus(convs, str(tmp_path), provider="codex")
     assert rep["rendered"] == 1 and rep["fidelity_passed"] == 1 and rep["errors"] == []
 
@@ -617,6 +959,7 @@ def test_codex_has_its_own_index_theme():
 
 
 # --------------------------------------------------------------------- loaders
+
 
 def _write(path, obj):
     with open(path, "w", encoding="utf-8") as fh:
@@ -647,18 +990,20 @@ def test_load_codex_reports_malformed_json(tmp_path):
 
 def test_load_codex_reports_an_adapter_failure(tmp_path, monkeypatch):
     _write(str(tmp_path / "codex.json"), [_thread()])
-    monkeypatch.setattr(codex, "parse_export",
-                        lambda d: (_ for _ in ()).throw(ValueError("boom")))
+    monkeypatch.setattr(codex, "parse_export", lambda d: (_ for _ in ()).throw(ValueError("boom")))
     convs, errors = loaders.load_codex(str(tmp_path))
     assert convs == [] and errors[0]["stage"] == "adapt"
 
 
 # ------------------------------------------------------------------------- cli
 
+
 def test_codex_end_to_end_through_the_cli(tmp_path):
     src = str(tmp_path / "codex.json")
-    _write(src, [_thread(turns=[
-        _user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])])
+    _write(
+        src,
+        [_thread(turns=[_user_turn(), _asst_turn(status="TaskTurnStatusEnum.FAILED", items=[])])],
+    )
     out = str(tmp_path / "site")
     assert cli.main(["codex", src, out]) == 0
     assert os.path.isfile(os.path.join(out, "index.html"))

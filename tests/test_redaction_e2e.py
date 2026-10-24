@@ -46,6 +46,7 @@ when a body-bearing OR a free-text-bearing view actually crosses. A detector sil
 both states proves nothing — if a control ever stops firing, none of the airtight
 assertions may be cited.
 """
+
 import json
 from dataclasses import asdict, fields
 
@@ -54,12 +55,12 @@ import pytest
 from llm_anthology import corpus, ir, redact, research, sidecar
 
 # --- KNOWN sensitive canary tokens (SYNTHETIC — never real corpus data) -----------
-SECRET = "RAWBODY_SECRET_DO_NOT_LEAK"          # a raw message-body secret
-SSN = "123-45-6789"                            # PII: fake SSN
-EMAIL = "patient.zero@example-clinic.test"     # PII: fake email
-NAME = "Jane Q. Patient"                       # PII: freeform name, regex-proof
-PHARMA = "Zynflaxen-250"                       # a fake medical/pharma term (drug name)
-USERNAME = "Prekzursil"                        # PII: a local-path component
+SECRET = "RAWBODY_SECRET_DO_NOT_LEAK"  # a raw message-body secret
+SSN = "123-45-6789"  # PII: fake SSN
+EMAIL = "patient.zero@example-clinic.test"  # PII: fake email
+NAME = "Jane Q. Patient"  # PII: freeform name, regex-proof
+PHARMA = "Zynflaxen-250"  # a fake medical/pharma term (drug name)
+USERNAME = "Prekzursil"  # PII: a local-path component
 
 # The full canary set the leak oracle hunts for. No element is a substring of another,
 # so a per-token membership test is unambiguous.
@@ -92,12 +93,19 @@ _DIRTY_ROLLOUT = rf"C:\Users\{USERNAME}\sessions\{SECRET}.jsonl"
 # The strict allowlist, stated INDEPENDENTLY of the module so drift in either direction
 # (a new leaky field, a dropped one) turns this red. STRUCTURAL ONLY — no free text.
 ALLOWLIST = {
-    "conversation_id", "provider", "account", "created_at", "updated_at",
-    "turn_count", "char_count", "thread_id",
+    "conversation_id",
+    "provider",
+    "account",
+    "created_at",
+    "updated_at",
+    "turn_count",
+    "char_count",
+    "thread_id",
 }
 
 
 # ------------------------------------------------------------------- the ONE oracle
+
 
 def _leaks_in(haystack, tokens=SENSITIVE):
     """Return the SET of canary tokens present in ``haystack`` (a str, or any
@@ -130,6 +138,7 @@ def _close_connections():
 
 # --------------------------------------------------------------- synthetic fixtures
 
+
 def _dirty_conversation(cid=CONV_ID, thread_id=THREAD_ID):
     """A synthetic medical/pharma conversation poisoned on EVERY axis: the body and a
     tool block's structured ``data`` payload, the content-derived TITLE, the free-text
@@ -140,21 +149,26 @@ def _dirty_conversation(cid=CONV_ID, thread_id=THREAD_ID):
     """
     return ir.Conversation(
         id=cid,
-        title=DIRTY_TITLE,                     # content-derived -> must NOT cross
+        title=DIRTY_TITLE,  # content-derived -> must NOT cross
         provider="claude",
         account="clinic-acct",
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-02T00:00:00Z",
         turns=[
-            ir.Turn("human", [
-                ir.Block("text", text=f"My SSN is {SSN}, email {EMAIL}. {SECRET}"),
-            ]),
-            ir.Turn("assistant", [
-                ir.Block("text", text=f"Prescribed {PHARMA} once daily. {SECRET}"),
-                # the secret also hidden in a tool block's structured payload
-                ir.Block("tool_use", text="",
-                         data={"raw": SECRET, "ssn": SSN, "rx": PHARMA}),
-            ]),
+            ir.Turn(
+                "human",
+                [
+                    ir.Block("text", text=f"My SSN is {SSN}, email {EMAIL}. {SECRET}"),
+                ],
+            ),
+            ir.Turn(
+                "assistant",
+                [
+                    ir.Block("text", text=f"Prescribed {PHARMA} once daily. {SECRET}"),
+                    # the secret also hidden in a tool block's structured payload
+                    ir.Block("tool_use", text="", data={"raw": SECRET, "ssn": SSN, "rx": PHARMA}),
+                ],
+            ),
         ],
         meta={
             "thread_id": thread_id,
@@ -176,8 +190,9 @@ def _dirty_index():
     Fully synthetic — never $CODEX_HOME."""
     conn = corpus.open_index(":memory:")
     conv = _dirty_conversation()
-    corpus.add_conversation(conn, conv, thread_id=conv.meta["thread_id"],
-                            rollout_path=_DIRTY_ROLLOUT)
+    corpus.add_conversation(
+        conn, conv, thread_id=conv.meta["thread_id"], rollout_path=_DIRTY_ROLLOUT
+    )
     conn.commit()
     return conn
 
@@ -187,13 +202,19 @@ def _dirty_corpus():
     one dirty conversation plus a thread whose title/preview/rollout_path carry
     canaries in off-allowlist fields."""
     cor = corpus.Corpus(conversations=[_dirty_conversation()])
-    cor.add_thread(corpus.ThreadMeta(
-        id=THREAD_ID, title=DIRTY_TITLE, preview=f"leak {SECRET} {EMAIL}",
-        rollout_path=_DIRTY_ROLLOUT))
+    cor.add_thread(
+        corpus.ThreadMeta(
+            id=THREAD_ID,
+            title=DIRTY_TITLE,
+            preview=f"leak {SECRET} {EMAIL}",
+            rollout_path=_DIRTY_ROLLOUT,
+        )
+    )
     return cor
 
 
 # ============================================================ SIDECAR full research path
+
 
 def test_sidecar_synthesize_airtight_input_and_response():
     """cloud ``research.synthesize`` over a dirty index: the recorded backend INPUT and
@@ -202,12 +223,11 @@ def test_sidecar_synthesize_airtight_input_and_response():
     # a REFLECTING responder: the response echoes the entire prompt the backend saw, so
     # any leak the backend touched would also show up in the response we scan.
     backend = research.MockBackend(responder=lambda p: "DIGEST:: " + p)
-    out = sidecar.Sidecar(conn, research_backend=backend).dispatch(
-        "research.synthesize", {})
+    out = sidecar.Sidecar(conn, research_backend=backend).dispatch("research.synthesize", {})
 
-    assert len(backend.prompts) == 1                 # exactly one metadata-only prompt
-    assert _leaks_in(backend.prompts) == set()       # recorded INPUT is clean
-    assert _leaks_in(out) == set()                   # sidecar RESPONSE is clean
+    assert len(backend.prompts) == 1  # exactly one metadata-only prompt
+    assert _leaks_in(backend.prompts) == set()  # recorded INPUT is clean
+    assert _leaks_in(out) == set()  # sidecar RESPONSE is clean
     # the content-derived title is absent on both sides ...
     assert DIRTY_TITLE not in backend.prompts[0]
     assert DIRTY_TITLE not in out["summary"]
@@ -223,15 +243,14 @@ def test_sidecar_extract_entities_airtight_input_and_response():
     conn = _track(_dirty_index())
     # reflect the WHOLE prompt as the entity payload — the strongest response to scan.
     backend = research.MockBackend(responder=lambda p: p)
-    out = sidecar.Sidecar(conn, research_backend=backend).dispatch(
-        "research.extract_entities", {})
+    out = sidecar.Sidecar(conn, research_backend=backend).dispatch("research.extract_entities", {})
 
     assert len(backend.prompts) == 1
-    assert _leaks_in(backend.prompts) == set()       # recorded INPUT is clean
-    assert _leaks_in(out) == set()                   # entity RESPONSE list is clean
+    assert _leaks_in(backend.prompts) == set()  # recorded INPUT is clean
+    assert _leaks_in(out) == set()  # entity RESPONSE list is clean
     assert DIRTY_TITLE not in backend.prompts[0]
     assert CONV_ID in backend.prompts[0]
-    assert any(CONV_ID in e for e in out["entities"])       # response non-vacuous
+    assert any(CONV_ID in e for e in out["entities"])  # response non-vacuous
     assert out["conversation_count"] == 1
 
 
@@ -250,6 +269,7 @@ def test_sidecar_metadata_views_are_allowlist_only():
 
 
 # ==================================================== redact -> research COMPOSITION (IR)
+
 
 def test_redact_to_research_composition_airtight():
     """The FULL redact->MetadataView->research path over live ``ir`` objects: the
@@ -293,12 +313,13 @@ def test_body_is_counted_not_copied():
     conv = _dirty_conversation()
     view = redact.to_metadata_view(conv)
     body_len = sum(len(b.text) for t in conv.turns for b in t.blocks)
-    assert body_len > 0                               # the body genuinely has content
-    assert view.char_count == body_len                # counted ...
-    assert _leaks_in(asdict(view)) == set()           # ... never copied
+    assert body_len > 0  # the body genuinely has content
+    assert view.char_count == body_len  # counted ...
+    assert _leaks_in(asdict(view)) == set()  # ... never copied
 
 
 # ============================================================ BOTH-STATES controls (crux)
+
 
 def _leaky_synthesize(conv, backend):
     """A DELIBERATELY BROKEN stand-in for ``research.synthesize_over_metadata``: it feeds
@@ -312,9 +333,9 @@ def _leaky_synthesize(conv, backend):
     body = "\n".join(b.text for t in conv.turns for b in t.blocks)
     view = {
         "conversation_id": conv.id,
-        "body": body,                                   # LEAK: raw message body
+        "body": body,  # LEAK: raw message body
         "rollout_path": conv.meta.get("rollout_path"),  # LEAK: local path (username)
-        "preview": conv.meta.get("preview"),            # LEAK: body snippet
+        "preview": conv.meta.get("preview"),  # LEAK: body snippet
     }
     prompt = "\n".join("%s: %s" % (k, v) for k, v in view.items())
     return backend.synthesize(prompt)
@@ -324,13 +345,15 @@ def _leaky_freetext_synthesize(conv, backend):
     """The control for the leak class that ACTUALLY SHIPPED: a prompt that renders the
     free-text family (the content-derived title + notes/tags/aliases) exactly as the
     pre-fix ``research._render_view`` did. The oracle must fire on this."""
-    prompt = "\n".join((
-        "  conversation_id: %s" % conv.id,
-        "  title: %s" % conv.title,
-        "  notes: %s" % conv.meta.get("notes", ""),
-        "  tags: %s" % ", ".join(conv.meta.get("tags", ())),
-        "  aliases: %s" % ", ".join(conv.meta.get("aliases", ())),
-    ))
+    prompt = "\n".join(
+        (
+            "  conversation_id: %s" % conv.id,
+            "  title: %s" % conv.title,
+            "  notes: %s" % conv.meta.get("notes", ""),
+            "  tags: %s" % ", ".join(conv.meta.get("tags", ())),
+            "  aliases: %s" % ", ".join(conv.meta.get("aliases", ())),
+        )
+    )
     return backend.synthesize(prompt)
 
 

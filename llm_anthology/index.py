@@ -32,6 +32,7 @@ times outranks one holding it once, and one hit in a long doc ranks below one in
 PRIVACY: this module moves opaque conversation text into an inverted index and reads
 counts/shapes; it never emits conversation content. Tests use synthetic fixtures only.
 """
+
 import hashlib
 import sqlite3
 import time
@@ -53,6 +54,7 @@ _RETRYABLE = (SQLITE_LOCKED, SQLITE_BUSY)
 
 # ------------------------------------------------------------------ dataclasses
 
+
 @dataclass
 class IndexSource:
     """One source file's worth of records to ingest.
@@ -62,6 +64,7 @@ class IndexSource:
     ordered list of ir.Conversation objects parsed from it. Checkpoint offsets count
     records consumed from `records`, so a resumed build restarts at records[offset:].
     """
+
     file: str
     content_hash: str
     records: list = field(default_factory=list)
@@ -70,13 +73,15 @@ class IndexSource:
 @dataclass
 class BuildStats:
     """The observable outcome of a build_index run."""
-    files_total: int = 0        # sources seen this run
-    files_skipped: int = 0      # a matching checkpoint already covered every record
+
+    files_total: int = 0  # sources seen this run
+    files_skipped: int = 0  # a matching checkpoint already covered every record
     records_processed: int = 0  # records handed to add_conversation THIS run
-    chunks_committed: int = 0   # batches committed THIS run
+    chunks_committed: int = 0  # batches committed THIS run
 
 
 # ---------------------------------------------------------------------- hashing
+
 
 def hash_content(data):
     """SHA-256 hex digest of `data` (a str is UTF-8 encoded first). The canonical way to
@@ -87,6 +92,7 @@ def hash_content(data):
 
 
 # ------------------------------------------------------------------ lock retry
+
 
 def _is_locked(exc):
     """True when `exc` is a transient SQLITE_LOCKED/BUSY a retry may clear.
@@ -101,8 +107,9 @@ def _is_locked(exc):
     return "locked" in text or "busy" in text
 
 
-def _retry(op, *, max_retries=DEFAULT_MAX_RETRIES, retry_delay=DEFAULT_RETRY_DELAY,
-           sleep=time.sleep):
+def _retry(
+    op, *, max_retries=DEFAULT_MAX_RETRIES, retry_delay=DEFAULT_RETRY_DELAY, sleep=time.sleep
+):
     """Run `op()` and return its result, retrying on a transient lock up to
     `max_retries` times (sleeping `retry_delay` between attempts). A non-lock
     OperationalError, or a lock that outlasts the retries, propagates unchanged."""
@@ -119,14 +126,22 @@ def _retry(op, *, max_retries=DEFAULT_MAX_RETRIES, retry_delay=DEFAULT_RETRY_DEL
 
 # ------------------------------------------------------------------ the build
 
+
 def _thread_id(conv):
     """The thread id linked to a conversation (from its meta), or '' when unlinked."""
     return conv.meta.get("thread_id", "")
 
 
-def build_index(conn, sources, *, chunk_size=DEFAULT_CHUNK_SIZE,
-                max_retries=DEFAULT_MAX_RETRIES, retry_delay=DEFAULT_RETRY_DELAY,
-                sleep=time.sleep, progress=None):
+def build_index(
+    conn,
+    sources,
+    *,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    max_retries=DEFAULT_MAX_RETRIES,
+    retry_delay=DEFAULT_RETRY_DELAY,
+    sleep=time.sleep,
+    progress=None,
+):
     """Ingest `sources` into the FTS index at `conn`, chunked and resumable.
 
     For each IndexSource: if a checkpoint exists whose content_hash matches, resume at
@@ -161,8 +176,11 @@ def build_index(conn, sources, *, chunk_size=DEFAULT_CHUNK_SIZE,
             end = min(i + chunk_size, n)
             for rec in src.records[i:end]:
                 tid = _thread_id(rec)
-                do(lambda rec=rec, tid=tid: corpus.add_conversation(
-                    conn, rec, thread_id=tid, rollout_path=src.file))
+                do(
+                    lambda rec=rec, tid=tid: corpus.add_conversation(
+                        conn, rec, thread_id=tid, rollout_path=src.file
+                    )
+                )
                 stats.records_processed += 1
             i = end
             do(lambda i=i: corpus.set_checkpoint(conn, src.file, i, src.content_hash))
@@ -174,6 +192,7 @@ def build_index(conn, sources, *, chunk_size=DEFAULT_CHUNK_SIZE,
 
 
 # ------------------------------------------------------------------ query side
+
 
 def count(conn):
     """Fast total of indexed conversation records."""
@@ -222,6 +241,6 @@ def ranked_search(conn, query, limit=DEFAULT_LIMIT, provider=None, since=None, u
         "SELECT c.*, bm25(conversations_fts) AS bm25_score "
         "FROM conversations_fts "
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ?%s ORDER BY bm25(conversations_fts) LIMIT ?"
-        % clause,
-        [q] + args + [limit]).fetchall()
+        "WHERE conversations_fts MATCH ?%s ORDER BY bm25(conversations_fts) LIMIT ?" % clause,
+        [q] + args + [limit],
+    ).fetchall()

@@ -26,6 +26,7 @@ What is pinned, and WHY each test exists:
     checksum this reader skips over) are each a real, exercised path, not a
     pragma.
 """
+
 import io
 import struct
 
@@ -37,6 +38,7 @@ from llm_anthology import archive
 
 # --------------------------------------------------------------------- helpers
 
+
 def _mixed_records():
     """A multi-frame corpus with varied record lengths so byte ranges land both
     inside a single frame and straddling frame boundaries."""
@@ -45,6 +47,7 @@ def _mixed_records():
 
 # --------------------------------------------------------- split_records()
 
+
 def test_split_records_is_a_lossless_inverse_of_join():
     """`b"".join(split_records(raw)) == raw` for every shape a rollout file takes:
     empty, single line, trailing newline, no trailing newline, a blank line, and
@@ -52,9 +55,9 @@ def test_split_records_is_a_lossless_inverse_of_join():
     source byte-for-byte."""
     for raw in (b"", b"a\n", b"a\nb\n", b"a\nb", b"\n", b"a\n\nb\n", b"no-sep"):
         assert b"".join(archive.split_records(raw)) == raw
-    assert archive.split_records(b"") == []                       # `not raw` true
-    assert archive.split_records(b"a\nb\n") == [b"a\n", b"b\n"]   # trailing-sep end
-    assert archive.split_records(b"a\nb") == [b"a\n", b"b"]       # no-trailing-sep end
+    assert archive.split_records(b"") == []  # `not raw` true
+    assert archive.split_records(b"a\nb\n") == [b"a\n", b"b\n"]  # trailing-sep end
+    assert archive.split_records(b"a\nb") == [b"a\n", b"b"]  # no-trailing-sep end
 
 
 def test_split_records_honours_a_custom_separator():
@@ -62,6 +65,7 @@ def test_split_records_honours_a_custom_separator():
 
 
 # ----------------------------------------------------- encode_records()
+
 
 def test_each_frame_decompresses_to_its_record_independently():
     """The defining property: frame N is a complete standalone zstd frame, so it
@@ -72,14 +76,14 @@ def test_each_frame_decompresses_to_its_record_independently():
     assert len(reader) == 3
     for i, record in enumerate(records):
         assert reader.frame(i) == record
-    assert reader.frame(-1) == records[-1]          # negative index resolves
+    assert reader.frame(-1) == records[-1]  # negative index resolves
 
 
 def test_encode_accepts_both_str_and_bytes_records():
     """str records are UTF-8 encoded; bytes records pass through unchanged."""
     reader = archive.SeekableReader(archive.encode_records(["ström-s\n", b"bytes-b\n"]))
-    assert reader.frame(0) == "ström-s\n".encode("utf-8")   # isinstance(str) branch
-    assert reader.frame(1) == b"bytes-b\n"                  # bytes branch
+    assert reader.frame(0) == "ström-s\n".encode("utf-8")  # isinstance(str) branch
+    assert reader.frame(1) == b"bytes-b\n"  # bytes branch
 
 
 def test_a_stock_zstd_decoder_reads_the_whole_seekable_archive():
@@ -88,12 +92,14 @@ def test_a_stock_zstd_decoder_reads_the_whole_seekable_archive():
     concatenated records and silently skips the table."""
     records = _mixed_records()
     data = archive.encode_records(records)
-    whole = zstandard.ZstdDecompressor().stream_reader(
-        io.BytesIO(data), read_across_frames=True).read()
+    whole = (
+        zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data), read_across_frames=True).read()
+    )
     assert whole == b"".join(records)
 
 
 # ---------------------------------------------- seek-read core property
+
 
 def test_read_equals_full_decompress_over_every_range():
     """THE contract: a seek-read by (offset, length) equals the same slice of the
@@ -108,26 +114,27 @@ def test_read_equals_full_decompress_over_every_range():
     n = len(full)
     for offset in range(n + 2):
         for length in range(n + 2):
-            assert reader.read(offset, length) == full[offset:offset + length]
+            assert reader.read(offset, length) == full[offset : offset + length]
 
 
 def test_read_rejects_negative_offset_or_length():
     reader = archive.SeekableReader(archive.encode_records([b"x\n"]))
     with pytest.raises(ValueError):
-        reader.read(-1, 1)          # offset < 0
+        reader.read(-1, 1)  # offset < 0
     with pytest.raises(ValueError):
-        reader.read(0, -1)          # length < 0
+        reader.read(0, -1)  # length < 0
 
 
 def test_frame_index_out_of_range_raises():
     reader = archive.SeekableReader(archive.encode_records([b"only\n"]))
     with pytest.raises(IndexError):
-        reader.frame(1)             # index >= count
+        reader.frame(1)  # index >= count
     with pytest.raises(IndexError):
-        reader.frame(-2)            # index + count still < 0
+        reader.frame(-2)  # index + count still < 0
 
 
 # ------------------------------------------------------ empty archive
+
 
 def test_empty_archive_round_trips_as_zero_frames():
     """Re-encoding an empty source yields a valid archive that is just the seek
@@ -143,11 +150,12 @@ def test_empty_archive_round_trips_as_zero_frames():
 
 # ---------------------------------------------------- reencode() flow
 
+
 def test_reencode_a_plain_zst_into_a_seekable_archive(tmp_path):
     """End to end: a plain single-frame .zst rollout is re-encoded so each JSONL
     record becomes an independently openable frame, the source is reconstructed
     byte-for-byte, and a single record opens without inflating the whole file."""
-    raw = b'{"turn":0}\n{"turn":1}\n{"turn":2}\n'          # synthetic JSONL rollout
+    raw = b'{"turn":0}\n{"turn":1}\n{"turn":2}\n'  # synthetic JSONL rollout
     src = tmp_path / "rollout.jsonl.zst"
     src.write_bytes(zstandard.ZstdCompressor(level=5).compress(raw))
     dst = tmp_path / "rollout.seekable.zst"
@@ -156,11 +164,12 @@ def test_reencode_a_plain_zst_into_a_seekable_archive(tmp_path):
 
     assert count == 3
     reader = archive.SeekableReader.open(str(dst))
-    assert b"".join(reader) == raw                          # lossless round-trip
-    assert reader.frame(1) == b'{"turn":1}\n'               # random single record
+    assert b"".join(reader) == raw  # lossless round-trip
+    assert reader.frame(1) == b'{"turn":1}\n'  # random single record
 
 
 # ----------------------------------------------- reader robustness
+
 
 def test_reader_rejects_data_too_small_for_a_seek_table():
     with pytest.raises(ValueError):
@@ -169,7 +178,7 @@ def test_reader_rejects_data_too_small_for_a_seek_table():
 
 def test_reader_rejects_a_non_seekable_blob():
     with pytest.raises(ValueError):
-        archive.SeekableReader(b"\x00" * 20)                # footer magic mismatch
+        archive.SeekableReader(b"\x00" * 20)  # footer magic mismatch
 
 
 def test_reader_rejects_a_seek_table_larger_than_the_archive():
@@ -181,9 +190,9 @@ def test_reader_rejects_a_seek_table_larger_than_the_archive():
 
 def test_reader_rejects_a_corrupt_skippable_header():
     data = bytearray(archive.encode_records([b"x\n", b"y\n"]))
-    table_size = 2 * 8 + 9                                  # entries + footer
+    table_size = 2 * 8 + 9  # entries + footer
     skip_start = len(data) - 8 - table_size
-    data[skip_start:skip_start + 4] = b"\x00\x00\x00\x00"   # break the skippable magic
+    data[skip_start : skip_start + 4] = b"\x00\x00\x00\x00"  # break the skippable magic
     with pytest.raises(ValueError):
         archive.SeekableReader(bytes(data))
 
@@ -199,12 +208,11 @@ def test_reader_parses_a_checksummed_seek_table_and_skips_the_checksum():
     content = bytearray()
     for frame, record in zip(frames, records):
         content += struct.pack("<III", len(frame), len(record), 0xDEADBEEF)  # +checksum
-    content += struct.pack("<IBI", len(records), archive._CHECKSUM_FLAG,
-                           archive._SEEKABLE_MAGIC)
+    content += struct.pack("<IBI", len(records), archive._CHECKSUM_FLAG, archive._SEEKABLE_MAGIC)
     skippable = struct.pack("<II", archive._SKIPPABLE_MAGIC, len(content)) + bytes(content)
     reader = archive.SeekableReader(b"".join(frames) + skippable)
     assert list(reader) == records
 
 
-if __name__ == "__main__":       # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

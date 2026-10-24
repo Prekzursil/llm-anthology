@@ -292,18 +292,27 @@ export function parseDesignChat(data: Rec): Conversation {
   const turns = [];
   for (const m of (get(data, "messages") as Rec[]) || []) {
     if (m === null || typeof m !== "object") continue;
-    const role = ["user", "human"].includes(s(get(m, "role")).toLowerCase()) ? "human" : "assistant";
+    const role = ["user", "human"].includes(s(get(m, "role")).toLowerCase())
+      ? "human"
+      : "assistant";
     const blocks = designBlocks(get(m, "content"));
     if (blocks.length) {
-      turns.push(turn(role, blocks, { uuid: s(get(m, "uuid")), timestamp: s(get(m, "created_at")) }));
+      turns.push(
+        turn(role, blocks, { uuid: s(get(m, "uuid")), timestamp: s(get(m, "created_at")) }),
+      );
     }
   }
-  return conversation(s(get(data, "uuid")), s(get(data, "title")) || "(untitled design chat)", "claude", {
-    turns,
-    created_at: s(get(data, "created_at")),
-    updated_at: s(get(data, "updated_at")),
-    meta: { kind: "design_chat" },
-  });
+  return conversation(
+    s(get(data, "uuid")),
+    s(get(data, "title")) || "(untitled design chat)",
+    "claude",
+    {
+      turns,
+      created_at: s(get(data, "created_at")),
+      updated_at: s(get(data, "updated_at")),
+      meta: { kind: "design_chat" },
+    },
+  );
 }
 
 function designBlocks(content: unknown): Block[] {

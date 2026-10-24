@@ -120,7 +120,7 @@ describe("KNOWN DIVERGENCE — an ABSENT optional field serialises differently",
    * committed layer is what gives chatgpt and gemini any parity cases at all.
    *
    * Measured. For a claude `files` entry with no `file_uuid`:
-   *   python  claude.py:236  data={"file_name": ..., "file_uuid": f.get("file_uuid")}
+   *   python  claude.py:276  data={"file_name": ..., "file_uuid": f.get("file_uuid")}
    *                          -> asdict()+json emits  "file_uuid": null
    *   this rail claude.ts:236 data={file_name: ..., file_uuid: get(f, "file_uuid")}
    *                          -> get() returns undefined, so JSON.stringify DROPS the key
@@ -129,7 +129,7 @@ describe("KNOWN DIVERGENCE — an ABSENT optional field serialises differently",
    * the divergence exists only at the JSON boundary. Benign today, and that is measured
    * rather than assumed: every consumer of Block.data collapses the two, always as an
    * explicit pair (`v === null || v === undefined` at render_html.ts:53, and
-   * `!== undefined && !== null` at render_html.ts:196,207,275 · render_md.ts:115,126,173 ·
+   * `!== undefined && !== null` at render_html.ts:196,207,275 · render_md.ts:118,129,176 ·
    * audit.ts:30). Not one of them can tell null from undefined, and the committed
    * byte-for-byte renderer gate (fixtures/render-parity.json) is green. It would stop being
    * benign the moment this rail serialises IR to JSON the way python's `index` command
@@ -148,9 +148,14 @@ describe("KNOWN DIVERGENCE — an ABSENT optional field serialises differently",
     name: "divergence probe",
     chat_messages: [
       {
-        uuid: "m1", parent_message_uuid: null, sender: "human", created_at: "t1",
+        uuid: "m1",
+        parent_message_uuid: null,
+        sender: "human",
+        created_at: "t1",
         content: [{ type: "text", text: "here", citations: [] }],
-        attachments: [], files: [{ file_name: "pic.png" }], text: "",
+        attachments: [],
+        files: [{ file_name: "pic.png" }],
+        text: "",
       },
     ],
   };

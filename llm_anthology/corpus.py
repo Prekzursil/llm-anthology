@@ -35,6 +35,7 @@ Phase-0 MEASURED facts this contract is built around (ground truth, not guesses)
 PRIVACY: this module reads counts and shapes and moves opaque text into an index; it
 never emits conversation content. Tests use synthetic fixtures only.
 """
+
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional
@@ -44,12 +45,14 @@ CORPUS_VERSION = 1
 
 # --------------------------------------------------------------- dataclasses
 
+
 @dataclass
 class ThreadMeta:
     """One spawn-graph node. `id` is the only required field; the rest default so a
     partial row from an older/leaner schema still constructs. created_at_ms and
     updated_at_ms are Optional[int]: the legacy canonical DB has no updated_at_ms
     column, so it stays None rather than being back-filled with a fabricated 0."""
+
     id: str
     title: str = ""
     model_provider: str = ""
@@ -86,6 +89,7 @@ class ThreadMeta:
 class SpawnEdge:
     """One directed spawn: `parent_thread_id` spawned `child_thread_id`. `status` is
     the spawn/child outcome (e.g. completed / failed) and may be empty."""
+
     parent_thread_id: str
     child_thread_id: str
     status: str = ""
@@ -100,9 +104,10 @@ class Corpus:
     treat any id that appears on an edge as a node even if it is absent from `threads`
     — a dangling parent still roots its visible subtree instead of disappearing.
     """
-    conversations: list = field(default_factory=list)   # list[ir.Conversation]
-    threads: dict = field(default_factory=dict)          # id -> ThreadMeta
-    edges: list = field(default_factory=list)            # list[SpawnEdge]
+
+    conversations: list = field(default_factory=list)  # list[ir.Conversation]
+    threads: dict = field(default_factory=dict)  # id -> ThreadMeta
+    edges: list = field(default_factory=list)  # list[SpawnEdge]
 
     # -- builders -------------------------------------------------------------
 
@@ -134,8 +139,7 @@ class Corpus:
 
     def children_of(self, tid):
         """The distinct children `tid` spawned, sorted."""
-        return sorted({e.child_thread_id for e in self.edges
-                       if e.parent_thread_id == tid})
+        return sorted({e.child_thread_id for e in self.edges if e.parent_thread_id == tid})
 
     def fan_out(self, tid):
         """Out-degree: how many distinct threads `tid` spawned."""
@@ -151,7 +155,7 @@ class Corpus:
         parents = self._parents_of(tid)
         if not parents:
             return 0
-        if tid in seen:            # a back-edge: stop, contribute no further depth
+        if tid in seen:  # a back-edge: stop, contribute no further depth
             return 0
         seen = seen | {tid}
         return 1 + min(self._depth(p, seen) for p in parents)
@@ -161,12 +165,33 @@ class Corpus:
 
 # Column orders are pinned as constants and reused by every read/write below, so the
 # INSERT lists, the SELECT lists and the dataclass field order can never drift apart.
-_THREAD_COLS = ("id", "title", "model_provider", "tokens_used", "created_at_ms",
-                "updated_at_ms", "git_branch", "cwd", "agent_role", "agent_nickname",
-                "preview", "rollout_path")
+_THREAD_COLS = (
+    "id",
+    "title",
+    "model_provider",
+    "tokens_used",
+    "created_at_ms",
+    "updated_at_ms",
+    "git_branch",
+    "cwd",
+    "agent_role",
+    "agent_nickname",
+    "preview",
+    "rollout_path",
+)
 _EDGE_COLS = ("parent_thread_id", "child_thread_id", "status")
-_CONV_COLS = ("conversation_id", "provider", "account", "title", "created_at",
-              "updated_at", "turn_count", "char_count", "thread_id", "rollout_path")
+_CONV_COLS = (
+    "conversation_id",
+    "provider",
+    "account",
+    "title",
+    "created_at",
+    "updated_at",
+    "turn_count",
+    "char_count",
+    "thread_id",
+    "rollout_path",
+)
 
 # The structural DDL (tables + indexes). WAL is applied separately in init_index:
 # `PRAGMA journal_mode=WAL` cannot portably run inside executescript's transaction on
@@ -307,6 +332,7 @@ def open_index(path):
 
 # ------------------------------------------------------------- write contract
 
+
 def _placeholders(cols):
     return ",".join("?" for _ in cols)
 
@@ -317,16 +343,20 @@ def _quoted(cols):
 
 def upsert_thread(conn, meta):
     """Write (or replace) one thread row from a ThreadMeta."""
-    conn.execute("INSERT OR REPLACE INTO threads(%s) VALUES (%s)"
-                 % (_quoted(_THREAD_COLS), _placeholders(_THREAD_COLS)),
-                 tuple(getattr(meta, c) for c in _THREAD_COLS))
+    conn.execute(
+        "INSERT OR REPLACE INTO threads(%s) VALUES (%s)"
+        % (_quoted(_THREAD_COLS), _placeholders(_THREAD_COLS)),
+        tuple(getattr(meta, c) for c in _THREAD_COLS),
+    )
 
 
 def upsert_edge(conn, edge):
     """Write (or replace) one spawn edge; the (parent, child) PK makes replays a no-op."""
-    conn.execute("INSERT OR REPLACE INTO thread_spawn_edges(%s) VALUES (%s)"
-                 % (_quoted(_EDGE_COLS), _placeholders(_EDGE_COLS)),
-                 tuple(getattr(edge, c) for c in _EDGE_COLS))
+    conn.execute(
+        "INSERT OR REPLACE INTO thread_spawn_edges(%s) VALUES (%s)"
+        % (_quoted(_EDGE_COLS), _placeholders(_EDGE_COLS)),
+        tuple(getattr(edge, c) for c in _EDGE_COLS),
+    )
 
 
 def _fts_can_delete(conn):
@@ -392,12 +422,23 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
     if body is None:
         body = _conversation_body(conv)
     set_conversation_body(conn, conv.id, conv.turns, conv.meta)
-    set_conversation_model(conn, conv.id, conv.meta)          # D-5, at EOF
-    values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
-              conv.updated_at, len(conv.turns), len(body), thread_id, rollout_path)
+    set_conversation_model(conn, conv.id, conv.meta)  # D-5, at EOF
+    values = (
+        conv.id,
+        conv.provider,
+        conv.account,
+        conv.title,
+        conv.created_at,
+        conv.updated_at,
+        len(conv.turns),
+        len(body),
+        thread_id,
+        rollout_path,
+    )
     existing = conn.execute(
         "SELECT rowid, %s FROM conversations WHERE conversation_id=?" % ",".join(_CONV_COLS),
-        (conv.id,)).fetchone()
+        (conv.id,),
+    ).fetchone()
 
     if existing is not None:
         # Positional, not by name: `row_factory` is not guaranteed to be `sqlite3.Row` here
@@ -415,9 +456,13 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
             conn.execute("DELETE FROM conversations_fts WHERE rowid=?", (rowid,))
             conn.execute(
                 "UPDATE conversations SET %s WHERE rowid=?"
-                % ",".join("%s=?" % c for c in _CONV_COLS), values + (rowid,))
-            conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
-                         (rowid, conv.title, body))
+                % ",".join("%s=?" % c for c in _CONV_COLS),
+                values + (rowid,),
+            )
+            conn.execute(
+                "INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
+                (rowid, conv.title, body),
+            )
             return rowid
 
         # LEGACY index: the old posting cannot be retracted at all, so the row has to move to
@@ -440,25 +485,33 @@ def add_conversation(conn, conv, body=None, thread_id="", rollout_path=""):
         moved = conn.execute("SELECT MAX(rowid) + 1 FROM conversations").fetchone()[0]
         conn.execute("UPDATE conversations SET rowid=? WHERE rowid=?", (moved, rowid))
         conn.execute(
-            "UPDATE conversations SET %s WHERE rowid=?"
-            % ",".join("%s=?" % c for c in _CONV_COLS), values + (moved,))
-        conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
-                     (moved, conv.title, body))
+            "UPDATE conversations SET %s WHERE rowid=?" % ",".join("%s=?" % c for c in _CONV_COLS),
+            values + (moved,),
+        )
+        conn.execute(
+            "INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
+            (moved, conv.title, body),
+        )
         return moved
 
     cur = conn.execute(
         "INSERT INTO conversations(%s) VALUES (%s)"
-        % (",".join(_CONV_COLS), _placeholders(_CONV_COLS)), values)
-    conn.execute("INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
-                 (cur.lastrowid, conv.title, body))
+        % (",".join(_CONV_COLS), _placeholders(_CONV_COLS)),
+        values,
+    )
+    conn.execute(
+        "INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
+        (cur.lastrowid, conv.title, body),
+    )
     return cur.lastrowid
 
 
 def set_checkpoint(conn, file, offset, content_hash):
     """Record ingest progress for `file`; re-recording the same file replaces it."""
     conn.execute(
-        'INSERT OR REPLACE INTO ingest_checkpoint(file, "offset", content_hash) '
-        "VALUES (?,?,?)", (file, offset, content_hash))
+        'INSERT OR REPLACE INTO ingest_checkpoint(file, "offset", content_hash) VALUES (?,?,?)',
+        (file, offset, content_hash),
+    )
 
 
 def set_conversation_rollouts(conn, conversation_id, paths):
@@ -478,15 +531,16 @@ def set_conversation_rollouts(conn, conversation_id, paths):
     paths = list(paths)
     if rollout_legs(conn, conversation_id) == paths:
         return
-    conn.execute("DELETE FROM conversation_rollouts WHERE conversation_id=?",
-                 (conversation_id,))
+    conn.execute("DELETE FROM conversation_rollouts WHERE conversation_id=?", (conversation_id,))
     conn.executemany(
         "INSERT INTO conversation_rollouts(conversation_id, leg_index, rollout_path) "
         "VALUES (?,?,?)",
-        [(conversation_id, i, path) for i, path in enumerate(paths)])
+        [(conversation_id, i, path) for i, path in enumerate(paths)],
+    )
 
 
 # -------------------------------------------------------------- read contract
+
 
 def search(conn, query, limit=50, provider=None, since=None, until=None):
     """FTS MATCH -> up to `limit` conversation rows, best-ranked first. Returns the
@@ -507,7 +561,8 @@ def search(conn, query, limit=50, provider=None, since=None, until=None):
         "SELECT %s FROM conversations_fts "
         "JOIN conversations c ON c.rowid = conversations_fts.rowid "
         "WHERE conversations_fts MATCH ?%s ORDER BY rank LIMIT ?" % (cols, clause),
-        [query] + args + [limit]).fetchall()
+        [query] + args + [limit],
+    ).fetchall()
 
 
 #: The ASCII digits, spelled out. See `_is_num` for why `str.isdigit` is not used.
@@ -550,10 +605,8 @@ def date_bound(value, name):
     """
     parts = value.split("-") if isinstance(value, str) else []
     widths = ((4, 1, 9999), (2, 1, 12), (2, 1, 31))
-    if not (1 <= len(parts) <= 3
-            and all(_is_num(p, *widths[i]) for i, p in enumerate(parts))):
-        raise ValueError(
-            "%s must be YYYY, YYYY-MM or YYYY-MM-DD (got %r)" % (name, value))
+    if not (1 <= len(parts) <= 3 and all(_is_num(p, *widths[i]) for i, p in enumerate(parts))):
+        raise ValueError("%s must be YYYY, YYYY-MM or YYYY-MM-DD (got %r)" % (name, value))
     return value
 
 
@@ -588,8 +641,11 @@ def search_filter_sql(provider=None, since=None, until=None):
     if provider is not None:
         sql += " AND c.provider = ?"
         args.append(provider)
-    bounds = [(date_bound(value, name), op) for name, value, op
-              in (("since", since, ">="), ("until", until, "<=")) if value is not None]
+    bounds = [
+        (date_bound(value, name), op)
+        for name, value, op in (("since", since, ">="), ("until", until, "<="))
+        if value is not None
+    ]
     if bounds:
         sql += " AND c.created_at != ''"
     for bound, op in bounds:
@@ -613,15 +669,20 @@ def search_histogram(conn, query, bucket="month", provider=None, since=None, unt
     """
     width = SEARCH_BUCKETS.get(bucket) if isinstance(bucket, str) else None
     if width is None:
-        raise ValueError("bucket must be one of %s (got %r)"
-                         % (", ".join(sorted(SEARCH_BUCKETS)), bucket))
+        raise ValueError(
+            "bucket must be one of %s (got %r)" % (", ".join(sorted(SEARCH_BUCKETS)), bucket)
+        )
     clause, args = search_filter_sql(provider, since, until)
     key = "substr(c.created_at,1,%d)" % width
-    return [(row[0], row[1]) for row in conn.execute(
-        "SELECT %s, COUNT(*) FROM conversations_fts "
-        "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ?%s GROUP BY %s ORDER BY %s"
-        % (key, clause, key, key), [query] + args)]
+    return [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT %s, COUNT(*) FROM conversations_fts "
+            "JOIN conversations c ON c.rowid = conversations_fts.rowid "
+            "WHERE conversations_fts MATCH ?%s GROUP BY %s ORDER BY %s" % (key, clause, key, key),
+            [query] + args,
+        )
+    ]
 
 
 def rollout_legs(conn, conversation_id):
@@ -632,16 +693,21 @@ def rollout_legs(conn, conversation_id):
     empty answer as "not recorded", never as "this conversation has no rollout": the
     fallback is `conversations.rollout_path`, which every index has always carried.
     """
-    return [row[0] for row in conn.execute(
-        "SELECT rollout_path FROM conversation_rollouts WHERE conversation_id=? "
-        "ORDER BY leg_index", (conversation_id,))]
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT rollout_path FROM conversation_rollouts WHERE conversation_id=? "
+            "ORDER BY leg_index",
+            (conversation_id,),
+        )
+    ]
 
 
 def get_checkpoint(conn, file):
     """(offset, content_hash) for `file`, or None if it was never checkpointed."""
     row = conn.execute(
-        'SELECT "offset", content_hash FROM ingest_checkpoint WHERE file=?',
-        (file,)).fetchone()
+        'SELECT "offset", content_hash FROM ingest_checkpoint WHERE file=?', (file,)
+    ).fetchone()
     if row is None:
         return None
     return (row[0], row[1])
@@ -663,17 +729,21 @@ def load_corpus(conn):
         meta = ThreadMeta(*row)
         threads[meta.id] = meta
     for tid, provider in conn.execute(
-            "SELECT thread_id, provider FROM conversations "
-            "WHERE thread_id != '' ORDER BY conversation_id"):
+        "SELECT thread_id, provider FROM conversations "
+        "WHERE thread_id != '' ORDER BY conversation_id"
+    ):
         meta = threads.get(tid)
         if meta is not None and not meta.adapter:
             meta.adapter = provider
-    edges = [SpawnEdge(*row) for row in
-             conn.execute("SELECT %s FROM thread_spawn_edges" % ",".join(_EDGE_COLS))]
+    edges = [
+        SpawnEdge(*row)
+        for row in conn.execute("SELECT %s FROM thread_spawn_edges" % ",".join(_EDGE_COLS))
+    ]
     return Corpus(threads=threads, edges=edges)
 
 
 # -------------------------------------------------------------------- helpers
+
 
 def _conversation_body(conv):
     """The searchable text of a conversation: its title and every block's text, with
@@ -736,8 +806,8 @@ def _fts_opts():
 #
 # WHY THIS SECTION SITS AT THE END OF THE MODULE, below the code that calls it. Module
 # globals resolve at CALL time, so the position is harmless — and it is deliberate:
-# `corpus.py` line numbers are cited BY LINE from other modules (`sidecar.py:856,861`,
-# `discover.py:285`, `claude_code.py:78`, `cockpit/src/ipc/types.ts`) and pinned by
+# `corpus.py` line numbers are cited BY LINE from other modules (`sidecar.py:881,886`,
+# `discover.py:332`, `claude_code.py:78`, `cockpit/src/ipc/types.ts`) and pinned by
 # `tests/test_citation_anchors.py`, so inserting lines higher up silently rots citations
 # in files this change does not own. Append-only is the honest way to grow this file.
 #
@@ -837,13 +907,14 @@ def rebuild_guidance(exc):
     addition. The text a v2 index needs is simply not present in a v1 file at any price. The
     original sources are the only place it still exists.
     """
-    return ("%s Rebuild it by re-ingesting your sources into a NEW index file, e.g. "
-            "`llm-anthology index <new.sqlite> --chatgpt-export <export>` (or the session "
-            "roots you originally used). The old file is left untouched, so it can still be "
-            "opened by the build that wrote it. There is no in-place migration: a version-1 "
-            "index stores no conversation text — its FTS table is contentless and the bodies "
-            "archive did not exist yet — so the text has to come from the sources again."
-            % exc)
+    return (
+        "%s Rebuild it by re-ingesting your sources into a NEW index file, e.g. "
+        "`llm-anthology index <new.sqlite> --chatgpt-export <export>` (or the session "
+        "roots you originally used). The old file is left untouched, so it can still be "
+        "opened by the build that wrote it. There is no in-place migration: a version-1 "
+        "index stores no conversation text — its FTS table is contentless and the bodies "
+        "archive did not exist yet — so the text has to come from the sources again." % exc
+    )
 
 
 def _version_verdict(found, expected, additive_from):
@@ -882,8 +953,9 @@ def read_schema_version(conn):
     ).fetchone()
     if table is None:
         return None
-    row = conn.execute("SELECT value FROM schema_meta WHERE key=?",
-                       (SCHEMA_VERSION_KEY,)).fetchone()
+    row = conn.execute(
+        "SELECT value FROM schema_meta WHERE key=?", (SCHEMA_VERSION_KEY,)
+    ).fetchone()
     if row is None:
         return None
     try:
@@ -891,8 +963,8 @@ def read_schema_version(conn):
     except (TypeError, ValueError):
         raise IndexVersionError(
             "this index records an unreadable schema version (%.40r); it may be corrupt "
-            "or hand-edited. This build writes version %d."
-            % (row[0], SCHEMA_VERSION))
+            "or hand-edited. This build writes version %d." % (row[0], SCHEMA_VERSION)
+        )
 
 
 def _holds_an_index(conn):
@@ -905,9 +977,12 @@ def _holds_an_index(conn):
     (`metadata.ensure_schema` runs on a bare connection) before an index is ever built, and
     that must still read as "no index here".
     """
-    return conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+        ).fetchone()
+        is not None
+    )
 
 
 def check_schema_version(conn):
@@ -950,20 +1025,22 @@ def check_schema_version(conn):
     found = read_schema_version(conn)
     if found is None:
         if not _holds_an_index(conn):
-            return SCHEMA_VERSION            # a new database, not an old index
+            return SCHEMA_VERSION  # a new database, not an old index
         found = UNSTAMPED_VERSION
     verdict = _version_verdict(found, SCHEMA_VERSION, _ADDITIVE_FROM)
     if verdict == "newer":
         raise IndexTooNewError(
             "this index is schema version %d, but this build of LLM Anthology only "
             "understands version %d. Update the app, or point it at a different index — "
-            "opening it with an older build could corrupt it." % (found, SCHEMA_VERSION))
+            "opening it with an older build could corrupt it." % (found, SCHEMA_VERSION)
+        )
     if verdict == "rebuild":
         raise IndexRebuildRequired(
             "this index is schema version %d and this build needs version %d; the change "
             "between them cannot be applied in place, so the index has to be rebuilt. "
             "Nothing has been modified — the existing index is still readable by the "
-            "build that wrote it." % (found, SCHEMA_VERSION))
+            "build that wrote it." % (found, SCHEMA_VERSION)
+        )
     return found
 
 
@@ -981,8 +1058,10 @@ def stamp_schema_version(conn):
     conn.executescript(_SCHEMA_META_DDL)
     if read_schema_version(conn) == SCHEMA_VERSION:
         return
-    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
-                 (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)))
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+        (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
+    )
     conn.commit()
 
 
@@ -993,6 +1072,7 @@ def stamp_schema_version(conn):
 # `types.ts`, and `tests/test_citation_anchors.py` turns a shifted anchor into a red
 # build. Growing the module at the end is what keeps a new fact from silently rotting
 # citations in files the change does not own.
+
 
 def indexed_provider(conn, conversation_id):
     """The `provider` already recorded for `conversation_id`, or None when the index holds
@@ -1013,8 +1093,9 @@ def indexed_provider(conn, conversation_id):
     Indexed POSITIONALLY: several callers hand in a bare connection with no row_factory,
     so `row["provider"]` would raise on a plain tuple.
     """
-    row = conn.execute("SELECT provider FROM conversations WHERE conversation_id=?",
-                       (conversation_id,)).fetchone()
+    row = conn.execute(
+        "SELECT provider FROM conversations WHERE conversation_id=?", (conversation_id,)
+    ).fetchone()
     return None if row is None else row[0]
 
 
@@ -1057,13 +1138,13 @@ def indexed_provider(conn, conversation_id):
 # stored format rather than an exercised optimisation today. It costs nothing to have and
 # cannot be retrofitted without rewriting every archive, which is why it is decided now.
 
-import json                                                              # noqa: E402
-from . import archive, ir                                                # noqa: E402
+import json  # noqa: E402
+from . import archive, ir  # noqa: E402
 
 #: `conversation_bodies` DDL, kept OUT of `INDEX_SCHEMA` for the same append-only reason
 #: this whole section is down here: `INDEX_SCHEMA` ends above line 292, and growing it
-#: would shift `PRAGMA journal_mode=WAL` (cited as `corpus.py:292`) and `sqlite3.connect`
-#: (`corpus.py:303`). `init_index` concatenates the two before formatting, so the on-disk
+#: would shift `PRAGMA journal_mode=WAL` (cited as `corpus.py:317`) and `sqlite3.connect`
+#: (`corpus.py:328`). `init_index` concatenates the two before formatting, so the on-disk
 #: result is identical to having written it inline.
 #:
 #: A new TABLE, never a column on `conversations` — the rule `init_index` states. It
@@ -1108,8 +1189,12 @@ def _block_record(block):
     `sidecar._serialize_block` puts both on the JSON-RPC wire, so an adapter that put a
     non-serializable value in either would already have crashed the reader.
     """
-    return {"type": block.type, "text": block.text,
-            "data": block.data, "citations": block.citations}
+    return {
+        "type": block.type,
+        "text": block.text,
+        "data": block.data,
+        "citations": block.citations,
+    }
 
 
 def _turn_record(turn):
@@ -1122,8 +1207,12 @@ def _turn_record(turn):
     `branch` is written only when it is set, because it is `Optional[dict]` and `None` is
     its meaningful default — the same rule `sidecar._serialize_turn` follows.
     """
-    record = {"role": turn.role, "uuid": turn.uuid, "timestamp": turn.timestamp,
-              "blocks": [_block_record(b) for b in turn.blocks]}
+    record = {
+        "role": turn.role,
+        "uuid": turn.uuid,
+        "timestamp": turn.timestamp,
+        "blocks": [_block_record(b) for b in turn.blocks],
+    }
     if turn.branch is not None:
         record["branch"] = turn.branch
     return record
@@ -1138,9 +1227,16 @@ def _turn_from_record(record):
         uuid=record.get("uuid", ""),
         timestamp=record.get("timestamp", ""),
         branch=record.get("branch"),
-        blocks=[ir.Block(type=b.get("type", "unknown"), text=b.get("text", ""),
-                         data=b.get("data") or {}, citations=b.get("citations") or [])
-                for b in record.get("blocks", ())])
+        blocks=[
+            ir.Block(
+                type=b.get("type", "unknown"),
+                text=b.get("text", ""),
+                data=b.get("data") or {},
+                citations=b.get("citations") or [],
+            )
+            for b in record.get("blocks", ())
+        ],
+    )
 
 
 #: Target DECOMPRESSED size of one archive frame, in bytes of turn JSON.
@@ -1197,8 +1293,7 @@ def _frames(records):
 def encode_turns(turns):
     """`turns` -> a seekable-zstd archive, frames packed to `_FRAME_BUDGET`. Pure, so the
     encoding is testable and measurable without a database."""
-    return archive.encode_records(
-        _frames(json.dumps(_turn_record(t), **_JSON) for t in turns))
+    return archive.encode_records(_frames(json.dumps(_turn_record(t), **_JSON) for t in turns))
 
 
 def set_conversation_body(conn, conversation_id, turns, meta=None):
@@ -1219,8 +1314,13 @@ def set_conversation_body(conn, conversation_id, turns, meta=None):
     conn.execute(
         "INSERT OR REPLACE INTO conversation_bodies"
         "(conversation_id, text_bytes, meta, archive) VALUES (?,?,?,?)",
-        (conversation_id, archive.SeekableReader(blob).decompressed_size,
-         json.dumps(meta or {}, **_JSON), sqlite3.Binary(blob)))
+        (
+            conversation_id,
+            archive.SeekableReader(blob).decompressed_size,
+            json.dumps(meta or {}, **_JSON),
+            sqlite3.Binary(blob),
+        ),
+    )
 
 
 def load_conversation_body(conn, conversation_id):
@@ -1242,20 +1342,22 @@ def load_conversation_body(conn, conversation_id):
     second query and an opportunity for the pair to disagree.
     """
     row = conn.execute(
-        "SELECT meta, archive FROM conversation_bodies WHERE conversation_id=?",
-        (conversation_id,)).fetchone()
+        "SELECT meta, archive FROM conversation_bodies WHERE conversation_id=?", (conversation_id,)
+    ).fetchone()
     if row is None:
         return None
-    turns = [_turn_from_record(json.loads(record))
-             for frame in archive.SeekableReader(bytes(row[1]))
-             for record in frame.split(_RECORD_SEP)]
+    turns = [
+        _turn_from_record(json.loads(record))
+        for frame in archive.SeekableReader(bytes(row[1]))
+        for record in frame.split(_RECORD_SEP)
+    ]
     return turns, json.loads(row[0])
 
 
 # ------------------------------------------ which MODEL answered, persisted (D-5)
 #
 # Appended for the reason the three blocks above are: this file's line numbers are cited BY
-# LINE from `sidecar.py:856,861`, `discover.py:285`, `claude_code.py:78`, `loaders.py:498`,
+# LINE from `sidecar.py:881,886`, `discover.py:332`, `claude_code.py:78`, `loaders.py:535`,
 # `mock.ts` and `types.ts`, and `tests/test_citation_anchors.py` turns a shifted anchor into
 # a red build. The single line this change adds ABOVE here sits inside `add_conversation`
 # (below every pinned anchor, the highest of which is 347), and `init_index` was edited in
@@ -1295,15 +1397,15 @@ def load_conversation_body(conn, conversation_id):
 # not an incompatibility. The marker exists to detect shapes a build cannot safely open, and
 # every build can safely open this one — `IF NOT EXISTS` creates the table on any open and
 # "no row" already means "not recorded yet", which is the convention `rollout_legs` states at
-# `corpus.py:288-291` and which `conversation_rollouts` was added under. The residual is
+# `corpus.py:313-316` and which `conversation_rollouts` was added under. The residual is
 # stated rather than hidden: without a bump, an absent row cannot distinguish "this index
 # predates the table" from "the adapter captured no model", exactly as `rollout_legs` cannot.
 # Settling experiment if that distinction ever becomes load-bearing: bump to 3 with
 # `_ADDITIVE_FROM = {2}` (an in-place migration, no rebuild) and read the marker.
 
 #: The `ir.Conversation.meta` key both capturing adapters agreed on, named ONCE here so the
-#: spelling is a contract instead of a coincidence: `adapters/claude_code.py:698` (the model
-#: off the first assistant `message`) and `adapters/grok.py:556` (`current_model_id` off the
+#: spelling is a contract instead of a coincidence: `adapters/claude_code.py:738` (the model
+#: off the first assistant `message`) and `adapters/grok.py:590` (`current_model_id` off the
 #: session summary). Other adapters capture no model at all, which is why an absent key is
 #: the COMMON case and not an error.
 MODEL_ID_KEY = "model_id"
@@ -1338,8 +1440,8 @@ CREATE TABLE IF NOT EXISTS conversation_models (
 #:
 #: A CONSTANT rather than the inline `INDEX_SCHEMA + _BODIES_SCHEMA` that used to sit in
 #: `init_index`: appending a third block there pushed that line past this file's width, and
-#: splitting it in two would have shifted `sqlite3.connect` (cited as `corpus.py:303`) and
-#: `add_conversation` (`corpus.py:347`, cited from `claude_code.py:78` and `loaders.py:498`).
+#: splitting it in two would have shifted `sqlite3.connect` (cited as `corpus.py:328`) and
+#: `add_conversation` (`corpus.py:377`, cited from `claude_code.py:78` and `loaders.py:535`).
 #: Module globals resolve at CALL time, so a constant defined below its use is harmless.
 _SCHEMA = INDEX_SCHEMA + _BODIES_SCHEMA + _MODEL_SCHEMA
 
@@ -1385,8 +1487,10 @@ def set_conversation_model(conn, conversation_id, meta):
     model_id = _meta_model_id(meta)
     if not model_id:
         return
-    conn.execute("INSERT OR REPLACE INTO conversation_models"
-                 "(conversation_id, model_id) VALUES (?,?)", (conversation_id, model_id))
+    conn.execute(
+        "INSERT OR REPLACE INTO conversation_models(conversation_id, model_id) VALUES (?,?)",
+        (conversation_id, model_id),
+    )
 
 
 def conversation_model(conn, conversation_id):
@@ -1395,7 +1499,7 @@ def conversation_model(conn, conversation_id):
     None is BOTH "this id is not in the index", "this index predates
     `conversation_models`" and "the adapter captured no model" — the caller must read it as
     "NOT RECORDED", never as "this conversation had no model". Same contract, and same three
-    way ambiguity, as `rollout_legs` documents at `corpus.py:288-291`.
+    way ambiguity, as `rollout_legs` documents at `corpus.py:313-316`.
 
     Never "": nothing writes a blank, so the answer is a non-empty name or None and a caller
     does not have to tell the two apart.
@@ -1415,6 +1519,6 @@ def conversation_model(conn, conversation_id):
     write contract so that unit has something true to read.
     """
     row = conn.execute(
-        "SELECT model_id FROM conversation_models WHERE conversation_id=?",
-        (conversation_id,)).fetchone()
+        "SELECT model_id FROM conversation_models WHERE conversation_id=?", (conversation_id,)
+    ).fetchone()
     return None if row is None else row[0]

@@ -85,11 +85,16 @@ describe("capFanOut", () => {
     // A node with no created_at_ms cannot be ranked by recency. It must not sort as
     // "epoch" (silently always dropped) nor as "now" (silently always kept).
     const nodes = [
-      node("p", 0), node("dated", 5000),
-      node("undated-c"), node("undated-b"), node("undated-a"),
+      node("p", 0),
+      node("dated", 5000),
+      node("undated-c"),
+      node("undated-b"),
+      node("undated-a"),
     ];
-    const edges: SpawnEdge[] = ["dated", "undated-c", "undated-b", "undated-a"]
-      .map((child) => ({ parent: "p", child }));
+    const edges: SpawnEdge[] = ["dated", "undated-c", "undated-b", "undated-a"].map((child) => ({
+      parent: "p",
+      child,
+    }));
     const out = capFanOut({ nodes, edges }, 3);
     const kept = out.nodes.filter((n) => n.id !== "p" && !n.id.startsWith(MORE_ID_PREFIX));
     // Budget 3 over 4 children leaves room for 2 real ones + the placeholder: the dated one
@@ -166,8 +171,11 @@ describe("capFanOut", () => {
       }
     }
     const out = capFanOut({ nodes, edges }, 5);
-    expect(placeholders(out).map((n) => n.id).sort())
-      .toEqual([`${MORE_ID_PREFIX}p1`, `${MORE_ID_PREFIX}p2`]);
+    expect(
+      placeholders(out)
+        .map((n) => n.id)
+        .sort(),
+    ).toEqual([`${MORE_ID_PREFIX}p1`, `${MORE_ID_PREFIX}p2`]);
   });
 
   it("caps a wide parent that is itself only reachable below another cap", () => {
@@ -327,7 +335,7 @@ describe("capFanOut", () => {
   });
 
   it("names the parent every placeholder stands for, recoverably from the id alone", () => {
-    // `app.ts:713-720` renders the detail pane for a selected placeholder by doing exactly
+    // `app.ts:708-715` renders the detail pane for a selected placeholder by doing exactly
     // this: `moreParentId(id)` and then looking that id up in the graph it laid out. So the
     // contract is a ROUND TRIP — the recovered id must be a real node in the SAME output —
     // not merely "strips a prefix". A placeholder whose parent could not be found renders as
@@ -356,7 +364,11 @@ describe("capFanOut", () => {
     const nodes = [node("r", 0)];
     const edges: SpawnEdge[] = [];
     // THREE wide children of r, so a budget of 2 caps r itself and keeps only the newest.
-    for (const [p, born] of [["old", 10], ["mid", 20], ["new", 30]] as const) {
+    for (const [p, born] of [
+      ["old", 10],
+      ["mid", 20],
+      ["new", 30],
+    ] as const) {
       nodes.push(node(p, born));
       edges.push({ parent: "r", child: p });
       for (let i = 0; i < 8; i++) {
@@ -371,8 +383,10 @@ describe("capFanOut", () => {
     expect(ids.has("mid")).toBe(false);
     // `old` and `mid` were capped too, but they are off screen, so neither gets a placeholder
     // and no edge points at a node ELK was never handed.
-    expect(placeholders(out).map((n) => n.id)).toEqual([`${MORE_ID_PREFIX}new`,
-                                                        `${MORE_ID_PREFIX}r`]);
+    expect(placeholders(out).map((n) => n.id)).toEqual([
+      `${MORE_ID_PREFIX}new`,
+      `${MORE_ID_PREFIX}r`,
+    ]);
     for (const e of out.edges) {
       expect(ids.has(e.parent)).toBe(true);
       expect(ids.has(e.child)).toBe(true);
@@ -404,7 +418,10 @@ describe("capFanOut", () => {
     const out = capFanOut(
       {
         nodes: [node("p", 0), node("real", 5)],
-        edges: [{ parent: "p", child: "real" }, { parent: "p", child: `${MORE_ID_PREFIX}p` }],
+        edges: [
+          { parent: "p", child: "real" },
+          { parent: "p", child: `${MORE_ID_PREFIX}p` },
+        ],
       },
       10,
     );
@@ -415,7 +432,7 @@ describe("capFanOut", () => {
 
   it("emits no duplicate node id and no duplicate edge, on any shape", () => {
     // This is the PRECONDITION that makes three comparator arms in this module dead code —
-    // the `: 0` equal-case in the child rank (`capFanOut.ts:97`), in the node sort (`:219`)
+    // the `: 0` equal-case in the child rank (`capFanOut.ts:104`), in the node sort (`:224`)
     // and in the edge sort (`:226`). Each can only fire on two entries that compare equal,
     // and none can, because children are collected into a `Set` per parent, nodes come from
     // `Map` keys, and there is at most one placeholder per parent. Rather than assert those
@@ -425,21 +442,41 @@ describe("capFanOut", () => {
       ["wide single parent", fanOut(50), 10],
       ["two wide parents", twoWideParents(), 10],
       ["re-capped output", capFanOut(fanOut(50), 10), 5],
-      ["diamond", {
-        nodes: [node("p", 0), node("q", 0), node("a", 10), node("b", 20), node("c", 30)],
-        edges: [
-          { parent: "p", child: "a" }, { parent: "p", child: "b" },
-          { parent: "p", child: "c" }, { parent: "q", child: "a" },
-        ],
-      }, 2],
-      ["cycle with no root", {
-        nodes: [node("x", 1), node("y", 2)],
-        edges: [{ parent: "x", child: "y" }, { parent: "y", child: "x" }],
-      }, 100],
-      ["self-loop and dangling endpoint", {
-        nodes: [node("p", 0)],
-        edges: [{ parent: "p", child: "p" }, { parent: "p", child: "ghost" }],
-      }, 1],
+      [
+        "diamond",
+        {
+          nodes: [node("p", 0), node("q", 0), node("a", 10), node("b", 20), node("c", 30)],
+          edges: [
+            { parent: "p", child: "a" },
+            { parent: "p", child: "b" },
+            { parent: "p", child: "c" },
+            { parent: "q", child: "a" },
+          ],
+        },
+        2,
+      ],
+      [
+        "cycle with no root",
+        {
+          nodes: [node("x", 1), node("y", 2)],
+          edges: [
+            { parent: "x", child: "y" },
+            { parent: "y", child: "x" },
+          ],
+        },
+        100,
+      ],
+      [
+        "self-loop and dangling endpoint",
+        {
+          nodes: [node("p", 0)],
+          edges: [
+            { parent: "p", child: "p" },
+            { parent: "p", child: "ghost" },
+          ],
+        },
+        1,
+      ],
     ];
     for (const [name, graph, budget] of shapes) {
       const out = capFanOut(graph, budget);
@@ -449,11 +486,10 @@ describe("capFanOut", () => {
       expect(new Set(keys).size, `${name}: duplicate edge`).toBe(keys.length);
       // The rank comparator's own input: distinct children per parent, by construction.
       const perParent = new Map<string, string[]>();
-      for (const e of out.edges) perParent.set(e.parent, [...(perParent.get(e.parent) ?? []),
-                                                          e.child]);
+      for (const e of out.edges)
+        perParent.set(e.parent, [...(perParent.get(e.parent) ?? []), e.child]);
       for (const [parent, kids] of perParent) {
-        expect(new Set(kids).size, `${name}: ${parent} has a repeated child`)
-          .toBe(kids.length);
+        expect(new Set(kids).size, `${name}: ${parent} has a repeated child`).toBe(kids.length);
       }
     }
   });

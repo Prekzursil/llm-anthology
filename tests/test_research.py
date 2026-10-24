@@ -26,6 +26,7 @@ oracle):
   * ``Jane Q. Patient``            -- PII: a freeform name no regex catches.
   * ``Zynflaxen-250``              -- sensitive non-PII content (a drug name).
 """
+
 from types import SimpleNamespace
 
 from llm_anthology import research
@@ -41,8 +42,14 @@ SENSITIVE = (RAWBODY, SSN, EMAIL, NAME, COMPOUND)
 # The full contract allowlist, stated INDEPENDENTLY of the module so a drift in
 # either direction (a new leaky field, a dropped one) is caught. STRUCTURAL ONLY.
 ALLOWLIST = {
-    "conversation_id", "provider", "account", "thread_id",
-    "created_at", "updated_at", "turn_count", "char_count",
+    "conversation_id",
+    "provider",
+    "account",
+    "thread_id",
+    "created_at",
+    "updated_at",
+    "turn_count",
+    "char_count",
 }
 
 
@@ -50,9 +57,14 @@ def _view(**kw):
     """A synthetic MetadataView-shaped object (duck-typed by attribute name),
     carrying ONLY the structural allowlist -- the real crossing surface."""
     base = dict(
-        conversation_id="c1", provider="claude", account="alice",
-        thread_id="t1", created_at="2026-01-01", updated_at="2026-01-02",
-        turn_count=3, char_count=100,
+        conversation_id="c1",
+        provider="claude",
+        account="alice",
+        thread_id="t1",
+        created_at="2026-01-01",
+        updated_at="2026-01-02",
+        turn_count=3,
+        char_count=100,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -89,6 +101,7 @@ def _leaks_in(haystack):
 
 # --------------------------------------------------------------- LLM backend
 
+
 def test_llmbackend_is_runtime_checkable_protocol():
     assert isinstance(research.MockBackend(), research.LLMBackend)
     assert not isinstance(object(), research.LLMBackend)
@@ -108,6 +121,7 @@ def test_mockbackend_responder_overrides_default():
 
 # ------------------------------------------------------- synthesize_over_metadata
 
+
 def test_synthesize_returns_backend_output():
     mb = research.MockBackend(response="THE SUMMARY")
     assert research.synthesize_over_metadata([_view()], mb) == "THE SUMMARY"
@@ -115,14 +129,23 @@ def test_synthesize_returns_backend_output():
 
 def test_summary_prompt_contains_allowlisted_structural_values():
     mb = research.MockBackend()
-    research.synthesize_over_metadata([
-        _view(conversation_id="cid9", provider="claude", account="alice",
-              thread_id="th9", created_at="2026-05-05", updated_at="2026-05-06",
-              turn_count=7, char_count=4242),
-    ], mb)
+    research.synthesize_over_metadata(
+        [
+            _view(
+                conversation_id="cid9",
+                provider="claude",
+                account="alice",
+                thread_id="th9",
+                created_at="2026-05-05",
+                updated_at="2026-05-06",
+                turn_count=7,
+                char_count=4242,
+            ),
+        ],
+        mb,
+    )
     p = mb.prompts[0]
-    for token in ("cid9", "claude", "alice", "th9", "2026-05-05", "2026-05-06",
-                  "7", "4242"):
+    for token in ("cid9", "claude", "alice", "th9", "2026-05-05", "2026-05-06", "7", "4242"):
         assert token in p
 
 
@@ -138,17 +161,22 @@ def test_summary_prompt_declares_no_free_text_and_emits_none():
 
 def test_summary_prompt_contains_aggregate_stats():
     mb = research.MockBackend()
-    research.synthesize_over_metadata([
-        _view(conversation_id="a", provider="claude", account="alice",
-              turn_count=3, char_count=10),
-        _view(conversation_id="b", provider="chatgpt", account="bob",
-              turn_count=5, char_count=90),
-    ], mb)
+    research.synthesize_over_metadata(
+        [
+            _view(
+                conversation_id="a", provider="claude", account="alice", turn_count=3, char_count=10
+            ),
+            _view(
+                conversation_id="b", provider="chatgpt", account="bob", turn_count=5, char_count=90
+            ),
+        ],
+        mb,
+    )
     p = mb.prompts[0]
     assert "conversations: 2" in p
     assert "total_turns: 8" in p
     assert "total_chars: 100" in p
-    assert "chatgpt=1" in p and "claude=1" in p       # key-sorted histogram
+    assert "chatgpt=1" in p and "claude=1" in p  # key-sorted histogram
     assert "alice=1" in p and "bob=1" in p
 
 
@@ -160,6 +188,7 @@ def test_summary_accepts_a_generator_of_views():
 
 
 # ----------------------------------------------------------- extract_entities
+
 
 def test_extract_entities_parses_newline_list_dedup_and_empties():
     # Alpha(add) Beta(add) Alpha(dup) ''(empty) Gamma(add)
@@ -173,7 +202,7 @@ def test_extract_entities_parses_comma_and_dash_bullets():
 
 
 def test_extract_entities_non_string_response_is_empty():
-    mb = research.MockBackend(response=12345)          # not a str
+    mb = research.MockBackend(response=12345)  # not a str
     assert research.extract_entities([_view()], mb) == []
 
 
@@ -182,10 +211,11 @@ def test_extract_entities_uses_metadata_only_prompt():
     research.extract_entities([_poison_view()], mb)
     p = mb.prompts[0]
     assert _leaks_in(p) == set()
-    assert "c1" in p                                   # a real prompt was built
+    assert "c1" in p  # a real prompt was built
 
 
 # ------------------------------------------------- leak-hunt / adversarial (crux)
+
 
 def test_no_raw_body_pii_or_free_text_in_summary_prompt():
     mb = research.MockBackend()
@@ -206,10 +236,18 @@ def test_conversation_like_object_leaks_no_raw_content():
     # A full conversation-shaped object (turns/blocks/body/title) that also happens
     # to expose the allowlisted metadata must still project to structural data ONLY.
     convo = SimpleNamespace(
-        conversation_id="c1", provider="claude", account="alice", thread_id="t1",
-        created_at="2026-01-01", updated_at="2026-01-02", turn_count=2,
+        conversation_id="c1",
+        provider="claude",
+        account="alice",
+        thread_id="t1",
+        created_at="2026-01-01",
+        updated_at="2026-01-02",
+        turn_count=2,
         char_count=50,
-        title=f"{NAME} — {COMPOUND}", notes=EMAIL, tags=[SSN], aliases=[NAME],
+        title=f"{NAME} — {COMPOUND}",
+        notes=EMAIL,
+        tags=[SSN],
+        aliases=[NAME],
         body=RAWBODY,
         turns=[SimpleNamespace(blocks=[SimpleNamespace(text=RAWBODY + " " + SSN)])],
     )
@@ -226,18 +264,21 @@ def test_both_states_control_detector_fires_on_a_leaky_render():
     clean_mb = research.MockBackend()
     research.synthesize_over_metadata([v], clean_mb)
     # a DELIBERATELY leaky renderer: the pre-fix behaviour (free text emitted)
-    leaky_prompt = "\n".join((
-        "  title: %s" % v.title,
-        "  notes: %s" % v.notes,
-        "  tags: %s" % ", ".join(v.tags),
-        "  aliases: %s" % ", ".join(v.aliases),
-        "  body: %s" % v.body,
-    ))
-    assert _leaks_in(clean_mb.prompts[0]) == set()      # silent on the real path
-    assert _leaks_in(leaky_prompt) == set(SENSITIVE)    # fires on the leak
+    leaky_prompt = "\n".join(
+        (
+            "  title: %s" % v.title,
+            "  notes: %s" % v.notes,
+            "  tags: %s" % ", ".join(v.tags),
+            "  aliases: %s" % ", ".join(v.aliases),
+            "  body: %s" % v.body,
+        )
+    )
+    assert _leaks_in(clean_mb.prompts[0]) == set()  # silent on the real path
+    assert _leaks_in(leaky_prompt) == set(SENSITIVE)  # fires on the leak
 
 
 # ------------------------------------------------------- robustness / coercion
+
 
 def test_missing_optional_fields_default_safely():
     sparse = SimpleNamespace(conversation_id="only-id", provider="claude")
@@ -276,5 +317,5 @@ def test_empty_view_set_aggregates_to_zero():
     p = mb.prompts[0]
     assert "conversations: 0" in p
     assert "total_turns: 0" in p and "total_chars: 0" in p
-    assert "by_provider: \n" in p                        # empty histogram renders ""
-    assert len(mb.prompts) == 1                          # backend still called once
+    assert "by_provider: \n" in p  # empty histogram renders ""
+    assert len(mb.prompts) == 1  # backend still called once

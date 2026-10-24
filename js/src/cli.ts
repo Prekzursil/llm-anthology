@@ -13,17 +13,24 @@
  *
  *   * python has two subcommands this rail does not: `codex` (a third export shape, whose
  *     absence matters because feeding codex.json to `chatgpt` yields zero conversations
- *     silently) and `index` (the SQLite corpus the cockpit reads). cli.py:47,62.
+ *     silently) and `index` (the SQLite corpus the cockpit reads). cli.py:49,63.
  *
  * `chatgpt <dir>` USED to be on that list — a real sharded Data Export directory loaded
  * NOTHING here and still exited 0, against the python rail's 2 of 2 on the same input.
- * `chatgptFiles` below now mirrors loaders.py:120-135, and test/cli.test.ts pins the same
- * cases as tests/test_coverage_paths.py:55-78.
+ * `chatgptFiles` below now mirrors loaders.py:133-148, and test/cli.test.ts pins the same
+ * cases as tests/test_coverage_paths.py:66-89.
  *
  * Nothing here is on the byte-for-byte-parity-tested renderer path; the heavy lifting is
  * delegated to the same ported modules the tests cover.
  */
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,16 +56,48 @@ const USAGE = `llm_anthology — render ChatGPT / Claude / Gemini session export
 const ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
 const WS = /\s+/g;
 
-const THEMES: Record<string, { title: string; bg: string; fg: string; link: string; muted: string }> = {
-  claude: { title: "Claude sessions", bg: "#1f1e1b", fg: "#f4f3ee", link: "#d97757", muted: "#b4b0a4" },
-  chatgpt: { title: "ChatGPT sessions", bg: "#212121", fg: "#ececec", link: "#7ab7ff", muted: "#a0a0a0" },
-  gemini: { title: "Gemini sessions", bg: "#1e1f20", fg: "#e3e3e3", link: "#8ab4f8", muted: "#9aa0a6" },
+const THEMES: Record<
+  string,
+  { title: string; bg: string; fg: string; link: string; muted: string }
+> = {
+  claude: {
+    title: "Claude sessions",
+    bg: "#1f1e1b",
+    fg: "#f4f3ee",
+    link: "#d97757",
+    muted: "#b4b0a4",
+  },
+  chatgpt: {
+    title: "ChatGPT sessions",
+    bg: "#212121",
+    fg: "#ececec",
+    link: "#7ab7ff",
+    muted: "#a0a0a0",
+  },
+  gemini: {
+    title: "Gemini sessions",
+    bg: "#1e1f20",
+    fg: "#e3e3e3",
+    link: "#8ab4f8",
+    muted: "#9aa0a6",
+  },
 };
-const FALLBACK_THEME = { title: "Sessions", bg: "#1b1b1b", fg: "#ededed", link: "#7ab7ff", muted: "#999999" };
+const FALLBACK_THEME = {
+  title: "Sessions",
+  bg: "#1b1b1b",
+  fg: "#ededed",
+  link: "#7ab7ff",
+  muted: "#999999",
+};
 
 function safeName(title: string | undefined, idx: number): string {
   let base = sanitizeForCopy(title || "untitled").replace(ILLEGAL, " ");
-  base = base.replace(WS, " ").trim().slice(0, 60).replace(/[. ]+$/, "") || "untitled";
+  base =
+    base
+      .replace(WS, " ")
+      .trim()
+      .slice(0, 60)
+      .replace(/[. ]+$/, "") || "untitled";
   return `${String(idx).padStart(3, "0")}-${base}`;
 }
 
@@ -144,7 +183,7 @@ function renderCorpus(
   // feeding a Codex-shaped export to the ChatGPT loader yields 1 conversation / 0 turns /
   // 0 errors, so real content vanishes while the caller sees a clean load. Count turns so
   // the caller — and main()'s exit code — can tell "rendered" from "rendered something".
-  // Mirrors build.py:112-118, field order included.
+  // Mirrors build.py:148-154, field order included.
   const turns = index.reduce((sum, row) => sum + row[2], 0);
   const empty = index.filter((row) => row[2] === 0).length;
   const report: Report = {
@@ -224,7 +263,7 @@ function loadClaude(src: string, outDir: string): [Conversation[], LoadError[]] 
     files = conv.length || design.length ? [...conv, ...design] : all;
   }
   // Never ingest our own output — the site dir often lives inside the source dir. 1:1 with
-  // loaders.py:63-66, and every part of that line is load-bearing:
+  // loaders.py:74-77, and every part of that line is load-bearing:
   //
   //   * `resolvePath` on BOTH sides (python's os.path.abspath). Comparing the two argv
   //     spellings raw makes the filter a no-op whenever they differ: `claude <abs>/export
@@ -251,7 +290,8 @@ function loadClaude(src: string, outDir: string): [Conversation[], LoadError[]] 
       continue;
     }
     try {
-      if (claude.isDesignChat(data)) convs.push(claude.parseDesignChat(data as Record<string, unknown>));
+      if (claude.isDesignChat(data))
+        convs.push(claude.parseDesignChat(data as Record<string, unknown>));
       else convs.push(...claude.parseExport(data));
     } catch (e) {
       errors.push({ file: basename(f), stage: "adapt", error: String(e) });
@@ -270,7 +310,7 @@ const CHATGPT_SHARD = /^conversations-.*\.json$/;
 
 /**
  * Resolve ONE cli argument to the export files it stands for. 1:1 with
- * `_chatgpt_files` (loaders.py:120-135), and every part of that mapping is load-bearing:
+ * `_chatgpt_files` (loaders.py:133-148), and every part of that mapping is load-bearing:
  *
  *   * A real ChatGPT Data Export ships the corpus SHARDED as conversations-000.json …
  *     conversations-NNN.json (17 shards / 1613 conversations in the observed export), so
@@ -311,7 +351,10 @@ function chatgptFiles(p: string): string[] {
   return files;
 }
 
-function loadChatgpt(mainPath: string, projectsPath?: string): [Conversation[], LoadError[], Map<string, string>] {
+function loadChatgpt(
+  mainPath: string,
+  projectsPath?: string,
+): [Conversation[], LoadError[], Map<string, string>] {
   const errors: LoadError[] = [];
   const byId = new Map<string, Record<string, unknown>>();
   const projOf = new Map<string, string>();
@@ -351,7 +394,10 @@ function gnorm(s: unknown): string {
   return (typeof s === "string" ? s : "").replace(/ /g, " ").replace(WS, " ").trim().toLowerCase();
 }
 
-function geminiGroupsFromHarvest(records: Record<string, unknown>[], harvest: unknown[]): [gemini.Group[], number] {
+function geminiGroupsFromHarvest(
+  records: Record<string, unknown>[],
+  harvest: unknown[],
+): [gemini.Group[], number] {
   const byPrompt = new Map<string, number[]>();
   records.forEach((r, i) => {
     const key = gnorm(r["prompt"]);
@@ -361,7 +407,7 @@ function geminiGroupsFromHarvest(records: Record<string, unknown>[], harvest: un
   const claimed = new Set<number>();
   for (const conv of harvest) {
     const idxs: number[] = [];
-    for (const t of (((conv as Record<string, unknown>)["turns"] as unknown[]) ?? [])) {
+    for (const t of ((conv as Record<string, unknown>)["turns"] as unknown[]) ?? []) {
       const role = String((t as Record<string, unknown>)["role"] ?? "").toLowerCase();
       if (role !== "user" && role !== "human") continue;
       for (const i of byPrompt.get(gnorm((t as Record<string, unknown>)["text"])) ?? []) {
@@ -374,11 +420,16 @@ function geminiGroupsFromHarvest(records: Record<string, unknown>[], harvest: un
     }
     if (idxs.length) {
       const c = conv as Record<string, unknown>;
-      groups.push({ id: String(c["id"] ?? ""), title: String(c["title"] ?? "(untitled)"), turn_idxs: idxs.sort((a, b) => a - b) });
+      groups.push({
+        id: String(c["id"] ?? ""),
+        title: String(c["title"] ?? "(untitled)"),
+        turn_idxs: idxs.sort((a, b) => a - b),
+      });
     }
   }
   const leftovers = records.map((_, i) => i).filter((i) => !claimed.has(i));
-  if (leftovers.length) groups.push({ id: "unmatched", title: "(unmatched Takeout activity)", turn_idxs: leftovers });
+  if (leftovers.length)
+    groups.push({ id: "unmatched", title: "(unmatched Takeout activity)", turn_idxs: leftovers });
   return [groups, claimed.size];
 }
 
@@ -391,7 +442,10 @@ function geminiGroupsFromGaps(records: Record<string, unknown>[]): gemini.Group[
     const t = Date.parse(String(r["timestamp_iso"] ?? ""));
     const ts = Number.isNaN(t) ? null : t;
     const gem = r["gem"] ?? null;
-    if (cur.length && ((prevTs !== null && ts !== null && ts - prevTs > GAP_MS) || gem !== prevGem)) {
+    if (
+      cur.length &&
+      ((prevTs !== null && ts !== null && ts - prevTs > GAP_MS) || gem !== prevGem)
+    ) {
       groups.push(cur);
       cur = [];
     }
@@ -400,10 +454,17 @@ function geminiGroupsFromGaps(records: Record<string, unknown>[]): gemini.Group[
     prevGem = gem;
   });
   if (cur.length) groups.push(cur);
-  return groups.map((g, n) => ({ id: `grp${String(n + 1).padStart(3, "0")}`, title: `(provisional group ${n + 1})`, turn_idxs: g }));
+  return groups.map((g, n) => ({
+    id: `grp${String(n + 1).padStart(3, "0")}`,
+    title: `(provisional group ${n + 1})`,
+    turn_idxs: g,
+  }));
 }
 
-function loadGemini(transcriptPath: string, harvestPath?: string): [Conversation[], LoadError[], Record<string, unknown>] {
+function loadGemini(
+  transcriptPath: string,
+  harvestPath?: string,
+): [Conversation[], LoadError[], Record<string, unknown>] {
   let records: Record<string, unknown>[];
   try {
     records = loadJson(transcriptPath) as Record<string, unknown>[];
@@ -423,7 +484,11 @@ function loadGemini(transcriptPath: string, harvestPath?: string): [Conversation
   } else {
     groups = geminiGroupsFromGaps(records);
   }
-  return [gemini.parseAll(records, groups), [], { grouping_mode: mode, harvest_matched_records: matched, source_records: records.length }];
+  return [
+    gemini.parseAll(records, groups),
+    [],
+    { grouping_mode: mode, harvest_matched_records: matched, source_records: records.length },
+  ];
 }
 
 // ------------------------------------------------------------------ main
@@ -445,7 +510,9 @@ function flag(args: string[], name: string): string | undefined {
  */
 export function packageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as { version: string };
+  const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {
+    version: string;
+  };
   return pkg.version;
 }
 
@@ -503,7 +570,7 @@ export function main(argv: string[]): number {
     return 2;
   }
   printReport(report);
-  // Exit 3 = "loaded, but produced nothing usable" (cli.py:194-195). Returning 0 here made a
+  // Exit 3 = "loaded, but produced nothing usable" (cli.py:241-242). Returning 0 here made a
   // wrong-provider or drifted export indistinguishable from a good run: the corpus rendered
   // blank pages and every automated caller saw success. A genuinely empty input (0
   // conversations) is not an error -- there was nothing to lose. Content that went in and

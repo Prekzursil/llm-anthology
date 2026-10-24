@@ -62,6 +62,7 @@ legacy state DB, which structurally lacks updated_at_ms and so leaves it None.)
 
 PRIVACY: tests use synthetic fixtures only; no real conversation content is committed.
 """
+
 import glob
 import json
 import os
@@ -81,8 +82,7 @@ from llm_anthology import corpus, ir
 _MAX_ROLLOUT_BYTES = 512 * 1024 * 1024
 
 _TEXT_PARTS = ("input_text", "output_text")
-_UUID = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _s(x):
@@ -94,6 +94,7 @@ def _s(x):
 class RolloutDoc:
     """One parsed rollout file: the transcript plus the thread-graph node and any spawn
     edge it implies. `thread_id` is exposed as a convenience alias of the node id."""
+
     conversation: object
     thread: object
     edges: list = field(default_factory=list)
@@ -105,6 +106,7 @@ class RolloutDoc:
 
 
 # ------------------------------------------------------------------- time / id
+
 
 def _iso_to_ms(s):
     """An ISO-8601 timestamp -> epoch milliseconds, or None if absent/unparseable. The
@@ -127,6 +129,7 @@ def _id_from_path(path):
 
 # ------------------------------------------------------------- content -> blocks
 
+
 def _text_blocks(content):
     """message.content is a LIST of parts; the visible prose is the input_text/output_text
     parts. encrypted_content parts and whitespace-only text add nothing."""
@@ -146,7 +149,7 @@ def _reasoning_blocks(payload):
     """The human-readable reasoning is only summary[].text (type=summary_text). An item
     with no visible summary (opaque encrypted_content only) emits nothing."""
     parts = []
-    for s in (payload.get("summary") if isinstance(payload.get("summary"), list) else []):
+    for s in payload.get("summary") if isinstance(payload.get("summary"), list) else []:
         if isinstance(s, dict) and _s(s.get("type")) == "summary_text":
             text = s.get("text")
             if isinstance(text, str) and text.strip():
@@ -175,9 +178,16 @@ def _flatten_output(output):
 
 
 def _tool_result(payload):
-    return ir.Block("tool_result", text="", data={
-        "name": "output", "content": _flatten_output(payload.get("output")),
-        "call_id": _s(payload.get("call_id")), "is_error": False})
+    return ir.Block(
+        "tool_result",
+        text="",
+        data={
+            "name": "output",
+            "content": _flatten_output(payload.get("output")),
+            "call_id": _s(payload.get("call_id")),
+            "is_error": False,
+        },
+    )
 
 
 def _response_blocks(payload, ptype):
@@ -185,21 +195,38 @@ def _response_blocks(payload, ptype):
     if ptype == "reasoning":
         return _reasoning_blocks(payload)
     if ptype == "function_call":
-        return [ir.Block("tool_use", text=_s(payload.get("name")), data={
-            "name": _s(payload.get("name")), "input": payload.get("arguments"),
-            "call_id": _s(payload.get("call_id")),
-            "namespace": _s(payload.get("namespace"))})]
+        return [
+            ir.Block(
+                "tool_use",
+                text=_s(payload.get("name")),
+                data={
+                    "name": _s(payload.get("name")),
+                    "input": payload.get("arguments"),
+                    "call_id": _s(payload.get("call_id")),
+                    "namespace": _s(payload.get("namespace")),
+                },
+            )
+        ]
     if ptype == "custom_tool_call":
-        return [ir.Block("tool_use", text=_s(payload.get("name")), data={
-            "name": _s(payload.get("name")), "input": payload.get("input"),
-            "call_id": _s(payload.get("call_id")),
-            "status": _s(payload.get("status"))})]
+        return [
+            ir.Block(
+                "tool_use",
+                text=_s(payload.get("name")),
+                data={
+                    "name": _s(payload.get("name")),
+                    "input": payload.get("input"),
+                    "call_id": _s(payload.get("call_id")),
+                    "status": _s(payload.get("status")),
+                },
+            )
+        ]
     if ptype in ("function_call_output", "custom_tool_call_output"):
         return [_tool_result(payload)]
     return [ir.Block("unknown", data={"orig_type": ptype, "x_raw": payload})]
 
 
 # ----------------------------------------------------------------- token usage
+
 
 def _token_total(payload):
     """The cumulative total from a token_count event, or None when any level is
@@ -215,6 +242,7 @@ def _token_total(payload):
 
 
 # ------------------------------------------------------------- document builder
+
 
 def _first_line(text, limit):
     """The first line of `text`, truncated to `limit`; '' for empty text."""
@@ -271,8 +299,7 @@ def build_document(records, rollout_path=""):
                 blocks = _text_blocks(payload.get("content"))
                 if not first_user and blocks:
                     first_user = blocks[0].text
-                turns.append(ir.Turn("human", blocks, uuid=_s(payload.get("id")),
-                                     timestamp=_s(ts)))
+                turns.append(ir.Turn("human", blocks, uuid=_s(payload.get("id")), timestamp=_s(ts)))
                 continue
             blocks = _text_blocks(payload.get("content"))
         else:
@@ -280,15 +307,15 @@ def build_document(records, rollout_path=""):
 
         if blocks:
             if asst is None:
-                asst = ir.Turn("assistant", [], uuid=_s(payload.get("id")),
-                               timestamp=_s(ts))
+                asst = ir.Turn("assistant", [], uuid=_s(payload.get("id")), timestamp=_s(ts))
             asst.blocks.extend(blocks)
 
     if asst is not None:
         turns.append(asst)
 
-    return _assemble(meta_seed or {}, turns, tokens, first_ts, last_ts, dev_count,
-                     first_user, rollout_path)
+    return _assemble(
+        meta_seed or {}, turns, tokens, first_ts, last_ts, dev_count, first_user, rollout_path
+    )
 
 
 def _assemble(ms, turns, tokens, first_ts, last_ts, dev_count, first_user, rollout_path):
@@ -305,28 +332,50 @@ def _assemble(ms, turns, tokens, first_ts, last_ts, dev_count, first_user, rollo
     parent = _s(ms.get("parent_thread_id"))
 
     thread = corpus.ThreadMeta(
-        id=tid, title=title, model_provider=model_provider, tokens_used=tokens,
-        created_at_ms=_iso_to_ms(created_ts), updated_at_ms=_iso_to_ms(_s(last_ts)),
-        git_branch=git_branch, cwd=cwd, agent_role=agent_role,
-        agent_nickname=agent_nickname, preview=first_user[:200], rollout_path=rollout_path)
+        id=tid,
+        title=title,
+        model_provider=model_provider,
+        tokens_used=tokens,
+        created_at_ms=_iso_to_ms(created_ts),
+        updated_at_ms=_iso_to_ms(_s(last_ts)),
+        git_branch=git_branch,
+        cwd=cwd,
+        agent_role=agent_role,
+        agent_nickname=agent_nickname,
+        preview=first_user[:200],
+        rollout_path=rollout_path,
+    )
 
     conv = ir.Conversation(
-        id=tid, title=title, provider="codex", turns=turns,
-        created_at=created_ts, updated_at=_s(last_ts), account="",
-        meta={"rollout_path": rollout_path, "cwd": cwd,
-              "model_provider": model_provider, "tokens_used": tokens,
-              "agent_role": agent_role, "agent_nickname": agent_nickname,
-              "git_branch": git_branch, "developer_message_count": dev_count,
-              "parent_thread_id": parent, "forked_from_id": _s(ms.get("forked_from_id"))})
+        id=tid,
+        title=title,
+        provider="codex",
+        turns=turns,
+        created_at=created_ts,
+        updated_at=_s(last_ts),
+        account="",
+        meta={
+            "rollout_path": rollout_path,
+            "cwd": cwd,
+            "model_provider": model_provider,
+            "tokens_used": tokens,
+            "agent_role": agent_role,
+            "agent_nickname": agent_nickname,
+            "git_branch": git_branch,
+            "developer_message_count": dev_count,
+            "parent_thread_id": parent,
+            "forked_from_id": _s(ms.get("forked_from_id")),
+        },
+    )
 
     edges = []
     if parent and tid:
         edges.append(corpus.SpawnEdge(parent, tid, _s(ms.get("thread_source"))))
-    return RolloutDoc(conversation=conv, thread=thread, edges=edges,
-                      rollout_path=rollout_path)
+    return RolloutDoc(conversation=conv, thread=thread, edges=edges, rollout_path=rollout_path)
 
 
 # ---------------------------------------------------------------- line / file / tree
+
 
 def parse_rollout_lines(lines, rollout_path=""):
     """Raw text lines -> (RolloutDoc, errors). Blank lines are skipped silently; a line
@@ -340,12 +389,17 @@ def parse_rollout_lines(lines, rollout_path=""):
         try:
             rec = json.loads(line)
         except ValueError as e:
-            errors.append({"file": rollout_path, "line": i, "stage": "parse",
-                           "error": repr(e)})
+            errors.append({"file": rollout_path, "line": i, "stage": "parse", "error": repr(e)})
             continue
         if not isinstance(rec, dict):
-            errors.append({"file": rollout_path, "line": i, "stage": "parse",
-                           "error": "line is not a JSON object"})
+            errors.append(
+                {
+                    "file": rollout_path,
+                    "line": i,
+                    "stage": "parse",
+                    "error": "line is not a JSON object",
+                }
+            )
             continue
         records.append(rec)
     return build_document(records, rollout_path=rollout_path), errors
@@ -389,8 +443,7 @@ def _read_rollout_lines(path):
             # avoid. (Caught by test_ingest_sessions_reports_a_corrupt_zst_...)
             raise OSError(f"corrupt zstd rollout {path}: {e}") from e
     if len(raw) > _MAX_ROLLOUT_BYTES:
-        raise OSError(
-            f"rollout exceeds the {_MAX_ROLLOUT_BYTES} byte decompression cap: {path}")
+        raise OSError(f"rollout exceeds the {_MAX_ROLLOUT_BYTES} byte decompression cap: {path}")
     return raw.decode("utf-8", errors="replace").splitlines(keepends=True)
 
 

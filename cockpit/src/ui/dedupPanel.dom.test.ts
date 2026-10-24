@@ -176,7 +176,8 @@ interface Fake extends DedupIpc {
 
 function fakeIpc(over: Partial<DedupIpc> = {}): Fake {
   const state: { release: (() => void) | null; wait: Promise<void> | null } = {
-    release: null, wait: null,
+    release: null,
+    wait: null,
   };
   const base: DedupIpc = {
     async dedupScan() {
@@ -316,8 +317,9 @@ describe("DedupPanel candidates", () => {
     const { panel, container } = mount();
     await panel.load();
     expect(must(container, ".dedup-candidate-name").textContent).toBe(HOME);
-    expect(must(container, ".dedup-candidate-summary").textContent)
-      .toBe("2,043 sessions · 15 minutes ago · high confidence");
+    expect(must(container, ".dedup-candidate-summary").textContent).toBe(
+      "2,043 sessions · 15 minutes ago · high confidence",
+    );
     expect(must(container, ".dedup-status").textContent).toBe("");
   });
 
@@ -435,8 +437,9 @@ describe("DedupPanel default folder picker", () => {
     must<HTMLButtonElement>(container, ".dedup-pick").click();
     await settle();
     expect(scans).toEqual([]);
-    expect(must(container, ".dedup-empty").classList.contains("dedup-empty-never-scanned"))
-      .toBe(true);
+    expect(must(container, ".dedup-empty").classList.contains("dedup-empty-never-scanned")).toBe(
+      true,
+    );
   });
 
   it("unwraps a one-element array rather than sending its text form on the wire", async () => {
@@ -506,10 +509,9 @@ describe("DedupPanel empty readings", () => {
   it("gives the genuinely clean store a DIFFERENT class from the empty one", async () => {
     // The whole point of the per-kind class: a stylesheet or a screenshot must not be able to
     // render "we found nothing there" and "your store is clean" identically.
-    const container = await scanned(
-      { session_count: 9, copy_count: 9, duplicate_count: 0 },
-      [session()],
-    );
+    const container = await scanned({ session_count: 9, copy_count: 9, duplicate_count: 0 }, [
+      session(),
+    ]);
     const empty = must(container, ".dedup-empty");
     expect(empty.classList.contains("dedup-empty-no-duplicates")).toBe(true);
     expect(empty.textContent).toMatch(/redundant/i);
@@ -543,7 +545,7 @@ describe("DedupPanel rows", () => {
   }
 
   it("shows the kept copy's measurements and gives the other copies NONE", async () => {
-    // `duplicate_paths` is paths only (`sidecar.py:1421`), so the other rows must carry no
+    // `duplicate_paths` is paths only (`sidecar.py:1485`), so the other rows must carry no
     // detail ELEMENT at all — an empty one would still be a place for a future guess to land.
     const container = await withSessions([pair()]);
     const row = must(container, ".dedup-row");
@@ -552,8 +554,9 @@ describe("DedupPanel rows", () => {
 
     const kept = must(row, ".dedup-copy-kept");
     expect(must(kept, ".dedup-copy-role").textContent).toBe("Kept in view");
-    expect(must(kept, ".dedup-copy-detail").textContent)
-      .toBe("live store · 403.2 KB · 5 minutes ago");
+    expect(must(kept, ".dedup-copy-detail").textContent).toBe(
+      "live store · 403.2 KB · 5 minutes ago",
+    );
 
     const other = must(row, ".dedup-copy-other");
     expect(must(other, ".dedup-copy-role").textContent).toBe("Also on disk");
@@ -595,8 +598,9 @@ describe("DedupPanel rows", () => {
       [pair(), session({ session_id: "", is_identified: false })],
       { unidentified: 1 },
     );
-    expect(must(container, "h3.dedup-subtitle").textContent)
-      .toBe("Files with no readable session id");
+    expect(must(container, "h3.dedup-subtitle").textContent).toBe(
+      "Files with no readable session id",
+    );
     const odd = all(container, ".dedup-row-unidentified");
     expect(odd).toHaveLength(1);
     expect(must(odd[0], ".dedup-headline").textContent).toBe("One file, no session id");
@@ -605,16 +609,18 @@ describe("DedupPanel rows", () => {
 
   it("counts the single-copy sessions in words that agree with the number", async () => {
     const one = await withSessions([pair(), session({ session_id: "solo" })]);
-    expect(must(one, ".dedup-singles").textContent)
-      .toBe("1 other session is stored in a single file, with nothing redundant to report.");
+    expect(must(one, ".dedup-singles").textContent).toBe(
+      "1 other session is stored in a single file, with nothing redundant to report.",
+    );
 
     const many = await withSessions([
       pair(),
       session({ session_id: "solo-a" }),
       session({ session_id: "solo-b" }),
     ]);
-    expect(must(many, ".dedup-singles").textContent)
-      .toBe("2 other sessions are stored in a single file, with nothing redundant to report.");
+    expect(must(many, ".dedup-singles").textContent).toBe(
+      "2 other sessions are stored in a single file, with nothing redundant to report.",
+    );
   });
 
   it("omits the singles line entirely when every session is duplicated", async () => {

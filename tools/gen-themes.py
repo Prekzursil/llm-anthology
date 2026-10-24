@@ -7,6 +7,7 @@ AND cannot drift from the Python copy — regenerate instead of editing.
 
     python tools/gen-themes.py
 """
+
 import glob
 import json
 import os
@@ -63,14 +64,13 @@ def main():
         "export const THEMES: Readonly<Record<string, string>> = {\n%s\n};\n\n"
         "/** Missing theme -> empty string, mirroring the Python loader's OSError path. */\n"
         "export function loadTheme(name: string): string {\n"
-        "  return THEMES[name] ?? \"\";\n"
+        '  return THEMES[name] ?? "";\n'
         "}\n" % body
     )
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(src)
-    print("WROTE", OUT, os.path.getsize(OUT), "bytes | themes:",
-          ", ".join(n for n, _ in entries))
+    print("WROTE", OUT, os.path.getsize(OUT), "bytes | themes:", ", ".join(n for n, _ in entries))
 
 
 if __name__ == "__main__":

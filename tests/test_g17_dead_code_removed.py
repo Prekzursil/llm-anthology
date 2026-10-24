@@ -22,6 +22,7 @@ helpers, and this suite has no conftest today.
 
 This file adds no ``llm_anthology`` code, so it does not move the 100% coverage gate.
 """
+
 from llm_anthology import dedup, index
 
 
@@ -52,7 +53,8 @@ def test_the_dedup_docstring_does_not_advertise_a_deleted_function():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "llm_anthology" / "dedup.py").read_text(
-        encoding="utf-8")
+        encoding="utf-8"
+    )
     assert "collapse_corpus" not in source, (
         "dedup.py still names collapse_corpus. Every mention has to go with the function, "
         "or the file documents a callee that no longer exists."

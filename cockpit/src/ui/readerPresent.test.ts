@@ -37,12 +37,21 @@ describe("blockDisplay", () => {
   });
 
   it("labels every non-body type so the reader shows WHAT it is", () => {
-    expect(blockDisplay(block({ type: "thinking", text: "hmm" })))
-      .toEqual({ kind: "thinking", label: "thinking", body: "hmm" });
-    expect(blockDisplay(block({ type: "tool_use", text: "Bash" })))
-      .toEqual({ kind: "tool_use", label: "tool call", body: "Bash" });
-    expect(blockDisplay(block({ type: "tool_result", text: "ok" })))
-      .toEqual({ kind: "tool_result", label: "tool result", body: "ok" });
+    expect(blockDisplay(block({ type: "thinking", text: "hmm" }))).toEqual({
+      kind: "thinking",
+      label: "thinking",
+      body: "hmm",
+    });
+    expect(blockDisplay(block({ type: "tool_use", text: "Bash" }))).toEqual({
+      kind: "tool_use",
+      label: "tool call",
+      body: "Bash",
+    });
+    expect(blockDisplay(block({ type: "tool_result", text: "ok" }))).toEqual({
+      kind: "tool_result",
+      label: "tool result",
+      body: "ok",
+    });
   });
 
   it("RENDERS SOMETHING for every block type the engine can emit", () => {
@@ -113,23 +122,26 @@ describe("readerTitle", () => {
 
 describe("readerSubtitle", () => {
   it("states the provider and how many turns are shown", () => {
-    expect(readerSubtitle({ provider: "codex", turns: 12, parseErrors: 0 }))
-      .toBe("codex · 12 turns");
+    expect(readerSubtitle({ provider: "codex", turns: 12, parseErrors: 0 })).toBe(
+      "codex · 12 turns",
+    );
   });
 
   it("DISCLOSES parse errors instead of presenting a partial transcript as whole", () => {
     // `parse_errors` is counted by the engine and was never surfaced. A transcript that
     // dropped lines must say so, or it is a confident lie about what the session contained.
-    expect(readerSubtitle({ provider: "codex", turns: 12, parseErrors: 3 }))
-      .toBe("codex · 12 turns · 3 lines could not be parsed");
-    expect(readerSubtitle({ provider: "grok", turns: 1, parseErrors: 1 }))
-      .toBe("grok · 1 turn · 1 line could not be parsed");
+    expect(readerSubtitle({ provider: "codex", turns: 12, parseErrors: 3 })).toBe(
+      "codex · 12 turns · 3 lines could not be parsed",
+    );
+    expect(readerSubtitle({ provider: "grok", turns: 1, parseErrors: 1 })).toBe(
+      "grok · 1 turn · 1 line could not be parsed",
+    );
   });
 });
 
 describe("stubExplanation", () => {
   const stub = (reason: string): ConversationStub =>
-    ({ id: "c1", available: false, reason } as ConversationStub);
+    ({ id: "c1", available: false, reason }) as ConversationStub;
 
   it("explains a missing session file in plain language", () => {
     // "rollout unavailable" is accurate and tells a user nothing they can act on.
@@ -141,8 +153,9 @@ describe("stubExplanation", () => {
   it("passes an UNRECOGNISED reason through verbatim rather than swallowing it", () => {
     // The known reasons get plain language; anything else must still reach the user, or a
     // new engine failure mode becomes invisible the moment it is introduced.
-    expect(stubExplanation(stub("rollout unreadable: permission denied")))
-      .toContain("rollout unreadable: permission denied");
+    expect(stubExplanation(stub("rollout unreadable: permission denied"))).toContain(
+      "rollout unreadable: permission denied",
+    );
   });
 
   it("explains an export-only provider in words a user can act on", () => {
@@ -159,7 +172,8 @@ describe("stubExplanation", () => {
     // DIFFERENT situation from "unavailable" — the file may well exist — and telling a user
     // it was "moved or deleted" would send them looking for the wrong thing.
     const text = stubExplanation(
-      stub("rollout rejected: rollout_path must be a local path, not a UNC/network path"));
+      stub("rollout rejected: rollout_path must be a local path, not a UNC/network path"),
+    );
     expect(text.toLowerCase()).toContain("refused");
     expect(text.toLowerCase()).not.toContain("deleted");
     // the engine's own precise words still reach the user
@@ -178,8 +192,11 @@ describe("the defensive fallbacks, which the wire can actually hit", () => {
   // A cast is the honest way to state "this is a shape the engine can send and the type
   // cannot describe" — the alternative is an untested branch guarding exactly that case.
   it("survives a block with no `text` and no `data` at all", () => {
-    expect(blockDisplay({ type: "text" } as ConversationBlock))
-      .toEqual({ kind: "text", label: "", body: "(empty)" });
+    expect(blockDisplay({ type: "text" } as ConversationBlock)).toEqual({
+      kind: "text",
+      label: "",
+      body: "(empty)",
+    });
   });
 
   it("titles a conversation that carries no title field", () => {

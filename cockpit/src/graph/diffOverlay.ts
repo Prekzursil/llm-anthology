@@ -91,8 +91,9 @@ function formatValue(value: ChangedValue): string {
  */
 function formatTooltip(fields: ChangedFields): string {
   return Object.entries(fields)
-    .map(([name, [oldValue, newValue]]) =>
-      `${name}: ${formatValue(oldValue)} -> ${formatValue(newValue)}`,
+    .map(
+      ([name, [oldValue, newValue]]) =>
+        `${name}: ${formatValue(oldValue)} -> ${formatValue(newValue)}`,
     )
     .join("\n");
 }

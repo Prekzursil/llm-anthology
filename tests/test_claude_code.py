@@ -28,6 +28,7 @@ line / unreadable file that must cost one file and be logged rather than abort t
 sweep, and the child-id collision that would silently DROP conversations because
 `conversations.conversation_id` is UNIQUE.
 """
+
 import builtins
 import json
 import os
@@ -46,18 +47,28 @@ _AGENT = "a97926b10"
 _AGENT_UUID = "3f2b1a0c-4d5e-6f70-8192-a3b4c5d6e7f8"
 _WF = "wf_82c5b350-9ba"
 _SLUG = "C--Users-owner-work-repo"
-_TS = "2026-08-06T12:00:00.123Z"          # 24 chars, exactly as measured
+_TS = "2026-08-06T12:00:00.123Z"  # 24 chars, exactly as measured
 _TS2 = "2026-08-06T12:05:30.500Z"
 _CWD = "C:/Users/owner/work/repo"
 
 
 # ------------------------------------------------------------------- fixtures
 
+
 def _rec(rtype, **kw):
     """One transcript line carrying the keys the spec measured on every turn."""
-    rec = {"type": rtype, "timestamp": _TS, "sessionId": _SID, "cwd": _CWD,
-           "gitBranch": "main", "version": "2.1.220", "isSidechain": False,
-           "userType": "external", "uuid": "u-1", "parentUuid": None}
+    rec = {
+        "type": rtype,
+        "timestamp": _TS,
+        "sessionId": _SID,
+        "cwd": _CWD,
+        "gitBranch": "main",
+        "version": "2.1.220",
+        "isSidechain": False,
+        "userType": "external",
+        "uuid": "u-1",
+        "parentUuid": None,
+    }
     rec.update(kw)
     return rec
 
@@ -76,8 +87,14 @@ def _text(t):
 
 
 def _tool_result(content, tool_use_id="tu-1", is_error=False):
-    return [{"type": "tool_result", "tool_use_id": tool_use_id,
-             "content": content, "is_error": is_error}]
+    return [
+        {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "is_error": is_error,
+        }
+    ]
 
 
 def _write(path, records):
@@ -89,16 +106,16 @@ def _write(path, records):
 
 
 def _session_file(root, sid=_SID, slug=_SLUG, records=None):
-    return _write(os.path.join(root, slug, sid + ".jsonl"),
-                  [_user("hello")] if records is None else records)
+    return _write(
+        os.path.join(root, slug, sid + ".jsonl"), [_user("hello")] if records is None else records
+    )
 
 
 def _child_file(root, sid=_SID, slug=_SLUG, agent=_AGENT, group="", records=None):
     parts = [root, slug, sid, "subagents"]
     parts.extend(p for p in group.split("/") if p)
     parts.append("agent-" + agent + ".jsonl")
-    return _write(os.path.join(*parts),
-                  [_user("child task")] if records is None else records)
+    return _write(os.path.join(*parts), [_user("child task")] if records is None else records)
 
 
 def _doc(records, path="", layout=None):
@@ -115,12 +132,21 @@ def _types(turn):
 
 # ------------------------------------------------------- signal to noise (trap 1)
 
+
 def test_only_user_and_assistant_records_become_turns():
     """61% of a real transcript is bookkeeping. Every non-conversation type in the
     measured vocabulary is fed at once; none of them may open a turn."""
-    doc = _doc([_rec("last-prompt"), _rec("mode"), _rec("permission-mode"),
-                _rec("queue-operation"), _rec("file-history-snapshot"),
-                _user(_text("hi")), _asst(_text("hey"))])
+    doc = _doc(
+        [
+            _rec("last-prompt"),
+            _rec("mode"),
+            _rec("permission-mode"),
+            _rec("queue-operation"),
+            _rec("file-history-snapshot"),
+            _user(_text("hi")),
+            _asst(_text("hey")),
+        ]
+    )
     assert _roles(doc) == ["human", "assistant"]
 
 
@@ -162,10 +188,14 @@ def test_attachment_records_are_counted_by_kind_and_never_rendered():
     """847 of 2500 sampled lines. The spec records the `attachment` KEY but not its
     inner shape, so counting is the honest ceiling — rendering would need an invented
     field name."""
-    doc = _doc([_rec("attachment", attachment={"type": "file"}),
-                _rec("attachment", attachment={"type": "file"}),
-                _rec("attachment", attachment={"no": "type"}),
-                _rec("attachment", attachment="not-a-dict")])
+    doc = _doc(
+        [
+            _rec("attachment", attachment={"type": "file"}),
+            _rec("attachment", attachment={"type": "file"}),
+            _rec("attachment", attachment={"no": "type"}),
+            _rec("attachment", attachment="not-a-dict"),
+        ]
+    )
     assert doc.conversation.turns == []
     assert doc.conversation.meta["attachment_kinds"] == {"file": 2, "(untyped)": 2}
 
@@ -173,29 +203,45 @@ def test_attachment_records_are_counted_by_kind_and_never_rendered():
 def test_system_records_are_counted_by_subtype_and_never_rendered():
     """Hooks, compaction boundaries and stop summaries are the harness talking to
     itself; they carry no role, so they cannot become a turn without inventing one."""
-    doc = _doc([_rec("system", subtype="compact_boundary"),
-                _rec("system", subtype="turn_duration"),
-                _rec("system")])
+    doc = _doc(
+        [
+            _rec("system", subtype="compact_boundary"),
+            _rec("system", subtype="turn_duration"),
+            _rec("system"),
+        ]
+    )
     assert doc.conversation.turns == []
     assert doc.conversation.meta["system_subtypes"] == {
-        "compact_boundary": 1, "turn_duration": 1, "(untyped)": 1}
+        "compact_boundary": 1,
+        "turn_duration": 1,
+        "(untyped)": 1,
+    }
 
 
 def test_prompt_sources_are_counted_so_injected_prompts_are_visible():
-    doc = _doc([_user(_text("typed one"), promptSource="typed"),
-                _user(_text("injected"), promptSource="system"),
-                _user(_text("no source"))])
+    doc = _doc(
+        [
+            _user(_text("typed one"), promptSource="typed"),
+            _user(_text("injected"), promptSource="system"),
+            _user(_text("no source")),
+        ]
+    )
     assert doc.conversation.meta["prompt_sources"] == {"typed": 1, "system": 1}
 
 
 def test_the_measured_claude_code_versions_are_collected():
-    doc = _doc([_user(_text("a"), version="2.1.170"),
-                _asst(_text("b"), version="2.1.220"),
-                _rec("mode", version="")])
+    doc = _doc(
+        [
+            _user(_text("a"), version="2.1.170"),
+            _asst(_text("b"), version="2.1.220"),
+            _rec("mode", version=""),
+        ]
+    )
     assert doc.conversation.meta["versions"] == ["2.1.170", "2.1.220"]
 
 
 # ------------------------------------------------------ message.content shapes
+
 
 def test_message_content_may_be_a_bare_string():
     doc = _doc([_user("just a string")])
@@ -210,10 +256,17 @@ def test_a_whitespace_only_string_content_makes_no_empty_bubble():
 
 
 def test_message_content_may_be_a_list_of_anthropic_blocks():
-    doc = _doc([_asst([{"type": "thinking", "thinking": "hmm"},
-                       {"type": "text", "text": "answer"},
-                       {"type": "tool_use", "name": "Read", "input": {"p": "x"},
-                        "id": "tu-1"}])])
+    doc = _doc(
+        [
+            _asst(
+                [
+                    {"type": "thinking", "thinking": "hmm"},
+                    {"type": "text", "text": "answer"},
+                    {"type": "tool_use", "name": "Read", "input": {"p": "x"}, "id": "tu-1"},
+                ]
+            )
+        ]
+    )
     turn = doc.conversation.turns[0]
     assert _types(turn) == ["thinking", "text", "tool_use"]
     assert turn.blocks[2].data["name"] == "Read"
@@ -237,8 +290,12 @@ def test_content_that_is_neither_string_nor_container_yields_no_blocks():
 
 
 def test_a_thinking_block_may_carry_its_text_under_either_key():
-    doc = _doc([_asst([{"type": "thinking", "text": "fallback"}]),
-                _asst([{"type": "thinking", "thinking": "  "}])])
+    doc = _doc(
+        [
+            _asst([{"type": "thinking", "text": "fallback"}]),
+            _asst([{"type": "thinking", "thinking": "  "}]),
+        ]
+    )
     assert [b.text for b in doc.conversation.turns[0].blocks] == ["fallback"]
 
 
@@ -258,9 +315,18 @@ def test_an_unknown_content_block_survives_as_an_unknown_block():
 def test_an_image_block_becomes_a_chip_and_never_carries_the_base64():
     """render_html has no base64 image path, and inlining one screenshot would put
     megabytes of payload into the export."""
-    doc = _doc([_user([{"type": "image", "source": {"type": "base64",
-                                                    "media_type": "image/png",
-                                                    "data": "AAAABBBB"}}])])
+    doc = _doc(
+        [
+            _user(
+                [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "AAAABBBB"},
+                    }
+                ]
+            )
+        ]
+    )
     block = doc.conversation.turns[0].blocks[0]
     assert block.type == "attachment"
     assert block.data["media_type"] == "image/png"
@@ -268,8 +334,19 @@ def test_an_image_block_becomes_a_chip_and_never_carries_the_base64():
 
 
 def test_a_document_block_becomes_a_chip_titled_by_its_own_title():
-    doc = _doc([_user([{"type": "document", "title": "spec.pdf",
-                        "source": {"type": "base64", "data": "PDF"}}])])
+    doc = _doc(
+        [
+            _user(
+                [
+                    {
+                        "type": "document",
+                        "title": "spec.pdf",
+                        "source": {"type": "base64", "data": "PDF"},
+                    }
+                ]
+            )
+        ]
+    )
     block = doc.conversation.turns[0].blocks[0]
     assert block.type == "attachment"
     assert block.data["file_name"] == "spec.pdf"
@@ -282,14 +359,19 @@ def test_a_media_block_with_no_source_falls_back_to_its_type_name():
 
 # ------------------------------------------------------------- tool results
 
+
 def test_a_user_record_of_pure_tool_results_folds_into_the_assistant_turn():
     """Claude Code delivers a tool RESULT as a user-role record. Rendering it as a
     human bubble would attribute machine output to the owner; the spec's
     `sourceToolAssistantUUID` says it belongs to the assistant turn that asked."""
-    doc = _doc([_user(_text("do it")),
-                _asst([{"type": "tool_use", "name": "Bash", "id": "tu-1"}]),
-                _user(_tool_result("output text"), sourceToolAssistantUUID="u-1"),
-                _asst(_text("done"))])
+    doc = _doc(
+        [
+            _user(_text("do it")),
+            _asst([{"type": "tool_use", "name": "Bash", "id": "tu-1"}]),
+            _user(_tool_result("output text"), sourceToolAssistantUUID="u-1"),
+            _asst(_text("done")),
+        ]
+    )
     assert _roles(doc) == ["human", "assistant"]
     assert _types(doc.conversation.turns[1]) == ["tool_use", "tool_result", "text"]
     assert doc.conversation.meta["tool_result_records"] == 1
@@ -313,9 +395,18 @@ def test_tool_result_content_that_is_a_list_of_parts_is_flattened():
 def test_a_base64_part_inside_a_tool_result_becomes_a_label_not_a_payload():
     """A screenshot returned by a tool must not smuggle megabytes of base64 past the
     `_MEDIA_BLOCKS` rule and into the export."""
-    doc = _doc([_user(_tool_result([{"type": "text", "text": "shot:"},
-                                    {"type": "image",
-                                     "source": {"data": "AAAABBBB"}}]))])
+    doc = _doc(
+        [
+            _user(
+                _tool_result(
+                    [
+                        {"type": "text", "text": "shot:"},
+                        {"type": "image", "source": {"data": "AAAABBBB"}},
+                    ]
+                )
+            )
+        ]
+    )
     content = doc.conversation.turns[0].blocks[0].data["content"]
     assert content == "shot:\n[image]"
 
@@ -334,16 +425,24 @@ def test_a_failed_tool_result_is_marked_as_an_error():
     block = doc.conversation.turns[0].blocks[0]
     assert block.data["is_error"] is True
     assert block.data["tool_use_id"] == "tu-1"
-    assert block.data["name"] == ""      # the Anthropic block carries no tool NAME
+    assert block.data["name"] == ""  # the Anthropic block carries no tool NAME
 
 
 # --------------------------------------------------------------- turn model
 
+
 def test_consecutive_assistant_records_coalesce_into_one_turn():
     """Matches codex_rollout: every assistant-side item joins one turn that the next
     human message flushes."""
-    doc = _doc([_user(_text("q")), _asst(_text("part 1")), _asst(_text("part 2")),
-                _user(_text("q2")), _asst(_text("part 3"))])
+    doc = _doc(
+        [
+            _user(_text("q")),
+            _asst(_text("part 1")),
+            _asst(_text("part 2")),
+            _user(_text("q2")),
+            _asst(_text("part 3")),
+        ]
+    )
     assert _roles(doc) == ["human", "assistant", "human", "assistant"]
     assert len(doc.conversation.turns[1].blocks) == 2
 
@@ -367,8 +466,13 @@ def test_the_first_human_text_becomes_the_title_and_the_preview():
 
 
 def test_a_generated_ai_title_wins_over_the_first_prompt():
-    doc = _doc([_user(_text("hi")), _rec("ai-title", aiTitle="Flaky test triage"),
-                _rec("ai-title", aiTitle="ignored second")])
+    doc = _doc(
+        [
+            _user(_text("hi")),
+            _rec("ai-title", aiTitle="Flaky test triage"),
+            _rec("ai-title", aiTitle="ignored second"),
+        ]
+    )
     assert doc.conversation.title == "Flaky test triage"
 
 
@@ -385,14 +489,19 @@ def test_a_leading_non_text_block_does_not_hide_the_first_prompt():
 
 # ------------------------------------------------- threading (spec instruction 5)
 
+
 def test_parent_uuid_branch_points_are_counted_not_walked():
     """`parentUuid` is an intra-session MESSAGE chain, distinct from the session-level
     spawn edge. Two records sharing one parent is a branch point; a null parentUuid is
     a chain HEAD, and several heads in one file are resumes, not branches."""
-    doc = _doc([_user(_text("a"), uuid="1", parentUuid=None),
-                _asst(_text("b"), uuid="2", parentUuid="1"),
-                _asst(_text("c"), uuid="3", parentUuid="1"),
-                _user(_text("d"), uuid="4", parentUuid=None)])
+    doc = _doc(
+        [
+            _user(_text("a"), uuid="1", parentUuid=None),
+            _asst(_text("b"), uuid="2", parentUuid="1"),
+            _asst(_text("c"), uuid="3", parentUuid="1"),
+            _user(_text("d"), uuid="4", parentUuid=None),
+        ]
+    )
     assert doc.conversation.meta["branch_points"] == 1
 
 
@@ -420,6 +529,7 @@ def test_meta_user_records_are_counted_and_still_rendered():
 
 
 # --------------------------------------------------------------- timestamps
+
 
 def test_iso_timestamps_become_epoch_milliseconds():
     doc = _doc([_user(_text("a"), timestamp=_TS), _asst(_text("b"), timestamp=_TS2)])
@@ -488,17 +598,32 @@ def test_a_timestamp_without_a_trailing_z_is_accepted():
 
 # ---------------------------------------------------- usage / cwd / git branch
 
+
 def test_assistant_usage_is_summed_and_the_model_id_is_kept():
     """UNVERIFIED against the store: the spec measured `message` as {content, role}
     only, so `usage`/`model` are read defensively and absence costs nothing."""
-    doc = _doc([_rec("assistant", message={"role": "assistant", "content": _text("a"),
-                                           "model": "claude-opus-5",
-                                           "usage": {"input_tokens": 10,
-                                                     "output_tokens": 5}}),
-                _rec("assistant", message={"role": "assistant", "content": _text("b"),
-                                           "usage": {"input_tokens": 1,
-                                                     "output_tokens": "bad"}}),
-                _rec("assistant", message="not-a-dict")])
+    doc = _doc(
+        [
+            _rec(
+                "assistant",
+                message={
+                    "role": "assistant",
+                    "content": _text("a"),
+                    "model": "claude-opus-5",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            ),
+            _rec(
+                "assistant",
+                message={
+                    "role": "assistant",
+                    "content": _text("b"),
+                    "usage": {"input_tokens": 1, "output_tokens": "bad"},
+                },
+            ),
+            _rec("assistant", message="not-a-dict"),
+        ]
+    )
     assert doc.thread.tokens_used == 16
     assert doc.conversation.meta["model_id"] == "claude-opus-5"
 
@@ -527,14 +652,14 @@ def test_a_missing_cwd_falls_back_to_the_raw_slug_and_never_a_decoded_path():
 def test_the_reported_session_id_is_kept_so_a_path_mismatch_is_visible():
     """Whether a CHILD transcript carries its own sessionId or its parent's is the
     spec's open question; recording it is what settles it on real data."""
-    layout = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl"
-                              % (_SLUG, _SID, _AGENT))
+    layout = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     doc = _doc([_user(_text("a"))], layout=layout)
     assert doc.conversation.meta["reported_session_id"] == _SID
     assert doc.conversation.id != _SID
 
 
 # ------------------------------------------------------- the path is the graph
+
 
 def test_a_session_path_classifies_as_a_session_keyed_by_its_filename():
     layout = cc.classify_path("/root/%s/%s.jsonl" % (_SLUG, _SID))
@@ -545,8 +670,7 @@ def test_a_session_path_classifies_as_a_session_keyed_by_its_filename():
 
 
 def test_a_flat_subagent_path_carries_both_ends_of_the_edge():
-    layout = cc.classify_path("/root/%s/%s/subagents/agent-%s.jsonl"
-                              % (_SLUG, _SID, _AGENT))
+    layout = cc.classify_path("/root/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert layout.kind == "subagent"
     assert layout.parent_id == _SID
     assert layout.agent_id == _AGENT
@@ -555,8 +679,9 @@ def test_a_flat_subagent_path_carries_both_ends_of_the_edge():
 
 
 def test_a_workflow_subagent_path_keeps_the_grouping_level():
-    layout = cc.classify_path("/root/%s/%s/subagents/workflows/%s/agent-%s.jsonl"
-                              % (_SLUG, _SID, _WF, _AGENT))
+    layout = cc.classify_path(
+        "/root/%s/%s/subagents/workflows/%s/agent-%s.jsonl" % (_SLUG, _SID, _WF, _AGENT)
+    )
     assert layout.kind == "subagent"
     assert layout.parent_id == _SID
     assert layout.workflow == "workflows/" + _WF
@@ -564,8 +689,7 @@ def test_a_workflow_subagent_path_keeps_the_grouping_level():
 
 
 def test_a_windows_backslash_path_classifies_identically():
-    layout = cc.classify_path("C:\\r\\%s\\%s\\subagents\\agent-%s.jsonl"
-                              % (_SLUG, _SID, _AGENT))
+    layout = cc.classify_path("C:\\r\\%s\\%s\\subagents\\agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert layout.parent_id == _SID
     assert layout.agent_id == _AGENT
 
@@ -587,17 +711,14 @@ def test_a_short_hex_child_id_is_qualified_by_its_path():
 
 
 def test_two_workflows_in_one_session_cannot_collide_either():
-    a = cc.classify_path("/r/%s/%s/subagents/workflows/wf_1/agent-%s.jsonl"
-                         % (_SLUG, _SID, _AGENT))
-    b = cc.classify_path("/r/%s/%s/subagents/workflows/wf_2/agent-%s.jsonl"
-                         % (_SLUG, _SID, _AGENT))
+    a = cc.classify_path("/r/%s/%s/subagents/workflows/wf_1/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    b = cc.classify_path("/r/%s/%s/subagents/workflows/wf_2/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert a.thread_id != b.thread_id
 
 
 def test_a_uuid_child_id_is_used_verbatim():
     """A UUID is unique by construction, so qualifying it would only obscure it."""
-    layout = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl"
-                              % (_SLUG, _SID, _AGENT_UUID))
+    layout = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT_UUID))
     assert layout.thread_id == _AGENT_UUID
 
 
@@ -621,13 +742,11 @@ def test_a_file_that_is_only_the_extension_falls_back_to_the_reported_id():
 def test_a_tool_results_sidecar_is_never_a_transcript():
     """`tool-results/` holds hook stdout `.txt` sidecars — real content, wrong shape."""
     assert cc.classify_path("/r/%s/%s/tool-results/x.jsonl" % (_SLUG, _SID)) is None
-    assert cc.classify_path("/r/%s/%s/tool-results/deep/x.jsonl"
-                            % (_SLUG, _SID)) is None
+    assert cc.classify_path("/r/%s/%s/tool-results/deep/x.jsonl" % (_SLUG, _SID)) is None
 
 
 def test_a_session_transcript_emits_no_spawn_edge():
-    doc = _doc([_user(_text("a"))],
-               layout=cc.classify_path("/r/%s/%s.jsonl" % (_SLUG, _SID)))
+    doc = _doc([_user(_text("a"))], layout=cc.classify_path("/r/%s/%s.jsonl" % (_SLUG, _SID)))
     assert doc.edges == []
     assert doc.thread.agent_role == "session"
 
@@ -638,14 +757,16 @@ def test_a_flat_child_emits_one_subagent_edge():
     assert len(doc.edges) == 1
     edge = doc.edges[0]
     assert (edge.parent_thread_id, edge.child_thread_id, edge.status) == (
-        _SID, "%s/%s" % (_SID, _AGENT), "subagent")
+        _SID,
+        "%s/%s" % (_SID, _AGENT),
+        "subagent",
+    )
     assert doc.thread.agent_role == "subagent"
     assert doc.thread.agent_nickname == _AGENT
 
 
 def test_a_workflow_child_edge_is_labelled_workflow():
-    path = ("/r/%s/%s/subagents/workflows/%s/agent-%s.jsonl"
-            % (_SLUG, _SID, _WF, _AGENT))
+    path = "/r/%s/%s/subagents/workflows/%s/agent-%s.jsonl" % (_SLUG, _SID, _WF, _AGENT)
     doc = _doc([_user(_text("a"))], path=path, layout=cc.classify_path(path))
     assert doc.edges[0].status == "workflow"
     assert doc.conversation.meta["workflow"] == "workflows/" + _WF
@@ -653,8 +774,7 @@ def test_a_workflow_child_edge_is_labelled_workflow():
 
 def test_a_child_layout_with_no_parent_yields_no_half_edge():
     """Half an edge would render as a spawn that never happened."""
-    doc = _doc([_user(_text("a"))],
-               layout=cc.Layout(kind="subagent", thread_id="c", agent_id="c"))
+    doc = _doc([_user(_text("a"))], layout=cc.Layout(kind="subagent", thread_id="c", agent_id="c"))
     assert doc.edges == []
 
 
@@ -667,13 +787,12 @@ def test_the_edge_is_exactly_what_corpus_upsert_edge_persists():
         corpus.upsert_thread(conn, doc.thread)
         for edge in doc.edges:
             corpus.upsert_edge(conn, edge)
-        assert conn.execute("SELECT parent_thread_id, child_thread_id, status "
-                            "FROM thread_spawn_edges").fetchall() == [
-            (_SID, "%s/%s" % (_SID, _AGENT), "subagent")]
+        assert conn.execute(
+            "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges"
+        ).fetchall() == [(_SID, "%s/%s" % (_SID, _AGENT), "subagent")]
         # The VENDOR reaches the column, not the adapter name. This assertion used to
         # read "claude-code", which recorded the conflation rather than pinning intent.
-        assert conn.execute("SELECT model_provider FROM threads").fetchone()[0] == \
-            "anthropic"
+        assert conn.execute("SELECT model_provider FROM threads").fetchone()[0] == "anthropic"
     finally:
         conn.close()
 
@@ -683,7 +802,7 @@ def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
 
     `corpus.py`'s `adapter` note documents this field as the vendor and records what
     conflating the two cost: every Codex node rendered as the palette's unknown grey. The
-    adapter label still travels on `Conversation.provider`, which `sidecar.py:1632`
+    adapter label still travels on `Conversation.provider`, which `sidecar.py:1692`
     surfaces as `provider` beside `model_provider` — both facts, each under its own name.
 
     "anthropic" is INFERRED from the adapter rather than read: a Claude Code transcript
@@ -704,25 +823,40 @@ def test_every_block_this_adapter_emits_actually_renders():
     data['name'] / data['input'] / data['content'] / data['file_name'] / data['x_raw'],
     and a wrong key renders a silently blank box. One document carrying every block
     type this adapter can emit is pushed through the real renderer."""
-    doc = _doc([_user(_text("a question")),
-                _asst([{"type": "thinking", "thinking": "reasoning"},
-                       {"type": "text", "text": "an answer"},
-                       {"type": "tool_use", "name": "Grep", "input": {"q": "x"},
-                        "id": "tu-1"},
-                       {"type": "image", "source": {"media_type": "image/png"}},
-                       {"type": "future_block_type", "payload": "kept"}]),
-                _user(_tool_result("the output"))])
+    doc = _doc(
+        [
+            _user(_text("a question")),
+            _asst(
+                [
+                    {"type": "thinking", "thinking": "reasoning"},
+                    {"type": "text", "text": "an answer"},
+                    {"type": "tool_use", "name": "Grep", "input": {"q": "x"}, "id": "tu-1"},
+                    {"type": "image", "source": {"media_type": "image/png"}},
+                    {"type": "future_block_type", "payload": "kept"},
+                ]
+            ),
+            _user(_tool_result("the output")),
+        ]
+    )
     html = render_html.render_conversation_html(doc.conversation)
-    for expected in ("a question", "reasoning", "an answer", "Grep", '"q": "x"',
-                     "image/png", "future_block_type", "kept", "the output"):
+    for expected in (
+        "a question",
+        "reasoning",
+        "an answer",
+        "Grep",
+        '"q": "x"',
+        "image/png",
+        "future_block_type",
+        "kept",
+        "the output",
+    ):
         assert expected in html, expected
-    assert "<div class=\"md\"></div>" not in html      # no silently blank block
+    assert '<div class="md"></div>' not in html  # no silently blank block
     assert "a question" in render_md.render_conversation_md(doc.conversation)
 
 
 def test_the_doc_exposes_the_thread_id_alias_and_the_ir_shapes():
-    doc = _doc([_user(_text("a"))],
-               layout=cc.classify_path("/r/%s/%s.jsonl" % (_SLUG, _SID)))
+    doc = _doc([_user(_text("a"))], layout=cc.classify_path("/r/%s/%s.jsonl" % (_SLUG, _SID)))
     assert doc.thread_id == doc.thread.id == _SID
     assert isinstance(doc.conversation, ir.Conversation)
     assert isinstance(doc.thread, corpus.ThreadMeta)
@@ -731,11 +865,18 @@ def test_the_doc_exposes_the_thread_id_alias_and_the_ir_shapes():
 
 # ------------------------------------------------------------- line / file layer
 
+
 def test_a_malformed_line_costs_that_line_and_is_logged():
     """A transcript is read while it is being written, so its tail can be partial."""
     doc, errors = cc.parse_transcript_lines(
-        [json.dumps(_user(_text("kept"))) + "\n", "\n", "{not json",
-         json.dumps(_asst(_text("also kept")))], transcript_path="t.jsonl")
+        [
+            json.dumps(_user(_text("kept"))) + "\n",
+            "\n",
+            "{not json",
+            json.dumps(_asst(_text("also kept"))),
+        ],
+        transcript_path="t.jsonl",
+    )
     assert _roles(doc) == ["human", "assistant"]
     assert len(errors) == 1
     assert errors[0]["line"] == 3
@@ -788,10 +929,12 @@ def test_ingest_ignores_a_tool_results_sibling_whatever_its_extension(tmp_path):
     root = str(tmp_path / "projects")
     _session_file(root)
     os.makedirs(os.path.join(root, _SLUG, _SID, "tool-results"))
-    _write(os.path.join(root, _SLUG, _SID, "tool-results", "hook.jsonl"),
-           [_user(_text("hook stdout"))])
-    with open(os.path.join(root, _SLUG, _SID, "tool-results", "hook.txt"), "w",
-              encoding="utf-8") as fh:
+    _write(
+        os.path.join(root, _SLUG, _SID, "tool-results", "hook.jsonl"), [_user(_text("hook stdout"))]
+    )
+    with open(
+        os.path.join(root, _SLUG, _SID, "tool-results", "hook.txt"), "w", encoding="utf-8"
+    ) as fh:
         fh.write("hook stdout\n")
     docs, errors = cc.ingest_sessions(root)
     assert errors == []
@@ -824,8 +967,7 @@ def test_ingest_is_deterministically_ordered(tmp_path):
     assert children == ["agent-a.jsonl", "agent-z.jsonl"]
 
 
-def test_an_unreadable_transcript_costs_that_file_and_never_the_sweep(tmp_path,
-                                                                     monkeypatch):
+def test_an_unreadable_transcript_costs_that_file_and_never_the_sweep(tmp_path, monkeypatch):
     root = str(tmp_path / "projects")
     good = _session_file(root, sid=_SID)
     bad = _session_file(root, sid=_SID2)
@@ -848,8 +990,7 @@ def test_a_missing_root_yields_an_honest_empty_result(tmp_path):
     assert cc.ingest_sessions(str(tmp_path / "nope")) == ([], [])
 
 
-def test_iter_documents_yields_none_for_a_file_it_could_not_read(tmp_path,
-                                                                monkeypatch):
+def test_iter_documents_yields_none_for_a_file_it_could_not_read(tmp_path, monkeypatch):
     root = str(tmp_path / "projects")
     _session_file(root)
     real_open = builtins.open

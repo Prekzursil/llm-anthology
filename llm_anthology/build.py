@@ -13,6 +13,7 @@ Two invariants are load-bearing:
 
 Nothing here touches the network.
 """
+
 import json
 import os
 import re
@@ -23,17 +24,42 @@ _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WS = re.compile(r"\s+")
 
 THEMES = {
-    "claude": {"title": "Claude sessions", "bg": "#1f1e1b", "fg": "#f4f3ee",
-               "link": "#d97757", "muted": "#b4b0a4"},
-    "chatgpt": {"title": "ChatGPT sessions", "bg": "#212121", "fg": "#ececec",
-                "link": "#7ab7ff", "muted": "#a0a0a0"},
-    "gemini": {"title": "Gemini sessions", "bg": "#1e1f20", "fg": "#e3e3e3",
-               "link": "#8ab4f8", "muted": "#9aa0a6"},
-    "codex": {"title": "Codex sessions", "bg": "#0d1117", "fg": "#e6edf3",
-              "link": "#58a6ff", "muted": "#8b949e"},
+    "claude": {
+        "title": "Claude sessions",
+        "bg": "#1f1e1b",
+        "fg": "#f4f3ee",
+        "link": "#d97757",
+        "muted": "#b4b0a4",
+    },
+    "chatgpt": {
+        "title": "ChatGPT sessions",
+        "bg": "#212121",
+        "fg": "#ececec",
+        "link": "#7ab7ff",
+        "muted": "#a0a0a0",
+    },
+    "gemini": {
+        "title": "Gemini sessions",
+        "bg": "#1e1f20",
+        "fg": "#e3e3e3",
+        "link": "#8ab4f8",
+        "muted": "#9aa0a6",
+    },
+    "codex": {
+        "title": "Codex sessions",
+        "bg": "#0d1117",
+        "fg": "#e6edf3",
+        "link": "#58a6ff",
+        "muted": "#8b949e",
+    },
 }
-_FALLBACK_THEME = {"title": "Sessions", "bg": "#1b1b1b", "fg": "#ededed",
-                   "link": "#7ab7ff", "muted": "#999999"}
+_FALLBACK_THEME = {
+    "title": "Sessions",
+    "bg": "#1b1b1b",
+    "fg": "#ededed",
+    "link": "#7ab7ff",
+    "muted": "#999999",
+}
 
 
 def safe_name(title, idx):
@@ -69,6 +95,7 @@ def render_corpus(convs, out_dir, provider="claude", meta_of=None, load_errors=N
     """
     theme = THEMES.get(provider, _FALLBACK_THEME)
     if meta_of is None:
+
         def meta_of(conv):
             return getattr(conv, "account", "") or ""
 
@@ -86,20 +113,29 @@ def render_corpus(convs, out_dir, provider="claude", meta_of=None, load_errors=N
         try:
             hits = audit.hidden_char_hits(conv)
             if hits:
-                audit_rows.append({"file": name + ".html", "title": conv.title,
-                                   "hidden_char_count": len(hits),
-                                   "codepoints": sorted(set(hits))})
+                audit_rows.append(
+                    {
+                        "file": name + ".html",
+                        "title": conv.title,
+                        "hidden_char_count": len(hits),
+                        "codepoints": sorted(set(hits)),
+                    }
+                )
             html_out = render_html.render_conversation_html(conv)
-            v = verify.verify(conv, html_out)          # text-exact fidelity gate
+            v = verify.verify(conv, html_out)  # text-exact fidelity gate
             if not v["ok"]:
-                fidelity_fail.append({"file": name + ".html", "title": conv.title,
-                                      "coverage": round(v["coverage"], 4),
-                                      "missing_sample": v["missing_tokens"][:20]})
+                fidelity_fail.append(
+                    {
+                        "file": name + ".html",
+                        "title": conv.title,
+                        "coverage": round(v["coverage"], 4),
+                        "missing_sample": v["missing_tokens"][:20],
+                    }
+                )
             write_text(os.path.join(html_dir, name + ".html"), html_out)
-            write_text(os.path.join(md_dir, name + ".md"),
-                       render_md.render_conversation_md(conv))
+            write_text(os.path.join(md_dir, name + ".md"), render_md.render_conversation_md(conv))
             index.append((name, conv.title, len(conv.turns), meta_of(conv)))
-        except Exception as e:                          # isolate: one bad record only
+        except Exception as e:  # isolate: one bad record only
             errors.append({"file": name, "stage": "render", "error": repr(e)})
 
     write_index(out_dir, index, theme)
@@ -129,11 +165,17 @@ def render_corpus(convs, out_dir, provider="claude", meta_of=None, load_errors=N
 
 def write_index(out_dir, index, theme):
     import html as _h
+
     rows = "".join(
         '<li><a href="html/%s.html">%s</a> <span class="muted">· %d turns%s</span></li>'
-        % (_h.escape(name, quote=True), sanitize.neutralize_html(title), turns,
-           (" · " + _h.escape(str(meta), quote=True)) if meta else "")
-        for name, title, turns, meta in index)
+        % (
+            _h.escape(name, quote=True),
+            sanitize.neutralize_html(title),
+            turns,
+            (" · " + _h.escape(str(meta), quote=True)) if meta else "",
+        )
+        for name, title, turns, meta in index
+    )
     doc = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta http-equiv="Content-Security-Policy" '
@@ -144,8 +186,17 @@ def write_index(out_dir, index, theme):
         "a{color:%s;text-decoration:none}li{margin:6px 0;line-height:1.5}"
         ".muted{color:%s;font-size:.85em}"
         "</style></head><body><h1>%s (%d)</h1><ul>%s</ul></body></html>"
-        % (_h.escape(theme["title"]), theme["bg"], theme["fg"], theme["link"],
-           theme["muted"], _h.escape(theme["title"]), len(index), rows))
+        % (
+            _h.escape(theme["title"]),
+            theme["bg"],
+            theme["fg"],
+            theme["link"],
+            theme["muted"],
+            _h.escape(theme["title"]),
+            len(index),
+            rows,
+        )
+    )
     write_text(os.path.join(out_dir, "index.html"), doc)
 
 
@@ -155,8 +206,11 @@ def print_report(report):
     if report["empty_conversations"]:
         # loud, because the usual cause is a wrong-provider or drifted export --
         # a case that otherwise renders blank pages and reports success
-        print("EMPTY_CONVERSATIONS", report["empty_conversations"],
-              "(no turns parsed - wrong provider, or the export format changed)")
+        print(
+            "EMPTY_CONVERSATIONS",
+            report["empty_conversations"],
+            "(no turns parsed - wrong provider, or the export format changed)",
+        )
     if report.get("grouping_mode"):
         # Gemini only, and printed on EVERY gemini run rather than only on the downgrade.
         # A field that appears only when something went wrong is a field nobody learns to

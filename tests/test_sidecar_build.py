@@ -27,6 +27,7 @@ it controls the interleaving, and the real thread runner joined explicitly.
 
 Synthetic rollouts written into tmp_path only; no test reads a real Codex store.
 """
+
 import json
 import os
 import sqlite3
@@ -58,6 +59,7 @@ def _close_connections():
 
 # --------------------------------------------------------------------- fixtures
 
+
 def _write_rollout(day_dir, name, records):
     os.makedirs(day_dir, exist_ok=True)
     path = os.path.join(day_dir, name)
@@ -72,31 +74,48 @@ def _rec(rtype, payload, ts):
 
 
 def _session_meta(sid, ts, **kw):
-    payload = {"session_id": sid, "id": sid, "timestamp": ts, "cwd": "/repo",
-               "model_provider": "openai", "git": {"branch": "feat/x"}}
+    payload = {
+        "session_id": sid,
+        "id": sid,
+        "timestamp": ts,
+        "cwd": "/repo",
+        "model_provider": "openai",
+        "git": {"branch": "feat/x"},
+    }
     payload.update(kw)
     return _rec("session_meta", payload, ts)
 
 
 def _user(text, ts):
-    return _rec("response_item",
-                {"type": "message", "role": "user",
-                 "content": [{"type": "input_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        ts,
+    )
 
 
 def _sessions_tree(root, n=2):
     """A DATE-NESTED synthetic sessions tree: C1 (spawned by P1) plus n-1 root threads."""
     day = os.path.join(root, "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1",
-                      thread_source="spawn"),
-        _user("alpha bravo", "2026-07-24T10:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1.jsonl",
+        [
+            _session_meta(
+                "C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1", thread_source="spawn"
+            ),
+            _user("alpha bravo", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
     for i in range(1, n):
-        _write_rollout(day, "rollout-2026-07-24T1%d-00-00-0000c%d.jsonl" % (i, i + 1), [
-            _session_meta("C%d" % (i + 1), "2026-07-24T1%d:00:00.000Z" % i),
-            _user("charlie delta", "2026-07-24T1%d:00:01.000Z" % i),
-        ])
+        _write_rollout(
+            day,
+            "rollout-2026-07-24T1%d-00-00-0000c%d.jsonl" % (i, i + 1),
+            [
+                _session_meta("C%d" % (i + 1), "2026-07-24T1%d:00:00.000Z" % i),
+                _user("charlie delta", "2026-07-24T1%d:00:01.000Z" % i),
+            ],
+        )
     return root
 
 
@@ -135,26 +154,53 @@ def _build_params(tmp_path, n=2):
 
 # -------------------------------------------------------- multi-provider sources
 
+
 def _grok_root(tmp_path):
     """A minimal Grok Build store: <enc-cwd>/<session-id>/ with summary.json + updates.jsonl."""
     sess = tmp_path / "grok" / "C%3A%5Cwork" / "1111-2222"
     sess.mkdir(parents=True)
-    (sess / "summary.json").write_text(json.dumps({
-        "info": {"id": "grok-sess-1", "cwd": "C:/work"},
-        "generated_title": "synthetic grok session",
-        "created_at": "2026-07-24T10:00:00.000000Z",
-        "last_active_at": "2026-07-24T10:05:00.000000Z",
-    }), encoding="utf-8")
-    (sess / "updates.jsonl").write_text("\n".join(json.dumps(r) for r in [
-        {"method": "session/update", "timestamp": "2026-07-24T10:00:01.000000Z",
-         "params": {"sessionId": "grok-sess-1", "update": {
-             "sessionUpdate": "user_message_chunk",
-             "content": {"type": "text", "text": "synthetic prompt"}}}},
-        {"method": "session/update", "timestamp": "2026-07-24T10:00:02.000000Z",
-         "params": {"sessionId": "grok-sess-1", "update": {
-             "sessionUpdate": "agent_message_chunk",
-             "content": {"type": "text", "text": "synthetic reply"}}}},
-    ]) + "\n", encoding="utf-8")
+    (sess / "summary.json").write_text(
+        json.dumps(
+            {
+                "info": {"id": "grok-sess-1", "cwd": "C:/work"},
+                "generated_title": "synthetic grok session",
+                "created_at": "2026-07-24T10:00:00.000000Z",
+                "last_active_at": "2026-07-24T10:05:00.000000Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sess / "updates.jsonl").write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "method": "session/update",
+                    "timestamp": "2026-07-24T10:00:01.000000Z",
+                    "params": {
+                        "sessionId": "grok-sess-1",
+                        "update": {
+                            "sessionUpdate": "user_message_chunk",
+                            "content": {"type": "text", "text": "synthetic prompt"},
+                        },
+                    },
+                },
+                {
+                    "method": "session/update",
+                    "timestamp": "2026-07-24T10:00:02.000000Z",
+                    "params": {
+                        "sessionId": "grok-sess-1",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "synthetic reply"},
+                        },
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return str(tmp_path / "grok")
 
 
@@ -166,10 +212,11 @@ def test_build_accepts_a_GROK_ONLY_source_with_no_codex_sessions_root(tmp_path):
     that does not exist. Naming only `grok_root` must work.
     """
     srv, _ = _server(tmp_path, runner=_sync)
-    out = srv.dispatch("corpus.build", {
-        "grok_root": _grok_root(tmp_path), "codex_home": _codex_home(tmp_path)})
+    out = srv.dispatch(
+        "corpus.build", {"grok_root": _grok_root(tmp_path), "codex_home": _codex_home(tmp_path)}
+    )
 
-    assert out["state"] == "running"          # the start reply is an ACCEPTANCE, not a result
+    assert out["state"] == "running"  # the start reply is an ACCEPTANCE, not a result
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
     assert status["indexed_conversations"] == 1, status
@@ -225,8 +272,10 @@ def test_build_still_rejects_a_UNC_codex_home_when_it_IS_named(tmp_path):
     """Optional must not mean unguarded: a named home is still an SMB/NTLM vector."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path),
-                                      "codex_home": r"\\evil.example\share"})
+        srv.dispatch(
+            "corpus.build",
+            {"grok_root": _grok_root(tmp_path), "codex_home": r"\\evil.example\share"},
+        )
     assert excinfo.value.code == -32602
 
 
@@ -249,6 +298,7 @@ def test_build_requires_at_least_one_named_source(tmp_path):
 
 # --------------------------------------------------------------- claude code source
 
+
 def _claude_root(tmp_path):
     """A minimal Claude Code transcript tree: `<projects>/<slug>/<session>.jsonl`.
 
@@ -258,16 +308,39 @@ def _claude_root(tmp_path):
     """
     proj = tmp_path / "claude" / "C--work-repo"
     proj.mkdir(parents=True)
-    (proj / "cc-sess-1.jsonl").write_text("\n".join(json.dumps(r) for r in [
-        {"type": "user", "timestamp": "2026-08-07T09:00:00.000Z", "uuid": "u-1",
-         "parentUuid": None, "sessionId": "cc-sess-1", "cwd": "C:/work/repo",
-         "gitBranch": "main", "version": "2.1.220",
-         "message": {"role": "user", "content": "synthetic claude code prompt"}},
-        {"type": "assistant", "timestamp": "2026-08-07T09:00:02.000Z", "uuid": "a-1",
-         "parentUuid": "u-1", "sessionId": "cc-sess-1", "version": "2.1.220",
-         "message": {"role": "assistant", "model": "claude-opus-5",
-                     "content": [{"type": "text", "text": "synthetic reply"}]}},
-    ]) + "\n", encoding="utf-8")
+    (proj / "cc-sess-1.jsonl").write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "type": "user",
+                    "timestamp": "2026-08-07T09:00:00.000Z",
+                    "uuid": "u-1",
+                    "parentUuid": None,
+                    "sessionId": "cc-sess-1",
+                    "cwd": "C:/work/repo",
+                    "gitBranch": "main",
+                    "version": "2.1.220",
+                    "message": {"role": "user", "content": "synthetic claude code prompt"},
+                },
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-08-07T09:00:02.000Z",
+                    "uuid": "a-1",
+                    "parentUuid": "u-1",
+                    "sessionId": "cc-sess-1",
+                    "version": "2.1.220",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-5",
+                        "content": [{"type": "text", "text": "synthetic reply"}],
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return str(tmp_path / "claude")
 
 
@@ -283,7 +356,7 @@ def test_build_accepts_a_CLAUDE_CODE_ONLY_source(tmp_path):
     srv, _ = _server(tmp_path, runner=_sync)
     out = srv.dispatch("corpus.build", {"claude_root": _claude_root(tmp_path)})
 
-    assert out["state"] == "running"      # the start reply is an ACCEPTANCE, not a result
+    assert out["state"] == "running"  # the start reply is an ACCEPTANCE, not a result
     assert out["claude_root"].endswith("claude")
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
@@ -295,17 +368,24 @@ def test_build_accepts_a_CLAUDE_CODE_ONLY_source(tmp_path):
 def test_build_accepts_claude_code_ALONGSIDE_the_other_roots(tmp_path):
     """All three roots in one call: the new source must merge, not displace."""
     srv, _ = _server(tmp_path, runner=_sync)
-    srv.dispatch("corpus.build", {
-        "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=1),
-        "grok_root": _grok_root(tmp_path),
-        "claude_root": _claude_root(tmp_path),
-        "codex_home": _codex_home(tmp_path)})
+    srv.dispatch(
+        "corpus.build",
+        {
+            "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=1),
+            "grok_root": _grok_root(tmp_path),
+            "claude_root": _claude_root(tmp_path),
+            "codex_home": _codex_home(tmp_path),
+        },
+    )
 
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
     assert status["indexed_conversations"] == 3, status
-    assert sorted(n["id"] for n in srv.dispatch("graph.roots", {})) == \
-        ["P1", "cc-sess-1", "grok-sess-1"]
+    assert sorted(n["id"] for n in srv.dispatch("graph.roots", {})) == [
+        "P1",
+        "cc-sess-1",
+        "grok-sess-1",
+    ]
 
 
 def test_build_rejects_a_claude_root_that_does_not_exist(tmp_path):
@@ -336,16 +416,16 @@ def test_build_rejects_a_unc_claude_root(tmp_path):
     assert excinfo.value.code == -32602
     message = str(excinfo.value.message)
     assert "claude_root must be a local path, not a UNC/network path" == message, message
-    assert "existing directory" not in message, \
+    assert "existing directory" not in message, (
         "a UNC path must be refused by the path guard, not by an isdir() that touched it"
+    )
 
 
 def test_build_rejects_a_non_string_claude_root(tmp_path):
     """Absent means 'not this source'; a wrong TYPE is a caller bug and stays an error."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path),
-                                      "claude_root": 42})
+        srv.dispatch("corpus.build", {"grok_root": _grok_root(tmp_path), "claude_root": 42})
     assert excinfo.value.code == -32602
 
 
@@ -402,8 +482,10 @@ def test_build_rejects_a_grok_root_that_does_not_exist(tmp_path):
     typo'd root yields zero docs and zero errors — a perfectly 'successful' build of nothing."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build", {"grok_root": str(tmp_path / "nope"),
-                                      "codex_home": _codex_home(tmp_path)})
+        srv.dispatch(
+            "corpus.build",
+            {"grok_root": str(tmp_path / "nope"), "codex_home": _codex_home(tmp_path)},
+        )
     assert excinfo.value.code == -32602
     assert "grok_root must be an existing directory" in str(excinfo.value.message)
 
@@ -414,24 +496,33 @@ def test_build_rejects_a_unc_grok_root(tmp_path):
     would mean the leak already happened."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build", {"grok_root": r"\\evil.example\share",
-                                      "codex_home": _codex_home(tmp_path)})
+        srv.dispatch(
+            "corpus.build",
+            {"grok_root": r"\\evil.example\share", "codex_home": _codex_home(tmp_path)},
+        )
     assert excinfo.value.code == -32602
-    assert "existing directory" not in str(excinfo.value.message), \
+    assert "existing directory" not in str(excinfo.value.message), (
         "a UNC path must be refused by the path guard, not by an isdir() that already touched it"
+    )
 
 
 def test_build_rejects_a_non_string_grok_root(tmp_path):
     """Absent means 'not this source'; a wrong TYPE is a caller bug and stays an error."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build", {"sessions_root": _sessions_tree(str(tmp_path / "s"), n=1),
-                                      "grok_root": 42,
-                                      "codex_home": _codex_home(tmp_path)})
+        srv.dispatch(
+            "corpus.build",
+            {
+                "sessions_root": _sessions_tree(str(tmp_path / "s"), n=1),
+                "grok_root": 42,
+                "codex_home": _codex_home(tmp_path),
+            },
+        )
     assert excinfo.value.code == -32602
 
 
 # ------------------------------------------------------------------ path safety
+
 
 def test_build_rejects_unc_and_relative_sessions_root(tmp_path):
     """A UNC sessions_root would coerce an outbound SMB/NTLM auth before any read.
@@ -443,9 +534,11 @@ def test_build_rejects_unc_and_relative_sessions_root(tmp_path):
     """
     srv, _ = _server(tmp_path, runner=_sync)
     home = _codex_home(tmp_path)
-    for bad, reason in (("\\\\evil.example\\share\\sessions", "UNC"),
-                        ("//evil.example/share/sessions", "UNC"),
-                        ("relative/sessions", "absolute")):
+    for bad, reason in (
+        ("\\\\evil.example\\share\\sessions", "UNC"),
+        ("//evil.example/share/sessions", "UNC"),
+        ("relative/sessions", "absolute"),
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("corpus.build", {"sessions_root": bad, "codex_home": home})
         assert ei.value.code == -32602
@@ -458,8 +551,7 @@ def test_build_rejects_unc_and_relative_codex_home(tmp_path):
     """codex_home is guarded on the same edge — dedup.scan's rule, same reason."""
     srv, _ = _server(tmp_path, runner=_sync)
     root = _sessions_tree(str(tmp_path / "sessions"))
-    for bad, reason in (("\\\\evil.example\\share", "UNC"),
-                        ("relative/home", "absolute")):
+    for bad, reason in (("\\\\evil.example\\share", "UNC"), ("relative/home", "absolute")):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("corpus.build", {"sessions_root": root, "codex_home": bad})
         assert ei.value.code == -32602
@@ -515,8 +607,9 @@ def test_build_rejects_a_sessions_root_that_is_not_a_directory(tmp_path):
     srv, _ = _server(tmp_path, runner=_sync)
     missing = str(tmp_path / "nope")
     with pytest.raises(sidecar.RpcError) as ei:
-        srv.dispatch("corpus.build",
-                     {"sessions_root": missing, "codex_home": _codex_home(tmp_path)})
+        srv.dispatch(
+            "corpus.build", {"sessions_root": missing, "codex_home": _codex_home(tmp_path)}
+        )
     assert ei.value.code == -32602
     assert "directory" in ei.value.message
 
@@ -542,10 +635,11 @@ def test_build_refuses_an_in_memory_index(tmp_path):
 
 # ------------------------------------------------------------------- happy path
 
+
 def test_build_ingests_a_synthetic_tree_and_reports_done(tmp_path):
     srv, _ = _server(tmp_path, runner=_sync)
     started = srv.dispatch("corpus.build", _build_params(tmp_path, n=3))
-    assert started["state"] == "running"        # the START reply is always 'running'
+    assert started["state"] == "running"  # the START reply is always 'running'
     assert started["job_id"] == "build-1"
     assert isinstance(started["started_ms"], int)
 
@@ -581,7 +675,7 @@ def test_a_completed_build_is_adopted_without_polling_status(tmp_path):
 def test_a_build_persists_the_graph_to_the_index_not_just_memory(tmp_path):
     """A build's SUCCESS CRITERION is a non-empty GRAPH, not a conversation count.
 
-    ``index.build_index`` writes conversations only (index.py:162-168). If the graph is not
+    ``index.build_index`` writes conversations only (index.py:177-186). If the graph is not
     persisted, ``corpus.stats`` reports conversations while ``graph.roots`` /
     ``graph.timeline`` / ``graph.children`` all come back empty — the app's primary view
     blank on a "successful" build. Asserted through a SEPARATE connection to the index file,
@@ -604,9 +698,9 @@ def test_an_incremental_build_keeps_the_previously_ingested_graph(tmp_path):
     """The in-app flow is "open an existing corpus, then ingest MORE sessions into it", so a
     second build must ADD to the graph rather than replace the view with only its own run.
 
-    ``loaders.load_corpus`` returns a Corpus assembled from THIS run alone (loaders.py:281)
+    ``loaders.load_corpus`` returns a Corpus assembled from THIS run alone (loaders.py:308)
     while ``_persist_graph`` upserts into the tables the previous run already populated
-    (loaders.py:346-350) — so adopting the RETURNED object would silently drop every
+    (loaders.py:383-387) — so adopting the RETURNED object would silently drop every
     previously-ingested thread while the index on disk still held it. The sidecar re-reads
     the graph from the index instead, which is the only source that carries the union.
     """
@@ -614,27 +708,37 @@ def test_an_incremental_build_keeps_the_previously_ingested_graph(tmp_path):
     home = _codex_home(tmp_path)
 
     first = str(tmp_path / "sessions-a")
-    _write_rollout(os.path.join(first, "2026", "07", "24"), "rollout-a.jsonl", [
-        _session_meta("A1", "2026-07-24T10:00:00.000Z"),
-        _user("alpha", "2026-07-24T10:00:01.000Z")])
+    _write_rollout(
+        os.path.join(first, "2026", "07", "24"),
+        "rollout-a.jsonl",
+        [
+            _session_meta("A1", "2026-07-24T10:00:00.000Z"),
+            _user("alpha", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
     srv.dispatch("corpus.build", {"sessions_root": first, "codex_home": home})
     assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["A1"]
 
     second = str(tmp_path / "sessions-b")
-    _write_rollout(os.path.join(second, "2026", "07", "25"), "rollout-b.jsonl", [
-        _session_meta("B1", "2026-07-25T10:00:00.000Z"),
-        _user("bravo", "2026-07-25T10:00:01.000Z")])
+    _write_rollout(
+        os.path.join(second, "2026", "07", "25"),
+        "rollout-b.jsonl",
+        [
+            _session_meta("B1", "2026-07-25T10:00:00.000Z"),
+            _user("bravo", "2026-07-25T10:00:01.000Z"),
+        ],
+    )
     srv.dispatch("corpus.build", {"sessions_root": second, "codex_home": home})
     assert [n["id"] for n in srv.dispatch("graph.roots", {})] == ["A1", "B1"]
 
 
 def test_a_failed_build_still_refreshes_a_graph_it_already_committed(tmp_path, monkeypatch):
     """``_persist_graph`` commits the graph BEFORE the long conversation ingest
-    (loaders.py:310-311), so a build can fail with the graph already on disk. The live view
+    (loaders.py:346-347), so a build can fail with the graph already on disk. The live view
     must follow the index in that case too — refreshing only on success would leave the
     sidecar reporting a graph the file no longer matches."""
-    def persist_then_die(sessions_root, index_path, codex_home, grok_root="",
-                         claude_root=""):
+
+    def persist_then_die(sessions_root, index_path, codex_home, grok_root="", claude_root=""):
         conn = corpus.open_index(index_path)
         try:
             corpus.upsert_thread(conn, ThreadMeta(id="PARTIAL"))
@@ -658,6 +762,7 @@ def test_status_is_idle_before_any_build(tmp_path):
 
 # --------------------------------------------------- concurrency + live progress
 
+
 def test_a_second_build_while_one_runs_is_rejected(tmp_path):
     """One ingest at a time. Two concurrent builds would race the same index file and the
     same job slot, so the second is refused rather than queued."""
@@ -670,7 +775,7 @@ def test_a_second_build_while_one_runs_is_rejected(tmp_path):
     assert ei.value.code == sidecar.BUILD_IN_PROGRESS
     assert srv.dispatch("corpus.build_status", {})["state"] == "running"
 
-    pending[0]()                                       # let the captured worker finish
+    pending[0]()  # let the captured worker finish
     assert srv.dispatch("corpus.build_status", {})["state"] == "done"
 
 
@@ -721,6 +826,7 @@ def test_status_job_id_on_an_idle_engine_is_rejected(tmp_path):
 
 # ------------------------------------------------------------ error surfacing
 
+
 def test_per_source_errors_reach_the_wire_basenamed_and_sanitized(tmp_path):
     """load_corpus returns (result, errors); a corrupt rollout must be REPORTED, not
     swallowed — and its ``file`` must cross as a bare basename with hidden unicode stripped.
@@ -738,20 +844,18 @@ def test_per_source_errors_reach_the_wire_basenamed_and_sanitized(tmp_path):
     root = str(tmp_path / "sessions")
     day = os.path.join(root, "2026", "07", "24")
     os.makedirs(day, exist_ok=True)
-    with open(os.path.join(day, "rollout-brok" + ZW + "en.jsonl"), "w",
-              encoding="utf-8") as fh:
+    with open(os.path.join(day, "rollout-brok" + ZW + "en.jsonl"), "w", encoding="utf-8") as fh:
         fh.write('{"type":"session_meta","payload":{"session_id":"OK"}}\n')
         fh.write("{not json at all\n")
 
     srv, _ = _server(tmp_path, runner=_sync)
-    srv.dispatch("corpus.build",
-                 {"sessions_root": root, "codex_home": _codex_home(tmp_path)})
+    srv.dispatch("corpus.build", {"sessions_root": root, "codex_home": _codex_home(tmp_path)})
     status = srv.dispatch("corpus.build_status", {})
 
-    assert status["state"] == "done"            # a bad FILE does not fail the RUN
+    assert status["state"] == "done"  # a bad FILE does not fail the RUN
     assert status["errors"], "a malformed rollout line must be reported"
     for err in status["errors"]:
-        assert err["file"] == "rollout-broken.jsonl"   # basenamed AND sanitized
+        assert err["file"] == "rollout-broken.jsonl"  # basenamed AND sanitized
         assert os.sep not in err["file"] and "/" not in err["file"]
         for value in err.values():
             assert ZW not in str(value)
@@ -761,6 +865,7 @@ def test_per_source_errors_reach_the_wire_basenamed_and_sanitized(tmp_path):
 def test_a_crashing_ingest_is_reported_not_swallowed(tmp_path, monkeypatch):
     """An exception inside the worker thread has nowhere to propagate — unhandled it would
     leave the job 'running' forever. It must land as a terminal 'failed' state."""
+
     def boom(*a, **kw):
         raise RuntimeError("disk on fire" + ZW)
 
@@ -777,8 +882,9 @@ def test_a_crashing_ingest_is_reported_not_swallowed(tmp_path, monkeypatch):
 def test_a_build_can_be_retried_after_a_failure(tmp_path, monkeypatch):
     """A failed job must not wedge the slot: build_index checkpoints and commits per
     chunk, so a re-run RESUMES rather than restarting, and the retry has to be reachable."""
-    monkeypatch.setattr(sidecar.loaders, "load_corpus",
-                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("nope")))
+    monkeypatch.setattr(
+        sidecar.loaders, "load_corpus", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("nope"))
+    )
     srv, _ = _server(tmp_path, runner=_sync)
     srv.dispatch("corpus.build", _build_params(tmp_path))
     assert srv.dispatch("corpus.build_status", {})["state"] == "failed"
@@ -796,8 +902,9 @@ def test_the_sessions_root_echo_is_sanitized(tmp_path):
     root = str(tmp_path / ("sess" + ZW + "ions"))
     _sessions_tree(root)
     srv, _ = _server(tmp_path, runner=_sync)
-    started = srv.dispatch("corpus.build",
-                           {"sessions_root": root, "codex_home": _codex_home(tmp_path)})
+    started = srv.dispatch(
+        "corpus.build", {"sessions_root": root, "codex_home": _codex_home(tmp_path)}
+    )
     assert ZW not in started["sessions_root"]
     assert ZW not in srv.dispatch("corpus.build_status", {})["sessions_root"]
 
@@ -809,11 +916,12 @@ def test_the_sessions_root_echo_is_sanitized(tmp_path):
 # in-app, because the path a user would name does not exist yet. corpus.create is the
 # explicit CREATE verb that closes it: create-then-open, with open still refusing to create.
 
+
 def test_create_makes_an_openable_empty_index(tmp_path):
     path = str(tmp_path / "new-corpus.db")
     out = sidecar.Sidecar(None).dispatch("corpus.create", {"index_path": path})
     assert out == {"index_path": path, "created": True}
-    assert os.path.isfile(path)                  # open_corpus checks is_file, so it must be
+    assert os.path.isfile(path)  # open_corpus checks is_file, so it must be
 
     probe = _track(sqlite3.connect(path))
     probe.row_factory = sqlite3.Row
@@ -852,17 +960,20 @@ def test_create_refuses_unc_relative_and_a_missing_parent(tmp_path):
     outbound SMB/NTLM. A missing parent is refused rather than mkdir'd: materialising an
     arbitrary directory tree from a caller-named path is more surface than this needs."""
     srv = sidecar.Sidecar(None)
-    for bad, reason in (("\\\\evil.example\\share\\c.db", "UNC"),
-                        ("//evil.example/share/c.db", "UNC"),
-                        ("relative/c.db", "absolute")):
+    for bad, reason in (
+        ("\\\\evil.example\\share\\c.db", "UNC"),
+        ("//evil.example/share/c.db", "UNC"),
+        ("relative/c.db", "absolute"),
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("corpus.create", {"index_path": bad})
         assert ei.value.code == -32602
         assert "index_path" in ei.value.message and reason in ei.value.message
 
     with pytest.raises(sidecar.RpcError) as ei:
-        srv.dispatch("corpus.create",
-                     {"index_path": str(tmp_path / "no" / "such" / "dir" / "c.db")})
+        srv.dispatch(
+            "corpus.create", {"index_path": str(tmp_path / "no" / "such" / "dir" / "c.db")}
+        )
     assert ei.value.code == -32602
     assert "parent directory" in ei.value.message
 
@@ -886,6 +997,7 @@ def test_create_then_build_is_the_full_new_corpus_journey(tmp_path):
 
 
 # -------------------------------------------------- the REAL background thread
+
 
 def test_the_default_runner_runs_the_build_on_a_daemon_thread(tmp_path):
     """The production seam itself: a real thread, joined explicitly (a barrier, not a
@@ -937,11 +1049,14 @@ def test_the_request_thread_sees_a_concurrent_workers_committed_rows(tmp_path, m
     committed, resume = threading.Event(), threading.Event()
 
     def fake_ingest(sessions_root, index_path, codex_home, grok_root="", claude_root=""):
-        conn = corpus.open_index(index_path)         # the WORKER's own connection
+        conn = corpus.open_index(index_path)  # the WORKER's own connection
         try:
             corpus.add_conversation(
-                conn, ir.Conversation(id="mid", title="t", provider="codex"),
-                thread_id="", rollout_path="mid.jsonl")
+                conn,
+                ir.Conversation(id="mid", title="t", provider="codex"),
+                thread_id="",
+                rollout_path="mid.jsonl",
+            )
             conn.commit()
             committed.set()
             resume.wait(timeout=30)
@@ -963,7 +1078,7 @@ def test_the_request_thread_sees_a_concurrent_workers_committed_rows(tmp_path, m
     assert committed.wait(timeout=30), "the worker never reached its commit"
     mid = srv.dispatch("corpus.build_status", {})
     assert mid["state"] == "running"
-    assert mid["indexed_conversations"] == 1     # the concurrent commit IS visible
+    assert mid["indexed_conversations"] == 1  # the concurrent commit IS visible
 
     resume.set()
     threads[0].join(timeout=30)
@@ -977,23 +1092,38 @@ def test_build_and_status_round_trip_over_the_real_ndjson_wire(tmp_path):
     json.dumps and must not embed a newline — a non-serializable object would otherwise
     reach the client as a -32603 at the transport rather than as a result."""
     srv, _ = _server(tmp_path, runner=_sync)
-    started = srv.handle_line(json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": "corpus.build",
-         "params": _build_params(tmp_path, n=2)}))
+    started = srv.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "corpus.build",
+                "params": _build_params(tmp_path, n=2),
+            }
+        )
+    )
     assert started["result"]["state"] == "running"
 
-    status = srv.handle_line(json.dumps(
-        {"jsonrpc": "2.0", "id": 2, "method": "corpus.build_status", "params": {}}))
+    status = srv.handle_line(
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "corpus.build_status", "params": {}})
+    )
     line = sidecar._dumps(status)
-    assert "\n" not in line                       # exactly one frame for read_line
+    assert "\n" not in line  # exactly one frame for read_line
     decoded = json.loads(line)
     assert decoded["id"] == 2
     assert decoded["result"]["state"] == "done"
     assert decoded["result"]["indexed_conversations"] == 2
 
-    refused = srv.handle_line(json.dumps(
-        {"jsonrpc": "2.0", "id": 3, "method": "corpus.build",
-         "params": {"sessions_root": "rel", "codex_home": "rel"}}))
+    refused = srv.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "corpus.build",
+                "params": {"sessions_root": "rel", "codex_home": "rel"},
+            }
+        )
+    )
     assert refused["error"]["code"] == -32602
     assert "\n" not in sidecar._dumps(refused)
 
@@ -1028,27 +1158,50 @@ def test_the_request_thread_stays_answerable_while_a_build_runs(tmp_path):
 # directory". A test that cannot tell an UNRECOGNISED parameter from a HANDLED one proves
 # nothing about wiring, which is the exact thing under test.
 
+
 def _chatgpt_export(tmp_path, name="conversations.json", text="zebra quokka", cid="c-1"):
     """A minimal ChatGPT export in the measured shape: a `mapping` of nodes whose active
     path is resolved from `current_node`. Synthetic only — no test here reads a real
     export, `~/.codex`, or the owner's corpus."""
     path = tmp_path / name
-    path.write_text(json.dumps([{
-        "id": cid, "title": "title %s" % cid,
-        "create_time": 1700000000.0, "update_time": 1700000060.0,
-        "current_node": "n2",
-        "mapping": {
-            "n1": {"id": "n1", "parent": None, "children": ["n2"],
-                   "message": {"id": "m1", "author": {"role": "user"},
-                               "create_time": 1700000000.0,
-                               "content": {"content_type": "text", "parts": [text]}}},
-            "n2": {"id": "n2", "parent": "n1", "children": [],
-                   "message": {"id": "m2", "author": {"role": "assistant"},
-                               "create_time": 1700000060.0,
-                               "content": {"content_type": "text",
-                                           "parts": ["reply to " + text]}}},
-        },
-    }]), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": cid,
+                    "title": "title %s" % cid,
+                    "create_time": 1700000000.0,
+                    "update_time": 1700000060.0,
+                    "current_node": "n2",
+                    "mapping": {
+                        "n1": {
+                            "id": "n1",
+                            "parent": None,
+                            "children": ["n2"],
+                            "message": {
+                                "id": "m1",
+                                "author": {"role": "user"},
+                                "create_time": 1700000000.0,
+                                "content": {"content_type": "text", "parts": [text]},
+                            },
+                        },
+                        "n2": {
+                            "id": "n2",
+                            "parent": "n1",
+                            "children": [],
+                            "message": {
+                                "id": "m2",
+                                "author": {"role": "assistant"},
+                                "create_time": 1700000060.0,
+                                "content": {"content_type": "text", "parts": ["reply to " + text]},
+                            },
+                        },
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     return str(path)
 
 
@@ -1084,17 +1237,22 @@ def test_an_export_and_a_SESSIONS_ROOT_in_one_build_both_land(tmp_path):
     half silently replacing the other.
     """
     srv, _ = _server(tmp_path, runner=_sync)
-    out = srv.dispatch("corpus.build", {
-        "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=2),
-        "codex_home": _codex_home(tmp_path),
-        "chatgpt_export": _chatgpt_export(tmp_path)})
+    out = srv.dispatch(
+        "corpus.build",
+        {
+            "sessions_root": _sessions_tree(str(tmp_path / "sessions"), n=2),
+            "codex_home": _codex_home(tmp_path),
+            "chatgpt_export": _chatgpt_export(tmp_path),
+        },
+    )
 
     assert out["state"] == "running"
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
-    assert status["indexed_conversations"] == 3, status     # 2 rollouts + 1 export
-    assert [h["conversation_id"] for h in
-            srv.dispatch("search.query", {"q": "zebra"})["hits"]] == ["c-1"]
+    assert status["indexed_conversations"] == 3, status  # 2 rollouts + 1 export
+    assert [h["conversation_id"] for h in srv.dispatch("search.query", {"q": "zebra"})["hits"]] == [
+        "c-1"
+    ]
     assert srv.dispatch("search.query", {"q": "alpha"})["hits"], "the rollout half"
 
 
@@ -1122,8 +1280,9 @@ def test_a_named_export_path_that_does_not_exist_is_refused_at_the_boundary(tmp_
     unrecognised parameter cannot masquerade as a guarded one."""
     srv, _ = _server(tmp_path, runner=_sync)
     with pytest.raises(sidecar.RpcError) as excinfo:
-        srv.dispatch("corpus.build",
-                     {"chatgpt_export": str(tmp_path / "nope" / "conversations.json")})
+        srv.dispatch(
+            "corpus.build", {"chatgpt_export": str(tmp_path / "nope" / "conversations.json")}
+        )
     assert excinfo.value.code == -32602
     assert "chatgpt_export must be an existing path" in str(excinfo.value.message)
 
@@ -1137,14 +1296,15 @@ def test_an_export_path_is_refused_when_UNC(tmp_path):
     assert excinfo.value.code == -32602
     message = str(excinfo.value.message)
     assert "claude_export must be a local path, not a UNC/network path" == message, message
-    assert "existing path" not in message, \
+    assert "existing path" not in message, (
         "a UNC path must be refused by the path guard, not by an exists() that touched it"
+    )
 
 
 def test_the_GEMINI_HARVEST_is_deliberately_NOT_existence_checked(tmp_path):
     """A documented CLI exemption that must survive the port, not a gap.
 
-    `cli.py:175-177` checks `src`, `chatgpt_projects` and each spec's PRIMARY path — and
+    `cli.py:222-224` checks `src`, `chatgpt_projects` and each spec's PRIMARY path — and
     pointedly not the gemini harvest, because `load_gemini` reports a named-but-absent
     harvest as an ERROR while still falling back to the labelled provisional grouping.
     Hard-failing here would make that documented, tested path unreachable from the app,
@@ -1153,18 +1313,30 @@ def test_the_GEMINI_HARVEST_is_deliberately_NOT_existence_checked(tmp_path):
     """
     srv, _ = _server(tmp_path, runner=_sync)
     src = tmp_path / "transcript.json"
-    src.write_text(json.dumps([
-        {"prompt": "zebra quokka", "response_md": "reply", "gem": None,
-         "timestamp_iso": "2026-03-03T10:00:00"}]), encoding="utf-8")
+    src.write_text(
+        json.dumps(
+            [
+                {
+                    "prompt": "zebra quokka",
+                    "response_md": "reply",
+                    "gem": None,
+                    "timestamp_iso": "2026-03-03T10:00:00",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
 
-    srv.dispatch("corpus.build", {"gemini_export": str(src),
-                                  "gemini_harvest": str(tmp_path / "absent.json")})
+    srv.dispatch(
+        "corpus.build", {"gemini_export": str(src), "gemini_harvest": str(tmp_path / "absent.json")}
+    )
 
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
     assert status["indexed_conversations"] >= 1, status
-    assert any("harvest" in e.get("error", "").lower() for e in status["errors"]), \
+    assert any("harvest" in e.get("error", "").lower() for e in status["errors"]), (
         "a named-but-absent harvest must be reported, not swallowed: %s" % status["errors"]
+    )
 
 
 def test_the_chatgpt_PROJECTS_second_path_joins_the_same_dedup_pool(tmp_path):
@@ -1179,8 +1351,9 @@ def test_the_chatgpt_PROJECTS_second_path_joins_the_same_dedup_pool(tmp_path):
     status = srv.dispatch("corpus.build_status", {})
     assert status["state"] == "done", status
     assert status["indexed_conversations"] == 2, status
-    assert [h["conversation_id"] for h in
-            srv.dispatch("search.query", {"q": "narwhal"})["hits"]] == ["c-2"]
+    assert [
+        h["conversation_id"] for h in srv.dispatch("search.query", {"q": "narwhal"})["hits"]
+    ] == ["c-2"]
 
 
 def test_naming_ONLY_an_export_satisfies_the_at_least_one_source_rule(tmp_path):
@@ -1221,7 +1394,8 @@ def test_the_export_params_match_the_loader_vocabulary():
     expected = {p: p in loaders._EXPORT_SECOND_PATH for p in loaders.EXPORT_PROVIDERS}
     assert seconds == expected, (
         "a provider's second-path support disagrees with loaders._EXPORT_SECOND_PATH; "
-        "a second path accepted here and ignored there is a flag that does nothing")
+        "a second path accepted here and ignored there is a flag that does nothing"
+    )
 
     # Every declared key is really read by the handler, and the exemption names a real key.
     assert set(sidecar._EXPORT_EXISTENCE_EXEMPT) <= set(sidecar._EXPORT_KEYS)
@@ -1246,5 +1420,6 @@ def test_a_non_string_export_path_is_a_caller_bug(tmp_path):
     with pytest.raises(sidecar.RpcError) as excinfo:
         srv.dispatch("corpus.build", {"chatgpt_export": 17})
     assert excinfo.value.code == -32602
-    assert "chatgpt_export must be a string" == str(excinfo.value.message), \
+    assert "chatgpt_export must be a string" == str(excinfo.value.message), (
         "a wrong TYPE must be refused by _opt_str, not by the no-source catch-all"
+    )

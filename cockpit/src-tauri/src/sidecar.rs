@@ -335,7 +335,7 @@ fn last_path_segment(path: &str) -> Option<&str> {
 /// username" (`llm_anthology/sidecar.py`, `_build_error`). A diagnostics bundle is a SHARED
 /// artifact, so without this the support channel becomes the identification channel.
 ///
-/// Cited BY NAME rather than by line: that anchor was written as `sidecar.py:541` and was
+/// Cited BY NAME rather than by line: that anchor was written as `sidecar.py:549` and was
 /// already stale within the hour, because the engine is under concurrent edit and every
 /// insertion above shifts it. `tests/test_citation_anchors.py` pins `mock.ts`/`types.ts`
 /// citations only and says so explicitly — `.rs` anchors are NOT covered — so a line number
@@ -742,7 +742,7 @@ fn jsonrpc_roundtrip_bounded(
     //
     // A NULL id is tolerated ONLY alongside an `error`. That allowance exists because a
     // parse error cannot echo an id it never managed to read
-    // (`_error_response(None, ..)`, llm_anthology/sidecar.py:654,660) — and that is its
+    // (`_error_response(None, ..)`, llm_anthology/sidecar.py:662,668) — and that is its
     // whole extent. A null id beside a RESULT has no legitimate producer, since every
     // result echoes the numeric request id (`:673`); accepting one hands the caller a
     // payload belonging to some other request as though it answered this one. Silent
@@ -1619,7 +1619,7 @@ mod tests {
     /// Measured before the fix: `id:null` + `result` returned `Ok("other")` for request
     /// 42. No legitimate producer exists — the engine's only null-id replies are
     /// `_error_response(None, ..)` on a parse / invalid-request line
-    /// (`llm_anthology/sidecar.py:654,660`), while every `result` echoes the numeric
+    /// (`llm_anthology/sidecar.py:662,668`), while every `result` echoes the numeric
     /// request id (`:673`) — so the tolerance is narrowed to exactly its stated purpose.
     #[test]
     fn a_null_id_reply_is_tolerated_only_when_it_carries_an_error() {
@@ -1851,7 +1851,7 @@ mod tests {
             "findings must be an array the UI can iterate: {out}"
         );
         // `roots_scanned` must be REPORTED, not necessarily non-zero. It counts only roots
-        // whose base directory exists (`discover.py:528`), so on a bare CI runner with no
+        // whose base directory exists (`discover.py:608`), so on a bare CI runner with no
         // ~/.codex, ~/.grok, ~/.claude or ~/Downloads it is legitimately 0. The previous
         // `>= 1` therefore asserted a property of the DEVELOPER'S MACHINE, not of this code,
         // and was measured deterministically red in a clean Linux container — one

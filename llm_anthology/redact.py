@@ -50,6 +50,7 @@ third implementation — not because the two policies are the same. The credenti
 is a SHAPE matcher only and says so in its own coverage statement; it is not, and must
 not be presented as, a personal-data or medical-content detector.
 """
+
 from __future__ import annotations
 
 import os
@@ -88,13 +89,14 @@ class MetadataView:
     research plane; adding a field here is the only way to widen what crosses, and that
     is a reviewable one-line change.
     """
+
     conversation_id: str
     provider: str
     account: str
     created_at: str
     updated_at: str
     turn_count: int
-    char_count: int                     # a COUNT of body chars, never the body
+    char_count: int  # a COUNT of body chars, never the body
     thread_id: str
 
 
@@ -235,8 +237,7 @@ _CREDENTIAL_SHAPES = (
     # every `sk-ant-` hit would be reported twice under two different shape names.
     ("openai-api-key", re.compile(r"\bsk-(?!ant-)[A-Za-z0-9_-]{20,}")),
     ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("github-token", re.compile(
-        r"\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,})")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,})")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{12,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")),
@@ -265,9 +266,11 @@ def _credential_spans(text):
     """
     if not isinstance(text, str):
         return []
-    raw = sorted((m.start(), -(m.end() - m.start()), name)
-                 for name, pattern in _CREDENTIAL_SHAPES
-                 for m in pattern.finditer(text))
+    raw = sorted(
+        (m.start(), -(m.end() - m.start()), name)
+        for name, pattern in _CREDENTIAL_SHAPES
+        for m in pattern.finditer(text)
+    )
     spans, end_of_last = [], -1
     for start, neg_len, name in raw:
         if start < end_of_last:
@@ -289,8 +292,10 @@ def scan_credential_shapes(text):
     COVERAGE: shapes only. See :data:`CREDENTIAL_SHAPE_COVERAGE_LIMIT` — an empty result
     is not a safety verdict, and personal and medical content is invisible to this.
     """
-    return [{"shape": name, "offset": start, "preview": _mask(text[start:end])}
-            for start, end, name in _credential_spans(text)]
+    return [
+        {"shape": name, "offset": start, "preview": _mask(text[start:end])}
+        for start, end, name in _credential_spans(text)
+    ]
 
 
 def scrub_credential_shapes(text):
@@ -333,7 +338,7 @@ def relativize_home(path, home=None):
     """
     if not isinstance(path, str) or not path:
         return ""
-    root = (os.path.expanduser("~") if home is None else home)
+    root = os.path.expanduser("~") if home is None else home
     root = root.replace("\\", "/").rstrip("/")
     if not root:
         # No home to relativize against (an explicitly empty root). Rewriting would
@@ -343,7 +348,7 @@ def relativize_home(path, home=None):
     if norm.lower() == root.lower():
         return "~"
     if norm.lower().startswith(root.lower() + "/"):
-        return "~/" + norm[len(root) + 1:]
+        return "~/" + norm[len(root) + 1 :]
     return path
 
 
@@ -383,7 +388,7 @@ def scrub_home_mentions(text, home=None):
     for spelling in {root.replace("\\", "/"), root.replace("/", "\\")}:
         idx = out.lower().find(spelling.lower())
         while idx != -1:
-            out = out[:idx] + "~" + out[idx + len(spelling):]
+            out = out[:idx] + "~" + out[idx + len(spelling) :]
             idx = out.lower().find(spelling.lower(), idx + 1)
     return out
 
@@ -391,11 +396,23 @@ def scrub_home_mentions(text, home=None):
 #: Every ThreadMeta field name, spelled out so :func:`shareable_thread` cannot silently
 #: pass through a field added later. A test asserts this equals ThreadMeta's real field
 #: set, so adding a field turns that test red and forces a keep / drop / relativize call.
-SHAREABLE_DECIDED_FIELDS = frozenset({
-    "id", "title", "model_provider", "tokens_used", "created_at_ms", "updated_at_ms",
-    "git_branch", "cwd", "agent_role", "agent_nickname", "preview", "rollout_path",
-    "adapter",
-})
+SHAREABLE_DECIDED_FIELDS = frozenset(
+    {
+        "id",
+        "title",
+        "model_provider",
+        "tokens_used",
+        "created_at_ms",
+        "updated_at_ms",
+        "git_branch",
+        "cwd",
+        "agent_role",
+        "agent_nickname",
+        "preview",
+        "rollout_path",
+        "adapter",
+    }
+)
 
 
 def shareable_thread(meta, home=None):

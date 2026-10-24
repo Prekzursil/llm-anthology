@@ -59,11 +59,7 @@ const main = async () => {
   check("nothing is attached, so this is the first-run branch", text.includes("No corpus"), text);
   check("the label carries a title attribute at all", title !== "", "(empty = the wire is dead)");
   check("the title names a concrete index file", /\.sqlite\b/.test(title), title);
-  check(
-    "the title names the app data folder, not just any path",
-    /anthology/i.test(title),
-    title,
-  );
+  check("the title names the app data folder, not just any path", /anthology/i.test(title), title);
 
   await browser.close();
   const failed = checks.filter((c) => !c.ok);

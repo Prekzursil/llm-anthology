@@ -58,6 +58,7 @@ FTS text, baseline calibrated at 6.1% of text against the real corpus's 9.4%):
 
 PRIVACY: synthetic only. It never opens the owner's index and never reads a session store.
 """
+
 import argparse
 import os
 import random
@@ -69,7 +70,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from llm_anthology import corpus, ir            # noqa: E402
+from llm_anthology import corpus, ir  # noqa: E402
 
 #: Measured shape of the real corpus (from the G-4 decision record).
 REAL_CONVERSATIONS = 1071
@@ -118,13 +119,20 @@ def _hapax(rng):
     """
     kind = rng.randint(0, 3)
     if kind == 0:
-        return "sym_%s_%04x" % (rng.choice(("resolve", "emit", "walk", "bind")), rng.getrandbits(16))
+        return "sym_%s_%04x" % (
+            rng.choice(("resolve", "emit", "walk", "bind")),
+            rng.getrandbits(16),
+        )
     if kind == 1:
         return "%08x%08x" % (rng.getrandbits(32), rng.getrandbits(32))
     if kind == 2:
         return "pkg/mod%03d/file_%05d.py" % (rng.randint(0, 400), rng.getrandbits(17))
-    return "v%d.%d.%d-rc%d" % (rng.randint(0, 9), rng.randint(0, 40), rng.getrandbits(9),
-                               rng.randint(1, 9))
+    return "v%d.%d.%d-rc%d" % (
+        rng.randint(0, 9),
+        rng.randint(0, 40),
+        rng.getrandbits(9),
+        rng.randint(1, 9),
+    )
 
 
 def _paragraph(rng, sentences, hapax_every):
@@ -151,13 +159,12 @@ def _blocks(rng, n_lines, data_ratio, hapax_every):
     """One turn's blocks: a prose paragraph plus, with probability `data_ratio`, a tool_use
     block whose `data` carries code. `data` is archived but NEVER enters the FTS body, so it
     is the parameter the archive's size is most sensitive to — hence a knob, not a constant."""
-    blocks = [ir.Block(type="text",
-                       text=_paragraph(rng, max(1, n_lines // 4), hapax_every))]
+    blocks = [ir.Block(type="text", text=_paragraph(rng, max(1, n_lines // 4), hapax_every))]
     if rng.random() < data_ratio:
-        code = "\n".join("%s  # %s" % (rng.choice(_CODE), _hapax(rng))
-                         for _ in range(n_lines))
-        blocks.append(ir.Block(type="tool_use", text="Edit",
-                               data={"name": "Edit", "input": {"code": code}}))
+        code = "\n".join("%s  # %s" % (rng.choice(_CODE), _hapax(rng)) for _ in range(n_lines))
+        blocks.append(
+            ir.Block(type="tool_use", text="Edit", data={"name": "Edit", "input": {"code": code}})
+        )
     return blocks
 
 
@@ -173,17 +180,25 @@ def _conversation(rng, cid, target_chars, data_ratio, hapax_every):
     turns, size = [], 0
     while size < target_chars:
         blocks = _blocks(rng, rng.randint(4, 40), data_ratio, hapax_every)
-        turns.append(ir.Turn(
-            role="human" if len(turns) % 2 == 0 else "assistant",
-            uuid="u-%s-%d" % (cid, len(turns)),
-            timestamp="2026-0%d-%02dT10:00:00Z" % (rng.randint(1, 8), rng.randint(1, 28)),
-            blocks=blocks))
+        turns.append(
+            ir.Turn(
+                role="human" if len(turns) % 2 == 0 else "assistant",
+                uuid="u-%s-%d" % (cid, len(turns)),
+                timestamp="2026-0%d-%02dT10:00:00Z" % (rng.randint(1, 8), rng.randint(1, 28)),
+                blocks=blocks,
+            )
+        )
         size += sum(len(b.text) for b in blocks)
     return ir.Conversation(
-        id=cid, title="synthetic session %s about a refactor" % cid, provider="codex",
-        account="acct", turns=turns, created_at="2026-03-01T00:00:00Z",
+        id=cid,
+        title="synthetic session %s about a refactor" % cid,
+        provider="codex",
+        account="acct",
+        turns=turns,
+        created_at="2026-03-01T00:00:00Z",
         updated_at="2026-03-02T00:00:00Z",
-        meta={"thread_id": "t-%s" % cid, "rollout_paths": ["/synthetic/%s.jsonl" % cid]}), size
+        meta={"thread_id": "t-%s" % cid, "rollout_paths": ["/synthetic/%s.jsonl" % cid]},
+    ), size
 
 
 def _corpus_records(scale, data_ratio, hapax_every):
@@ -195,8 +210,7 @@ def _corpus_records(scale, data_ratio, hapax_every):
     rest = max(1, (total - outlier) // max(1, count - 1))
     rng = random.Random(20260810)
     for i in range(count):
-        yield _conversation(rng, "c%05d" % i, outlier if i == 0 else rest, data_ratio,
-                            hapax_every)
+        yield _conversation(rng, "c%05d" % i, outlier if i == 0 else rest, data_ratio, hapax_every)
 
 
 def _old_shape(conn):
@@ -208,7 +222,8 @@ def _old_shape(conn):
         "DROP TABLE conversation_bodies;\n"
         "DROP TABLE conversations_fts;\n"
         "CREATE VIRTUAL TABLE conversations_fts USING fts5("
-        "title, body, content='', detail=none, contentless_delete=1);")
+        "title, body, content='', detail=none, contentless_delete=1);"
+    )
     return conn
 
 
@@ -220,15 +235,27 @@ def _build(path, records, old):
         if old:
             # the pre-G-4 write: FTS + row only, no archived body
             body = corpus._conversation_body(conv)
-            values = (conv.id, conv.provider, conv.account, conv.title, conv.created_at,
-                      conv.updated_at, len(conv.turns), len(body), "", "")
+            values = (
+                conv.id,
+                conv.provider,
+                conv.account,
+                conv.title,
+                conv.created_at,
+                conv.updated_at,
+                len(conv.turns),
+                len(body),
+                "",
+                "",
+            )
             cur = conn.execute(
                 "INSERT INTO conversations(%s) VALUES (%s)"
                 % (",".join(corpus._CONV_COLS), ",".join("?" * len(corpus._CONV_COLS))),
-                values)
+                values,
+            )
             conn.execute(
                 "INSERT INTO conversations_fts(rowid, title, body) VALUES (?,?,?)",
-                (cur.lastrowid, conv.title, body))
+                (cur.lastrowid, conv.title, body),
+            )
         else:
             corpus.add_conversation(conn, conv, rollout_path="/synthetic/%s.jsonl" % conv.id)
     conn.commit()
@@ -245,9 +272,16 @@ def _build(path, records, old):
 
 
 _QUERIES = [
-    '"quick brown"', '"the assistant proposed"', "refactor AND windows",
-    "NEAR(phrase positions, 6)", "title: synthetic", "coverage", "seek*",
-    '"one hundred percent"', "detail AND none AND positions", "conn OR execute",
+    '"quick brown"',
+    '"the assistant proposed"',
+    "refactor AND windows",
+    "NEAR(phrase positions, 6)",
+    "title: synthetic",
+    "coverage",
+    "seek*",
+    '"one hundred percent"',
+    "detail AND none AND positions",
+    "conn OR execute",
 ]
 
 
@@ -255,17 +289,21 @@ def _p95(conn, repeats):
     """Wall-clock per MATCH, mirroring `sidecar._run_search`: the COUNT then the ranked
     page, both over the same JOIN, because that pair is what one `search.query` costs."""
     samples = []
-    frm = ("FROM conversations_fts JOIN conversations c "
-           "ON c.rowid = conversations_fts.rowid WHERE conversations_fts MATCH ?")
+    frm = (
+        "FROM conversations_fts JOIN conversations c "
+        "ON c.rowid = conversations_fts.rowid WHERE conversations_fts MATCH ?"
+    )
     for _ in range(repeats):
         for query in _QUERIES:
             started = time.perf_counter()
             try:
                 conn.execute("SELECT COUNT(*) " + frm, (query,)).fetchone()
                 conn.execute(
-                    "SELECT c.conversation_id, c.title " + frm
+                    "SELECT c.conversation_id, c.title "
+                    + frm
                     + " ORDER BY bm25(conversations_fts), c.conversation_id LIMIT 50",
-                    (query,)).fetchall()
+                    (query,),
+                ).fetchall()
             except sqlite3.OperationalError as exc:
                 samples.append((query, None, str(exc)))
                 continue
@@ -288,40 +326,65 @@ def _mb(n):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--scale", type=int, default=1,
-                    help="divide the real corpus size by this (default 1 = full scale)")
-    ap.add_argument("--repeats", type=int, default=20,
-                    help="query repeats per expression for the latency sample")
-    ap.add_argument("--data-ratio", type=float, default=0.45,
-                    help="probability a turn carries a tool_use `data` payload. THE MOST "
-                         "SENSITIVE PARAMETER and an UNVERIFIED one: `data` is archived but "
-                         "never enters the FTS body, so it inflates the archive without "
-                         "moving the 'MB of text' figure. Its real value is unknown here — "
-                         "measuring it means reading the owner's private index, which this "
-                         "benchmark may not do. Run 0.0 for the text-only floor.")
-    ap.add_argument("--hapax-every", type=int, default=5,
-                    help="mint one once-seen token per N sentences. Calibration knob: the "
-                         "printed synthetic index/text ratio should land near the real "
-                         "corpus's measured 9.4%%. Swept at 1/32 scale — 2 -> 19.7%%, "
-                         "3 -> 11.4%%, 5 -> 10.4%% — so 5 is the default.")
+    ap.add_argument(
+        "--scale",
+        type=int,
+        default=1,
+        help="divide the real corpus size by this (default 1 = full scale)",
+    )
+    ap.add_argument(
+        "--repeats",
+        type=int,
+        default=20,
+        help="query repeats per expression for the latency sample",
+    )
+    ap.add_argument(
+        "--data-ratio",
+        type=float,
+        default=0.45,
+        help="probability a turn carries a tool_use `data` payload. THE MOST "
+        "SENSITIVE PARAMETER and an UNVERIFIED one: `data` is archived but "
+        "never enters the FTS body, so it inflates the archive without "
+        "moving the 'MB of text' figure. Its real value is unknown here — "
+        "measuring it means reading the owner's private index, which this "
+        "benchmark may not do. Run 0.0 for the text-only floor.",
+    )
+    ap.add_argument(
+        "--hapax-every",
+        type=int,
+        default=5,
+        help="mint one once-seen token per N sentences. Calibration knob: the "
+        "printed synthetic index/text ratio should land near the real "
+        "corpus's measured 9.4%%. Swept at 1/32 scale — 2 -> 19.7%%, "
+        "3 -> 11.4%%, 5 -> 10.4%% — so 5 is the default.",
+    )
     args = ap.parse_args(argv)
 
-    print("generating a synthetic corpus at 1/%d of the measured real shape "
-          "(data-ratio %.2f)..." % (args.scale, args.data_ratio))
+    print(
+        "generating a synthetic corpus at 1/%d of the measured real shape "
+        "(data-ratio %.2f)..." % (args.scale, args.data_ratio)
+    )
     started = time.perf_counter()
     records = list(_corpus_records(args.scale, args.data_ratio, args.hapax_every))
     text_bytes = sum(len(corpus._conversation_body(c).encode("utf-8")) for c, _s in records)
-    print("  %d conversations, %.1f MB of text, generated in %.1fs"
-          % (len(records), _mb(text_bytes), time.perf_counter() - started))
+    print(
+        "  %d conversations, %.1f MB of text, generated in %.1fs"
+        % (len(records), _mb(text_bytes), time.perf_counter() - started)
+    )
 
     tmp = tempfile.mkdtemp(prefix="g4bench-")
     results = {}
-    for label, old in (("pre-G-4 (detail=none, no bodies)", True),
-                       ("shipped  (detail=full + bodies)", False)):
+    for label, old in (
+        ("pre-G-4 (detail=none, no bodies)", True),
+        ("shipped  (detail=full + bodies)", False),
+    ):
         path = os.path.join(tmp, ("old" if old else "new") + ".sqlite")
         conn, ingest = _build(path, records, old)
-        size = sum(os.path.getsize(path + suffix) for suffix in ("", "-wal", "-shm")
-                   if os.path.exists(path + suffix))
+        size = sum(
+            os.path.getsize(path + suffix)
+            for suffix in ("", "-wal", "-shm")
+            if os.path.exists(path + suffix)
+        )
         # TWO denominators, because using one of them produced a nonsense number in the
         # first run of this benchmark: it divided the archive by the FTS body size and
         # reported "128% of the text they hold", i.e. compression that made data bigger.
@@ -334,7 +397,8 @@ def main(argv=None):
         if not old:
             blobs, payload = conn.execute(
                 "SELECT COALESCE(SUM(LENGTH(archive)), 0), COALESCE(SUM(text_bytes), 0) "
-                "FROM conversation_bodies").fetchone()
+                "FROM conversation_bodies"
+            ).fetchone()
         latency = _p95(conn, args.repeats)
         # ...and a SETTLED size too. A freshly built index carries free pages the ingest left
         # behind; VACUUM is what a distributed/exported archive would actually weigh. Both are
@@ -343,51 +407,84 @@ def main(argv=None):
         conn.commit()
         conn.close()
         settled = os.path.getsize(path)
-        results[label] = dict(size=size, settled=settled, blobs=blobs, payload=payload,
-                              ingest=ingest, latency=latency)
+        results[label] = dict(
+            size=size, settled=settled, blobs=blobs, payload=payload, ingest=ingest, latency=latency
+        )
         print("\n%s" % label)
-        print("  index on disk       %8.1f MB   (%.1f MB after VACUUM)"
-              % (_mb(size), _mb(settled)))
+        print("  index on disk       %8.1f MB   (%.1f MB after VACUUM)" % (_mb(size), _mb(settled)))
         if not old:
             print("  of which bodies     %8.1f MB compressed" % _mb(blobs))
-            print("    they store        %8.1f MB of turn JSON -> ratio x%.2f"
-                  % (_mb(payload), payload / max(1.0, float(blobs))))
-            print("    (that JSON is %.1fx the %.1f MB of FTS text, because block.data —"
-                  % (payload / max(1.0, float(text_bytes)), _mb(text_bytes)))
+            print(
+                "    they store        %8.1f MB of turn JSON -> ratio x%.2f"
+                % (_mb(payload), payload / max(1.0, float(blobs)))
+            )
+            print(
+                "    (that JSON is %.1fx the %.1f MB of FTS text, because block.data —"
+                % (payload / max(1.0, float(text_bytes)), _mb(text_bytes))
+            )
             print("     tool input/output, code — is archived but never in the FTS body)")
-            print("  everything else     %8.1f MB (row store + detail=full FTS)"
-                  % _mb(size - blobs))
+            print(
+                "  everything else     %8.1f MB (row store + detail=full FTS)" % _mb(size - blobs)
+            )
         if old:
-            print("  CALIBRATION         %8.1f%% of the FTS text (real corpus: %.1f%%, "
-                  "11.5 MB over 122.1 MB)"
-                  % (100.0 * size / max(1, text_bytes),
-                     100.0 * REAL_INDEX_BYTES / REAL_TEXT_BYTES))
+            print(
+                "  CALIBRATION         %8.1f%% of the FTS text (real corpus: %.1f%%, "
+                "11.5 MB over 122.1 MB)"
+                % (100.0 * size / max(1, text_bytes), 100.0 * REAL_INDEX_BYTES / REAL_TEXT_BYTES)
+            )
         print("  ingest              %8.1f s" % ingest)
-        print("  MATCH p50 / p95     %8.1f / %.1f ms   (budget %d ms, max %.1f)"
-              % (latency["p50"], latency["p95"], BUDGET_MS, latency["max"]))
+        print(
+            "  MATCH p50 / p95     %8.1f / %.1f ms   (budget %d ms, max %.1f)"
+            % (latency["p50"], latency["p95"], BUDGET_MS, latency["max"])
+        )
         if latency["refused"]:
             print("  REFUSED outright    %s" % ", ".join(latency["refused"]))
 
     old_r = results["pre-G-4 (detail=none, no bodies)"]
     new_r = results["shipped  (detail=full + bodies)"]
     print("\n---- verdict ----")
-    print("index      %.1f MB -> %.1f MB  (x%.2f);  settled %.1f -> %.1f MB (x%.2f)"
-          % (_mb(old_r["size"]), _mb(new_r["size"]),
-             new_r["size"] / max(1.0, float(old_r["size"])),
-             _mb(old_r["settled"]), _mb(new_r["settled"]),
-             new_r["settled"] / max(1.0, float(old_r["settled"]))))
-    print("           the G-4 estimate was 55-75 MB -> %s"
-          % ("WITHIN the estimate" if _mb(new_r["settled"]) <= 75
-             else "OVER the estimate by x%.1f" % (_mb(new_r["settled"]) / 75.0)))
-    print("p95        %.1f ms -> %.1f ms  (budget %d ms) -> %s"
-          % (old_r["latency"]["p95"], new_r["latency"]["p95"], BUDGET_MS,
-             "WITHIN budget" if new_r["latency"]["p95"] <= BUDGET_MS else "OVER BUDGET"))
-    print("worst      %.1f ms -> %.1f ms -> %s"
-          % (old_r["latency"]["max"], new_r["latency"]["max"],
-             "every sample within budget" if new_r["latency"]["max"] <= BUDGET_MS
-             else "the SLOWEST sample EXCEEDS the budget"))
-    print("capability the old shape could not answer at all: %s"
-          % ", ".join(old_r["latency"]["refused"]))
+    print(
+        "index      %.1f MB -> %.1f MB  (x%.2f);  settled %.1f -> %.1f MB (x%.2f)"
+        % (
+            _mb(old_r["size"]),
+            _mb(new_r["size"]),
+            new_r["size"] / max(1.0, float(old_r["size"])),
+            _mb(old_r["settled"]),
+            _mb(new_r["settled"]),
+            new_r["settled"] / max(1.0, float(old_r["settled"])),
+        )
+    )
+    print(
+        "           the G-4 estimate was 55-75 MB -> %s"
+        % (
+            "WITHIN the estimate"
+            if _mb(new_r["settled"]) <= 75
+            else "OVER the estimate by x%.1f" % (_mb(new_r["settled"]) / 75.0)
+        )
+    )
+    print(
+        "p95        %.1f ms -> %.1f ms  (budget %d ms) -> %s"
+        % (
+            old_r["latency"]["p95"],
+            new_r["latency"]["p95"],
+            BUDGET_MS,
+            "WITHIN budget" if new_r["latency"]["p95"] <= BUDGET_MS else "OVER BUDGET",
+        )
+    )
+    print(
+        "worst      %.1f ms -> %.1f ms -> %s"
+        % (
+            old_r["latency"]["max"],
+            new_r["latency"]["max"],
+            "every sample within budget"
+            if new_r["latency"]["max"] <= BUDGET_MS
+            else "the SLOWEST sample EXCEEDS the budget",
+        )
+    )
+    print(
+        "capability the old shape could not answer at all: %s"
+        % ", ".join(old_r["latency"]["refused"])
+    )
     return 0
 
 

@@ -5,6 +5,7 @@ every run (a decode crash, a bad cwd, a wrong command), an unprotected mutation 
 reported as killed too. This runs the IDENTICAL subprocess call against the UNMUTATED
 source and requires exit 0.
 """
+
 import pathlib
 import subprocess
 

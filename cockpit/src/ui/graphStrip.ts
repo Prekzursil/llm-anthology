@@ -8,8 +8,8 @@
  * its spawn graph has ZERO nodes and a stranger's graph pane is empty BY CONSTRUCTION, not by
  * accident. That is verified in the engine rather than assumed — the export ingest path admits
  * each conversation with `corpus.add_conversation(conn, conv, thread_id="", …)` and never calls
- * `add_thread` or `_add_edge` (`llm_anthology/loaders.py:1101-1152`), while the session-store
- * path does both (`loaders.py:567-569`). Spawn lineage is a property of an agent SESSION STORE,
+ * `add_thread` or `_add_edge` (`llm_anthology/loaders.py:1147-1209`), while the session-store
+ * path does both (`loaders.py:609-611`). Spawn lineage is a property of an agent SESSION STORE,
  * and no export format has it.
  *
  * A big black rectangle with centred text reads as a broken renderer; a one-line strip reads as
@@ -82,9 +82,9 @@ export type GraphStripReason =
  * mention the corpus control — that is the advice this whole decision exists to stop giving.
  */
 export const NO_LINEAGE_LABEL =
-  "No spawn lineage in this corpus. Parent/child links between sessions are recorded only in "
-  + "agent session stores — a downloaded ChatGPT or Claude export carries none. Ingest a Codex "
-  + "or Claude Code session store to draw a tree here.";
+  "No spawn lineage in this corpus. Parent/child links between sessions are recorded only in " +
+  "agent session stores — a downloaded ChatGPT or Claude export carries none. Ingest a Codex " +
+  "or Claude Code session store to draw a tree here.";
 
 /**
  * A corpus is attached and there is genuinely nothing in it.
@@ -94,8 +94,8 @@ export const NO_LINEAGE_LABEL =
  * more of the same kind.
  */
 export const EMPTY_CORPUS_LABEL =
-  "This corpus is empty — nothing has been ingested into it yet. Import a session store or an "
-  + "export to fill it.";
+  "This corpus is empty — nothing has been ingested into it yet. Import a session store or an " +
+  "export to fill it.";
 
 /** Everything the decision needs, and nothing that would let it read the DOM. */
 export interface GraphStripInput {

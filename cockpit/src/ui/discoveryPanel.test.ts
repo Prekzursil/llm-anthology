@@ -199,7 +199,7 @@ describe("mtimeToMs", () => {
   });
 
   it("reads 0 as unknown rather than 1970", () => {
-    // `discover.py:552` writes 0.0 — never null — when nothing datable was seen.
+    // `discover.py:632` writes 0.0 — never null — when nothing datable was seen.
     expect(mtimeToMs(0)).toBeNull();
   });
 
@@ -307,7 +307,7 @@ describe("kindLabel", () => {
 
 describe("formatDetailValue", () => {
   it("omits an empty string, because that MEANS the marker was not found", () => {
-    // discover.py:564 writes `state_db: ""` for a marker file it did not find.
+    // discover.py:644 writes `state_db: ""` for a marker file it did not find.
     expect(formatDetailValue("")).toBeNull();
   });
 
@@ -378,7 +378,7 @@ describe("detailSummary", () => {
 
 describe("deriveBuildParams", () => {
   it("derives both parameters from a base-reporting store", () => {
-    // discover.py:550-551: report="base" names the HOME as `path`, with the sessions tree
+    // discover.py:630-631: report="base" names the HOME as `path`, with the sessions tree
     // carried separately as detail.items_root.
     expect(deriveBuildParams(codexStore())).toEqual({
       build: {
@@ -419,7 +419,7 @@ describe("deriveBuildParams", () => {
     // uses. So the refusal became the stale half, and leaving it would mean the UI
     // rejecting an import the engine is ready to serve.
     //
-    // Structurally identical to the Grok line: `discover.py:644` sets `path = scan_root`
+    // Structurally identical to the Grok line: `discover.py:724` sets `path = scan_root`
     // for report="subdir", and that IS the projects root `claude_code.ingest_sessions`
     // takes, so no derivation is needed beyond naming it.
     const derived = deriveBuildParams(claudeCodeStore());
@@ -473,9 +473,9 @@ describe("deriveAction", () => {
   });
 
   it("does NOT gate the import on detail.ingestable", () => {
-    // The measured live store reads `ingestable: 0` because discover.py:291-295 marks the
+    // The measured live store reads `ingestable: 0` because discover.py:339-343 marks the
     // compressed form not-ingestable, while ingest_sessions actually globs BOTH forms
-    // (codex_rollout.py:416-419) and the store holds 2043 .zst against 0 plain .jsonl.
+    // (codex_rollout.py:469-472) and the store holds 2043 .zst against 0 plain .jsonl.
     // Gating on that counter would hide a working import of the entire history.
     expect(codexStore().detail.ingestable).toBe(0);
     expect(deriveAction(codexStore(), OPEN_CTX).kind).toBe("import");
@@ -527,11 +527,7 @@ describe("groupFindings ordering", () => {
       ]),
       { ...OPEN_CTX, nowMs: NOW },
     );
-    expect(groups.map((g) => g.kind)).toEqual([
-      "built_index",
-      "session_store",
-      "export_file",
-    ]);
+    expect(groups.map((g) => g.kind)).toEqual(["built_index", "session_store", "export_file"]);
   });
 
   it("sorts a kind it does not recognise LAST rather than first", () => {
@@ -560,7 +556,7 @@ describe("groupFindings ordering", () => {
   });
 
   it("puts the newest finding first WITHIN a group", () => {
-    // The engine sorts survivors by (kind, provider, PATH) — discover.py:819-820 — so wire
+    // The engine sorts survivors by (kind, provider, PATH) — discover.py:920-922 — so wire
     // order is not presentation order and the UI has to re-sort.
     const groups = groupFindings(
       scan([
@@ -594,7 +590,7 @@ describe("groupFindings ordering", () => {
   it("reaches the SAME row order from the opposite wire order", () => {
     // The claim above is "byte-identical", which is a claim about the comparator being a total
     // order — not merely about one input. The engine sorts by (kind, provider, PATH)
-    // (discover.py:819-820), so wire order is arbitrary from this UI's point of view, and the
+    // (discover.py:920-922), so wire order is arbitrary from this UI's point of view, and the
     // previous test only exercises the comparator in one direction.
     const groups = groupFindings(
       scan([
@@ -729,7 +725,7 @@ describe("groupFindings truncation", () => {
   });
 
   it("carries the backend cap in a SEPARATE field from its own collapsing", () => {
-    // stats.truncated_groups is keyed "<provider>/<kind>" (discover.py:785). Both
+    // stats.truncated_groups is keyed "<provider>/<kind>" (discover.py:883). Both
     // truncations are live here at once, and each has to keep its own field: one is a
     // button, the other is a sentence no button can satisfy.
     const groups = groupFindings(
@@ -833,7 +829,7 @@ describe("pollOutcome", () => {
   });
 
   it("stops on idle, which is what the engine reports when it holds no job", () => {
-    // sidecar.py:822. Treating idle as "keep waiting" would spin forever.
+    // sidecar.py:832. Treating idle as "keep waiting" would spin forever.
     expect(pollOutcome("idle", 0, DEFAULT_POLL_LIMITS)).toBe("terminal");
   });
 
@@ -974,7 +970,8 @@ function harness(
     {
       now: deps.now ?? ((): number => NOW),
       sleep: deps.sleep ?? (async (ms: number): Promise<void> => void sleeps.push(ms)),
-      chooseDestination: deps.chooseDestination ?? (async (): Promise<string | null> => "C:\\new.db"),
+      chooseDestination:
+        deps.chooseDestination ?? (async (): Promise<string | null> => "C:\\new.db"),
       limits: deps.limits,
       maxRows: deps.maxRows,
     },
@@ -1095,7 +1092,7 @@ describe("DiscoveryPanelController.activate", () => {
 
   it("creates and attaches an index before importing when nothing is open", async () => {
     // corpus.build is only forwarded once a corpus is attached (lib.rs:35-45) and the
-    // engine needs that index to exist on disk (sidecar.py:715-718).
+    // engine needs that index to exist on disk (sidecar.py:724-727).
     const h = harness();
     await h.controller.activate(codexStore());
     expect(h.ipc.created).toEqual(["C:\\new.db"]);
@@ -1105,27 +1102,26 @@ describe("DiscoveryPanelController.activate", () => {
     ]);
   });
 
-  it("IMPORTS a Claude Code store end to end, sending claude_root and nothing else",
-    async () => {
-      // The journey this whole change exists for, asserted where a user actually stands
-      // rather than at `deriveBuildParams`. The engine gaining `claude_root` was never
-      // enough on its own: this controller was the last hop, and it hard-refused any
-      // subdir store that was not Grok, so a user would have been told "this app cannot
-      // import a claude-code store yet" by a UI sitting on top of an engine that could.
-      // That is the unreachable-data-plane shape the adapter itself was in for months —
-      // complete, tested, and reachable from nothing — moved one layer out.
-      //
-      // `claude_root` ALONE is the assertion that matters. `corpus.build` was measured
-      // accepting it with no other source named, and inventing a `codex_home` here would
-      // merge a state graph this import does not have; defaulting it to the live `~/.codex`
-      // is precisely the behaviour that once let an automated probe read real private
-      // sessions.
-      const h = harness();
-      await h.controller.activate(claudeCodeStore());
+  it("IMPORTS a Claude Code store end to end, sending claude_root and nothing else", async () => {
+    // The journey this whole change exists for, asserted where a user actually stands
+    // rather than at `deriveBuildParams`. The engine gaining `claude_root` was never
+    // enough on its own: this controller was the last hop, and it hard-refused any
+    // subdir store that was not Grok, so a user would have been told "this app cannot
+    // import a claude-code store yet" by a UI sitting on top of an engine that could.
+    // That is the unreachable-data-plane shape the adapter itself was in for months —
+    // complete, tested, and reachable from nothing — moved one layer out.
+    //
+    // `claude_root` ALONE is the assertion that matters. `corpus.build` was measured
+    // accepting it with no other source named, and inventing a `codex_home` here would
+    // merge a state graph this import does not have; defaulting it to the live `~/.codex`
+    // is precisely the behaviour that once let an automated probe read real private
+    // sessions.
+    const h = harness();
+    await h.controller.activate(claudeCodeStore());
 
-      expect(h.ipc.builds).toEqual([{ claude_root: "C:\\Users\\me\\.claude\\projects" }]);
-      expect(h.controller.current.status).not.toContain("cannot import");
-    });
+    expect(h.ipc.builds).toEqual([{ claude_root: "C:\\Users\\me\\.claude\\projects" }]);
+    expect(h.controller.current.status).not.toContain("cannot import");
+  });
 
   it("treats a dismissed destination picker as a no-op, not an error", async () => {
     const h = harness({}, { chooseDestination: async (): Promise<string | null> => null });
@@ -1206,7 +1202,9 @@ describe("DiscoveryPanelController.activate", () => {
     // Single-flight, for the same reason `scan` is: a double-click on Import would otherwise
     // start a second build the engine refuses by naming a job id the user never saw.
     let release = (): void => {};
-    const gate = new Promise<void>((r) => { release = r; });
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     const h = harness({
       async openCorpus(indexPath: string): Promise<OpenCorpusResult> {
         await gate;
@@ -1232,12 +1230,15 @@ describe("DiscoveryPanelController.activate", () => {
   it("abandons an import when the panel is destroyed while the picker is open", async () => {
     // The picker is a NATIVE dialog, so it can sit open indefinitely while the app moves on.
     // Creating an index after that would leave a file behind for a panel that is gone.
-    const h = harness({}, {
-      chooseDestination: async (): Promise<string | null> => {
-        h.controller.destroy();
-        return "C:\\new.db";
+    const h = harness(
+      {},
+      {
+        chooseDestination: async (): Promise<string | null> => {
+          h.controller.destroy();
+          return "C:\\new.db";
+        },
       },
-    });
+    );
     await h.controller.activate(codexStore());
     expect(h.ipc.created).toEqual([]);
     expect(h.ipc.builds).toEqual([]);
@@ -1307,7 +1308,12 @@ describe("DiscoveryPanelController build polling", () => {
   it("reloads the app even on a FAILED build, because the graph may already have changed", async () => {
     const h = harness({
       async corpusBuildStatus(): Promise<BuildStatus> {
-        return { state: "failed", error: "rollout tree vanished", indexed_conversations: 3, errors: [] };
+        return {
+          state: "failed",
+          error: "rollout tree vanished",
+          indexed_conversations: 3,
+          errors: [],
+        };
       },
     });
     await h.controller.activate(codexStore());
@@ -1468,10 +1474,10 @@ describe("a terminal import outcome the user must actually read", () => {
    * and `toggleGroup` patch only `groups`, leaving `phase` and `status` exactly as they were,
    * so clearing the marker there does not supersede the report — it deletes it. And because
    * the phase is still `done`, the next paint takes the collapse branch
-   * (`discoveryPanel.ts:1099`) and the panel disappears, taking with it the ONLY place in the
+   * (`discoveryPanel.ts:1124`) and the panel disappears, taking with it the ONLY place in the
    * cockpit that formats `BuildStatus.errors`.
    *
-   * That contradicts this file's own stated delivery guarantee (`discoveryPanel.ts:961-966`:
+   * That contradicts this file's own stated delivery guarantee (`discoveryPanel.ts:986-991`:
    * "an import that skipped files cannot vanish before someone dismissed the report of it").
    */
   describe("an unread report survives a re-derivation that supersedes nothing", () => {
