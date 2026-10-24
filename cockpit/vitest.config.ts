@@ -80,6 +80,8 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
+      // declaration files carry no runtime code to measure
+      exclude: ["src/**/*.d.ts"],
       thresholds: { lines: 100, functions: 100, statements: 100, branches: 100 },
       // the text table is not truncated, so every uncovered line is named in the log
       reporter: ["text-summary", ["text", { maxCols: 1000 }], "json-summary"],
