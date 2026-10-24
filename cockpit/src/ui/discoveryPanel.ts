@@ -13,13 +13,13 @@
  *   * `built_index`   -> OPEN it. `open_corpus` takes exactly this path.
  *   * `session_store` -> IMPORT it, but ONLY when the finding actually supplies both
  *     parameters `corpus.build` requires. The engine defaults NEITHER `sessions_root` nor
- *     `codex_home` (`llm_anthology/sidecar.py:838-843` states the rule and names the
+ *     `codex_home` (`llm_anthology/sidecar.py:836-841` states the rule and names the
  *     measured reason; `:856-861` enforces that at least one source is named),
  *     deliberately, because defaulting the latter would read the user's live private store
  *     unasked. So a store whose finding names only one of them gets a stated reason, not a
  *     guessed default.
  *   * `export_file`   -> NOTHING but the fact it exists. There is no import RPC for a
- *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:602-607`) has one
+ *     downloaded export: the sidecar's whole dispatch table (`sidecar.py:600-605`) has one
  *     ingest verb, `corpus.build`, and it runs `loaders.load_corpus`, which is Codex
  *     rollout logs plus a Codex state DB and nothing else (`llm_anthology/loaders.py:280`).
  *     Offering an "Import" button here would be inventing a capability.
@@ -293,7 +293,7 @@ function detailString(detail: Record<string, unknown>, key: string): string {
  * `rollout-*.jsonl` (`adapters/codex_rollout.py:416-419`) and matches nothing — a build
  * that reports complete success having imported zero conversations — the exact outcome the
  * engine's own docstring calls out, having added an existing-directory check to stop it
- * (`sidecar.py:845-847`).
+ * (`sidecar.py:843-845`).
  *
  * KNOWN LIMIT, stated rather than hidden: this reads a base-reporting store as
  * Codex-shaped. That is true of every store in the shipped table (`discover.py:271-333`
@@ -638,7 +638,7 @@ export type PollOutcome = "continue" | "terminal" | "timeout";
  *
  * Anything that is not `running` is terminal — `done` and `failed` obviously, but also
  * `idle`, which `corpus.build_status` reports when it holds no job at all
- * (`llm_anthology/sidecar.py:973-975`). Treating `idle` as "keep waiting" would spin forever
+ * (`llm_anthology/sidecar.py:971-973`). Treating `idle` as "keep waiting" would spin forever
  * against an engine that has nothing to report.
  */
 export function pollOutcome(state: string, elapsedMs: number, limits: PollLimits): PollOutcome {
@@ -764,7 +764,7 @@ function initialView(): DiscoveryView {
  * re-entrant call while one is in flight is ignored rather than queued, so a double-click
  * on "Import" cannot start two builds — which the engine would refuse anyway, with a
  * BUILD_IN_PROGRESS naming a job id the user never knew existed
- * (`llm_anthology/sidecar.py:892-896`).
+ * (`llm_anthology/sidecar.py:890-894`).
  */
 export class DiscoveryPanelController {
   private view: DiscoveryView = initialView();
@@ -921,8 +921,8 @@ export class DiscoveryPanelController {
    *
    * That first step is not optional: `corpus.build` is forwarded only when a corpus is
    * already attached (`cockpit/src-tauri/src/lib.rs:35-45`), the engine re-checks that
-   * itself (`sidecar.py:848` calling `_require_corpus`, `sidecar.py:701-703`), and it
-   * additionally refuses an index it cannot reopen from disk (`sidecar.py:887-889`).
+   * itself (`sidecar.py:846` calling `_require_corpus`, `sidecar.py:699-701`), and it
+   * additionally refuses an index it cannot reopen from disk (`sidecar.py:885-887`).
    * Firing the build anyway
    * on a fresh install would surface the engine's internal "no corpus attached: call
    * open_corpus first" — the exact leak `ui/errors` exists to stop.

@@ -833,7 +833,7 @@ describe("pollOutcome", () => {
   });
 
   it("stops on idle, which is what the engine reports when it holds no job", () => {
-    // sidecar.py:824. Treating idle as "keep waiting" would spin forever.
+    // sidecar.py:822. Treating idle as "keep waiting" would spin forever.
     expect(pollOutcome("idle", 0, DEFAULT_POLL_LIMITS)).toBe("terminal");
   });
 
@@ -1095,7 +1095,7 @@ describe("DiscoveryPanelController.activate", () => {
 
   it("creates and attaches an index before importing when nothing is open", async () => {
     // corpus.build is only forwarded once a corpus is attached (lib.rs:35-45) and the
-    // engine needs that index to exist on disk (sidecar.py:717-720).
+    // engine needs that index to exist on disk (sidecar.py:715-718).
     const h = harness();
     await h.controller.activate(codexStore());
     expect(h.ipc.created).toEqual(["C:\\new.db"]);

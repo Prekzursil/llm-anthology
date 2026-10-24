@@ -37,6 +37,7 @@ input order; there is no clock, randomness, or corpus access anywhere here.
 """
 from __future__ import annotations
 
+from abc import abstractmethod
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only; keeps the plane corpus-blind
@@ -73,7 +74,9 @@ class LLMBackend(Protocol):
     metadata and returns the model's text response.
     """
 
-    def synthesize(self, prompt: str) -> str: ...
+    @abstractmethod
+    def synthesize(self, prompt: str) -> str:
+        """Return the backend's text response to an already-sanitized ``prompt``."""
 
 
 class MockBackend:
@@ -183,9 +186,9 @@ def _build_prompt(views: "Iterable[MetadataView]", instruction: str) -> str:
     lines = [
         instruction,
         "",
-        "You are given ONLY sanitized, STRUCTURAL conversation METADATA -- no message "
-        "bodies, no titles, no free text, no personal data. Base your answer solely on "
-        "the identifiers, timestamps, and counts below.",
+        ("You are given ONLY sanitized, STRUCTURAL conversation METADATA -- no message "
+         "bodies, no titles, no free text, no personal data. Base your answer solely on "
+         "the identifiers, timestamps, and counts below."),
         "",
         "## Aggregate",
         "conversations: %d" % stats["conversations"],

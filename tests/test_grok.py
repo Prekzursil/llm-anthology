@@ -536,7 +536,7 @@ def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
     different label.
 
     The adapter label is not lost: it stays on `Conversation.provider`, and
-    `sidecar.py:1634` surfaces that as `provider` alongside `model_provider`, so both
+    `sidecar.py:1632` surfaces that as `provider` alongside `model_provider`, so both
     facts reach the UI under their own names.
 
     "xai" is INFERRED from the adapter, not read: the measured `summary.json` schema

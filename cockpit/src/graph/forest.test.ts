@@ -199,7 +199,7 @@ describe("loadForest", () => {
     // pays one request per 2,000 roots rather than one per root. Measured against this
     // fixture before the fix: 9,000 serial round-trips for one render, no progress shown.
     //
-    // `rootsApi` slices by `offset`/`limit` exactly the way `sidecar.py:1012` does
+    // `rootsApi` slices by `offset`/`limit` exactly the way `sidecar.py:1010` does
     // (`nodes[offset:offset + limit]`), so a walk that failed to advance its offset would
     // spin here rather than quietly passing — an earlier test in this file was vacuous for
     // precisely that reason.

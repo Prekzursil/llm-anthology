@@ -683,7 +683,7 @@ def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
 
     `corpus.py`'s `adapter` note documents this field as the vendor and records what
     conflating the two cost: every Codex node rendered as the palette's unknown grey. The
-    adapter label still travels on `Conversation.provider`, which `sidecar.py:1634`
+    adapter label still travels on `Conversation.provider`, which `sidecar.py:1632`
     surfaces as `provider` beside `model_provider` — both facts, each under its own name.
 
     "anthropic" is INFERRED from the adapter rather than read: a Claude Code transcript

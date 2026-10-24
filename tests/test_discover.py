@@ -313,14 +313,15 @@ class _StubEntry:
     link" and "does the walk skip a thing it was told is a link".
     """
 
-    def __init__(self, path, verdict):
+    def __init__(self, path, verdict=False, error=None):
         self.path = path
         self.name = os.path.basename(path)
         self._verdict = verdict
+        self._error = error
 
     def is_symlink(self):
-        if isinstance(self._verdict, Exception):
-            raise self._verdict
+        if self._error is not None:
+            raise self._error
         return self._verdict
 
 
@@ -345,7 +346,7 @@ def test_an_entry_that_cannot_be_stat_ed_is_treated_as_a_link():
     cannot be classified is skipped rather than read.
     """
     state = discover._Scan(100)
-    entry = _StubEntry(r"C:\s\vanished.json", OSError("gone mid-walk"))
+    entry = _StubEntry(r"C:\s\vanished.json", error=OSError("gone mid-walk"))
     assert discover._is_link(entry, state) is True
     assert "gone mid-walk" in state.errors[0]
 
