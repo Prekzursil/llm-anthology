@@ -33,3 +33,21 @@ describe("htmlVisibleTokens span dropping", () => {
     expect(tokens).toHaveLength(50_000);
   });
 });
+
+describe("htmlVisibleTokens tag stripping", () => {
+  it("cuts each tag from its < to the first > after it, as /<[^>]+>/g did", () => {
+    expect(htmlVisibleTokens("a<b<c>d")).toEqual(["a", "d"]);
+  });
+
+  it("leaves <> as text and stops at a < that no > follows", () => {
+    expect(htmlVisibleTokens("x<>y<z>w")).toEqual(["x", "y", "w"]);
+    expect(htmlVisibleTokens("a<b")).toEqual(["a", "b"]);
+  });
+
+  it("stays linear on many < and no >", () => {
+    // the regex retried from every `<` to the end of this string: quadratic
+    const started = performance.now();
+    expect(htmlVisibleTokens(`${"<".repeat(50_000)}x`)).toEqual(["x"]);
+    expect(performance.now() - started).toBeLessThan(5_000);
+  });
+});
