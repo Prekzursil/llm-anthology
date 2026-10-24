@@ -27,7 +27,6 @@ const STYLE_OPEN = /<style/gi;
 const STYLE_CLOSE = /<\/style>/gi;
 const HEAD_OPEN = /<head/gi;
 const HEAD_CLOSE = /<\/head>/gi;
-const TAG = /<[^>]+>/g;
 // Source words can legitimately land in an ATTRIBUTE rather than visible text: a
 // markdown link's URL -> href, an image -> src/alt, a code fence's language ->
 // class="language-x". Harvest those so the gate does not false-positive on them.
@@ -109,6 +108,28 @@ function dropSpans(s: string, open: RegExp, close: RegExp): string {
   return out + s.slice(from);
 }
 
+/** Replace every tag with one space, in a single pass: what `s.replace(/<[^>]+>/g, " ")`
+ *  did, without the regex's quadratic retry from every `<` that no `>` follows. A tag
+ *  runs from a `<` to the first `>` after it and holds at least one character, so `<>`
+ *  is text; once no `>` follows a `<`, none follows any later `<` either. */
+function dropTags(s: string): string {
+  let out = "";
+  let from = 0;
+  let at = 0;
+  for (let lt = s.indexOf("<"); lt !== -1; lt = s.indexOf("<", at)) {
+    const gt = s.indexOf(">", lt + 1);
+    if (gt === -1) break;
+    if (gt === lt + 1) {
+      at = lt + 1;
+      continue;
+    }
+    out += `${s.slice(from, lt)} `;
+    from = gt + 1;
+    at = from;
+  }
+  return out + s.slice(from);
+}
+
 export function htmlVisibleTokens(h: string): string[] {
   let s = dropSpans(h ?? "", BADGE_OPEN, SPAN_CLOSE); // badges replace invisibles — not content words
   s = dropSpans(s, STYLE_OPEN, STYLE_CLOSE);
@@ -117,7 +138,7 @@ export function htmlVisibleTokens(h: string): string[] {
     ...[...s.matchAll(ATTR_VALS)].map((m) => m[1]!),
     ...[...s.matchAll(LANG_CLASS)].map((m) => m[1]!),
   ].join(" ");
-  const body = s.replace(TAG, " ");
+  const body = dropTags(s);
   return tok(decodeHTML(body + " " + attrs));
 }
 
