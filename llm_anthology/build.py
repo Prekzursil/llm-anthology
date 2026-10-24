@@ -96,8 +96,10 @@ def render_corpus(convs, out_dir, provider="claude", meta_of=None, load_errors=N
     theme = THEMES.get(provider, _FALLBACK_THEME)
     if meta_of is None:
 
-        def meta_of(conv):
+        def _account_meta(conv):
             return getattr(conv, "account", "") or ""
+
+        meta_of = _account_meta
 
     html_dir = os.path.join(out_dir, "html")
     md_dir = os.path.join(out_dir, "md")

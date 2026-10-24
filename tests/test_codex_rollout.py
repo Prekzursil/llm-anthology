@@ -31,6 +31,7 @@ be skipped-and-logged rather than abort the whole file.
 import json
 
 import pytest
+from typing import Optional
 
 from llm_anthology import corpus, ir
 from llm_anthology.adapters import codex_rollout as cr
@@ -44,7 +45,7 @@ _TS2 = "2026-07-12T19:05:10.500Z"
 # ------------------------------------------------------------------- fixtures
 
 
-def _rec(rtype, payload, ts=_TS):
+def _rec(rtype, payload, ts: Optional[str] = _TS):
     return {"type": rtype, "timestamp": ts, "payload": payload}
 
 

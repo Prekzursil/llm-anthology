@@ -5,7 +5,7 @@
  *
  *  1. `metadata.set` takes `tags` (a LIST); `metadata.search` takes `tag` (a SINGULAR STRING).
  *     Passing the wrong one silently returns `[]` and reads as "search is broken".
- *  2. With NEITHER filter, `metadata.search` returns `[]` BY DESIGN (`sidecar.py:1425-1426`,
+ *  2. With NEITHER filter, `metadata.search` returns `[]` BY DESIGN (`sidecar.py:1423-1424`,
  *     `metadata.py:533-534`) so a blank query cannot dump the catalogue. An empty result from a
  *     blank query is therefore NOT "no matches", and saying "0 results" there reports a working
  *     engine as broken.

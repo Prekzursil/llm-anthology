@@ -472,7 +472,8 @@ def test_the_running_job_records_the_claude_root_it_was_started_with(tmp_path):
     out = srv.dispatch("corpus.build", {"claude_root": croot})
 
     assert srv.dispatch("corpus.build_status", {})["state"] == "running"
-    assert srv._build_job["claude_root"] == croot
+    job = srv._build_job
+    assert job is not None and job["claude_root"] == croot
     assert out["claude_root"] == croot and out["sessions_root"] == ""
     pending[0]()
 
@@ -1102,7 +1103,7 @@ def test_build_and_status_round_trip_over_the_real_ndjson_wire(tmp_path):
             }
         )
     )
-    assert started["result"]["state"] == "running"
+    assert started is not None and started["result"]["state"] == "running"
 
     status = srv.handle_line(
         json.dumps({"jsonrpc": "2.0", "id": 2, "method": "corpus.build_status", "params": {}})
@@ -1124,7 +1125,7 @@ def test_build_and_status_round_trip_over_the_real_ndjson_wire(tmp_path):
             }
         )
     )
-    assert refused["error"]["code"] == -32602
+    assert refused is not None and refused["error"]["code"] == -32602
     assert "\n" not in sidecar._dumps(refused)
 
 

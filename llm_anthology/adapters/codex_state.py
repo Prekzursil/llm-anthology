@@ -37,6 +37,7 @@ it never inspects or emits conversation content. Tests use synthetic fixtures on
 """
 
 import dataclasses
+from typing import Any
 import os
 import sqlite3
 import time
@@ -76,7 +77,7 @@ _ORDER_PREFERENCE = ("updated_at_ms", "created_at_ms", "updated_at", "created_at
 _EDGE_FIELDS = ("parent_thread_id", "child_thread_id", "status")
 
 
-def _defaults(cls):
+def _defaults(cls) -> dict[str, Any]:
     """Field-name -> default value for a dataclass, using '' for a field that has no
     default (only ThreadMeta.id / SpawnEdge parent+child). A NULL or absent column
     collapses to this, so absent-or-NULL yields one consistent, contract-valid value."""
@@ -186,7 +187,7 @@ def _table_columns(conn, table):
     return [row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)]
 
 
-def _row_kwargs(fields, row, defaults):
+def _row_kwargs(fields, row, defaults) -> dict[str, Any]:
     """Zip selected values onto their target dataclass field names, collapsing a NULL
     to that field's default so absent-or-NULL yields one consistent value."""
     return {

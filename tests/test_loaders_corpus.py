@@ -1159,7 +1159,7 @@ def _blank_thread_id_grok_doc(session_dir, conv_id):
     """A Grok doc whose THREAD id is blank, injected rather than fixtured.
 
     Deliberately synthetic, and the reason is the finding: the shipped Grok adapter cannot
-    produce one. `grok.py:544` derives `sid` as
+    produce one. `grok.py:550` derives `sid` as
     `info.id or params.sessionId or _dir_id(session_dir)`, and `_dir_id` is the directory
     basename (`grok.py:241`), which is never empty for a real session directory — grok.py:64-67
     says that fallback exists precisely so an id of "" cannot happen. So a SECOND blank-id

@@ -661,8 +661,15 @@ def test_the_reported_session_id_is_kept_so_a_path_mismatch_is_visible():
 # ------------------------------------------------------- the path is the graph
 
 
+def _layout(path):
+    """classify_path for a path these tests expect to be a transcript."""
+    layout = cc.classify_path(path)
+    assert layout is not None, path
+    return layout
+
+
 def test_a_session_path_classifies_as_a_session_keyed_by_its_filename():
-    layout = cc.classify_path("/root/%s/%s.jsonl" % (_SLUG, _SID))
+    layout = _layout("/root/%s/%s.jsonl" % (_SLUG, _SID))
     assert layout.kind == "session"
     assert layout.thread_id == _SID
     assert layout.slug == _SLUG
@@ -670,7 +677,7 @@ def test_a_session_path_classifies_as_a_session_keyed_by_its_filename():
 
 
 def test_a_flat_subagent_path_carries_both_ends_of_the_edge():
-    layout = cc.classify_path("/root/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    layout = _layout("/root/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert layout.kind == "subagent"
     assert layout.parent_id == _SID
     assert layout.agent_id == _AGENT
@@ -679,7 +686,7 @@ def test_a_flat_subagent_path_carries_both_ends_of_the_edge():
 
 
 def test_a_workflow_subagent_path_keeps_the_grouping_level():
-    layout = cc.classify_path(
+    layout = _layout(
         "/root/%s/%s/subagents/workflows/%s/agent-%s.jsonl" % (_SLUG, _SID, _WF, _AGENT)
     )
     assert layout.kind == "subagent"
@@ -689,14 +696,14 @@ def test_a_workflow_subagent_path_keeps_the_grouping_level():
 
 
 def test_a_windows_backslash_path_classifies_identically():
-    layout = cc.classify_path("C:\\r\\%s\\%s\\subagents\\agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    layout = _layout("C:\\r\\%s\\%s\\subagents\\agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert layout.parent_id == _SID
     assert layout.agent_id == _AGENT
 
 
 def test_a_child_filename_without_the_agent_prefix_is_still_a_child():
     """Tolerating drift: the `agent-` prefix is a naming convention, not the signal."""
-    layout = cc.classify_path("/r/%s/%s/subagents/%s.jsonl" % (_SLUG, _SID, _AGENT))
+    layout = _layout("/r/%s/%s/subagents/%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert layout.kind == "subagent"
     assert layout.agent_id == _AGENT
 
@@ -704,32 +711,32 @@ def test_a_child_filename_without_the_agent_prefix_is_still_a_child():
 def test_a_short_hex_child_id_is_qualified_by_its_path():
     """`conversations.conversation_id` is UNIQUE, so if two sessions each hold an
     `agent-a97926b10`, a bare id would make the second one SILENTLY vanish."""
-    a = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
-    b = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID2, _AGENT))
+    a = _layout("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    b = _layout("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID2, _AGENT))
     assert a.thread_id != b.thread_id
     assert a.thread_id == "%s/%s" % (_SID, _AGENT)
 
 
 def test_two_workflows_in_one_session_cannot_collide_either():
-    a = cc.classify_path("/r/%s/%s/subagents/workflows/wf_1/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
-    b = cc.classify_path("/r/%s/%s/subagents/workflows/wf_2/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    a = _layout("/r/%s/%s/subagents/workflows/wf_1/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
+    b = _layout("/r/%s/%s/subagents/workflows/wf_2/agent-%s.jsonl" % (_SLUG, _SID, _AGENT))
     assert a.thread_id != b.thread_id
 
 
 def test_a_uuid_child_id_is_used_verbatim():
     """A UUID is unique by construction, so qualifying it would only obscure it."""
-    layout = cc.classify_path("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT_UUID))
+    layout = _layout("/r/%s/%s/subagents/agent-%s.jsonl" % (_SLUG, _SID, _AGENT_UUID))
     assert layout.thread_id == _AGENT_UUID
 
 
 def test_a_subagents_component_with_no_parent_above_it_is_not_an_edge():
-    layout = cc.classify_path("subagents/agent-x.jsonl")
+    layout = _layout("subagents/agent-x.jsonl")
     assert layout.kind == "session"
     assert layout.parent_id == ""
 
 
 def test_a_bare_filename_classifies_with_an_empty_slug():
-    layout = cc.classify_path("%s.jsonl" % _SID)
+    layout = _layout("%s.jsonl" % _SID)
     assert layout.thread_id == _SID
     assert layout.slug == ""
 
@@ -802,7 +809,7 @@ def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
 
     `corpus.py`'s `adapter` note documents this field as the vendor and records what
     conflating the two cost: every Codex node rendered as the palette's unknown grey. The
-    adapter label still travels on `Conversation.provider`, which `sidecar.py:1692`
+    adapter label still travels on `Conversation.provider`, which `sidecar.py:1690`
     surfaces as `provider` beside `model_provider` — both facts, each under its own name.
 
     "anthropic" is INFERRED from the adapter rather than read: a Claude Code transcript

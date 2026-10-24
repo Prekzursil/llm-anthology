@@ -824,7 +824,7 @@ describe("export.plan / export.run", () => {
 // `research.*` is absent on purpose and is pinned NEGATIVELY below — see the NOT BOUND note
 // in `./types.ts`.
 
-/** The engine's annotation key set (`llm_anthology/sidecar.py:1376-1382`). */
+/** The engine's annotation key set (`llm_anthology/sidecar.py:1374-1380`). */
 const ANNOTATION_KEYS = ["alias", "conversation_id", "is_empty", "notes", "tags"];
 
 describe("the research plane is NOT bound", () => {
@@ -937,7 +937,7 @@ describe("metadata.* annotations", () => {
     const rows = await ipc.metadataSearch({ tag: "rust" });
     // The seed puts 'Rust' on orch and 'rust' on ipc: a whole-tag match is case-insensitive.
     expect(rows.map((r) => r.conversation_id)).toEqual(["ipc", "orch"]);
-    // sidecar.py:1436-1448 — the exact row shape a listing renders.
+    // sidecar.py:1434-1446 — the exact row shape a listing renders.
     expect(Object.keys(rows[0]).sort()).toEqual([
       "account",
       "annotation",
@@ -1011,7 +1011,7 @@ describe("dedup.scan / dedup.sessions", () => {
   it("tallies the scan consistently with the sessions it then serves", async () => {
     const ipc = createMockIpc();
     const scan = await ipc.dedupScan("C:\\Users\\preview\\.codex");
-    // sidecar.py:1504-1511.
+    // sidecar.py:1502-1509.
     expect(Object.keys(scan).sort()).toEqual([
       "copy_count",
       "duplicate_count",
@@ -1049,7 +1049,7 @@ describe("dedup.scan / dedup.sessions", () => {
     await ipc.dedupScan("C:\\Users\\preview\\.codex");
     const rows = await ipc.dedupSessions();
     expect(rows).toHaveLength(MOCK_DEDUP_SESSIONS.length);
-    // sidecar.py:1476-1488.
+    // sidecar.py:1474-1486.
     expect(Object.keys(rows[0]).sort()).toEqual([
       "canonical_path",
       "copy_count",
@@ -1081,7 +1081,7 @@ describe("dedup.scan / dedup.sessions", () => {
   });
 
   it("requires a codex_home and refuses a UNC or relative one", async () => {
-    // sidecar.py:1491-1499: never defaulted, because a defaulted home once made a probe
+    // sidecar.py:1489-1497: never defaulted, because a defaulted home once made a probe
     // read the owner's live Codex store.
     const ipc = createMockIpc();
     await expect(ipc.dedupScan("")).rejects.toThrow(/codex_home/);
@@ -1125,7 +1125,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     const preview = await ipc.maintenancePlan(
       planParams([`${STORE}\\a.jsonl`, `${STORE}\\b.jsonl`]),
     );
-    // sidecar.py:1539-1556.
+    // sidecar.py:1537-1554.
     expect(Object.keys(preview).sort()).toEqual([
       "action",
       "allowed",
@@ -1148,7 +1148,7 @@ describe("maintenance.* (the only destructive surface)", () => {
     expect(preview.requires_typed_confirmation).toBe(true);
     // maintenance.py:429-434 — derived from the ALLOWED count, plural-aware.
     expect(preview.required_typed_confirmation).toBe("DELETE 2 FILES");
-    // sidecar.py:1535-1537 — every RPC-built target is forced to UNKNOWN (sidecar.py:1616).
+    // sidecar.py:1533-1535 — every RPC-built target is forced to UNKNOWN (sidecar.py:1614).
     expect(Object.keys(preview.allowed[0]).sort()).toEqual([
       "file_path",
       "is_hot",
@@ -1316,7 +1316,7 @@ describe("maintenance.* (the only destructive surface)", () => {
       plan_id: preview.plan_id,
       confirmation: preview.required_typed_confirmation,
     });
-    // sidecar.py:1560-1566.
+    // sidecar.py:1558-1564.
     expect(Object.keys(out).sort()).toEqual(["executed", "manifest_path", "moves", "unaccounted"]);
     expect(out.executed).toBe(false);
     // "" and NOT null (maintenance.py:279) — truthiness is the right "did it write" test.
@@ -1338,7 +1338,7 @@ describe("maintenance.* (the only destructive surface)", () => {
 
   it("leaves the handle usable after a REFUSED confirmation, and consumes it on accept", async () => {
     // A typo must be correctable without forcing a re-plan; a completed run cannot be
-    // replayed (sidecar.py:1646-1648, tests/test_sidecar_maintenance.py:205-224).
+    // replayed (sidecar.py:1644-1646, tests/test_sidecar_maintenance.py:205-224).
     const ipc = createMockIpc();
     const preview = await ipc.maintenancePlan(planParams([`${STORE}\\a.jsonl`]));
     await expect(
@@ -1485,7 +1485,7 @@ describe("maintenance.* (the only destructive surface)", () => {
   });
 
   it("refuses an empty store_root / checkpoint_root as a PARAM error", async () => {
-    // The engine requires both as non-empty strings at the RPC edge (`sidecar.py:1585-1595`).
+    // The engine requires both as non-empty strings at the RPC edge (`sidecar.py:1583-1593`).
     // The code matters as much as the refusal: -32602 says "your form is incomplete" while
     // -32003 says "the engine declined a valid request", and a panel routes them differently.
     const ipc = createMockIpc();
@@ -1893,7 +1893,7 @@ describe("MockGraph walks not otherwise exercised", () => {
   });
 
   it("graph.subtree honours a depth cap on the WALK", async () => {
-    // Mirrors `_collect_subtree` (`sidecar.py:1736-1746`): the cap bounds how far the frontier
+    // Mirrors `_collect_subtree` (`sidecar.py:1734-1744`): the cap bounds how far the frontier
     // expands, and depth 0 is a real value meaning "this node only" — not "no cap".
     expect((await mockIpc.graphSubtree("orch", 0)).nodes.map((n) => n.id)).toEqual(["orch"]);
     const d1 = await mockIpc.graphSubtree("orch", 1);
@@ -1913,7 +1913,7 @@ describe("MockGraph walks not otherwise exercised", () => {
   it("the ancestor walk reports a shared ancestor ONCE, nearest first", () => {
     // `review` is reached from three parents and `repro` sits above two of them, so an
     // un-deduped BFS would list it twice and a panel would draw the same thread as two
-    // ancestors (`_collect_ancestors`, `sidecar.py:1748-1757`).
+    // ancestors (`_collect_ancestors`, `sidecar.py:1746-1755`).
     //
     // Driven through `MockGraph.collectAncestors` rather than an IPC method: DECISION G-17
     // removed `graphAncestors` from the contract (no caller), but the BFS-dedup property is
@@ -1937,7 +1937,7 @@ describe("MockGraph walks not otherwise exercised", () => {
 
 describe("graph.roots ordering", () => {
   it("orders by RECENCY, falling back created -> 0 for a node with neither", async () => {
-    // `_order_nodes` "recent" (`sidecar.py:1729-1731`) keys on updated_at_ms OR created_at_ms
+    // `_order_nodes` "recent" (`sidecar.py:1727-1729`) keys on updated_at_ms OR created_at_ms
     // OR 0. All three arms are live in the built-in forest: `orch` has an update, `repro` and
     // `research` have only a birth date, and the dangling `pruned-parent` has neither — so it
     // sinks to the bottom instead of being dropped or thrown at.

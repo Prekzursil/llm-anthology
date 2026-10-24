@@ -95,8 +95,8 @@ class RolloutDoc:
     """One parsed rollout file: the transcript plus the thread-graph node and any spawn
     edge it implies. `thread_id` is exposed as a convenience alias of the node id."""
 
-    conversation: object
-    thread: object
+    conversation: ir.Conversation
+    thread: corpus.ThreadMeta
     edges: list = field(default_factory=list)
     rollout_path: str = ""
 

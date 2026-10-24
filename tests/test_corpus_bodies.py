@@ -103,6 +103,13 @@ def _rich_turns():
 # ------------------------------------------------------------------ the schema
 
 
+def _body(conn, conversation_id):
+    """load_conversation_body for a conversation the test just stored."""
+    found = corpus.load_conversation_body(conn, conversation_id)
+    assert found is not None, conversation_id
+    return found
+
+
 def test_the_bodies_table_is_created_by_init_index():
     conn = _open()
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -133,13 +140,13 @@ def test_conversation_meta_is_stored_alongside_the_turns():
         "hidden_char_hits": 3,
     }
     corpus.add_conversation(conn, conv)
-    assert corpus.load_conversation_body(conn, "c1")[1] == conv.meta
+    assert _body(conn, "c1")[1] == conv.meta
 
 
 def test_an_absent_meta_round_trips_as_an_empty_dict_not_None():
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[_turn()]))
-    assert corpus.load_conversation_body(conn, "c1")[1] == {}
+    assert _body(conn, "c1")[1] == {}
 
 
 # ---------------------------------------------------------------- storing a body
@@ -168,7 +175,7 @@ def test_a_small_conversation_is_ONE_frame_and_a_large_one_is_MANY():
             assert reader._entries[i].decompressed_size <= corpus._FRAME_BUDGET * 2, (
                 "a frame may overshoot the budget only by one oversized turn"
             )
-    assert [b.text for t in corpus.load_conversation_body(conn, "small")[0] for b in t.blocks] == [
+    assert [b.text for t in _body(conn, "small")[0] for b in t.blocks] == [
         "one",
         "two",
     ]
@@ -250,7 +257,7 @@ def test_a_turn_whose_TEXT_CONTAINS_A_NEWLINE_still_round_trips():
     conn = _open()
     nasty = "first line\nsecond line\n\nafter a blank\nliteral \\n and a } brace"
     corpus.add_conversation(conn, _conv(turns=[_turn(text=nasty), _turn(text="after")]))
-    turns = corpus.load_conversation_body(conn, "c1")[0]
+    turns = _body(conn, "c1")[0]
     assert [b.text for t in turns for b in t.blocks] == [nasty, "after"]
 
 
@@ -261,7 +268,7 @@ def test_the_stored_body_round_trips_every_IR_FIELD_a_turn_carries():
     conn = _open()
     original = _rich_turns()
     corpus.add_conversation(conn, _conv(turns=original))
-    restored = corpus.load_conversation_body(conn, "c1")[0]
+    restored = _body(conn, "c1")[0]
     assert restored == original
 
 
@@ -271,7 +278,7 @@ def test_a_conversation_with_no_turns_stores_an_empty_archive_not_a_missing_row(
     second may fall back to re-parsing."""
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[]))
-    assert corpus.load_conversation_body(conn, "c1") == ([], {})
+    assert _body(conn, "c1") == ([], {})
 
 
 def test_an_unstored_conversation_reads_back_None_not_an_empty_list():
@@ -286,7 +293,7 @@ def test_a_grown_conversation_REPLACES_its_stored_body():
     conn = _open()
     corpus.add_conversation(conn, _conv(turns=[_turn(text="first")]))
     corpus.add_conversation(conn, _conv(turns=[_turn(text="first"), _turn(text="second")]))
-    restored = corpus.load_conversation_body(conn, "c1")[0]
+    restored = _body(conn, "c1")[0]
     assert [b.text for t in restored for b in t.blocks] == ["first", "second"]
     assert conn.execute("SELECT COUNT(*) FROM conversation_bodies").fetchone()[0] == 1
 
@@ -295,8 +302,8 @@ def test_two_conversations_keep_separate_bodies():
     conn = _open()
     corpus.add_conversation(conn, _conv("c1", turns=[_turn(text="alpha only")]))
     corpus.add_conversation(conn, _conv("c2", turns=[_turn(text="beta only")]))
-    assert corpus.load_conversation_body(conn, "c1")[0][0].blocks[0].text == "alpha only"
-    assert corpus.load_conversation_body(conn, "c2")[0][0].blocks[0].text == "beta only"
+    assert _body(conn, "c1")[0][0].blocks[0].text == "alpha only"
+    assert _body(conn, "c2")[0][0].blocks[0].text == "beta only"
 
 
 # ------------------------------------------------------- the size accounting
@@ -347,5 +354,5 @@ def test_the_body_needs_no_source_file_at_all():
         _conv(turns=[_turn(text="survives its source")]),
         rollout_path="/no/such/rollout-deleted.jsonl",
     )
-    restored = corpus.load_conversation_body(conn, "c1")[0]
+    restored = _body(conn, "c1")[0]
     assert [b.text for t in restored for b in t.blocks] == ["survives its source"]

@@ -336,7 +336,7 @@ PROVIDERS = (
         required_tables=("conversations", "conversations_fts"),
         count_table="conversations",
     ),
-    # adapters/codex_state.py:46 (state_5.sqlite) and adapters/codex_rollout.py:1
+    # adapters/codex_state.py:47 (state_5.sqlite) and adapters/codex_rollout.py:1
     # (sessions/YYYY/MM/DD/rollout-*.jsonl).
     #
     # COUPLED TO THE ENGINE — re-check this flag when codex_rollout changes.
@@ -444,7 +444,7 @@ def default_roots(home=None, env=None):
     """The candidate roots for this machine.
 
     ``$CODEX_HOME`` wins over ``~/.codex`` because that is the precedence
-    ``adapters/codex_state.py:132`` already uses — a discovery that disagreed with the
+    ``adapters/codex_state.py:133`` already uses — a discovery that disagreed with the
     loader would point at a store the ingest then ignores. ``$GROK_HOME`` is the same
     shape one level over: the override names the HOME, and the sessions tree hangs off
     it, so the default resolves to ``~/.grok/sessions``. UNVERIFIED whether Grok reads
@@ -693,7 +693,7 @@ def _scan_one_store(spec, base, state):
     told they have a Codex store.
     """
     patterns = _item_patterns(spec)
-    counts = dict((p.name, 0) for p in patterns)
+    counts: dict[str, int] = {p.name: 0 for p in patterns}
     mtimes = []
     item_dirs = set()
     scan_root = os.path.join(base, spec.subdir) if spec.subdir else base
@@ -708,7 +708,7 @@ def _scan_one_store(spec, base, state):
             mtimes.append(_mtime(entry, state))
             item_dirs.add(dirpath)
 
-    detail = dict(counts)
+    detail: dict[str, int | str] = dict(counts)
     for key, filename in spec.markers:
         marker = os.path.join(base, filename)
         found = os.path.isfile(marker)

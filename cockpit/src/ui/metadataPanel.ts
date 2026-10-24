@@ -22,7 +22,7 @@
  * returns `[]`, which reads exactly like a broken search.
  *
  * With NEITHER filter, `metadata.search` returns `[]` ON PURPOSE, so a blank query cannot
- * dump the whole catalogue into the UI (`sidecar.py:1425-1426`, `metadata.py:533-534`). An
+ * dump the whole catalogue into the UI (`sidecar.py:1423-1424`, `metadata.py:533-534`). An
  * empty result from a blank query is therefore NOT "no matches", and this panel says so in
  * different words — see {@link searchOutcome}.
  *

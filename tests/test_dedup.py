@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 from llm_anthology import corpus, dedup
 
@@ -20,7 +21,11 @@ from llm_anthology import corpus, dedup
 
 
 def _copy(
-    session_id, file_path, store_kind=dedup.STORE_BACKUP, last_write_ms=1000, size_bytes=1000
+    session_id,
+    file_path,
+    store_kind=dedup.STORE_BACKUP,
+    last_write_ms: Optional[int] = 1000,
+    size_bytes=1000,
 ):
     return dedup.PhysicalCopy(
         session_id=session_id,

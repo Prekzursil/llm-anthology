@@ -114,7 +114,7 @@ from urllib.parse import unquote
 from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
-#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1980` surfaces it to
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1978` surfaces it to
 #: the UI as `provider`. `ThreadMeta` has no model field, so the model id travels in
 #: `Conversation.meta['model_id']`.
 #:
@@ -122,7 +122,7 @@ from llm_anthology import corpus, ir
 #: :data:`GROK_MODEL_VENDOR`. (The comment here previously defended putting this label in
 #: that field on the grounds that the graph node surfaced `model_provider` as the thread's
 #: provider. That WAS true when it was written — `git show a361759:llm_anthology/sidecar.py`
-#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1980`
+#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1978`
 #: surfaces `provider = meta.adapter` and passes `model_provider` separately. That old
 #: anchor is deliberately spelled as a GIT REVISION and not as a live `<file>:<line>`,
 #: because line 1390 of today's sidecar is unrelated code in `_metadata_search`: a reader
@@ -207,8 +207,8 @@ class GrokDoc:
     spawn edges its `subagents/` directory declared. `thread_id` is a convenience
     alias of the node id, matching `codex_rollout.RolloutDoc`."""
 
-    conversation: object
-    thread: object
+    conversation: ir.Conversation
+    thread: corpus.ThreadMeta
     edges: list = field(default_factory=list)
     session_dir: str = ""
 
@@ -342,12 +342,18 @@ class _Turns:
         self.pending = None
         text = CHUNK_JOIN.join(parts)
         if text.strip():
-            self.cur.blocks.append(ir.Block(_CHUNK_ROLE[kind][1], text=text))
+            self._open().blocks.append(ir.Block(_CHUNK_ROLE[kind][1], text=text))
 
     def add(self, block):
         """Append a non-chunk block, closing any open chunk run before it."""
         self.flush()
-        self.cur.blocks.append(block)
+        self._open().blocks.append(block)
+
+    def _open(self):
+        """The open turn. Every block arrives after `want()` opened one."""
+        cur = self.cur
+        assert cur is not None, "a block arrived with no open turn"
+        return cur
 
     def close(self):
         """Close the open turn, keeping it only if it carries something."""

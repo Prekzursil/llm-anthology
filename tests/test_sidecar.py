@@ -1233,7 +1233,7 @@ def test_dispatch_db_busy_maps_to_32002():
         def execute(self, *a, **k):
             raise sqlite3.OperationalError("database is locked")
 
-    srv.conn = _BusyConn()
+    setattr(srv, "conn", _BusyConn())  # a fake whose every execute() raises
     with pytest.raises(sidecar.RpcError) as ei:
         srv.dispatch("corpus.stats", {})
     assert ei.value.code == -32002 and ei.value.data["retry_ms"] > 0
@@ -1246,24 +1246,32 @@ def test_dispatch_other_operational_error_maps_to_internal():
         def execute(self, *a, **k):
             raise sqlite3.OperationalError("no such table: conversations")
 
-    srv.conn = _BrokenConn()
+    setattr(srv, "conn", _BrokenConn())  # a fake whose every execute() raises
     with pytest.raises(sidecar.RpcError) as ei:
         srv.dispatch("corpus.stats", {})
     assert ei.value.code == -32603
 
 
+def _answered(resp):
+    """A request carrying an id is always answered; only a notification gets None."""
+    assert resp is not None
+    return resp
+
+
 def test_handle_request_success_and_error_envelope():
     srv = _mem_server()
-    ok = srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "health.ping", "params": {}})
+    ok = _answered(
+        srv.handle_request({"jsonrpc": "2.0", "id": 1, "method": "health.ping", "params": {}})
+    )
     assert ok["id"] == 1 and ok["result"]["ok"] is True
-    err = srv.handle_request({"jsonrpc": "2.0", "id": 2, "method": "bogus"})
+    err = _answered(srv.handle_request({"jsonrpc": "2.0", "id": 2, "method": "bogus"}))
     assert err["error"]["code"] == -32601 and err["id"] == 2
 
 
 def test_handle_request_non_dict_and_bad_method():
     srv = _mem_server()
-    assert srv.handle_request(["not", "a", "dict"])["error"]["code"] == -32600
-    bad_method = srv.handle_request({"jsonrpc": "2.0", "id": 3, "method": 42})
+    assert _answered(srv.handle_request(["not", "a", "dict"]))["error"]["code"] == -32600
+    bad_method = _answered(srv.handle_request({"jsonrpc": "2.0", "id": 3, "method": 42}))
     assert bad_method["error"]["code"] == -32600 and bad_method["id"] == 3
 
 
@@ -1281,15 +1289,15 @@ def test_handle_request_internal_error(monkeypatch):
         raise ValueError("unexpected")
 
     srv._handlers["health.ping"] = _boom
-    resp = srv.handle_request({"jsonrpc": "2.0", "id": 9, "method": "health.ping"})
+    resp = _answered(srv.handle_request({"jsonrpc": "2.0", "id": 9, "method": "health.ping"}))
     assert resp["error"]["code"] == -32603 and "detail" in resp["error"]["data"]
 
 
 def test_handle_line_blank_parse_error_and_valid():
     srv = _mem_server()
     assert srv.handle_line("   \n") is None  # blank -> skipped
-    assert srv.handle_line("{not json")["error"]["code"] == -32700
-    ok = srv.handle_line('{"jsonrpc":"2.0","id":5,"method":"health.ping"}')
+    assert _answered(srv.handle_line("{not json"))["error"]["code"] == -32700
+    ok = _answered(srv.handle_line('{"jsonrpc":"2.0","id":5,"method":"health.ping"}'))
     assert ok["id"] == 5 and ok["result"]["corpus_ready"] is True
 
 

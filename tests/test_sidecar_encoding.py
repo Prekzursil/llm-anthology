@@ -177,13 +177,13 @@ def test_a_stream_that_cannot_be_reconfigured_does_not_become_a_startup_crash(mo
         pass
 
     if attr is None:
-        Awkward.reconfigure = None  # present but not callable
+        monkeypatch.setattr(Awkward, "reconfigure", None, raising=False)  # present, not callable
     else:
 
         def _raise(self, **kw):
             raise ValueError("underlying buffer has been detached")
 
-        Awkward.reconfigure = _raise
+        monkeypatch.setattr(Awkward, "reconfigure", _raise, raising=False)
 
     monkeypatch.setattr(sidecar.sys, "argv", ["prog"])
     monkeypatch.setattr(sidecar.sys, "stdout", Awkward())

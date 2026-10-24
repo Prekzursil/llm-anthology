@@ -891,7 +891,7 @@ class Sidecar:
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
     # IS DEAD: load_corpus takes `progress` (loaders.py:372) and forwards it
     # (loaders.py:499), and `ingest_exports` accepts one too. True now, and narrower:
-    # NEITHER worker call passes one (sidecar.py:1160, :1163), a call-site gap and not an
+    # NEITHER worker call passes one (sidecar.py:1159, :1162), a call-site gap and not an
     # architectural one — TWO of them since the export half was wired, so a cancel means
     # threading it through both; doing only the first would leave the export ingest
     # uncancellable while the UI claimed otherwise. What still holds: the phase BEFORE it,
@@ -989,7 +989,7 @@ class Sidecar:
         ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1071) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
-        LIVE Codex store (codex_state.py:130-133), and an automated probe really did read
+        LIVE Codex store (codex_state.py:131-134), and an automated probe really did read
         the owner's real sessions that way. Omitting it means "no state graph", never "go
         find one". Both paths are refused if UNC (an outbound SMB/NTLM vector) or relative.
 
@@ -1070,7 +1070,7 @@ class Sidecar:
         # automated probe read the owner's real sessions.
         codex_home = _opt_str(params, "codex_home")
         # Existence is NOT required here: codex_state.load_corpus skips a missing/busy
-        # state DB by design (codex_state.py:100-102), so an absent one is a valid, silent
+        # state DB by design (codex_state.py:101-103), so an absent one is a valid, silent
         # "no state graph to merge" rather than a failure.
         # Guarded only when NAMED. An empty string is not an absolute path, so running the
         # guard unconditionally rejected the very case this parameter was just made optional
@@ -1086,12 +1086,11 @@ class Sidecar:
             )
 
         with self._build_lock:
-            running = self._build_job is not None and self._build_job["state"] == "running"
-            if running:
+            current = self._build_job
+            if current is not None and current["state"] == "running":
                 raise RpcError(
                     BUILD_IN_PROGRESS,
-                    "build %s is still running; poll corpus.build_status"
-                    % self._build_job["job_id"],
+                    "build %s is still running; poll corpus.build_status" % current["job_id"],
                 )
             job = {
                 "job_id": "build-%d" % self._next_build_id,
@@ -1197,9 +1196,8 @@ class Sidecar:
         """
         with self._build_lock:
             job = self._build_job
-            pending = job is not None and job["needs_reload"]
-        if not pending:
-            return
+            if job is None or not job["needs_reload"]:
+                return
         self.corpus = corpus.load_corpus(self.conn)
         with self._build_lock:
             job["needs_reload"] = False

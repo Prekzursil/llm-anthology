@@ -29,6 +29,7 @@ import json
 import os
 
 import pytest
+from typing import Optional
 
 from llm_anthology import corpus, discover, ir
 from llm_anthology.adapters import grok
@@ -153,7 +154,7 @@ def _summary(**kw):
     return pl
 
 
-def _subagent(parent=_SID, child=_CHILD, status="completed", **kw):
+def _subagent(parent=_SID, child: Optional[str] = _CHILD, status="completed", **kw):
     pl = {
         "child_cwd": "/work/repo",
         "child_session_id": child,
@@ -583,7 +584,9 @@ def test_timestamps_fall_back_to_the_event_stream_when_the_summary_lacks_them():
     doc = _doc([_user("hi", ts=_TS), _agent("yo", ts=_TS2)])
     assert doc.conversation.created_at == _TS
     assert doc.conversation.updated_at == _TS2
-    assert doc.thread.created_at_ms < doc.thread.updated_at_ms
+    created, updated = doc.thread.created_at_ms, doc.thread.updated_at_ms
+    assert created is not None and updated is not None
+    assert created < updated
 
 
 def test_the_summary_dates_win_over_the_event_stream():
@@ -643,7 +646,7 @@ def test_the_thread_carries_the_model_vendor_and_the_adapter_label_separately():
     different label.
 
     The adapter label is not lost: it stays on `Conversation.provider`, and
-    `sidecar.py:1692` surfaces that as `provider` alongside `model_provider`, so both
+    `sidecar.py:1690` surfaces that as `provider` alongside `model_provider`, so both
     facts reach the UI under their own names.
 
     "xai" is INFERRED from the adapter, not read: the measured `summary.json` schema

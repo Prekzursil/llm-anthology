@@ -28,6 +28,7 @@ oracle):
 """
 
 from types import SimpleNamespace
+from typing import Any
 
 from llm_anthology import research
 
@@ -53,7 +54,7 @@ ALLOWLIST = {
 }
 
 
-def _view(**kw):
+def _view(**kw) -> Any:
     """A synthetic MetadataView-shaped object (duck-typed by attribute name),
     carrying ONLY the structural allowlist -- the real crossing surface."""
     base = dict(
@@ -70,7 +71,7 @@ def _view(**kw):
     return SimpleNamespace(**base)
 
 
-def _poison_view(**kw):
+def _poison_view(**kw) -> Any:
     """A view whose STRUCTURAL fields are clean but which ALSO carries a raw
     body / preview / PII in non-allowlisted attributes AND in the free-text
     family (title/notes/tags/aliases) that must no longer cross -- exactly the
@@ -202,7 +203,7 @@ def test_extract_entities_parses_comma_and_dash_bullets():
 
 
 def test_extract_entities_non_string_response_is_empty():
-    mb = research.MockBackend(response=12345)  # not a str
+    mb = research.MockBackend(response=12345)  # pyright: ignore[reportArgumentType] -- a non-str reply on purpose: the plane must not trust the backend's type
     assert research.extract_entities([_view()], mb) == []
 
 
@@ -235,7 +236,7 @@ def test_projection_keys_are_exactly_the_allowlist_and_carry_no_secret():
 def test_conversation_like_object_leaks_no_raw_content():
     # A full conversation-shaped object (turns/blocks/body/title) that also happens
     # to expose the allowlisted metadata must still project to structural data ONLY.
-    convo = SimpleNamespace(
+    convo: Any = SimpleNamespace(
         conversation_id="c1",
         provider="claude",
         account="alice",
@@ -281,7 +282,7 @@ def test_both_states_control_detector_fires_on_a_leaky_render():
 
 
 def test_missing_optional_fields_default_safely():
-    sparse = SimpleNamespace(conversation_id="only-id", provider="claude")
+    sparse: Any = SimpleNamespace(conversation_id="only-id", provider="claude")
     mb = research.MockBackend(response="OK")
     assert research.synthesize_over_metadata([sparse], mb) == "OK"
     p = mb.prompts[0]

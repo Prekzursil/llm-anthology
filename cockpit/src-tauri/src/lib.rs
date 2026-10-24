@@ -834,7 +834,7 @@ fn export_run(state: State<'_, EngineState>, params: Option<Value>) -> Result<Va
 // vitest — it throws only when a user presses the button.
 //
 // All 13 forward through `forward`, so all 13 require an attached corpus (verified: each
-// handler calls `_require_corpus`, llm_anthology/sidecar.py:1320-1669). That is why they
+// handler calls `_require_corpus`, llm_anthology/sidecar.py:1318-1667). That is why they
 // take `state`, unlike `create_corpus` / `discover_sources`, which run on a throwaway
 // index-less engine precisely because no corpus exists yet.
 
@@ -918,7 +918,7 @@ fn metadata_tags(state: State<'_, EngineState>, params: Option<Value>) -> Result
 // `research.synthesize` and `research.extract_entities` are DELIBERATELY not wired, and
 // the omission is enforced by `every_engine_rpc_has_a_registered_tauri_command` rather than
 // left to memory. Both return empty output in the shipped app BY CONSTRUCTION: `main` builds
-// `Sidecar(conn)` with no backend arguments (llm_anthology/sidecar.py:2035, the module's only
+// `Sidecar(conn)` with no backend arguments (llm_anthology/sidecar.py:2033, the module's only
 // construction site), so `research_backend` and `local_backend` both fall back to
 // `research.MockBackend()` (`:587-590`), whose `synthesize` returns its `response` — default
 // `""` (llm_anthology/research.py:89-98). The only two `synthesize` implementations in the
@@ -926,7 +926,7 @@ fn metadata_tags(state: State<'_, EngineState>, params: Option<Value>) -> Result
 //
 // Note this holds for BOTH methods, including extraction: `_research_extract_entities` is not
 // a local deterministic pass that would work without a model — it routes through the same
-// `self.research_backend` (`sidecar.py:1344`).
+// `self.research_backend` (`sidecar.py:1342`).
 //
 // A command here would therefore make a guaranteed-empty feature reachable. The owner
 // deferred the feature rather than wire a backend, because it touches a standing privacy

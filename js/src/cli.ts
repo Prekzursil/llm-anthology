@@ -193,7 +193,7 @@ function renderCorpus(
   // feeding a Codex-shaped export to the ChatGPT loader yields 1 conversation / 0 turns /
   // 0 errors, so real content vanishes while the caller sees a clean load. Count turns so
   // the caller — and main()'s exit code — can tell "rendered" from "rendered something".
-  // Mirrors build.py:148-154, field order included.
+  // Mirrors build.py:150-156, field order included.
   const turns = index.reduce((sum, row) => sum + row[2], 0);
   const empty = index.filter((row) => row[2] === 0).length;
   const report: Report = {

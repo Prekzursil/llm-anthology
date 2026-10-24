@@ -1321,7 +1321,7 @@ export function createMockIpc(
    * The in-flight/last mock ingest, or null before any `corpusBuild`.
    *
    * `sessionsRoot` is REMEMBERED rather than re-derived because `build_status` reports the
-   * root the job was started with (`llm_anthology/sidecar.py:1236` reads it off the job
+   * root the job was started with (`llm_anthology/sidecar.py:1234` reads it off the job
    * snapshot). A status that invented its own path would let a panel read the ingest source
    * off the poll and show somewhere the build never touched.
    */
@@ -1557,10 +1557,10 @@ export function createMockIpc(
      * correct.
      *
      * An UNNAMED poll before any build reads back `idle` rather than erroring, so the UI can
-     * render unconditionally (`llm_anthology/sidecar.py:1228`). A poll that NAMES a `job_id`
+     * render unconditionally (`llm_anthology/sidecar.py:1226`). A poll that NAMES a `job_id`
      * is the opposite case and both engine branches are reproduced: naming a job when none
-     * has started (`sidecar.py:1225-1227`), or naming one that is not the job in flight
-     * (`sidecar.py:1229-1232`), is -32602. The whole point of the optional argument is to let a
+     * has started (`sidecar.py:1223-1225`), or naming one that is not the job in flight
+     * (`sidecar.py:1227-1230`), is -32602. The whole point of the optional argument is to let a
      * client prove it is reading the job it started, which a mock that ignored it would
      * quietly defeat — a stale handle after a restart would read "idle" here and take a param
      * error from the engine.
@@ -1753,7 +1753,7 @@ export function createMockIpc(
 
     async exportPlan(_dest?: string, mode: ExportMode = "full"): Promise<ExportPlan> {
       // A dry run over the loaded corpus. No filesystem access, and `_dest` is ignored
-      // exactly as the engine ignores it (`sidecar.py:1363`).
+      // exactly as the engine ignores it (`sidecar.py:1361`).
       //
       // est_bytes IS THE SERIALIZED GRAPH, NOT A CONTENT SUM. This used to add up
       // `char_count` and assert equality with `corpus.stats` bytes — the very quantity the
@@ -1832,7 +1832,7 @@ export function createMockIpc(
 
     /**
      * PARTIAL update, with the tri-state the engine defines: an OMITTED field is left
-     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1651-1653`).
+     * unchanged, an explicit `""` / `[]` clears it (`llm_anthology/sidecar.py:1649-1651`).
      * Getting this wrong here would make a per-field editor look correct in preview while
      * blanking the other two fields against the real engine.
      */
@@ -1934,7 +1934,7 @@ export function createMockIpc(
      * `codexHome` is still VALIDATED (non-empty, local, non-UNC) rather than ignored: the
      * argument being required is a safety property of this call — an automated probe once
      * read the owner's live Codex store through a defaulted home
-     * (`llm_anthology/sidecar.py:1745-1745`) — so a UI that forgot to collect it must fail
+     * (`llm_anthology/sidecar.py:1743-1743`) — so a UI that forgot to collect it must fail
      * here too, not only against the engine.
      *
      * NOT REPRODUCIBLE HERE: the engine's "missing home -> empty result, not an error"
@@ -2018,7 +2018,7 @@ export function createMockIpc(
           throw rpcError(RPC_INVALID_PARAMS, "each target needs a non-empty file_path");
         }
         // Every RPC-built target is forced to UNKNOWN — the client cannot assert a store
-        // kind (`llm_anthology/sidecar.py:1892`).
+        // kind (`llm_anthology/sidecar.py:1890`).
         const copy: MaintenanceCopy = {
           session_id: target.session_id ?? "",
           file_path: target.file_path,
@@ -2277,7 +2277,7 @@ export function createMockIpc(
       }
       if (apply) record.restored = true;
       // NOTE the ledger is NOT updated here, matching the RPC surface: `record_run` is
-      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1934-1935`), so a
+      // called only from `maintenance.execute` (`llm_anthology/sidecar.py:1932-1933`), so a
       // restored run keeps `status: "executed"` in `maintenance.runs`.
       return {
         executed: apply,

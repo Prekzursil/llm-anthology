@@ -1405,7 +1405,7 @@ def load_conversation_body(conn, conversation_id):
 
 #: The `ir.Conversation.meta` key both capturing adapters agreed on, named ONCE here so the
 #: spelling is a contract instead of a coincidence: `adapters/claude_code.py:738` (the model
-#: off the first assistant `message`) and `adapters/grok.py:590` (`current_model_id` off the
+#: off the first assistant `message`) and `adapters/grok.py:596` (`current_model_id` off the
 #: session summary). Other adapters capture no model at all, which is why an absent key is
 #: the COMMON case and not an error.
 MODEL_ID_KEY = "model_id"

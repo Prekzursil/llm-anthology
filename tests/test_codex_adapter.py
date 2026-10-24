@@ -17,6 +17,7 @@ snapshot whose bodies live one nesting level below `contents`.
 
 import json
 import os
+from typing import Optional
 from pathlib import Path
 
 from llm_anthology import build, cli, ir, loaders, render_html, render_md
@@ -115,7 +116,10 @@ def _snapshot(path="src/app.py", lrcs=None, missing_reason=None, contents=None):
 
 
 def _pr(
-    output_diff=None, pre_apply_patch=None, title="Add a thing", message="This PR adds a thing."
+    output_diff=None,
+    pre_apply_patch=None,
+    title="Add a thing",
+    message: Optional[str] = "This PR adds a thing.",
 ):
     if output_diff is None:
         output_diff = _output_diff()

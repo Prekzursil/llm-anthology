@@ -309,7 +309,7 @@ def _build_index(args):
     # reason for printing it has not changed.
     #
     # The path shown in the NOT-read case is still resolved through the real resolution
-    # order (`adapters/codex_state.py:132` — explicit home, else $CODEX_HOME, else
+    # order (`adapters/codex_state.py:133` — explicit home, else $CODEX_HOME, else
     # ~/.codex), so it names the store that WOULD be read. Printing it is what makes the
     # "not read" line meaningful: naming the store and then saying it was skipped is the
     # disclosure; suppressing the path entirely would leave a user unable to tell which
@@ -408,7 +408,7 @@ def _build_index(args):
     # written and the build is idempotent, so re-running after fixing the bad file
     # completes it; but a caller scripting `index && open-the-cockpit` must not read a
     # half-ingested corpus as success. That silent-partial-success is the exact trap
-    # this file (see the exit-3 note in main) and build.py:143 were already bitten by.
+    # this file (see the exit-3 note in main) and build.py:145 were already bitten by.
     # One code is enough -- the counts above already separate partial from total.
     return 3 if errors else 0
 

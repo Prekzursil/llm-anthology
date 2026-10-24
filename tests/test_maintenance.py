@@ -54,6 +54,7 @@ import sqlite3
 import tempfile
 
 import pytest
+from typing import Any
 
 from llm_anthology import maintenance as mt
 
@@ -244,7 +245,7 @@ def test_plan_blocks_a_protected_path_however_it_is_spelled(tmp_path, spelling):
     reached ALLOWED and `execute_maintenance` relocated the live session file.
 
     This is the whole live-store defence in practice, not a second line of it — the RPC
-    layer builds every target with `store_kind=UNKNOWN` (sidecar.py:1611), so the
+    layer builds every target with `store_kind=UNKNOWN` (sidecar.py:1609), so the
     `SessionStoreKind.LIVE` half of the guard can never fire on a request that arrived
     over the wire. Neither spelling needs a filesystem link or any privilege.
     """
@@ -303,13 +304,13 @@ def test_plan_refuses_to_write_into_a_protected_store_path(tmp_path, action, fie
 
     Both roots below reach the same effective root through
     `_effective_destination_root`, and both arrive from the client on the wire
-    (sidecar.py:1582-1591 only rejects them for being non-local), so both are pinned.
+    (sidecar.py:1580-1589 only rejects them for being non-local), so both are pinned.
     This is corruption rather than loss — Codex then reads session files it never wrote —
     and a checkpoint cannot undo it, because the checkpoint is what got misplaced.
     """
     root, paths = _store(tmp_path, "a.jsonl")
     protected = str(tmp_path / ".codex" / "sessions")
-    fields = dict(
+    fields: dict[str, Any] = dict(
         action=action,
         targets=(_copy(paths[0]),),
         store_root=root,
@@ -329,7 +330,7 @@ def test_plan_measures_the_size_on_disk_and_ignores_the_callers_claim(tmp_path):
     """`size_bytes` on an ALLOWED target describes the file, not the request.
 
     It is the one number on the preview a caller could previously dictate: the RPC edge
-    forwards `size_bytes` verbatim (`llm_anthology/sidecar.py:1617`) while never even
+    forwards `size_bytes` verbatim (`llm_anthology/sidecar.py:1615`) while never even
     reading `last_write_ms` or `is_hot` from the request. And it is not decorative — the
     cockpit's maintenance panel SUMS it and prints the total on the confirm screen beside
     the file count, so an inflated claim became the largest, most reassuring figure on the

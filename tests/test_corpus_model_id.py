@@ -2,7 +2,7 @@
 
 WHAT THE ADAPTERS ALREADY CAPTURE. `adapters/claude_code.py:738` puts the model the
 assistant actually answered with into `Conversation.meta["model_id"]`, and
-`adapters/grok.py:590` puts `summary.current_model_id` in the same key. Two adapters, one
+`adapters/grok.py:596` puts `summary.current_model_id` in the same key. Two adapters, one
 agreed spelling, and nothing in `corpus.py` had ever heard of it.
 
 THE PREMISE THIS UNIT WAS GIVEN WAS STALE, AND THE CORRECTION IS THE REASON THESE TESTS
@@ -83,6 +83,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from typing import Optional
 
 from llm_anthology import corpus, ir
 
@@ -103,7 +104,7 @@ def _open(path=":memory:"):
     return corpus.init_index(conn)
 
 
-def _conv(cid="c1", model_id="synth-model-1", **extra_meta):
+def _conv(cid="c1", model_id: Optional[str] = "synth-model-1", **extra_meta):
     """A synthetic conversation shaped like what the two capturing adapters emit.
 
     `model_id=None` means the key is ABSENT entirely, which is what every adapter that

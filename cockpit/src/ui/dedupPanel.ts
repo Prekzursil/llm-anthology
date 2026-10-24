@@ -2,12 +2,12 @@
  * DEDUP: which of the owner's session files are redundant copies of each other.
  *
  * The engine side has worked for a long time with nothing able to reach it — `dedup.scan`
- * and `dedup.sessions` are both fully implemented (`llm_anthology/sidecar.py:1490-1517`)
+ * and `dedup.sessions` are both fully implemented (`llm_anthology/sidecar.py:1488-1515`)
  * and, until this panel, had no caller outside the Python tests.
  *
  * WHAT THIS PANEL DOES, and the boundary it does not cross: it REPORTS. `dedup` contains no
  * write, delete or move call, so nothing it can be asked to do removes one of the owner's
- * files (`sidecar.py:1460-1465`). The only destructive surface on this wire is
+ * files (`sidecar.py:1458-1463`). The only destructive surface on this wire is
  * `maintenance.execute` (`cockpit/src/ipc/types.ts:986-992`), which is a separate plane with
  * a server-issued single-use handle and a typed confirmation. Acting on these results
  * therefore belongs to that plane, not here, and this file grows no delete button —
@@ -20,7 +20,7 @@
  * byte-equal session id and nothing else, `dedup.py:14-19`), which copy is being put
  * forward, and which copies merely also exist. Where the wire does not carry a fact, the row
  * says nothing rather than formatting a guess — a non-canonical copy travels as a PATH ONLY
- * (`sidecar.py:1485`), with no size, mtime or store kind, so no row may imply otherwise.
+ * (`sidecar.py:1483`), with no size, mtime or store kind, so no row may imply otherwise.
  *
  * THE EMPTY STATE IS FOUR STATES, not one, and conflating them is the defect this panel most
  * has to avoid. See {@link emptyReading}: a never-scanned panel, a scan that found no files
@@ -349,7 +349,7 @@ export interface DedupCopyLine {
    * "live store · 403.2 KB · 5 minutes ago" for the kept copy; ALWAYS "" for the others.
    *
    * Not an oversight — the wire carries `store_kind`, `size_bytes` and `last_write_ms` for
-   * the CANONICAL copy only (`sidecar.py:1476-1488`); `duplicate_paths` is a list of strings
+   * the CANONICAL copy only (`sidecar.py:1474-1486`); `duplicate_paths` is a list of strings
    * (`:1423`). Filling this in for a non-canonical copy would mean inventing it.
    */
   detail: string;
@@ -481,7 +481,7 @@ function byUrgency(a: DedupSession, b: DedupSession): number {
  * Every hidden row is present and one click away, which is what makes this a button. It is
  * NOT the same kind of fact as an engine-side cap — see `ui/discoveryPanel`'s note on its two
  * truncations — and `dedup.sessions` returns the whole persisted view with no cap of its own
- * (`sidecar.py:1513-1517`), so this UI's collapsing is the only truncation on this surface.
+ * (`sidecar.py:1511-1515`), so this UI's collapsing is the only truncation on this surface.
  */
 export function expandLabel(hiddenCount: number, expanded: boolean): string {
   if (hiddenCount > 0) return `+${groupDigits(hiddenCount)} more`;
@@ -639,13 +639,13 @@ function initialView(): DedupView {
  * Single-flight throughout, like the discovery panel's controller: a re-entrant call while
  * one is in flight is IGNORED rather than queued, so a double-click cannot run two scans.
  * That matters more than usual here — a scan writes the derived view into the attached index
- * (`sidecar.py:1502-1503`), so two overlapping scans of different homes would interleave
+ * (`sidecar.py:1500-1501`), so two overlapping scans of different homes would interleave
  * their writes.
  *
  * NO SCAN IS EVER AUTOMATIC. There is no boot-time scan and no default home: `dedup.scan`
  * requires `codex_home` and never defaults it, deliberately, because an automated probe
  * really did read the owner's live Codex sessions through a similar fallback
- * (`sidecar.py:1491-1496`). The user names the folder; this class only carries it.
+ * (`sidecar.py:1489-1494`). The user names the folder; this class only carries it.
  */
 export class DedupPanelController {
   private view: DedupView = initialView();
@@ -736,7 +736,7 @@ export class DedupPanelController {
    *
    * Two calls, in this order, because they answer different questions: `dedup.scan` returns
    * the tally for THIS run and `dedup.sessions` returns the whole persisted view
-   * (`sidecar.py:1504-1517`). Both are needed — the tally is what distinguishes an empty
+   * (`sidecar.py:1502-1515`). Both are needed — the tally is what distinguishes an empty
    * store from a clean one, and the list is what the user reads.
    */
   async scan(codexHome: string): Promise<void> {
@@ -816,7 +816,7 @@ export class DedupPanelController {
  * That last point is not boilerplate here. Every string this paints is either a local
  * filesystem path off the wire or an engine error, and paths are display-sensitive in their
  * own right: `canonical_path` embeds the owner's username and is absent from
- * `redact.MetadataView` (`sidecar.py:1463-1465`). It reaches the DOM as text and never as
+ * `redact.MetadataView` (`sidecar.py:1461-1463`). It reaches the DOM as text and never as
  * markup, and it must not leave the app.
  */
 export class DedupPanel {

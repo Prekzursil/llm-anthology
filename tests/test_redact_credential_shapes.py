@@ -137,6 +137,7 @@ def test_a_medical_and_personal_probe_is_invisible_and_the_stated_limit_says_so(
         redact.scan_credential_shapes.__doc__,
         redact.scrub_credential_shapes.__doc__,
     ):
+        assert text is not None
         assert "pii" not in text.lower()
         assert "personally identifiable" not in text.lower()
 

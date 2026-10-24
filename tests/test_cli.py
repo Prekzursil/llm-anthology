@@ -629,7 +629,7 @@ def test_index_without_codex_home_discloses_the_live_store_it_will_read(
     tmp_path, monkeypatch, capsys
 ):
     """With no --codex-home, `load_corpus` falls back to the LIVE Codex store
-    (adapters/codex_state.py:132 — $CODEX_HOME, else ~/.codex) and that read is
+    (adapters/codex_state.py:133 — $CODEX_HOME, else ~/.codex) and that read is
     otherwise SILENT: an absent DB is skipped without a word. Someone indexing an
     ARCHIVED sessions tree would get this machine's live spawn graph merged in and
     never know. So the resolved DB path is always printed.
