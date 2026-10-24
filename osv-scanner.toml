@@ -11,3 +11,26 @@
 # id = "GHSA-xxxx-xxxx-xxxx"
 # ignoreUntil = 2027-01-31
 # reason = "Why this advisory cannot affect this repository, with evidence."
+
+# The four advisories below are informational UNMAINTAINED notices: they describe no
+# vulnerability, there is no fixed version to move to, and each crate arrives only through
+# the Tauri 2 stack, which cannot drop it. Each expires so it is re-checked.
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+ignoreUntil = 2027-01-31
+reason = "proc-macro-error 1.0.4 is unmaintained (informational notice, no vulnerability, no fixed version). It is a build-time proc-macro only, pulled by glib-macros/gtk3-macros 0.18 of the Linux GTK3 stack every Tauri 2 release depends on; none of its code ships in the app. Re-check when Tauri leaves gtk-rs 0.18."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-01-31
+reason = "zvariant 5.13.1 is unmaintained (informational notice, no vulnerability, no fixed version). Pulled only by zbus 5 through tauri-plugin-opener 2.7.2 on Linux; zbus 6 no longer uses it, but every tauri-plugin-opener 2.x requires zbus ^5.9. Re-check when the plugin moves to zbus 6."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-01-31
+reason = "zbus_names 4.3.4 is unmaintained (informational notice, no vulnerability, no fixed version). Same single path as zvariant: zbus 5 via tauri-plugin-opener 2.7.2 on Linux. Re-check when the plugin moves to zbus 6."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-01-31
+reason = "zvariant_derive 5.13.1 is unmaintained (informational notice, no vulnerability, no fixed version). Build-time derive macro on the same zbus 5 / tauri-plugin-opener 2.7.2 Linux path. Re-check when the plugin moves to zbus 6."

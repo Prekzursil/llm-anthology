@@ -1236,7 +1236,8 @@ def test_dispatch_db_busy_maps_to_32002():
     setattr(srv, "conn", _BusyConn())  # a fake whose every execute() raises
     with pytest.raises(sidecar.RpcError) as ei:
         srv.dispatch("corpus.stats", {})
-    assert ei.value.code == -32002 and ei.value.data["retry_ms"] > 0
+    data = ei.value.data
+    assert ei.value.code == -32002 and data is not None and data["retry_ms"] > 0
 
 
 def test_dispatch_other_operational_error_maps_to_internal():
