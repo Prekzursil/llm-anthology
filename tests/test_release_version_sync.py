@@ -44,7 +44,7 @@ at the bottom feed each extractor a deliberately broken input to prove it actual
 red there — a detector that has never failed is indistinguishable from a no-op.
 
 The TOML extractor is table-scoped for a measured reason, not for tidiness:
-`cockpit/src-tauri/Cargo.toml` carries a second `version = "0.59"` under
+`cockpit/src-tauri/Cargo.toml` carries a second `version = "0.61"` under
 `[target.'cfg(windows)'.dependencies.windows-sys]`. A first-match scan reads that
 dependency pin as the application version.
 """
@@ -214,10 +214,10 @@ def test_the_gate_covers_every_file_the_runbook_tells_you_to_bump():
 
 @requires_source_tree
 def test_toml_version_ignores_a_version_in_a_different_table():
-    """The live trap: Cargo.toml pins windows-sys 0.59 after [package] version."""
+    """The live trap: Cargo.toml pins windows-sys 0.61 after [package] version."""
     cargo = (REPO / "cockpit/src-tauri/Cargo.toml").read_text(encoding="utf-8")
-    assert 'version = "0.59"' in cargo, "the decoy this test guards against is gone"
-    assert toml_version(cargo, "package") != "0.59"
+    assert 'version = "0.61"' in cargo, "the decoy this test guards against is gone"
+    assert toml_version(cargo, "package") != "0.61"
 
 
 def test_toml_version_raises_when_the_table_has_no_version():
