@@ -21,6 +21,7 @@ SYNTHETIC fixtures only: no real conversation content, thread id or path appears
 per-file `_write_rollout`/`_session_meta` helpers are local by the convention this suite
 already follows — six other test modules define their own, and there is no conftest.
 """
+
 import json
 import os
 import sqlite3
@@ -34,6 +35,7 @@ LEG_TWO_ONLY = "zibbervane"
 
 
 # ------------------------------------------------------------------- fixtures
+
 
 def _write_rollout(day_dir, name, records):
     os.makedirs(day_dir, exist_ok=True)
@@ -49,23 +51,34 @@ def _rec(rtype, payload, ts):
 
 
 def _session_meta(sid, ts):
-    return _rec("session_meta",
-                {"session_id": sid, "id": sid, "timestamp": ts, "cwd": "/repo",
-                 "model_provider": "openai"}, ts)
+    return _rec(
+        "session_meta",
+        {"session_id": sid, "id": sid, "timestamp": ts, "cwd": "/repo", "model_provider": "openai"},
+        ts,
+    )
 
 
 def _user(text, ts):
-    return _rec("response_item",
-                {"type": "message", "role": "user",
-                 "content": [{"type": "input_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        ts,
+    )
 
 
 def _assistant_with_id(text, ts, item_id):
     """An assistant turn carrying the provider's opaque item id — the shape that lets one
     id arrive twice with two different bodies (`_merge_resumed_leg`'s divergence case)."""
-    return _rec("response_item",
-                {"type": "message", "role": "assistant", "id": item_id,
-                 "content": [{"type": "output_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {
+            "type": "message",
+            "role": "assistant",
+            "id": item_id,
+            "content": [{"type": "output_text", "text": text}],
+        },
+        ts,
+    )
 
 
 def _two_leg_store(tmp_path, first_records=None, second_records=None):
@@ -78,18 +91,26 @@ def _two_leg_store(tmp_path, first_records=None, second_records=None):
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
     shared = _user("the shared prefix", "2026-07-24T10:00:01.000Z")
-    first = _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
-                           first_records or [
-                               _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-                               shared,
-                               _user(LEG_ONE_ONLY, "2026-07-24T10:00:02.000Z"),
-                           ])
-    second = _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
-                            second_records or [
-                                _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-                                shared,
-                                _user(LEG_TWO_ONLY, "2026-07-24T12:00:01.000Z"),
-                            ])
+    first = _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        first_records
+        or [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            shared,
+            _user(LEG_ONE_ONLY, "2026-07-24T10:00:02.000Z"),
+        ],
+    )
+    second = _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        second_records
+        or [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            shared,
+            _user(LEG_TWO_ONLY, "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
     built, _errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
     return idx, first, second, built
@@ -101,10 +122,14 @@ def _one_leg_store(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    only = _write_rollout(day, "rollout-2026-07-24T10-00-00-0000d1.jsonl", [
-        _session_meta("D1", "2026-07-24T10:00:00.000Z"),
-        _user(LEG_ONE_ONLY, "2026-07-24T10:00:01.000Z"),
-    ])
+    only = _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000d1.jsonl",
+        [
+            _session_meta("D1", "2026-07-24T10:00:00.000Z"),
+            _user(LEG_ONE_ONLY, "2026-07-24T10:00:01.000Z"),
+        ],
+    )
     home.mkdir()
     loaders.load_corpus(str(sessions), idx, codex_home=str(home))
     return idx, only
@@ -156,6 +181,7 @@ def _legs_on_disk(idx, cid):
 
 # ---------------------------------------------------------------- the leg record
 
+
 def test_the_index_records_every_leg_ON_DISK(tmp_path):
     """The claim the old in-memory test could not make: the leg list survives to the FILE.
 
@@ -182,6 +208,7 @@ def test_an_unrecorded_conversation_reads_back_as_no_legs(tmp_path):
 
 # ------------------------------------------------------------------- the reader
 
+
 def test_conversation_get_renders_the_FIRST_leg_not_only_the_last(tmp_path):
     """The user-visible half. Before this, the transcript held only the last leg."""
     idx, _first, _second, _built = _two_leg_store(tmp_path)
@@ -201,8 +228,9 @@ def test_a_search_hit_OPENS_to_a_transcript_that_contains_it(tmp_path):
     try:
         server = sidecar.Sidecar(conn)
         hits = server.dispatch("search.query", {"q": LEG_ONE_ONLY})["hits"]
-        assert [h["conversation_id"] for h in hits] == ["C1"], \
+        assert [h["conversation_id"] for h in hits] == ["C1"], (
             "the FTS body already spans every leg"
+        )
         out = server.dispatch("conversation.get", {"id": hits[0]["conversation_id"]})
     finally:
         conn.close()
@@ -221,8 +249,9 @@ def test_the_reader_folds_with_the_INGEST_policy_not_a_second_copy_of_it(tmp_pat
     in_memory = [b.text for t in built.conversations[0].turns for b in t.blocks]
     out = _read(idx, "conversation.get", {"id": "C1"})
     assert [b["text"] for t in out["turns"] for b in t["blocks"]] == in_memory
-    assert in_memory == ["the shared prefix", LEG_ONE_ONLY, LEG_TWO_ONLY], \
+    assert in_memory == ["the shared prefix", LEG_ONE_ONLY, LEG_TWO_ONLY], (
         "the replayed prefix appears ONCE, and both legs' own turns survive"
+    )
 
 
 def test_the_reader_reports_how_many_legs_it_folded(tmp_path):
@@ -230,8 +259,9 @@ def test_the_reader_reports_how_many_legs_it_folded(tmp_path):
     out = _read(idx, "conversation.get", {"id": "C1"})
     assert out["meta"]["rollout_legs"] == 2
     assert "rollout_legs_unreadable" not in out["meta"]
-    assert out["meta"]["rollout_path"] == "rollout-2026-07-24T12-00-00-0000c1b.jsonl", \
+    assert out["meta"]["rollout_path"] == "rollout-2026-07-24T12-00-00-0000c1b.jsonl", (
         "the resume target stays the LAST leg, basenamed, exactly as the ingest records it"
+    )
 
 
 def test_a_single_leg_conversation_reads_exactly_as_before(tmp_path):
@@ -255,9 +285,11 @@ def _lossy_two_leg_store(tmp_path):
         ],
         second_records=[
             _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-            _assistant_with_id("the whole answer, at length",
-                               "2026-07-24T12:00:01.000Z", "msg_run"),
-        ])
+            _assistant_with_id(
+                "the whole answer, at length", "2026-07-24T12:00:01.000Z", "msg_run"
+            ),
+        ],
+    )
 
 
 def test_a_LOSSY_reconciliation_is_visible_to_the_reader(tmp_path):
@@ -277,8 +309,9 @@ def test_a_LOSSY_reconciliation_is_visible_to_the_reader(tmp_path):
     """
     idx, _first, _second, _built = _lossy_two_leg_store(tmp_path)
     out = _read(idx, "conversation.get", {"id": "C1"})
-    assert _text(out) == "the whole answer, at length", \
+    assert _text(out) == "the whole answer, at length", (
         "the fuller rendering replaces the truncated one, in place"
+    )
     assert out["meta"]["merge_divergent_turns"] == 1
 
 
@@ -308,6 +341,7 @@ def test_a_clean_merge_reports_NO_divergence(tmp_path):
 
 # ----------------------------------------------------- degrading, not exploding
 
+
 def test_an_index_that_PREDATES_the_legs_table_still_reads(tmp_path):
     """The migration promise. An index built before this change has no leg rows at all;
     `init_index` adds the table (IF NOT EXISTS, so nothing is dropped or rebuilt) and the
@@ -336,8 +370,9 @@ def test_an_index_that_PREDATES_the_legs_table_still_reads(tmp_path):
     assert out["available"] is True
     body = _text(out)
     assert LEG_TWO_ONLY in body, "the last leg still reads, as it always did"
-    assert LEG_ONE_ONLY not in body, \
+    assert LEG_ONE_ONLY not in body, (
         "and the pre-fix limitation is honestly reproduced rather than papered over"
+    )
     assert out["meta"]["rollout_path"] == os.path.basename(second)
 
 
@@ -376,8 +411,7 @@ def test_a_plain_REBUILD_repairs_an_index_that_predates_the_table(tmp_path):
     raw.commit()
     raw.close()
 
-    loaders.load_corpus(str(tmp_path / "sessions"), idx,
-                        codex_home=str(tmp_path / "no_state"))
+    loaders.load_corpus(str(tmp_path / "sessions"), idx, codex_home=str(tmp_path / "no_state"))
 
     assert _legs_on_disk(idx, "C1") == [first, second]
     assert LEG_ONE_ONLY in _text(_read(idx, "conversation.get", {"id": "C1"}))
@@ -423,14 +457,12 @@ def test_re_recording_the_same_legs_is_a_no_op(tmp_path):
     """A resumed/idempotent build must not churn the table. Re-running the whole ingest
     over unchanged files leaves exactly the rows it left the first time."""
     idx, first, second, _built = _two_leg_store(tmp_path)
-    loaders.load_corpus(str(tmp_path / "sessions"), idx,
-                        codex_home=str(tmp_path / "no_state"))
+    loaders.load_corpus(str(tmp_path / "sessions"), idx, codex_home=str(tmp_path / "no_state"))
 
     assert _legs_on_disk(idx, "C1") == [first, second]
     conn = sqlite3.connect(idx)
     try:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM conversation_rollouts").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM conversation_rollouts").fetchone()[0] == 2
     finally:
         conn.close()
 
@@ -465,7 +497,6 @@ def test_a_leg_that_disappears_from_the_source_leaves_the_record(tmp_path):
     the ingest itself no longer believes in."""
     idx, first, second, _built = _two_leg_store(tmp_path)
     os.remove(first)
-    loaders.load_corpus(str(tmp_path / "sessions"), idx,
-                        codex_home=str(tmp_path / "no_state"))
+    loaders.load_corpus(str(tmp_path / "sessions"), idx, codex_home=str(tmp_path / "no_state"))
 
     assert _legs_on_disk(idx, "C1") == [second]

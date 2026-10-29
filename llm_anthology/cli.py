@@ -27,6 +27,7 @@ store present at all — which is the only artifact most users have:
 That is why `sessions_root` is OPTIONAL: at least one source must be named, and an export
 counts. Naming several builds ONE index from all of them.
 """
+
 import argparse
 import os
 import sys
@@ -43,14 +44,14 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="llm-anthology",
         description="Render AI session exports to faithful HTML + clean Markdown. "
-                    "Fully offline — no network calls, ever.")
+        "Fully offline — no network calls, ever.",
+    )
     # 0.1.0 shipped without this, so `llm-anthology --version` answered
     # "error: unrecognized arguments: --version" and exit 2 -- which reads as a broken
     # install rather than a missing flag. The value is `llm_anthology.__version__`, the
     # copy that ships INSIDE the wheel, so it reports the version actually running and
     # not whatever a nearby source tree happens to say.
-    p.add_argument("--version", action="version",
-                   version=f"llm-anthology {__version__}")
+    p.add_argument("--version", action="version", version=f"llm-anthology {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     c = sub.add_parser("claude", help="Claude native export (a .json file or a directory of them)")
@@ -60,73 +61,115 @@ def build_parser():
     g = sub.add_parser("chatgpt", help="ChatGPT conversations.json (or a harvested array)")
     g.add_argument("src")
     g.add_argument("out_dir")
-    g.add_argument("--projects", default=None,
-                   help="optional second export whose records carry __project_id")
+    g.add_argument(
+        "--projects", default=None, help="optional second export whose records carry __project_id"
+    )
 
-    x = sub.add_parser("codex", help="Codex task export (codex.json) — a THIRD shape, "
-                                     "NOT readable by the chatgpt subcommand")
+    x = sub.add_parser(
+        "codex",
+        help="Codex task export (codex.json) — a THIRD shape, "
+        "NOT readable by the chatgpt subcommand",
+    )
     x.add_argument("src")
     x.add_argument("out_dir")
 
     m = sub.add_parser("gemini", help="Google Takeout 'Gemini Apps' activity transcript.json")
     m.add_argument("src")
     m.add_argument("out_dir")
-    m.add_argument("--harvest", default=None,
-                   help="web-app harvest enabling TRUE conversation grouping "
-                        "(without it, grouping is a labelled provisional heuristic)")
+    m.add_argument(
+        "--harvest",
+        default=None,
+        help="web-app harvest enabling TRUE conversation grouping "
+        "(without it, grouping is a labelled provisional heuristic)",
+    )
 
     d = sub.add_parser("demo", help="write a synthetic sample page (no real content)")
     d.add_argument("out_html")
 
-    i = sub.add_parser("index", help="build the SQLite corpus index the cockpit reads "
-                                     "(the ONLY supported way to produce one)")
-    i.add_argument("src", nargs="?", default="",
-                   help="the Codex sessions ROOT — the date-nested "
-                        "YYYY/MM/DD/rollout-*.jsonl tree. OPTIONAL: an export flag is a "
-                        "source in its own right, so omit this to import an export alone. "
-                        "At least one source must be named either way; naming none is "
-                        "refused before anything is written.")
-    i.add_argument("out_index", help="the SQLite index FILE to write; hand it to "
-                                     "`sidecar --index <this>`")
-    i.add_argument("--codex-home", default=None,
-                   help="directory holding state_5.sqlite (the spawn graph). OMITTED "
-                        "MEANS NO SPAWN GRAPH IS MERGED — not 'go find one'. The help "
-                        "here used to promise a fallback to the LIVE store ($CODEX_HOME, "
-                        "else ~/.codex); loaders.py guards the merge on this argument "
-                        "being named, so that fallback is gone and omission is the safe "
-                        "choice. Whether the graph was merged is printed either way.")
-    i.add_argument("--grok-root", default=None,
-                   help="a Grok Build session store (<enc-cwd>/<session-id>/). OPT-IN "
-                        "and never defaulted: a Grok store holds private material, so "
-                        "omitting this reads none. Reachable from the cockpit before "
-                        "this flag existed, and from nowhere on the command line.")
-    i.add_argument("--claude-root", default=None,
-                   help="a Claude Code store (the projects/ tree under a Claude home). "
-                        "OPT-IN and never defaulted, for the same reason — ~/.claude is "
-                        "private and omitting this reads nothing.")
+    i = sub.add_parser(
+        "index",
+        help="build the SQLite corpus index the cockpit reads "
+        "(the ONLY supported way to produce one)",
+    )
+    i.add_argument(
+        "src",
+        nargs="?",
+        default="",
+        help="the Codex sessions ROOT — the date-nested "
+        "YYYY/MM/DD/rollout-*.jsonl tree. OPTIONAL: an export flag is a "
+        "source in its own right, so omit this to import an export alone. "
+        "At least one source must be named either way; naming none is "
+        "refused before anything is written.",
+    )
+    i.add_argument(
+        "out_index", help="the SQLite index FILE to write; hand it to `sidecar --index <this>`"
+    )
+    i.add_argument(
+        "--codex-home",
+        default=None,
+        help="directory holding state_5.sqlite (the spawn graph). OMITTED "
+        "MEANS NO SPAWN GRAPH IS MERGED — not 'go find one'. The help "
+        "here used to promise a fallback to the LIVE store ($CODEX_HOME, "
+        "else ~/.codex); loaders.py guards the merge on this argument "
+        "being named, so that fallback is gone and omission is the safe "
+        "choice. Whether the graph was merged is printed either way.",
+    )
+    i.add_argument(
+        "--grok-root",
+        default=None,
+        help="a Grok Build session store (<enc-cwd>/<session-id>/). OPT-IN "
+        "and never defaulted: a Grok store holds private material, so "
+        "omitting this reads none. Reachable from the cockpit before "
+        "this flag existed, and from nowhere on the command line.",
+    )
+    i.add_argument(
+        "--claude-root",
+        default=None,
+        help="a Claude Code store (the projects/ tree under a Claude home). "
+        "OPT-IN and never defaulted, for the same reason — ~/.claude is "
+        "private and omitting this reads nothing.",
+    )
     # The four DOWNLOADED exports, promoted to first-class corpus inputs by G-1. Same flag
     # style as --grok-root / --claude-root above, and the same rule: opt-in, never
     # defaulted, never guessed. Each takes a FILE or an export DIRECTORY (except gemini,
     # whose Takeout transcript is read directly and so must be a file).
-    i.add_argument("--chatgpt-export", default=None,
-                   help="a ChatGPT export: conversations.json, ONE of its "
-                        "conversations-NNN.json shards, or the export DIRECTORY (every "
-                        "shard is contributed)")
-    i.add_argument("--chatgpt-projects", default=None,
-                   help="a SECOND ChatGPT export whose project-tagged conversations join "
-                        "the same dedup pool (the render path's --projects)")
-    i.add_argument("--claude-export", default=None,
-                   help="a Claude account export: conversations.json, a design_chats "
-                        "document, or the export DIRECTORY")
-    i.add_argument("--codex-export", default=None,
-                   help="a Codex TASK export (codex.json), or a directory holding one. A "
-                        "third shape, unrelated to the rollout tree in `src`")
-    i.add_argument("--gemini-export", default=None,
-                   help="a Google Takeout 'Gemini Apps' activity transcript.json")
-    i.add_argument("--gemini-harvest", default=None,
-                   help="web-app harvest enabling TRUE conversation grouping for "
-                        "--gemini-export (without it, grouping is a labelled provisional "
-                        "heuristic, and the mode used is printed either way)")
+    i.add_argument(
+        "--chatgpt-export",
+        default=None,
+        help="a ChatGPT export: conversations.json, ONE of its "
+        "conversations-NNN.json shards, or the export DIRECTORY (every "
+        "shard is contributed)",
+    )
+    i.add_argument(
+        "--chatgpt-projects",
+        default=None,
+        help="a SECOND ChatGPT export whose project-tagged conversations join "
+        "the same dedup pool (the render path's --projects)",
+    )
+    i.add_argument(
+        "--claude-export",
+        default=None,
+        help="a Claude account export: conversations.json, a design_chats "
+        "document, or the export DIRECTORY",
+    )
+    i.add_argument(
+        "--codex-export",
+        default=None,
+        help="a Codex TASK export (codex.json), or a directory holding one. A "
+        "third shape, unrelated to the rollout tree in `src`",
+    )
+    i.add_argument(
+        "--gemini-export",
+        default=None,
+        help="a Google Takeout 'Gemini Apps' activity transcript.json",
+    )
+    i.add_argument(
+        "--gemini-harvest",
+        default=None,
+        help="web-app harvest enabling TRUE conversation grouping for "
+        "--gemini-export (without it, grouping is a labelled provisional "
+        "heuristic, and the mode used is printed either way)",
+    )
     return p
 
 
@@ -136,12 +179,16 @@ def _export_specs(args):
     A provider with no `--<provider>-export` contributes nothing — an omitted source is
     not read, which is the same no-fallback rule --grok-root and --claude-root follow.
     """
-    return [(provider, path, second or "") for provider, path, second in (
-        ("chatgpt", args.chatgpt_export, args.chatgpt_projects),
-        ("claude", args.claude_export, None),
-        ("codex", args.codex_export, None),
-        ("gemini", args.gemini_export, args.gemini_harvest),
-    ) if path]
+    return [
+        (provider, path, second or "")
+        for provider, path, second in (
+            ("chatgpt", args.chatgpt_export, args.chatgpt_projects),
+            ("claude", args.claude_export, None),
+            ("codex", args.codex_export, None),
+            ("gemini", args.gemini_export, args.gemini_harvest),
+        )
+        if path
+    ]
 
 
 def _missing_source(args, specs):
@@ -199,9 +246,12 @@ def _build_index(args):
     """
     specs = _export_specs(args)
     if not (args.src or args.grok_root or args.claude_root or specs):
-        print("ERROR: name at least one source: a sessions ROOT positional, --grok-root, "
-              "--claude-root, or one of --chatgpt-export / --claude-export / "
-              "--codex-export / --gemini-export", file=sys.stderr)
+        print(
+            "ERROR: name at least one source: a sessions ROOT positional, --grok-root, "
+            "--claude-root, or one of --chatgpt-export / --claude-export / "
+            "--codex-export / --gemini-export",
+            file=sys.stderr,
+        )
         return 2
     missing = _missing_source(args, specs)
     if missing is not None:
@@ -230,8 +280,8 @@ def _build_index(args):
     # Announce before the work: a real sessions tree takes minutes and the call below
     # passes no `progress=`, so this line is the only thing standing between the user
     # and a silent terminal. NOT because there is no hook — `load_corpus` accepts one
-    # (loaders.py:336) and forwards it to `index.build_index` after every committed
-    # chunk (loaders.py:461). An earlier version of this comment denied that any such
+    # (loaders.py:372) and forwards it to `index.build_index` after every committed
+    # chunk (loaders.py:499). An earlier version of this comment denied that any such
     # hook existed at all; that was true when it was written and the forward has since
     # been added, so per-chunk CLI progress is a one-line change AT THIS CALL SITE
     # rather than a change in loaders. Whether to wire it is an OPEN decision, not a
@@ -242,8 +292,7 @@ def _build_index(args):
     # a gate that cannot tell a quotation from an assertion is the right trade — a
     # re-assertion must not be able to hide inside quote marks. Do not restore the
     # quote and then relax the gate.
-    print("INDEX_BUILDING", args.src or "(no sessions root)", "->", args.out_index,
-          flush=True)
+    print("INDEX_BUILDING", args.src or "(no sessions root)", "->", args.out_index, flush=True)
     # Disclose the state store BEFORE reading it. The read is otherwise SILENT — an absent
     # or busy DB is skipped without a word — so someone indexing an ARCHIVED sessions tree
     # could get a live spawn graph merged in and never know. Resolved through _db_path
@@ -260,7 +309,7 @@ def _build_index(args):
     # reason for printing it has not changed.
     #
     # The path shown in the NOT-read case is still resolved through the real resolution
-    # order (`adapters/codex_state.py:129` — explicit home, else $CODEX_HOME, else
+    # order (`adapters/codex_state.py:133` — explicit home, else $CODEX_HOME, else
     # ~/.codex), so it names the store that WOULD be read. Printing it is what makes the
     # "not read" line meaningful: naming the store and then saying it was skipped is the
     # disclosure; suppressing the path entirely would leave a user unable to tell which
@@ -269,13 +318,21 @@ def _build_index(args):
     if merged:
         print("CODEX_STATE_DB", codex_state._db_path(args.codex_home), flush=True)
     else:
-        print("CODEX_STATE_DB", codex_state._db_path(args.codex_home),
-              "(NOT read — no --codex-home)", flush=True)
+        print(
+            "CODEX_STATE_DB",
+            codex_state._db_path(args.codex_home),
+            "(NOT read — no --codex-home)",
+            flush=True,
+        )
     print("STATE_GRAPH_MERGED", "yes" if merged else "no", flush=True)
 
-    result, errors = loaders.load_corpus(args.src, out, codex_home=args.codex_home,
-                                         grok_root=args.grok_root,
-                                         claude_root=args.claude_root)
+    result, errors = loaders.load_corpus(
+        args.src,
+        out,
+        codex_home=args.codex_home,
+        grok_root=args.grok_root,
+        claude_root=args.claude_root,
+    )
 
     # The EXPORT half of the ingest (G-1), against the same index. A second call rather
     # than a `load_corpus` argument because a streamed export must write and drop each
@@ -293,8 +350,10 @@ def _build_index(args):
     for row in export_report:
         # PER FILE, because that is what makes a dead shard visible: a 17-shard export that
         # silently contributed 16 is exactly what a single total cannot show.
-        line = ("EXPORT_INGEST provider=%(provider)s file=%(file)s "
-                "conversations=%(conversations)d duplicates=%(duplicates)d" % row)
+        line = (
+            "EXPORT_INGEST provider=%(provider)s file=%(file)s "
+            "conversations=%(conversations)d duplicates=%(duplicates)d" % row
+        )
         if "grouping_mode" in row:
             # Gemini only, and never omitted: Takeout carries no conversation id, so a
             # corpus whose boundaries were INFERRED must not read like ground truth.
@@ -320,9 +379,12 @@ def _build_index(args):
     # INDEX_ROWS below reads 3. Without saying which half it counts, a successful
     # export-only import looks like a failed one. The token and the number keep their
     # position, so `INGESTED_CONVERSATIONS <n>` still parses as before.
-    print("INGESTED_CONVERSATIONS", len(result.conversations),   # read out of the tree
-          "(session stores; exports are counted above)")
-    print("INDEX_ROWS", rows)                                    # ...and landed on disk
+    print(
+        "INGESTED_CONVERSATIONS",
+        len(result.conversations),  # read out of the tree
+        "(session stores; exports are counted above)",
+    )
+    print("INDEX_ROWS", rows)  # ...and landed on disk
     print("INDEX_THREADS", len(graph.threads))
     print("INDEX_EDGES", len(graph.edges))
     print("INGEST_ERRORS", len(errors))
@@ -333,8 +395,10 @@ def _build_index(args):
     for err in errors[:MAX_ERRORS_SHOWN]:
         # sorted(items) rather than named fields: an entry carries `line` only when it
         # came from a rollout, and a formatter that named fields would silently drop it.
-        print("  INGEST_ERROR " + " ".join("%s=%s" % kv for kv in sorted(err.items())),
-              file=sys.stderr)
+        print(
+            "  INGEST_ERROR " + " ".join("%s=%s" % kv for kv in sorted(err.items())),
+            file=sys.stderr,
+        )
     if len(errors) > MAX_ERRORS_SHOWN:
         print("  ... and %d more" % (len(errors) - MAX_ERRORS_SHOWN), file=sys.stderr)
     print("INDEX_WRITTEN", args.out_index)
@@ -344,7 +408,7 @@ def _build_index(args):
     # written and the build is idempotent, so re-running after fixing the bad file
     # completes it; but a caller scripting `index && open-the-cockpit` must not read a
     # half-ingested corpus as success. That silent-partial-success is the exact trap
-    # this file (see the exit-3 note in main) and build.py:107 were already bitten by.
+    # this file (see the exit-3 note in main) and build.py:145 were already bitten by.
     # One code is enough -- the counts above already separate partial from total.
     return 3 if errors else 0
 
@@ -364,8 +428,8 @@ def main(argv=None):
         print("DEMO_WRITTEN", args.out_html)
         return 0
 
-    if args.cmd is None:              # pragma: no cover - empty argv is handled above and
-        parser.print_help()           # argparse rejects any non-subcommand token before here
+    if args.cmd is None:  # pragma: no cover - empty argv is handled above and
+        parser.print_help()  # argparse rejects any non-subcommand token before here
         return 2
 
     # `index` VALIDATES ITS OWN SOURCES and so is dispatched BEFORE the check below. It has
@@ -384,16 +448,22 @@ def main(argv=None):
         report = build.render_corpus(convs, args.out_dir, provider="claude", load_errors=errors)
     elif args.cmd == "chatgpt":
         convs, errors, proj_of = loaders.load_chatgpt(args.src, args.projects)
-        report = build.render_corpus(convs, args.out_dir, provider="chatgpt", load_errors=errors,
-                                     meta_of=lambda c: proj_of.get(c.id, ""))
+        report = build.render_corpus(
+            convs,
+            args.out_dir,
+            provider="chatgpt",
+            load_errors=errors,
+            meta_of=lambda c: proj_of.get(c.id, ""),
+        )
     elif args.cmd == "codex":
         convs, errors = loaders.load_codex(args.src, args.out_dir)
         report = build.render_corpus(convs, args.out_dir, provider="codex", load_errors=errors)
     elif args.cmd == "gemini":
         convs, errors, extra = loaders.load_gemini(args.src, args.harvest)
-        report = build.render_corpus(convs, args.out_dir, provider="gemini", load_errors=errors,
-                                     extra=extra)
-    else:                             # pragma: no cover - argparse constrains cmd to the four above
+        report = build.render_corpus(
+            convs, args.out_dir, provider="gemini", load_errors=errors, extra=extra
+        )
+    else:  # pragma: no cover - argparse constrains cmd to the four above
         parser.print_help()
         return 2
 
@@ -408,5 +478,5 @@ def main(argv=None):
     return 0
 
 
-if __name__ == "__main__":            # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

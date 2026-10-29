@@ -32,6 +32,7 @@ shipped yet) and still needs its patch.
 The pure verdict function is tested directly with explicit arguments, so the policy itself
 needs no patching in any case.
 """
+
 import hashlib
 import pathlib
 import sqlite3
@@ -60,9 +61,14 @@ def _close_connections():
 
 def _conv(cid="c1", title="A synthetic title", body_text="alpha bravo"):
     return ir.Conversation(
-        id=cid, title=title, provider="codex", account="acct",
+        id=cid,
+        title=title,
+        provider="codex",
+        account="acct",
         turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=body_text)])],
-        created_at="2026-01-01", updated_at="2026-01-02")
+        created_at="2026-01-01",
+        updated_at="2026-01-02",
+    )
 
 
 def _populate(conn):
@@ -74,8 +80,10 @@ def _populate(conn):
 
 def _set_marker(conn, value):
     """Write a RAW marker value, bypassing the stamp so a test can forge any state."""
-    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
-                 (corpus.SCHEMA_VERSION_KEY, value))
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+        (corpus.SCHEMA_VERSION_KEY, value),
+    )
     conn.commit()
 
 
@@ -105,14 +113,18 @@ def _premarker_index(path):
         "DROP TABLE conversation_models;\n"
         "DROP TABLE conversations_fts;\n"
         "CREATE VIRTUAL TABLE conversations_fts USING fts5("
-        "title, body, content='', detail=none);")
-    conn.execute("INSERT INTO conversations_fts(rowid, title, body) "
-                 "SELECT rowid, title, 'alpha bravo' FROM conversations")
+        "title, body, content='', detail=none);"
+    )
+    conn.execute(
+        "INSERT INTO conversations_fts(rowid, title, body) "
+        "SELECT rowid, title, 'alpha bravo' FROM conversations"
+    )
     conn.commit()
     conn.close()
 
 
 # ------------------------------------------------- the shipped constants, today
+
 
 def test_the_shipped_version_constants_are_todays_truth():
     """Documents the state the older-index branches are measured against: version 1
@@ -121,10 +133,12 @@ def test_the_shipped_version_constants_are_todays_truth():
     assert corpus.UNSTAMPED_VERSION == 1, (
         "an UNMARKED index is still a 1 and must stay a 1 — this is exactly the constant "
         "whose separateness from SCHEMA_VERSION stops a version bump from skipping a real "
-        "migration, and the bump to 2 is the first time that mattered")
+        "migration, and the bump to 2 is the first time that mattered"
+    )
     assert corpus._ADDITIVE_FROM == frozenset(), (
         "recreating a virtual table is not additive, so version 1 may NOT be migrated in "
-        "place — it has to be reported as needing a rebuild")
+        "place — it has to be reported as needing a rebuild"
+    )
     assert corpus.SCHEMA_VERSION_KEY == "schema_version"
 
 
@@ -136,6 +150,7 @@ def test_every_refusal_is_catchable_as_one_error_type():
 
 
 # ------------------------------------------------------- the pure verdict seam
+
 
 def test_the_same_version_is_ok():
     assert corpus._version_verdict(3, 3, frozenset()) == "ok"
@@ -161,6 +176,7 @@ def test_the_verdict_vocabulary_is_exactly_four_words():
 
 
 # --------------------------------------------------------------- the marker table
+
 
 def test_init_index_creates_the_marker_table_with_the_decided_shape():
     conn = _track(corpus.init_index(sqlite3.connect(":memory:")))
@@ -204,11 +220,12 @@ def test_a_BRAND_NEW_database_is_not_mistaken_for_a_version_one_index(tmp_path):
     """
     conn = _track(corpus.open_index(str(tmp_path / "brand-new.sqlite")))
     assert corpus.read_schema_version(conn) == corpus.SCHEMA_VERSION
-    assert conn.execute(
-        "SELECT count(*) FROM conversations").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM conversations").fetchone()[0] == 0
     # and in-memory, which is what most of the suite and every ad-hoc reader uses
-    assert corpus.read_schema_version(
-        _track(corpus.init_index(sqlite3.connect(":memory:")))) == corpus.SCHEMA_VERSION
+    assert (
+        corpus.read_schema_version(_track(corpus.init_index(sqlite3.connect(":memory:"))))
+        == corpus.SCHEMA_VERSION
+    )
 
 
 def test_read_returns_none_when_the_marker_table_is_absent():
@@ -232,6 +249,7 @@ def test_an_unreadable_marker_is_refused_rather_than_guessed():
 
 
 # ------------------------------------------- an index that predates the marker
+
 
 def test_a_real_pre_G4_index_is_REFUSED_with_a_rebuild_instruction(tmp_path):
     """THE behaviour change G-4 buys, and the price it charges.
@@ -277,8 +295,12 @@ def test_the_refused_pre_G4_index_is_left_completely_alone(tmp_path):
     check = _track(sqlite3.connect(path))
     assert check.execute("SELECT count(*) FROM conversations").fetchone()[0] == 1
     assert corpus.read_schema_version(check) is None, "not stamped"
-    assert "detail=none" in check.execute(
-        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+    assert (
+        "detail=none"
+        in check.execute("SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[
+            0
+        ]
+    )
 
 
 #: Every INSERT a `_SpyConn` saw aimed at `schema_meta`. A module-level list because
@@ -315,6 +337,7 @@ def test_opening_a_current_index_twice_does_not_rewrite_the_marker(tmp_path):
 
 # ---------------------------------------------------- an index NEWER than us
 
+
 def test_an_index_from_a_newer_build_refuses_to_open(tmp_path):
     path = str(tmp_path / "future.sqlite")
     seed = _track(sqlite3.connect(path))
@@ -344,20 +367,19 @@ def test_the_refusal_happens_BEFORE_the_schema_is_touched(tmp_path):
     conn = _track(sqlite3.connect(path))
     with pytest.raises(corpus.IndexTooNewError):
         corpus.init_index(conn)
-    tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "ingest_checkpoint" not in tables
 
 
 def test_a_refused_open_does_not_write_a_single_byte(tmp_path):
-    """"Before the schema is touched" is not enough: `journal_mode` is a PERSISTENT
+    """ "Before the schema is touched" is not enough: `journal_mode` is a PERSISTENT
     header setting, so enabling WAL on an archive a newer build owns is still a write
     into a shape this build does not understand. Measured with the pragma running one
     line ahead of the gate: `delete` became `wal` and the file hash changed. The gate
     therefore runs before ANY statement, and this pins the whole file."""
     path = str(tmp_path / "future.sqlite")
     seed = _track(sqlite3.connect(path))
-    seed.execute("PRAGMA journal_mode=DELETE")   # the hostile case: NOT already WAL
+    seed.execute("PRAGMA journal_mode=DELETE")  # the hostile case: NOT already WAL
     seed.executescript(corpus._SCHEMA_META_DDL)
     _set_marker(seed, str(corpus.SCHEMA_VERSION + 1))
     seed.close()
@@ -369,11 +391,11 @@ def test_a_refused_open_does_not_write_a_single_byte(tmp_path):
     conn.close()
 
     assert hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() == before
-    assert _track(sqlite3.connect(path)).execute(
-        "PRAGMA journal_mode").fetchone()[0] == "delete"
+    assert _track(sqlite3.connect(path)).execute("PRAGMA journal_mode").fetchone()[0] == "delete"
 
 
 # ---------------------------------------------------- an index OLDER than us
+
 
 def _index_at(path, version):
     conn = sqlite3.connect(path)
@@ -414,7 +436,7 @@ def test_an_older_index_with_a_breaking_delta_asks_for_a_rebuild(tmp_path, monke
 
 
 def test_a_breaking_delta_leaves_the_old_index_intact(tmp_path, monkeypatch):
-    """"Report that a rebuild is required" must not be "start one": the refused index
+    """ "Report that a rebuild is required" must not be "start one": the refused index
     still holds its rows, so the user can downgrade or export before rebuilding."""
     path = str(tmp_path / "v1.sqlite")
     _index_at(path, 1)
@@ -451,6 +473,7 @@ def test_a_breaking_delta_leaves_the_old_index_intact(tmp_path, monkeypatch):
 # route is re-ingesting the SOURCES. So the error tells the user to rebuild rather than
 # offering to migrate, and recording that here is cheaper than the next person re-deriving it.
 
+
 def _v1_index(tmp_path, name="old.sqlite"):
     path = str(tmp_path / name)
     _premarker_index(path)
@@ -463,9 +486,9 @@ def _drive(index_path, *lines):
     import json as _json
 
     from llm_anthology import sidecar as sc
+
     stdout = io.StringIO()
-    sc.main(["--index", index_path], stdin=io.StringIO("\n".join(lines) + "\n"),
-            stdout=stdout)
+    sc.main(["--index", index_path], stdin=io.StringIO("\n".join(lines) + "\n"), stdout=stdout)
     return [_json.loads(ln) for ln in stdout.getvalue().splitlines() if ln.strip()]
 
 
@@ -486,6 +509,7 @@ def test_a_corpus_call_on_a_v1_index_is_a_TYPED_error_naming_the_rebuild(tmp_pat
     """Not a generic "corpus not indexed": that sends a user looking for a missing file when
     the file is present and merely old. The code is distinct and the message is actionable."""
     from llm_anthology import sidecar as sc
+
     out = _drive(_v1_index(tmp_path), '{"jsonrpc":"2.0","id":1,"method":"corpus.stats"}')
     err = out[0]["error"]
     assert err["code"] == sc.INDEX_REBUILD_REQUIRED, err
@@ -513,6 +537,7 @@ def test_a_HEALTHY_index_is_untouched_by_the_new_path(tmp_path):
 def test_the_cli_reports_a_v1_index_as_a_SENTENCE_not_a_traceback(tmp_path, capsys):
     """cli index against an old index is the other spawn-a-corpse path."""
     from llm_anthology import cli
+
     src = tmp_path / "src"
     src.mkdir()
     code = cli.main(["index", str(src), _v1_index(tmp_path)])

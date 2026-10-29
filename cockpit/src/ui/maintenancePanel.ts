@@ -109,7 +109,7 @@ export interface RunRow {
   label: string;
   /**
    * Whether offering "undo" for this row makes sense. A `restored` manifest refuses a second
-   * restore (`llm_anthology/maintenance.py:658-659`), so presenting the affordance would
+   * restore (`llm_anthology/maintenance.py:702-703`), so presenting the affordance would
    * promise an action guaranteed to fail.
    */
   canRestore: boolean;
@@ -128,7 +128,7 @@ export interface MaintenancePlanView {
   /**
    * The EFFECTIVE destination, straight from the preview — a `delete` quarantines under
    * `<checkpoint_root>/deleted` and a `reconcile` under `<destination_root>/reconciled`
-   * (`llm_anthology/maintenance.py:404-411`). This is where the files really go, which is
+   * (`llm_anthology/maintenance.py:419-426`). This is where the files really go, which is
    * not necessarily the root the caller asked for.
    */
   destinationRoot: string;
@@ -195,13 +195,7 @@ export type MaintenanceRemedy =
 
 /** A classified failure: what happened, and what the operator should do about it. */
 export interface MaintenanceFailure {
-  kind:
-    | "plan-expired"
-    | "refused"
-    | "bad-params"
-    | "no-corpus"
-    | "manifest-unreadable"
-    | "failed";
+  kind: "plan-expired" | "refused" | "bad-params" | "no-corpus" | "manifest-unreadable" | "failed";
   /** What to show. Always carries the engine's own words so a new fault is never masked. */
   message: string;
   remedy: MaintenanceRemedy;
@@ -257,7 +251,7 @@ const ACTION_VERB: Record<MaintenanceActionName, string> = {
  *
  * `needsAttention` is deliberately NOT `warnings.length > 0`. The engine emits a DANGEROUS
  * warning for EVERY allowed target plus a closing INFO summary, so a perfectly healthy
- * 2-file plan arrives carrying 3 warnings (`llm_anthology/maintenance.py:506-527`, and the
+ * 2-file plan arrives carrying 3 warnings (`llm_anthology/maintenance.py:523-544`, and the
  * caveat on {@link MaintenanceWarning}). A UI keyed on non-emptiness would therefore flag
  * every plan it ever saw, which trains the operator to ignore the signal on the one plane
  * where that is most expensive. What actually deserves attention is a REFUSED target or a
@@ -300,16 +294,13 @@ export function derivePlanView(preview: MaintenancePreview): MaintenancePlanView
  * Is `typed` submittable against this plan?
  *
  * The comparison is EXACT — no trim, no case fold — because the engine's is
- * (`llm_anthology/maintenance.py:554` compares the raw strings, having already refused a
+ * (`llm_anthology/maintenance.py:578` compares the raw strings, having already refused a
  * whitespace-only one at `:552`). A UI that trimmed would enable its own button for
  * `"DELETE 1 FILE "` and then eat a refusal from the server, which reads to the operator as
  * the app being broken rather than as their trailing space. Mirroring the rule exactly is
  * what makes the disabled state honest.
  */
-export function confirmationState(
-  plan: MaintenancePlanView,
-  typed: string,
-): ConfirmationState {
+export function confirmationState(plan: MaintenancePlanView, typed: string): ConfirmationState {
   if (typed.trim() === "") return "empty";
   return typed === plan.requiredConfirmation ? "match" : "mismatch";
 }
@@ -319,7 +310,7 @@ export function confirmationState(
  *
  * -32003 IS NOT ONE CONDITION, and the difference decides whether the operator's work is
  * lost. The engine raises it both for a spent/unknown plan handle
- * (`llm_anthology/sidecar.py:1579-1581`) and for every refusal that `execute_maintenance`
+ * (`llm_anthology/sidecar.py:1638-1640`) and for every refusal that `execute_maintenance`
  * itself produces — a mismatched confirmation, a protected target, a colliding restore
  * (`:1518`). Only the FIRST means the plan is gone: the handle is deleted at `:1589`, AFTER
  * the call that raises, so a refused confirmation leaves it usable and the engine's own
@@ -402,7 +393,7 @@ export function deriveOutcome(
 /**
  * A courtesy pre-check on a `manifest_path`, mirroring the engine's edge rule: absolute and
  * local only, because merely resolving `\\host\share` on Windows initiates an outbound
- * SMB/NTLM authentication (`llm_anthology/sidecar.py:1597` -> `:498-512`).
+ * SMB/NTLM authentication (`llm_anthology/sidecar.py:1656` -> `:506-520`).
  *
  * NOT A SECURITY BOUNDARY — the engine's check is, and it runs regardless. This exists only
  * so the operator learns immediately instead of after a round trip. Returns null when the
@@ -473,7 +464,7 @@ export function renderMaintenanceView(view: MaintenanceView): string[] {
  * engine's dry-run default is never the thing standing between the operator and their files.
  *
  * NOTE ON WHY THERE IS NO "dry-run execute" STEP: `maintenance.execute` consumes the plan
- * handle on ANY accepted run, dry or not (`llm_anthology/sidecar.py:1587` deletes it after
+ * handle on ANY accepted run, dry or not (`llm_anthology/sidecar.py:1646` deletes it after
  * the call succeeds). A plan -> dry-execute -> apply-execute flow would therefore burn the
  * handle on the dry run and earn "already-used plan_id; re-plan" on the apply. The pure
  * `maintenance.plan` IS the dry run, and it is a better one: it reports what was REFUSED,
@@ -672,11 +663,7 @@ function fileWord(count: number): string {
   return count === 1 ? "file" : "files";
 }
 
-function planHeadline(
-  action: MaintenanceActionName,
-  allowed: number,
-  blocked: number,
-): string {
+function planHeadline(action: MaintenanceActionName, allowed: number, blocked: number): string {
   const head = `${ACTION_VERB[action]} ${allowed} ${fileWord(allowed)}`;
   return blocked === 0 ? head : `${head} (${blocked} refused)`;
 }

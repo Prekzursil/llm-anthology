@@ -17,6 +17,7 @@ asserted as a string):
   3. LOCK RETRY    — every write is wrapped in an app-level SQLITE_LOCKED(6)/BUSY(5)
      retry that recovers from a transient lock and re-raises anything else.
 """
+
 import sqlite3
 
 import pytest
@@ -63,13 +64,15 @@ def _fts_postings(conn):
 def _conv(cid, title, body):
     """A one-turn synthetic ir.Conversation whose single block carries `body`."""
     return ir.Conversation(
-        id=cid, title=title, provider="codex",
-        turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=body)])])
+        id=cid,
+        title=title,
+        provider="codex",
+        turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=body)])],
+    )
 
 
 def _src(file, records, content="v1"):
-    return index.IndexSource(file=file, content_hash=index.hash_content(content),
-                             records=records)
+    return index.IndexSource(file=file, content_hash=index.hash_content(content), records=records)
 
 
 def _nosleep(_delay):
@@ -87,6 +90,7 @@ def _operr(msg, code=None):
 
 # --------------------------------------------------------------- hash_content
 
+
 def test_hash_content_is_stable_across_str_and_bytes():
     """The same bytes hash identically whether handed in as str or bytes, so every
     producer fingerprints a source the same way; different content hashes differently."""
@@ -97,6 +101,7 @@ def test_hash_content_is_stable_across_str_and_bytes():
 
 # ---------------------------------------------------------- dataclass surface
 
+
 def test_index_source_defaults_records_to_an_empty_list():
     s = index.IndexSource(file="f", content_hash="h")
     assert s.file == "f" and s.content_hash == "h" and s.records == []
@@ -104,11 +109,16 @@ def test_index_source_defaults_records_to_an_empty_list():
 
 def test_build_stats_defaults_every_counter_to_zero():
     st = index.BuildStats()
-    assert (st.files_total, st.files_skipped, st.records_processed,
-            st.chunks_committed) == (0, 0, 0, 0)
+    assert (st.files_total, st.files_skipped, st.records_processed, st.chunks_committed) == (
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 # ------------------------------------------------------------------ _is_locked
+
 
 def test_is_locked_true_on_the_sqlite_locked_errorcode():
     assert index._is_locked(_operr("x", code=index.SQLITE_LOCKED)) is True
@@ -136,6 +146,7 @@ def test_is_locked_false_on_an_unrelated_message_without_a_code():
 
 # --------------------------------------------------------------------- _retry
 
+
 def test_retry_returns_the_result_on_first_success():
     slept = []
     assert index._retry(lambda: 42, sleep=slept.append) == 42
@@ -154,8 +165,7 @@ def test_retry_recovers_after_transient_locks():
             raise _operr("database is locked")
         return "ok"
 
-    assert index._retry(flaky, max_retries=5, retry_delay=0.01,
-                        sleep=slept.append) == "ok"
+    assert index._retry(flaky, max_retries=5, retry_delay=0.01, sleep=slept.append) == "ok"
     assert calls["n"] == 3 and slept == [0.01, 0.01]
 
 
@@ -183,6 +193,7 @@ def test_retry_reraises_a_non_lock_error_immediately():
 
 
 # -------------------------------------------------------------- build_index
+
 
 def test_build_index_indexes_every_record_and_makes_it_searchable(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
@@ -216,8 +227,9 @@ def test_build_index_chunks_commits_and_reports_progress(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
     recs = [_conv("c%d" % i, "t", "tok%d" % i) for i in range(5)]
     offsets = []
-    stats = index.build_index(conn, [_src("f.jsonl", recs)], chunk_size=2,
-                              progress=lambda f, o: offsets.append((f, o)))
+    stats = index.build_index(
+        conn, [_src("f.jsonl", recs)], chunk_size=2, progress=lambda f, o: offsets.append((f, o))
+    )
     assert offsets == [("f.jsonl", 2), ("f.jsonl", 4), ("f.jsonl", 5)]
     assert stats.chunks_committed == 3 and stats.records_processed == 5
     assert index.count(conn) == 5
@@ -242,6 +254,7 @@ def test_build_index_skips_a_source_with_no_records(tmp_path):
 
 # ------------------------------------------------------------- RESUMABILITY
 
+
 def test_build_index_resumes_from_a_checkpoint_after_an_interruption(tmp_path):
     """A build crashes right after its first chunk commits; a resume on a FRESH
     connection to the same file picks up at the checkpoint and lands the identical
@@ -252,8 +265,7 @@ def test_build_index_resumes_from_a_checkpoint_after_an_interruption(tmp_path):
 
     # reference: an uninterrupted build in its own db
     clean = _open(str(tmp_path / "clean.sqlite"))
-    index.build_index(clean, [index.IndexSource("roll.jsonl", h, list(recs))],
-                      chunk_size=1)
+    index.build_index(clean, [index.IndexSource("roll.jsonl", h, list(recs))], chunk_size=1)
     assert index.count(clean) == 3
 
     # interrupted build: raise from progress after the first committed chunk
@@ -267,24 +279,27 @@ def test_build_index_resumes_from_a_checkpoint_after_an_interruption(tmp_path):
             raise RuntimeError("simulated crash after the first chunk")
 
     with pytest.raises(RuntimeError):
-        index.build_index(conn_a, [index.IndexSource("roll.jsonl", h, list(recs))],
-                          chunk_size=1, progress=crash)
-    assert index.count(conn_a) == 1                          # only chunk 1 persisted
+        index.build_index(
+            conn_a, [index.IndexSource("roll.jsonl", h, list(recs))], chunk_size=1, progress=crash
+        )
+    assert index.count(conn_a) == 1  # only chunk 1 persisted
     assert corpus.get_checkpoint(conn_a, "roll.jsonl") == (1, h)
-    conn_a.close()                                            # simulate process death
+    conn_a.close()  # simulate process death
 
     # resume on a brand-new connection -> an independent signal
     conn_b = _open(path)
-    stats = index.build_index(conn_b, [index.IndexSource("roll.jsonl", h, list(recs))],
-                              chunk_size=1)
-    assert stats.records_processed == 2                      # only records[1:] this run
+    stats = index.build_index(
+        conn_b, [index.IndexSource("roll.jsonl", h, list(recs))], chunk_size=1
+    )
+    assert stats.records_processed == 2  # only records[1:] this run
     assert index.count(conn_b) == 3 and _fts_postings(conn_b) == 3
     assert corpus.get_checkpoint(conn_b, "roll.jsonl") == (3, h)
-    for i in range(3):                                        # each token once, no dups
+    for i in range(3):  # each token once, no dups
         assert len(index.search(conn_b, "tok%d" % i)) == 1
 
 
 # --------------------------------------------------------------- IDEMPOTENCY
+
 
 def test_rerun_with_a_matching_hash_skips_the_file(tmp_path):
     """The content-hash fast path: an identical re-run touches nothing and adds no
@@ -305,8 +320,7 @@ def test_rerun_with_a_changed_hash_reingests_without_duplicating(tmp_path):
     conversation_ids, and never duplicates a posting for an already-indexed id."""
     conn = _open(str(tmp_path / "i.sqlite"))
     r0, r1 = _conv("c0", "t", "alpha"), _conv("c1", "t", "beta")
-    index.build_index(conn, [index.IndexSource("f.jsonl", index.hash_content("v1"),
-                                               [r0, r1])])
+    index.build_index(conn, [index.IndexSource("f.jsonl", index.hash_content("v1"), [r0, r1])])
     assert index.count(conn) == 2
 
     r2 = _conv("c2", "t", "gamma")
@@ -320,6 +334,7 @@ def test_rerun_with_a_changed_hash_reingests_without_duplicating(tmp_path):
 
 
 # --------------------------------------------------------------- LOCK RETRY
+
 
 def test_build_index_wraps_its_writes_in_the_lock_retry(tmp_path, monkeypatch):
     """A transient SQLITE_LOCKED on the FIRST write is retried and the build completes:
@@ -336,14 +351,20 @@ def test_build_index_wraps_its_writes_in_the_lock_retry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(corpus, "add_conversation", flaky_add)
     conn = _open(str(tmp_path / "i.sqlite"))
-    index.build_index(conn, [_src("f.jsonl", [_conv("c0", "t", "alpha")])],
-                      chunk_size=1, retry_delay=0, sleep=slept.append)
-    assert calls["n"] == 2 and slept == [0]        # failed once, retried, succeeded
+    index.build_index(
+        conn,
+        [_src("f.jsonl", [_conv("c0", "t", "alpha")])],
+        chunk_size=1,
+        retry_delay=0,
+        sleep=slept.append,
+    )
+    assert calls["n"] == 2 and slept == [0]  # failed once, retried, succeeded
     assert index.count(conn) == 1
     assert index.search(conn, "alpha")[0]["conversation_id"] == "c0"
 
 
 # ------------------------------------------------------- count / search API
+
 
 def test_count_and_fts_postings_are_zero_on_a_fresh_index(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
@@ -377,14 +398,13 @@ def test_ranked_search_returns_rows_with_bm25_scores_best_first(tmp_path):
     and matching rows tend to tie — this asserts the ordering key and the matched set,
     NOT a fine-grained relevance separation the schema cannot provide."""
     conn = _open(str(tmp_path / "i.sqlite"))
-    recs = [_conv("c0", "t", "alpha beta"), _conv("c1", "t", "alpha"),
-            _conv("c2", "t", "gamma")]
+    recs = [_conv("c0", "t", "alpha beta"), _conv("c1", "t", "alpha"), _conv("c2", "t", "gamma")]
     index.build_index(conn, [_src("f.jsonl", recs)])
     rows = index.ranked_search(conn, "alpha")
     assert {r["conversation_id"] for r in rows} == {"c0", "c1"}
     scores = [r["bm25_score"] for r in rows]
     assert all(isinstance(s, float) for s in scores)
-    assert scores == sorted(scores)                      # best-first == ascending bm25
+    assert scores == sorted(scores)  # best-first == ascending bm25
     assert len(index.ranked_search(conn, "alpha", limit=1)) == 1
 
 
@@ -403,6 +423,7 @@ def test_ranked_search_returns_rows_with_bm25_scores_best_first(tmp_path):
 # unwired seam — it is not a defect a user can currently reach. `index.search` IS reachable
 # from `cli` and the export tests, but no caller passes a facet today either.
 
+
 def _dated(cid, title, body, provider, created):
     conv = _conv(cid, title, body)
     conv.provider = provider
@@ -412,26 +433,37 @@ def _dated(cid, title, body, provider, created):
 
 def _faceted_index(tmp_path):
     conn = _open(str(tmp_path / "facets.sqlite"))
-    index.build_index(conn, [_src("f.jsonl", [
-        _dated("c-codex", "t", "alpha", "codex", "2026-01-15T00:00:00Z"),
-        _dated("c-grok", "t", "alpha", "grok", "2026-06-15T00:00:00Z"),
-    ])])
+    index.build_index(
+        conn,
+        [
+            _src(
+                "f.jsonl",
+                [
+                    _dated("c-codex", "t", "alpha", "codex", "2026-01-15T00:00:00Z"),
+                    _dated("c-grok", "t", "alpha", "grok", "2026-06-15T00:00:00Z"),
+                ],
+            )
+        ],
+    )
     return conn
 
 
 def test_index_search_passes_the_provider_facet_through(tmp_path):
     conn = _faceted_index(tmp_path)
     assert {r["conversation_id"] for r in index.search(conn, "alpha")} == {"c-codex", "c-grok"}
-    assert [r["conversation_id"] for r in
-            index.search(conn, "alpha", provider="grok")] == ["c-grok"]
+    assert [r["conversation_id"] for r in index.search(conn, "alpha", provider="grok")] == [
+        "c-grok"
+    ]
 
 
 def test_index_search_passes_the_date_bounds_through(tmp_path):
     conn = _faceted_index(tmp_path)
-    assert [r["conversation_id"] for r in
-            index.search(conn, "alpha", since="2026-03")] == ["c-grok"]
-    assert [r["conversation_id"] for r in
-            index.search(conn, "alpha", until="2026-03")] == ["c-codex"]
+    assert [r["conversation_id"] for r in index.search(conn, "alpha", since="2026-03")] == [
+        "c-grok"
+    ]
+    assert [r["conversation_id"] for r in index.search(conn, "alpha", until="2026-03")] == [
+        "c-codex"
+    ]
 
 
 def test_ranked_search_passes_the_facets_through_AND_keeps_its_score(tmp_path):
@@ -440,16 +472,18 @@ def test_ranked_search_passes_the_facets_through_AND_keeps_its_score(tmp_path):
     rows = index.ranked_search(conn, "alpha", provider="grok")
     assert [r["conversation_id"] for r in rows] == ["c-grok"]
     assert isinstance(rows[0]["bm25_score"], float)
-    assert [r["conversation_id"] for r in
-            index.ranked_search(conn, "alpha", since="2026-03")] == ["c-grok"]
+    assert [r["conversation_id"] for r in index.ranked_search(conn, "alpha", since="2026-03")] == [
+        "c-grok"
+    ]
 
 
 def test_an_unfiltered_call_is_byte_identical_to_before(tmp_path):
     """`search_filter_sql` returns `("", [])` when nothing is filtered, so the unfiltered
     query plan must be untouched — the additive guarantee D-3 states for `corpus.search`."""
     conn = _faceted_index(tmp_path)
-    assert ({r["conversation_id"] for r in index.search(conn, "alpha")}
-            == {r["conversation_id"] for r in index.search(conn, "alpha", provider=None)})
+    assert {r["conversation_id"] for r in index.search(conn, "alpha")} == {
+        r["conversation_id"] for r in index.search(conn, "alpha", provider=None)
+    }
     assert len(index.ranked_search(conn, "alpha")) == 2
 
 
@@ -460,7 +494,10 @@ def test_the_facets_use_the_SHARED_policy_not_a_fourth_copy(tmp_path):
     that policy does, so matching it is evidence the shared helper is what ran.
     """
     conn = _faceted_index(tmp_path)
-    assert [r["conversation_id"] for r in
-            index.search(conn, "alpha", since="2026-06", until="2026-06")] == ["c-grok"]
-    assert [r["conversation_id"] for r in
-            index.ranked_search(conn, "alpha", since="2026-06", until="2026-06")] == ["c-grok"]
+    assert [
+        r["conversation_id"] for r in index.search(conn, "alpha", since="2026-06", until="2026-06")
+    ] == ["c-grok"]
+    assert [
+        r["conversation_id"]
+        for r in index.ranked_search(conn, "alpha", since="2026-06", until="2026-06")
+    ] == ["c-grok"]

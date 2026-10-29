@@ -38,7 +38,10 @@ describe("mountDiagnosticsButton", () => {
     const host = document.createElement("div");
     document.body.append(host);
 
-    mountDiagnosticsButton(host, deps(async () => undefined));
+    mountDiagnosticsButton(
+      host,
+      deps(async () => undefined),
+    );
 
     const button = host.querySelector("button");
     expect(button).not.toBeNull();
@@ -130,7 +133,11 @@ describe("DiagnosticsButton.destroy", () => {
     const button = document.createElement("button");
     const status = document.createElement("span");
     document.body.append(button, status);
-    const panel = new DiagnosticsButton(button, status, deps(async () => undefined));
+    const panel = new DiagnosticsButton(
+      button,
+      status,
+      deps(async () => undefined),
+    );
     expect(status.textContent).toBe("");
     panel.destroy();
   });

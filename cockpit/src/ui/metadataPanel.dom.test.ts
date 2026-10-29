@@ -37,7 +37,12 @@ import type { Annotation, MetadataSearchRow } from "../ipc/types";
 /** `is_empty` is RECOMPUTED, never passed in, so a fixture cannot contradict itself. */
 function makeAnnotation(over: Partial<Annotation> = {}): Annotation {
   const merged: Annotation = {
-    conversation_id: "c1", alias: "", tags: [], notes: "", is_empty: true, ...over,
+    conversation_id: "c1",
+    alias: "",
+    tags: [],
+    notes: "",
+    is_empty: true,
+    ...over,
   };
   return {
     ...merged,
@@ -47,8 +52,14 @@ function makeAnnotation(over: Partial<Annotation> = {}): Annotation {
 
 function searchRow(id: string, over: Partial<MetadataSearchRow> = {}): MetadataSearchRow {
   return {
-    conversation_id: id, provider: "codex", account: "", title: `title of ${id}`,
-    created_at: "2026-01-01", updated_at: "2026-01-02", turn_count: 3, thread_id: "t1",
+    conversation_id: id,
+    provider: "codex",
+    account: "",
+    title: `title of ${id}`,
+    created_at: "2026-01-01",
+    updated_at: "2026-01-02",
+    turn_count: 3,
+    thread_id: "t1",
     annotation: makeAnnotation({ conversation_id: id, tags: ["x"] }),
     ...over,
   };
@@ -74,8 +85,9 @@ function fakeEngine(over: Partial<MetadataIpc> = {}): MetadataIpc & { calls: str
     },
     async metadataSet(params) {
       calls.push(`set(${JSON.stringify(params)})`);
-      const prev = store.get(params.conversation_id)
-        ?? makeAnnotation({ conversation_id: params.conversation_id });
+      const prev =
+        store.get(params.conversation_id) ??
+        makeAnnotation({ conversation_id: params.conversation_id });
       const next = makeAnnotation({
         conversation_id: params.conversation_id,
         alias: params.alias ?? prev.alias,
@@ -102,7 +114,10 @@ function fakeEngine(over: Partial<MetadataIpc> = {}): MetadataIpc & { calls: str
     },
     async metadataTags() {
       calls.push("tags()");
-      return [{ tag: "alpha", count: 4 }, { tag: "zeta", count: 1 }];
+      return [
+        { tag: "alpha", count: 4 },
+        { tag: "zeta", count: 1 },
+      ];
     },
   };
   return Object.assign({ calls }, base, over);
@@ -275,8 +290,10 @@ describe("MetadataPanel editor", () => {
     expect(m.tags.value).toBe("alpha");
     expect(m.notes.value).toBe("n");
     expect(m.ipc.calls).toEqual(["get(c1)", "tags()"]);
-    expect(all(m.container, ".metadata-tag").map((b) => b.textContent))
-      .toEqual(["alpha (4)", "zeta (1)"]);
+    expect(all(m.container, ".metadata-tag").map((b) => b.textContent)).toEqual([
+      "alpha (4)",
+      "zeta (1)",
+    ]);
   });
 
   it("wires all three inputs, and names the unsaved fields on the Save button", async () => {
@@ -423,8 +440,8 @@ describe("MetadataPanel caret guard", () => {
     type(m.alias, "half-typed");
     await m.panel.open("c2");
 
-    expect(m.alias.value).toBe("half-typed");   // the divergence
-    expect(m.tags.value).toBe("zeta");          // the fields that did reseed
+    expect(m.alias.value).toBe("half-typed"); // the divergence
+    expect(m.tags.value).toBe("zeta"); // the fields that did reseed
     expect(m.notes.value).toBe("m");
     // ...and the safety property: nothing is claimed unsaved, so nothing can be written.
     expect(m.save.disabled).toBe(true);

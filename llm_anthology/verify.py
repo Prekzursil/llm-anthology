@@ -8,6 +8,7 @@ catches any rendering bug that silently drops or garbles content.
 verify() returns {ok, missing_tokens, coverage}. Wire it into the build; a non-empty
 missing_tokens on any conversation fails the fidelity gate.
 """
+
 import html as _html
 import re
 from collections import Counter
@@ -53,9 +54,9 @@ def prose_tokens(conv):
 
 
 def html_visible_tokens(h):
-    h = _BADGE_SPAN.sub(" ", h or "")     # badges replace invisibles — not content words
+    h = _BADGE_SPAN.sub(" ", h or "")  # badges replace invisibles — not content words
     h = _STYLE.sub(" ", h)
-    h = _HEAD.sub(" ", h)                 # drop CSS + <title> so they can't mask a real drop
+    h = _HEAD.sub(" ", h)  # drop CSS + <title> so they can't mask a real drop
     attrs = " ".join(_ATTR_VALS.findall(h) + _LANG_CLASS.findall(h))  # URLs, alt, code language
     body = _TAG.sub(" ", h)
     return _tok(_html.unescape(body + " " + attrs))
@@ -64,7 +65,7 @@ def html_visible_tokens(h):
 def verify(conv, rendered_html):
     want = Counter(prose_tokens(conv))
     got = Counter(html_visible_tokens(rendered_html))
-    missing = want - got                  # multiset difference: prose words not in the HTML
+    missing = want - got  # multiset difference: prose words not in the HTML
     total = sum(want.values())
     covered = total - sum(missing.values())
     return {

@@ -42,6 +42,7 @@ the same reasoning, and the same detector-guarding discipline, as
 and each one has a test at the bottom feeding it a deliberately broken input, because a
 reader that silently returns nothing turns this whole file into a vacuous green.
 """
+
 import os
 import pathlib
 import re
@@ -59,8 +60,7 @@ SOURCE_TREE_MARKER = REPO / ".github" / "workflows" / "release.yml"
 requires_source_tree = pytest.mark.skipif(
     not SOURCE_TREE_MARKER.is_file(),
     reason="not a source checkout ({} is absent, so this is an unpacked sdist and "
-           ".github/, js/ and cockpit/ are legitimately missing)".format(
-               SOURCE_TREE_MARKER),
+    ".github/, js/ and cockpit/ are legitimately missing)".format(SOURCE_TREE_MARKER),
 )
 
 DEPENDABOT = REPO / ".github" / "dependabot.yml"
@@ -81,11 +81,28 @@ MANIFEST_NAMES = frozenset({"pyproject.toml", "package.json", "Cargo.toml"})
 # Build outputs, caches and vendored trees. Everything here contains manifests that are
 # NOT this repo's dependencies, so walking into them would demand rails for other
 # people's packages.
-PRUNED_DIRS = frozenset({
-    ".git", ".beads", ".claude", ".metaswarm", ".port", ".audit", ".scratch",
-    ".pytest_cache", ".ruff_cache", ".mypy_cache", "__pycache__",
-    "node_modules", "target", "dist", "build", "coverage", ".venv", "venv",
-})
+PRUNED_DIRS = frozenset(
+    {
+        ".git",
+        ".beads",
+        ".claude",
+        ".metaswarm",
+        ".port",
+        ".audit",
+        ".scratch",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "__pycache__",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "coverage",
+        ".venv",
+        "venv",
+    }
+)
 
 # The one action whose "latest version" is not installable. See R-4 above.
 PHANTOM_VERSION_ACTIONS = ("dtolnay/rust-toolchain",)
@@ -130,9 +147,7 @@ def update_entries(text):
         {
             "ecosystem": _scalar(body[start:end], "package-ecosystem"),
             "directory": _scalar(body[start:end], "directory"),
-            "ignored": frozenset(
-                re.findall(r'dependency-name:\s*"([^"]+)"', body[start:end])
-            ),
+            "ignored": frozenset(re.findall(r'dependency-name:\s*"([^"]+)"', body[start:end])),
         }
         for start, end in zip(starts, bounds)
     ]
@@ -195,7 +210,7 @@ def specifiers(requirement):
     name = re.match(r"[A-Za-z0-9._-]+", requirement)
     if not name:
         raise AssertionError("not a requirement: {!r}".format(requirement))
-    rest = requirement[name.end():]
+    rest = requirement[name.end() :]
     return name.group(0), [part.strip() for part in rest.split(",") if part.strip()]
 
 
@@ -216,15 +231,12 @@ def pinned_action_versions(name):
 
 # ------------------------------------------------------------------- the gates
 
+
 @requires_source_tree
 def test_every_dependency_manifest_in_the_tree_has_an_update_rail():
     """R-3. A manifest with no rail cannot receive a security fix, ever."""
     declared = rails(DEPENDABOT.read_text(encoding="utf-8"))
-    missing = {
-        manifest: rail
-        for manifest, rail in MANIFEST_RAILS.items()
-        if rail not in declared
-    }
+    missing = {manifest: rail for manifest, rail in MANIFEST_RAILS.items() if rail not in declared}
     assert not missing, (
         "these manifests have no dependabot rail, so Dependabot can raise alerts on "
         "them and never propose a fix: {}".format(missing)
@@ -276,12 +288,9 @@ def test_the_pinned_rust_toolchain_agrees_across_every_workflow_that_declares_it
     found = pinned_action_versions("dtolnay/rust-toolchain")
     # A zero-match regex would make the equality below trivially true.
     assert len(found) >= 2, (
-        "expected the toolchain pin in at least ci.yml and release.yml, found "
-        "{}".format(found)
+        "expected the toolchain pin in at least ci.yml and release.yml, found {}".format(found)
     )
-    assert len(set(found.values())) == 1, "the rust toolchain pins disagree: {}".format(
-        found
-    )
+    assert len(set(found.values())) == 1, "the rust toolchain pins disagree: {}".format(found)
 
 
 def test_the_renderer_dependency_that_decides_user_facing_html_is_capped():
@@ -290,26 +299,27 @@ def test_the_renderer_dependency_that_decides_user_facing_html_is_capped():
     assert declared, "no runtime dependencies parsed, so this gate proves nothing"
     specs = dict(specifiers(req) for req in declared)
     for name in MUST_BE_CAPPED:
-        assert name in specs, "{} is not a declared dependency: {}".format(
-            name, sorted(specs)
-        )
+        assert name in specs, "{} is not a declared dependency: {}".format(name, sorted(specs))
         assert has_upper_bound(specs[name]), (
             "{} has no upper bound ({!r}), so the next major arrives on the next clean "
-            "install and rewrites user-facing HTML with nothing going red".format(
-                name, specs[name]
-            )
+            "install and rewrites user-facing HTML with nothing going red".format(name, specs[name])
         )
 
 
 # ------------------------------------------ the readers must be able to fail
 
+
 def test_strip_comments_removes_a_dependency_name_that_is_only_prose():
     """Both states: the same line counts when live and does not when commented."""
-    live = '  - package-ecosystem: "npm"\n    directory: "/x"\n    ignore:\n' \
-           '      - dependency-name: "left-pad"\n'
+    live = (
+        '  - package-ecosystem: "npm"\n    directory: "/x"\n    ignore:\n'
+        '      - dependency-name: "left-pad"\n'
+    )
     assert update_entries(live)[0]["ignored"] == frozenset({"left-pad"})
-    prose = '  - package-ecosystem: "npm"\n    directory: "/x"\n' \
-            '    # e.g. - dependency-name: "left-pad"\n'
+    prose = (
+        '  - package-ecosystem: "npm"\n    directory: "/x"\n'
+        '    # e.g. - dependency-name: "left-pad"\n'
+    )
     assert update_entries(prose)[0]["ignored"] == frozenset()
 
 

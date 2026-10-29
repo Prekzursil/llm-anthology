@@ -166,14 +166,26 @@ export class MaintenanceShell {
     this.actionEl.addEventListener("change", () => this.syncDestinationField());
     actionLabel.append(this.actionEl);
 
-    this.storeRootEl = field(form, "Store root", "maintenance-store-root",
-      "C:\\Users\\you\\.codex");
-    this.checkpointRootEl = field(form, "Checkpoint root", "maintenance-checkpoint-root",
-      "Where the undo checkpoint is written");
+    this.storeRootEl = field(
+      form,
+      "Store root",
+      "maintenance-store-root",
+      "C:\\Users\\you\\.codex",
+    );
+    this.checkpointRootEl = field(
+      form,
+      "Checkpoint root",
+      "maintenance-checkpoint-root",
+      "Where the undo checkpoint is written",
+    );
     // Built through the same helper, then captured so the whole row can be hidden for a
     // delete — a field that is documented as ignored should not be on screen at all.
-    this.destinationEl = field(form, "Destination root", "maintenance-destination",
-      "Where the files are moved to");
+    this.destinationEl = field(
+      form,
+      "Destination root",
+      "maintenance-destination",
+      "Where the files are moved to",
+    );
     this.destinationLabel = this.destinationEl.parentElement as HTMLElement;
 
     const targetsLabel = document.createElement("label");
@@ -206,11 +218,18 @@ export class MaintenanceShell {
 
     this.confirmRow = document.createElement("div");
     this.confirmRow.className = "maintenance-confirm";
-    this.confirmEl = field(this.confirmRow, "Type the confirmation phrase",
-      "maintenance-confirmation", "");
+    this.confirmEl = field(
+      this.confirmRow,
+      "Type the confirmation phrase",
+      "maintenance-confirmation",
+      "",
+    );
     this.confirmEl.addEventListener("input", () => this.syncConfirmGate());
-    this.executeBtn = button("Execute", "maintenance-execute",
-      () => void this.panel.execute(this.confirmEl.value));
+    this.executeBtn = button(
+      "Execute",
+      "maintenance-execute",
+      () => void this.panel.execute(this.confirmEl.value),
+    );
     this.confirmRow.append(this.executeBtn);
     this.confirmRow.hidden = true;
 
@@ -219,13 +238,23 @@ export class MaintenanceShell {
     const restoreTitle = document.createElement("h3");
     restoreTitle.className = "maintenance-subtitle";
     restoreTitle.textContent = "Undo a past run";
-    this.manifestEl = field(restore, "Checkpoint manifest path", "maintenance-manifest",
-      "The manifest a run wrote");
+    this.manifestEl = field(
+      restore,
+      "Checkpoint manifest path",
+      "maintenance-manifest",
+      "The manifest a run wrote",
+    );
     this.manifestEl.addEventListener("input", () => this.syncRestoreGate());
-    this.restoreDryBtn = button("Preview restore", "maintenance-restore-dry",
-      () => void this.panel.restore(this.manifestEl.value));
-    this.restoreApplyBtn = button("Restore", "maintenance-restore-apply",
-      () => void this.panel.restore(this.manifestEl.value, { apply: true }));
+    this.restoreDryBtn = button(
+      "Preview restore",
+      "maintenance-restore-dry",
+      () => void this.panel.restore(this.manifestEl.value),
+    );
+    this.restoreApplyBtn = button(
+      "Restore",
+      "maintenance-restore-apply",
+      () => void this.panel.restore(this.manifestEl.value, { apply: true }),
+    );
     restore.prepend(restoreTitle);
     restore.append(this.restoreDryBtn, this.restoreApplyBtn);
 
@@ -298,29 +327,33 @@ export class MaintenanceShell {
       this.runsEl.replaceChildren(empty);
       return;
     }
-    this.runsEl.replaceChildren(...rows.map((row) => {
-      const el = document.createElement("div");
-      el.className = "maintenance-run";
-      const label = document.createElement("span");
-      label.className = "maintenance-run-label";
-      label.textContent = row.label;
-      el.append(label);
-      // `canRestore` off the row, never `status !== "restored"` recomputed here: the rule
-      // that a restored manifest refuses a second restore belongs to the view-model.
-      if (row.canRestore) {
-        el.append(button("Use for undo", "maintenance-run-use", () => {
-          this.manifestEl.value = row.manifestPath;
-          this.syncRestoreGate();
-          this.manifestEl.focus();
-        }));
-      }
-      const path = document.createElement("span");
-      path.className = "maintenance-run-path muted";
-      path.textContent = row.manifestPath;
-      path.title = row.manifestPath;
-      el.append(path);
-      return el;
-    }));
+    this.runsEl.replaceChildren(
+      ...rows.map((row) => {
+        const el = document.createElement("div");
+        el.className = "maintenance-run";
+        const label = document.createElement("span");
+        label.className = "maintenance-run-label";
+        label.textContent = row.label;
+        el.append(label);
+        // `canRestore` off the row, never `status !== "restored"` recomputed here: the rule
+        // that a restored manifest refuses a second restore belongs to the view-model.
+        if (row.canRestore) {
+          el.append(
+            button("Use for undo", "maintenance-run-use", () => {
+              this.manifestEl.value = row.manifestPath;
+              this.syncRestoreGate();
+              this.manifestEl.focus();
+            }),
+          );
+        }
+        const path = document.createElement("span");
+        path.className = "maintenance-run-path muted";
+        path.textContent = row.manifestPath;
+        path.title = row.manifestPath;
+        el.append(path);
+        return el;
+      }),
+    );
   }
 
   private showRemedy(remedy: MaintenanceRemedy): void {

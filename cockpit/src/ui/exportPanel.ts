@@ -232,7 +232,9 @@ export function deriveScan(scan: CredentialScan): CredentialScanView {
         ? "No credential shapes found — scrub was ON, so nothing needed replacing."
         : "No credential shapes found — read the coverage limit below before sharing."
       : `${findings.length} credential shape${findings.length === 1 ? "" : "s"} found` +
-        (scan.scrubbed ? " and REPLACED in the written bytes." : " — warning only, bytes untouched.");
+        (scan.scrubbed
+          ? " and REPLACED in the written bytes."
+          : " — warning only, bytes untouched.");
   return { findings, coverageLimit: scan.coverage_limit, scrubbed: scan.scrubbed, headline };
 }
 
@@ -561,7 +563,9 @@ function renderVerdict(verdict: ExportVerdict): string[] {
     lines.push(`~${verdict.changedNodes.length} changed: ${ids}`);
   }
   if (verdict.missingTokens.length > 0) {
-    lines.push(`missing ${verdict.missingTokens.length} tokens: ${verdict.missingTokens.join(", ")}`);
+    lines.push(
+      `missing ${verdict.missingTokens.length} tokens: ${verdict.missingTokens.join(", ")}`,
+    );
   }
   if (verdict.totalChanges === 0) {
     lines.push("no structural or token differences reported");

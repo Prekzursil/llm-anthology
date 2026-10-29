@@ -48,6 +48,7 @@ The TOML extractor is table-scoped for a measured reason, not for tidiness:
 `[target.'cfg(windows)'.dependencies.windows-sys]`. A first-match scan reads that
 dependency pin as the application version.
 """
+
 import json
 import pathlib
 import re
@@ -70,7 +71,7 @@ SOURCE_TREE_MARKER = REPO / ".github" / "workflows" / "release.yml"
 requires_source_tree = pytest.mark.skipif(
     not SOURCE_TREE_MARKER.is_file(),
     reason="not a source checkout ({} is absent, so this is an unpacked sdist and the "
-           "js/ and cockpit/ trees are legitimately missing)".format(SOURCE_TREE_MARKER),
+    "js/ and cockpit/ trees are legitimately missing)".format(SOURCE_TREE_MARKER),
 )
 
 # (path relative to the repo root, format, table) — table is None for JSON and python.
@@ -153,7 +154,8 @@ def read_version(rel, kind, table):
 def implausible(found):
     """Names of entries whose value does not look like a version at all."""
     return sorted(
-        rel for rel, value in found.items()
+        rel
+        for rel, value in found.items()
         if not (isinstance(value, str) and _VERSION_RE.match(value))
     )
 
@@ -165,10 +167,10 @@ def disagree(found):
 
 # ------------------------------------------------------------------- the gate
 
+
 @requires_source_tree
 def test_every_release_artifact_declares_the_same_version():
-    found = {rel: read_version(rel, kind, table)
-             for rel, kind, table in RELEASE_VERSION_FILES}
+    found = {rel: read_version(rel, kind, table) for rel, kind, table in RELEASE_VERSION_FILES}
 
     # Reject an implausible value BEFORE comparing, so four empty strings can never be
     # read as agreement.
@@ -192,8 +194,7 @@ def test_the_two_versions_that_ship_inside_the_wheel_agree():
     shipped = read_version("llm_anthology/__init__.py", "python", None)
     assert not implausible({"pyproject.toml": declared}), declared
     assert declared == shipped, (
-        "the wheel is built as {} but the engine inside it reports {}".format(
-            declared, shipped)
+        "the wheel is built as {} but the engine inside it reports {}".format(declared, shipped)
     )
 
 
@@ -209,6 +210,7 @@ def test_the_gate_covers_every_file_the_runbook_tells_you_to_bump():
 
 
 # -------------------------------------------- the detector must be able to fail
+
 
 @requires_source_tree
 def test_toml_version_ignores_a_version_in_a_different_table():
@@ -269,11 +271,12 @@ def test_read_version_names_the_file_it_could_not_parse():
     # Guarded, and it has to be: without the marker this would still "pass" on the
     # `does not exist` message, which also matches — a vacuous green.
     with pytest.raises(AssertionError, match=r"js/package\.json: no `version`"):
-        read_version("js/package.json", "toml", "project")   # wrong parser on purpose
+        read_version("js/package.json", "toml", "project")  # wrong parser on purpose
 
 
 # Both-states checks on the two predicates the gate is built out of: each must be
 # False for the good state and True for the bad one, or the gate measures nothing.
+
 
 def test_disagree_is_false_when_all_agree_and_true_when_one_differs():
     assert not disagree({"a": "0.1.0", "b": "0.1.0", "c": "0.1.0"})

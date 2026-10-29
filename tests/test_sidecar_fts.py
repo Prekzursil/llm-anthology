@@ -11,6 +11,7 @@ A user typing a bracket got an exception. These tests pin that they cannot any m
 just as importantly — that ordinary search still works, because the cheap way to stop crashes
 is to break search.
 """
+
 import sqlite3
 
 import pytest
@@ -18,8 +19,22 @@ import pytest
 from llm_anthology import corpus, index, ir, sidecar
 
 # Every input that was measured to raise before the fix.
-CRASHERS = ["foo(", "a AND", '"unclosed', "NEAR/", "*", "a OR OR b",
-            "(", ")", '"', "**", "a NOT", "OR", "x AND (y", "NEAR(a b"]
+CRASHERS = [
+    "foo(",
+    "a AND",
+    '"unclosed',
+    "NEAR/",
+    "*",
+    "a OR OR b",
+    "(",
+    ")",
+    '"',
+    "**",
+    "a NOT",
+    "OR",
+    "x AND (y",
+    "NEAR(a b",
+]
 
 
 def _index_with(rows):
@@ -30,11 +45,18 @@ def _index_with(rows):
     """
     conn = corpus.open_index(":memory:")
     src = index.IndexSource(
-        file="f.jsonl", content_hash=index.hash_content("v1"),
-        records=[ir.Conversation(
-            id=cid, title=body, provider="codex",
-            turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=body)])])
-            for cid, body in rows])
+        file="f.jsonl",
+        content_hash=index.hash_content("v1"),
+        records=[
+            ir.Conversation(
+                id=cid,
+                title=body,
+                provider="codex",
+                turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=body)])],
+            )
+            for cid, body in rows
+        ],
+    )
     index.build_index(conn, [src])
     return conn
 
@@ -44,6 +66,7 @@ def _server(conn):
 
 
 # ------------------------------------------------------------------ the expression builder
+
 
 @pytest.mark.parametrize("raw", CRASHERS)
 def test_every_previously_crashing_input_now_produces_a_usable_expression(raw):
@@ -56,8 +79,8 @@ def test_every_previously_crashing_input_now_produces_a_usable_expression(raw):
         if expr:
             # Must not raise. That is the entire contract.
             conn.execute(
-                "SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?",
-                (expr,)).fetchone()
+                "SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?", (expr,)
+            ).fetchone()
     finally:
         conn.close()
 
@@ -73,15 +96,28 @@ def test_punctuation_inside_a_word_becomes_separate_terms():
     assert sidecar.fts_match_expression("C:/Users/x") == '"C" "Users" "x"'
 
 
-@pytest.mark.parametrize("raw", ["file.py", "foo-bar", "don't", "main.rs", "a.b.c.d",
-                                 "https://example.com/p?q=1", "3.14", "e-mail@host.tld"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "file.py",
+        "foo-bar",
+        "don't",
+        "main.rs",
+        "a.b.c.d",
+        "https://example.com/p?q=1",
+        "3.14",
+        "e-mail@host.tld",
+    ],
+)
 def test_ordinary_punctuated_words_do_not_raise_against_a_real_index(raw):
     """The regression that the first fix missed, pinned against a real detail=none index —
     these are not exotic inputs, they are what a corpus of coding sessions is searched for."""
     conn = _index_with([("c1", "alpha bravo")])
     try:
-        conn.execute("SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?",
-                     (sidecar.fts_match_expression(raw),)).fetchone()
+        conn.execute(
+            "SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?",
+            (sidecar.fts_match_expression(raw),),
+        ).fetchone()
     finally:
         conn.close()
 
@@ -121,6 +157,7 @@ def test_a_SINGLE_token_quote_is_indistinguishable_from_an_unquoted_one():
 # `foo(` and `a OR OR b` crash. Phrases were the asked-for minimum and are the whole of what
 # a search box needs; operators would be a different, larger decision.
 
+
 def test_a_quoted_MULTI_token_string_becomes_one_phrase():
     """The point of the feature. `file.py` unquoted is still two ANDed terms; QUOTED it is
     the phrase, which is what a user typing quotes around a filename means."""
@@ -131,16 +168,18 @@ def test_a_quoted_MULTI_token_string_becomes_one_phrase():
 def test_a_phrase_matches_ADJACENT_words_and_not_scattered_ones(index_conn=None):
     """The behavioural difference, against a REAL index — an expression-shape assertion
     alone would not show that FTS5 actually treats it as adjacency."""
-    conn = _index_with([("c-adjacent", "alpha bravo charlie"),
-                        ("c-scattered", "alpha zulu bravo")])
+    conn = _index_with([("c-adjacent", "alpha bravo charlie"), ("c-scattered", "alpha zulu bravo")])
     try:
         srv = _server(conn)
-        both = {h["conversation_id"]
-                for h in srv.dispatch("search.query", {"q": "alpha bravo"})["hits"]}
-        assert both == {"c-adjacent", "c-scattered"}, both      # unquoted = AND, unchanged
-        only = [h["conversation_id"]
-                for h in srv.dispatch("search.query", {"q": '"alpha bravo"'})["hits"]]
-        assert only == ["c-adjacent"], only                     # quoted = adjacency
+        both = {
+            h["conversation_id"] for h in srv.dispatch("search.query", {"q": "alpha bravo"})["hits"]
+        }
+        assert both == {"c-adjacent", "c-scattered"}, both  # unquoted = AND, unchanged
+        only = [
+            h["conversation_id"]
+            for h in srv.dispatch("search.query", {"q": '"alpha bravo"'})["hits"]
+        ]
+        assert only == ["c-adjacent"], only  # quoted = adjacency
     finally:
         conn.close()
 
@@ -181,8 +220,9 @@ def test_a_detail_none_index_cannot_be_opened_at_all(tmp_path):
     legacy = tmp_path / "legacy.sqlite"
     conn = sqlite3.connect(str(legacy))
     conn.execute("CREATE TABLE conversations (rowid INTEGER PRIMARY KEY, conversation_id TEXT)")
-    conn.execute("CREATE VIRTUAL TABLE conversations_fts "
-                 "USING fts5(title, body, content='', detail=none)")
+    conn.execute(
+        "CREATE VIRTUAL TABLE conversations_fts USING fts5(title, body, content='', detail=none)"
+    )
     conn.commit()
     conn.close()
     with pytest.raises(corpus.IndexRebuildRequired):
@@ -215,6 +255,7 @@ def test_input_with_no_usable_token_yields_an_empty_expression():
 
 
 # ------------------------------------------------------------------ through the RPC
+
 
 @pytest.mark.parametrize("raw", CRASHERS)
 def test_search_query_rpc_survives_every_crashing_input(raw):
@@ -285,7 +326,7 @@ def test_the_raw_binding_really_did_crash_before(monkeypatch):
     try:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute(
-                "SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?",
-                ("foo(",)).fetchone()
+                "SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH ?", ("foo(",)
+            ).fetchone()
     finally:
         conn.close()

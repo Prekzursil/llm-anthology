@@ -99,13 +99,15 @@ describe("resultStatus", () => {
   it("says so when the list is a TRUNCATED view of the total", () => {
     // The defect: "1432 hits" above a list of 200, with nothing saying which you are
     // looking at. A user scrolls to the bottom and concludes the rest do not exist.
-    expect(resultStatus({ total: 1432, shown: 200, tookMs: 31 }))
-      .toBe("showing 200 of 1,432 hits · 31ms");
+    expect(resultStatus({ total: 1432, shown: 200, tookMs: 31 })).toBe(
+      "showing 200 of 1,432 hits · 31ms",
+    );
   });
 
   it("groups thousands so a big number is readable at a glance", () => {
-    expect(resultStatus({ total: 1_234_567, shown: 200, tookMs: 9 }))
-      .toContain("of 1,234,567 hits");
+    expect(resultStatus({ total: 1_234_567, shown: 200, tookMs: 9 })).toContain(
+      "of 1,234,567 hits",
+    );
   });
 
   it("uses the singular for exactly one", () => {
@@ -118,10 +120,12 @@ describe("resultStatus", () => {
 
   it("names the filter when one is narrowing the result", () => {
     // Otherwise a filtered search that finds nothing reads as an empty corpus.
-    expect(resultStatus({ total: 0, shown: 0, tookMs: 3, provider: "grok" }))
-      .toBe("No matches in grok · 3ms");
-    expect(resultStatus({ total: 5, shown: 5, tookMs: 3, provider: "grok" }))
-      .toBe("5 hits in grok · 3ms");
+    expect(resultStatus({ total: 0, shown: 0, tookMs: 3, provider: "grok" })).toBe(
+      "No matches in grok · 3ms",
+    );
+    expect(resultStatus({ total: 5, shown: 5, tookMs: 3, provider: "grok" })).toBe(
+      "5 hits in grok · 3ms",
+    );
   });
 });
 
@@ -130,25 +134,33 @@ describe("searchParams", () => {
     // The defect this pins: `SearchParams.provider` was on the wire contract from the
     // start and the panel never sent it. A capability nothing exercises is
     // indistinguishable from one that does not work.
-    expect(searchParams("timeout", "grok", 200))
-      .toEqual({ q: "timeout", limit: 200, provider: "grok" });
+    expect(searchParams("timeout", "grok", 200)).toEqual({
+      q: "timeout",
+      limit: 200,
+      provider: "grok",
+    });
   });
 
   it("SENDS the D-3 facets when they are set", () => {
     // Same defect, one facet later. `since`/`until`/`histogram` reached the wire contract in
     // CF-14 and this builder is the ONLY funnel from the search box to `ipc.searchQuery`, so
     // leaving it unwidened would put them in exactly the state `provider` was in above.
-    expect(searchParams("timeout", "", 200, { since: "2026-03", until: "2026-03", histogram: "month" }))
-      .toEqual({ q: "timeout", limit: 200, since: "2026-03", until: "2026-03", histogram: "month" });
+    expect(
+      searchParams("timeout", "", 200, { since: "2026-03", until: "2026-03", histogram: "month" }),
+    ).toEqual({ q: "timeout", limit: 200, since: "2026-03", until: "2026-03", histogram: "month" });
   });
 
   it("OMITS each facet independently rather than sending a blank one", () => {
     // Same reasoning as `provider: ""`. An empty `since` is not an unbounded search — the
     // engine would reject it as a malformed bound, so a blank input must send NO key.
-    expect(searchParams("timeout", "", 200, { since: "", until: "", histogram: undefined }))
-      .toEqual({ q: "timeout", limit: 200 });
-    expect(searchParams("timeout", "", 200, { since: "2026" }))
-      .toEqual({ q: "timeout", limit: 200, since: "2026" });
+    expect(
+      searchParams("timeout", "", 200, { since: "", until: "", histogram: undefined }),
+    ).toEqual({ q: "timeout", limit: 200 });
+    expect(searchParams("timeout", "", 200, { since: "2026" })).toEqual({
+      q: "timeout",
+      limit: 200,
+      since: "2026",
+    });
     // ...and the whole facet argument is optional, so every existing call site is unaffected.
     expect(searchParams("timeout", "", 200)).toEqual({ q: "timeout", limit: 200 });
   });
@@ -194,13 +206,20 @@ describe("providerOptions", () => {
   });
 
   it("orders by size, because the big store is the one people filter to", () => {
-    expect(providerOptions({ grok: 71, codex: 2042, gemini: 300 }).map((o) => o.value))
-      .toEqual(["", "codex", "gemini", "grok"]);
+    expect(providerOptions({ grok: 71, codex: 2042, gemini: 300 }).map((o) => o.value)).toEqual([
+      "",
+      "codex",
+      "gemini",
+      "grok",
+    ]);
   });
 
   it("breaks a tie by name so the list does not reshuffle between renders", () => {
-    expect(providerOptions({ zulu: 5, alpha: 5 }).map((o) => o.value))
-      .toEqual(["", "alpha", "zulu"]);
+    expect(providerOptions({ zulu: 5, alpha: 5 }).map((o) => o.value)).toEqual([
+      "",
+      "alpha",
+      "zulu",
+    ]);
   });
 
   it("offers no filter at all for a single-provider corpus", () => {
@@ -213,7 +232,10 @@ describe("providerOptions", () => {
   });
 
   it("ignores a provider with no conversations", () => {
-    expect(providerOptions({ codex: 10, grok: 0, gemini: 4 }).map((o) => o.value))
-      .toEqual(["", "codex", "gemini"]);
+    expect(providerOptions({ codex: 10, grok: 0, gemini: 4 }).map((o) => o.value)).toEqual([
+      "",
+      "codex",
+      "gemini",
+    ]);
   });
 });

@@ -8,6 +8,7 @@ file content into its result.
 No test depends on what happens to be on the machine running it — the candidate roots
 are always injected via `discover.Roots`, never resolved from the real home.
 """
+
 import json
 import os
 import sqlite3
@@ -18,6 +19,7 @@ from llm_anthology import corpus, discover
 
 
 # --------------------------------------------------------------------- helpers
+
 
 def _touch(path, data=b"x"):
     """Create `path` (and parents) holding `data`. Returns the absolute path."""
@@ -30,6 +32,7 @@ def _touch(path, data=b"x"):
 def _can_symlink():
     """Probe once: file symlinks need Developer Mode / elevation on Windows."""
     import tempfile
+
     d = tempfile.mkdtemp()
     target = os.path.join(d, "t")
     with open(target, "w", encoding="utf-8") as fh:
@@ -37,7 +40,7 @@ def _can_symlink():
     try:
         os.symlink(target, os.path.join(d, "l"))
         return True
-    except OSError:                          # env capability probe, not app code
+    except OSError:  # env capability probe, not app code
         return False
 
 
@@ -73,9 +76,11 @@ def _claude_home(base, projects=0, files_each=1):
 
 
 def _by(result, provider=None, kind=None):
-    return [f for f in result.findings
-            if (provider is None or f.provider == provider)
-            and (kind is None or f.kind == kind)]
+    return [
+        f
+        for f in result.findings
+        if (provider is None or f.provider == provider) and (kind is None or f.kind == kind)
+    ]
 
 
 @pytest.fixture
@@ -83,13 +88,16 @@ def empty_roots(tmp_path):
     """Roots pointing at existing-but-empty dirs — the honest 'nothing here' baseline."""
     for name in ("codex", "claude", "user", "idx"):
         os.makedirs(str(tmp_path / name), exist_ok=True)
-    return discover.Roots(codex_home=str(tmp_path / "codex"),
-                          claude_home=str(tmp_path / "claude"),
-                          user_dirs=(str(tmp_path / "user"),),
-                          index_dirs=(str(tmp_path / "idx"),))
+    return discover.Roots(
+        codex_home=str(tmp_path / "codex"),
+        claude_home=str(tmp_path / "claude"),
+        user_dirs=(str(tmp_path / "user"),),
+        index_dirs=(str(tmp_path / "idx"),),
+    )
 
 
 # ------------------------------------------------------- structure / contract
+
 
 def test_finding_is_json_ready_and_ordered_deterministically(tmp_path, empty_roots):
     _corpus_index(str(tmp_path / "idx" / "a.sqlite"))
@@ -98,11 +106,18 @@ def test_finding_is_json_ready_and_ordered_deterministically(tmp_path, empty_roo
     second = discover.discover(empty_roots)
 
     assert [f.path for f in first.findings] == [f.path for f in second.findings]
-    payload = json.dumps(first.as_dict())          # must survive an RPC boundary
+    payload = json.dumps(first.as_dict())  # must survive an RPC boundary
     assert "a.sqlite" in payload
     one = first.findings[0]
-    assert set(one.as_dict()) == {"provider", "kind", "path", "count",
-                                  "newest_mtime", "confidence", "detail"}
+    assert set(one.as_dict()) == {
+        "provider",
+        "kind",
+        "path",
+        "count",
+        "newest_mtime",
+        "confidence",
+        "detail",
+    }
     assert os.path.isabs(one.path)
 
 
@@ -115,24 +130,26 @@ def test_empty_roots_yield_no_findings_but_real_stats(empty_roots):
 
 
 def test_missing_roots_are_skipped_not_fatal(tmp_path):
-    roots = discover.Roots(codex_home=str(tmp_path / "nope"),
-                           claude_home=str(tmp_path / "also-nope"),
-                           user_dirs=(str(tmp_path / "gone"),),
-                           index_dirs=(str(tmp_path / "vanished"),))
+    roots = discover.Roots(
+        codex_home=str(tmp_path / "nope"),
+        claude_home=str(tmp_path / "also-nope"),
+        user_dirs=(str(tmp_path / "gone"),),
+        index_dirs=(str(tmp_path / "vanished"),),
+    )
     result = discover.discover(roots)
     assert result.findings == ()
 
 
 # ---------------------------------------------------------------- codex store
 
+
 def test_codex_store_detected_with_state_db_and_rollout_counts(tmp_path, empty_roots):
     _codex_home(str(tmp_path / "codex"), jsonl=2, zst=3)
-    hits = _by(discover.discover(empty_roots), provider="codex",
-               kind=discover.KIND_SESSION_STORE)
+    hits = _by(discover.discover(empty_roots), provider="codex", kind=discover.KIND_SESSION_STORE)
     assert len(hits) == 1
     hit = hits[0]
     assert hit.path == str(tmp_path / "codex")
-    assert hit.count == 5                               # every rollout on disk
+    assert hit.count == 5  # every rollout on disk
     assert hit.confidence == discover.CONF_HIGH
     assert hit.detail["rollouts_jsonl"] == 2
     assert hit.detail["rollouts_zst"] == 3
@@ -177,6 +194,7 @@ def test_codex_dir_without_any_marker_is_not_a_match(tmp_path, empty_roots):
 
 # ---------------------------------------------------------- claude-code store
 
+
 def test_claude_code_projects_store_counts_transcripts(tmp_path, empty_roots):
     _claude_home(str(tmp_path / "claude"), projects=3, files_each=2)
     hits = _by(discover.discover(empty_roots), provider="claude-code")
@@ -193,23 +211,26 @@ def test_claude_projects_dir_with_no_transcripts_is_not_a_match(tmp_path, empty_
 
 # ----------------------------------------------------------------- built index
 
+
 def test_built_corpus_index_detected_with_row_counts(tmp_path, empty_roots):
     path = _corpus_index(str(tmp_path / "idx" / "corpus.sqlite"))
     hits = _by(discover.discover(empty_roots), kind=discover.KIND_BUILT_INDEX)
     assert len(hits) == 1
     assert hits[0].path == path
     assert hits[0].confidence == discover.CONF_HIGH
-    assert hits[0].detail["conversations"] == 0        # a real, empty index
+    assert hits[0].detail["conversations"] == 0  # a real, empty index
 
 
-@pytest.mark.parametrize("name", [
-    "Chat%20Export.sqlite",      # exactly what a browser download produces
-    "a%41b.sqlite",              # %41 decodes to 'A' — the path SQLite opens is not this
-    "100%.sqlite",               # a bare % not followed by hex digits
-    "%25already.sqlite",         # a literal %25 must not be double-unescaped
-])
-def test_a_percent_in_the_filename_does_not_hide_a_real_index(tmp_path, empty_roots,
-                                                              name):
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Chat%20Export.sqlite",  # exactly what a browser download produces
+        "a%41b.sqlite",  # %41 decodes to 'A' — the path SQLite opens is not this
+        "100%.sqlite",  # a bare % not followed by hex digits
+        "%25already.sqlite",  # a literal %25 must not be double-unescaped
+    ],
+)
+def test_a_percent_in_the_filename_does_not_hide_a_real_index(tmp_path, empty_roots, name):
     """A `%` in the path must not make a real index INVISIBLE to discovery.
 
     The URI the shape probe builds is opened with ``uri=True``, and URI mode decodes
@@ -245,10 +266,12 @@ def test_a_percent_in_a_PARENT_DIRECTORY_does_not_hide_a_real_index(tmp_path):
     path = _corpus_index(str(holder / "anthology.sqlite"))
     for name in ("codex", "claude", "user"):
         os.makedirs(str(tmp_path / name), exist_ok=True)
-    roots = discover.Roots(codex_home=str(tmp_path / "codex"),
-                           claude_home=str(tmp_path / "claude"),
-                           user_dirs=(str(tmp_path / "user"),),
-                           index_dirs=(str(tmp_path / "idx"),))
+    roots = discover.Roots(
+        codex_home=str(tmp_path / "codex"),
+        claude_home=str(tmp_path / "claude"),
+        user_dirs=(str(tmp_path / "user"),),
+        index_dirs=(str(tmp_path / "idx"),),
+    )
     hits = _by(discover.discover(roots), kind=discover.KIND_BUILT_INDEX)
     assert [h.path for h in hits] == [path]
 
@@ -293,10 +316,12 @@ def test_a_symlink_is_never_read_through_and_the_skip_is_recorded(tmp_path, empt
 
     result = discover.discover(empty_roots)
     paths = [f.path.lower() for f in result.findings]
-    assert not any("conversations.json" in p and "real-dir" not in p for p in paths), \
+    assert not any("conversations.json" in p and "real-dir" not in p for p in paths), (
         "the symlinked export was read through: %s" % paths
-    assert not any("linked.sqlite" in p for p in paths), \
+    )
+    assert not any("linked.sqlite" in p for p in paths), (
         "the symlinked index was opened: %s" % paths
+    )
     assert any("real-dir" in p for p in paths), "the control export must still be found"
     # Not silent: the panel already renders a skip count, so the operator can see it.
     assert any("conversations.json" in e for e in result.stats.errors)
@@ -351,9 +376,9 @@ def test_an_entry_that_cannot_be_stat_ed_is_treated_as_a_link():
     assert "gone mid-walk" in state.errors[0]
 
 
-def test_the_walk_skips_whatever_is_link_flags_without_examining_it(tmp_path,
-                                                                   empty_roots,
-                                                                   monkeypatch):
+def test_the_walk_skips_whatever_is_link_flags_without_examining_it(
+    tmp_path, empty_roots, monkeypatch
+):
     """The walk's half of the contract, independent of how the OS reports links.
 
     A flagged entry must be neither yielded nor counted in `files_examined` — counting it
@@ -363,13 +388,14 @@ def test_the_walk_skips_whatever_is_link_flags_without_examining_it(tmp_path,
     _touch(str(tmp_path / "user" / "flagged.json"), b"[]")
     real_is_link = discover._is_link
     monkeypatch.setattr(
-        discover, "_is_link",
-        lambda entry, state: (entry.name == "flagged.json"
-                              or real_is_link(entry, state)))
+        discover,
+        "_is_link",
+        lambda entry, state: entry.name == "flagged.json" or real_is_link(entry, state),
+    )
     result = discover.discover(empty_roots)
     assert [f.path for f in result.findings if "flagged" in f.path] == []
-    assert len(_by(result, provider="codex")) == 1        # the real file still lands
-    assert result.stats.files_examined == 1               # the flagged one is not counted
+    assert len(_by(result, provider="codex")) == 1  # the real file still lands
+    assert result.stats.files_examined == 1  # the flagged one is not counted
 
 
 def test_unrelated_sqlite_file_is_not_a_built_index(tmp_path, empty_roots):
@@ -382,22 +408,21 @@ def test_unrelated_sqlite_file_is_not_a_built_index(tmp_path, empty_roots):
     assert _by(discover.discover(empty_roots), kind=discover.KIND_BUILT_INDEX) == []
 
 
-def test_non_sqlite_file_named_like_a_db_is_rejected_by_the_header_sniff(tmp_path,
-                                                                        empty_roots):
+def test_non_sqlite_file_named_like_a_db_is_rejected_by_the_header_sniff(tmp_path, empty_roots):
     _touch(str(tmp_path / "idx" / "fake.sqlite"), b"this is plain text, not sqlite")
     assert _by(discover.discover(empty_roots), kind=discover.KIND_BUILT_INDEX) == []
 
 
 def test_corrupt_sqlite_header_but_unreadable_body_does_not_crash(tmp_path, empty_roots):
     _touch(str(tmp_path / "idx" / "trunc.sqlite"), b"SQLite format 3\x00" + b"\x00" * 40)
-    result = discover.discover(empty_roots)          # must not raise
+    result = discover.discover(empty_roots)  # must not raise
     assert _by(result, kind=discover.KIND_BUILT_INDEX) == []
 
 
 # ---------------------------------------------------------------- export files
 
-def test_conversations_json_alone_is_ambiguous_between_chatgpt_and_claude(tmp_path,
-                                                                          empty_roots):
+
+def test_conversations_json_alone_is_ambiguous_between_chatgpt_and_claude(tmp_path, empty_roots):
     _touch(str(tmp_path / "user" / "export" / "conversations.json"), b'[{"a": 1}]')
     result = discover.discover(empty_roots)
     providers = sorted(f.provider for f in _by(result, kind=discover.KIND_EXPORT_FILE))
@@ -410,7 +435,7 @@ def test_conversations_json_alone_is_ambiguous_between_chatgpt_and_claude(tmp_pa
 def test_claude_sibling_files_resolve_the_ambiguity_to_claude_only(tmp_path, empty_roots):
     base = str(tmp_path / "user" / "claude-export")
     _touch(os.path.join(base, "conversations.json"), b'[{"a": 1}]')
-    # grounded sibling set — loaders.py:39-42 names these as real Claude-export files
+    # grounded sibling set — loaders.py:48-52 names these as real Claude-export files
     _touch(os.path.join(base, "users.json"), b"{}")
     _touch(os.path.join(base, "design_chats", "d1.json"), b"{}")
     hits = _by(discover.discover(empty_roots), kind=discover.KIND_EXPORT_FILE)
@@ -420,14 +445,15 @@ def test_claude_sibling_files_resolve_the_ambiguity_to_claude_only(tmp_path, emp
     assert convs[0].detail.get("ambiguous_with", ()) == ()
 
 
-def test_chatgpt_sibling_files_resolve_the_ambiguity_to_chatgpt_only(tmp_path,
-                                                                      empty_roots):
+def test_chatgpt_sibling_files_resolve_the_ambiguity_to_chatgpt_only(tmp_path, empty_roots):
     base = str(tmp_path / "user" / "chatgpt-export")
     _touch(os.path.join(base, "conversations.json"), b'[{"a": 1}]')
     _touch(os.path.join(base, "chat.html"), b"<html></html>")
-    convs = [f for f in _by(discover.discover(empty_roots),
-                            kind=discover.KIND_EXPORT_FILE)
-             if f.path.endswith("conversations.json")]
+    convs = [
+        f
+        for f in _by(discover.discover(empty_roots), kind=discover.KIND_EXPORT_FILE)
+        if f.path.endswith("conversations.json")
+    ]
     assert [f.provider for f in convs] == ["chatgpt"]
     assert convs[0].confidence == discover.CONF_HIGH
 
@@ -463,7 +489,7 @@ def test_takeout_folder_anywhere_above_the_file_confirms_gemini(tmp_path, empty_
 
 
 def test_the_apps_own_output_directory_is_never_scanned(tmp_path, empty_roots):
-    """loaders.py:56-58 already refuses to ingest this app's own `_site` output; a
+    """loaders.py:66-68 already refuses to ingest this app's own `_site` output; a
     discovery pass that offered it back would recreate that bug from the other end."""
     _touch(str(tmp_path / "user" / "_site" / "codex.json"), b"[]")
     assert _by(discover.discover(empty_roots), provider="codex") == []
@@ -471,8 +497,7 @@ def test_the_apps_own_output_directory_is_never_scanned(tmp_path, empty_roots):
 
 def test_codex_json_export_detected(tmp_path, empty_roots):
     _touch(str(tmp_path / "user" / "codex.json"), b'{"threads": []}')
-    hits = _by(discover.discover(empty_roots), provider="codex",
-               kind=discover.KIND_EXPORT_FILE)
+    hits = _by(discover.discover(empty_roots), provider="codex", kind=discover.KIND_EXPORT_FILE)
     assert len(hits) == 1
     assert hits[0].count == 1
     assert hits[0].detail["size_bytes"] > 0
@@ -484,8 +509,7 @@ def test_gemini_takeout_transcript_detected(tmp_path, empty_roots):
     assert [h.kind for h in hits] == [discover.KIND_EXPORT_FILE]
 
 
-def test_bare_transcript_json_outside_a_takeout_folder_is_low_confidence(tmp_path,
-                                                                         empty_roots):
+def test_bare_transcript_json_outside_a_takeout_folder_is_low_confidence(tmp_path, empty_roots):
     """`transcript.json` is a generic name; only the Takeout folder shape around it
     justifies calling it a Gemini export with confidence."""
     _touch(str(tmp_path / "user" / "misc" / "transcript.json"), b"[]")
@@ -511,12 +535,12 @@ def test_export_findings_are_capped_newest_first_per_provider(tmp_path, empty_ro
     hits = _by(result, provider="codex", kind=discover.KIND_EXPORT_FILE)
     assert len(hits) == 3
     # the three NEWEST survive the cap (d5, d6, d7), not the three first-walked
-    assert sorted(os.path.basename(os.path.dirname(h.path)) for h in hits) == \
-        ["d5", "d6", "d7"]
+    assert sorted(os.path.basename(os.path.dirname(h.path)) for h in hits) == ["d5", "d6", "d7"]
     assert result.stats.truncated_groups == ("codex/export_file",)
 
 
 # ------------------------------------------------------------------- bounding
+
 
 def test_depth_limit_stops_the_walk(tmp_path, empty_roots):
     deep = str(tmp_path / "user")
@@ -554,18 +578,16 @@ def test_overlapping_roots_are_walked_only_once(tmp_path):
 def test_an_index_spec_without_a_count_table_still_reports(tmp_path, empty_roots):
     _corpus_index(str(tmp_path / "idx" / "corpus.sqlite"))
     spec = discover.IndexSpec(provider="anthology", required_tables=("threads",))
-    hits = _by(discover.discover(empty_roots, specs=(spec,)),
-               kind=discover.KIND_BUILT_INDEX)
+    hits = _by(discover.discover(empty_roots, specs=(spec,)), kind=discover.KIND_BUILT_INDEX)
     assert len(hits) == 1
     assert hits[0].count == 0
     assert "conversations" not in hits[0].detail
 
 
-def test_unreadable_file_is_recorded_and_the_scan_continues(tmp_path, empty_roots,
-                                                            monkeypatch):
+def test_unreadable_file_is_recorded_and_the_scan_continues(tmp_path, empty_roots, monkeypatch):
     locked = _touch(str(tmp_path / "user" / "codex.json"), b"[]")
     _touch(str(tmp_path / "user" / "ok" / "codex.json"), b"[]")
-    real_open = open          # module attribute lookup does not fall back to builtins
+    real_open = open  # module attribute lookup does not fall back to builtins
 
     def blowing_open(path, *a, **kw):
         if os.path.abspath(str(path)) == os.path.abspath(locked):
@@ -574,8 +596,9 @@ def test_unreadable_file_is_recorded_and_the_scan_continues(tmp_path, empty_root
 
     monkeypatch.setattr(discover, "open", blowing_open, raising=False)
     result = discover.discover(empty_roots)
-    assert [os.path.basename(os.path.dirname(f.path))
-            for f in _by(result, provider="codex")] == ["ok"]
+    assert [os.path.basename(os.path.dirname(f.path)) for f in _by(result, provider="codex")] == [
+        "ok"
+    ]
     assert any("locked by another process" in e for e in result.stats.errors)
 
 
@@ -592,7 +615,7 @@ def test_unreadable_directory_does_not_abort_the_scan(tmp_path, empty_roots, mon
 
     monkeypatch.setattr(discover.os, "scandir", blowing_scandir)
     result = discover.discover(empty_roots)
-    assert _by(result, provider="codex")                # the good branch still found
+    assert _by(result, provider="codex")  # the good branch still found
     assert any("bad" in e for e in result.stats.errors)
 
 
@@ -600,16 +623,16 @@ def test_symlink_loop_terminates(tmp_path, empty_roots):
     base = str(tmp_path / "user" / "loop")
     os.makedirs(base, exist_ok=True)
     try:
-        os.symlink(str(tmp_path / "user"), os.path.join(base, "back"),
-                   target_is_directory=True)
+        os.symlink(str(tmp_path / "user"), os.path.join(base, "back"), target_is_directory=True)
     except (OSError, NotImplementedError, AttributeError):  # pragma: no cover
         pytest.skip("this platform/user cannot create a directory symlink")
     _touch(str(tmp_path / "user" / "codex.json"), b"[]")
-    result = discover.discover(empty_roots)              # must terminate
-    assert len(_by(result, provider="codex")) == 1       # counted exactly once
+    result = discover.discover(empty_roots)  # must terminate
+    assert len(_by(result, provider="codex")) == 1  # counted exactly once
 
 
 # --------------------------------------------------------- caller-path discipline
+
 
 @pytest.mark.parametrize("bad", ["\\\\server\\share", "//server/share", "relative/dir"])
 def test_nonlocal_or_relative_roots_are_rejected(bad):
@@ -618,10 +641,11 @@ def test_nonlocal_or_relative_roots_are_rejected(bad):
 
 
 def test_absolute_local_root_is_accepted(tmp_path):
-    discover.discover(discover.Roots(user_dirs=(str(tmp_path),)))   # must not raise
+    discover.discover(discover.Roots(user_dirs=(str(tmp_path),)))  # must not raise
 
 
 # -------------------------------------------------------------------- read-only
+
 
 def test_scan_mutates_nothing(tmp_path, empty_roots):
     _codex_home(str(tmp_path / "codex"), jsonl=1, zst=1)
@@ -644,25 +668,29 @@ def test_scan_mutates_nothing(tmp_path, empty_roots):
 
 # ---------------------------------------------------------------------- privacy
 
+
 def test_never_returns_file_content(tmp_path, empty_roots):
     canary = "CANARY_PRIVATE_TEXT_MUST_NOT_ESCAPE"
-    _touch(str(tmp_path / "user" / "conversations.json"),
-           json.dumps([{"name": canary}]).encode("utf-8"))
-    _touch(str(tmp_path / "user" / "codex.json"),
-           json.dumps({"title": canary}).encode("utf-8"))
+    _touch(
+        str(tmp_path / "user" / "conversations.json"),
+        json.dumps([{"name": canary}]).encode("utf-8"),
+    )
+    _touch(str(tmp_path / "user" / "codex.json"), json.dumps({"title": canary}).encode("utf-8"))
     result = discover.discover(empty_roots)
-    assert _by(result, kind=discover.KIND_EXPORT_FILE)      # the detector DID fire
+    assert _by(result, kind=discover.KIND_EXPORT_FILE)  # the detector DID fire
     assert canary not in json.dumps(result.as_dict())
     assert canary not in repr(result)
 
 
 # ------------------------------------------------------------------ extensibility
 
+
 def test_a_new_provider_is_added_by_one_registry_entry(tmp_path, empty_roots):
     """Adding a provider must not require new scan code — only a table row."""
     _touch(str(tmp_path / "user" / "grokked.json"), b"[]")
-    spec = discover.ExportSpec(provider="madeup", patterns=("grokked.json",),
-                               confidence=discover.CONF_LOW)
+    spec = discover.ExportSpec(
+        provider="madeup", patterns=("grokked.json",), confidence=discover.CONF_LOW
+    )
     result = discover.discover(empty_roots, specs=discover.PROVIDERS + (spec,))
     hits = _by(result, provider="madeup")
     assert len(hits) == 1
@@ -671,10 +699,12 @@ def test_a_new_provider_is_added_by_one_registry_entry(tmp_path, empty_roots):
 
 def test_a_new_store_provider_is_added_by_one_registry_entry(tmp_path, empty_roots):
     _touch(str(tmp_path / "claude" / "invented" / "s1.log"))
-    spec = discover.StoreSpec(provider="madeup-store", root="claude_home",
-                              subdir="invented", item_patterns=("*.log",))
-    hits = _by(discover.discover(empty_roots, specs=discover.PROVIDERS + (spec,)),
-               provider="madeup-store")
+    spec = discover.StoreSpec(
+        provider="madeup-store", root="claude_home", subdir="invented", item_patterns=("*.log",)
+    )
+    hits = _by(
+        discover.discover(empty_roots, specs=discover.PROVIDERS + (spec,)), provider="madeup-store"
+    )
     assert len(hits) == 1 and hits[0].count == 1
 
 
@@ -682,10 +712,8 @@ def test_a_store_whose_items_sit_in_its_base_omits_items_root(tmp_path, empty_ro
     """With no subdir the finding path IS the item root, so repeating it would be
     noise a caller has to reconcile."""
     _touch(str(tmp_path / "claude" / "s1.log"))
-    spec = discover.StoreSpec(provider="madeup-store", root="claude_home",
-                              item_patterns=("*.log",))
-    hit = _by(discover.discover(empty_roots, specs=(spec,)),
-              provider="madeup-store")[0]
+    spec = discover.StoreSpec(provider="madeup-store", root="claude_home", item_patterns=("*.log",))
+    hit = _by(discover.discover(empty_roots, specs=(spec,)), provider="madeup-store")[0]
     assert hit.path == str(tmp_path / "claude")
     assert "items_root" not in hit.detail
 
@@ -693,12 +721,12 @@ def test_a_store_whose_items_sit_in_its_base_omits_items_root(tmp_path, empty_ro
 def test_registry_ships_only_grounded_providers():
     """Guards against inventing a filename pattern for a provider whose on-disk shape
     is unknown. Every shipped provider is one this repo has an adapter or loader for."""
-    grounded = {"codex", "claude", "claude-code", "chatgpt", "gemini", "anthology",
-                "grok"}
+    grounded = {"codex", "claude", "claude-code", "chatgpt", "gemini", "anthology", "grok"}
     assert {s.provider for s in discover.PROVIDERS} <= grounded
 
 
 # --------------------------------------------------------------- default roots
+
 
 def test_default_roots_prefers_codex_home_env(tmp_path):
     home = str(tmp_path / "home")
@@ -716,8 +744,7 @@ def test_default_roots_falls_back_to_dot_codex(tmp_path):
     assert all(os.path.isabs(d) for d in roots.user_dirs)
 
 
-def test_default_roots_uses_the_process_environment_when_none_given(monkeypatch,
-                                                                    tmp_path):
+def test_default_roots_uses_the_process_environment_when_none_given(monkeypatch, tmp_path):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "envcodex"))
     monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
     assert discover.default_roots().codex_home == str(tmp_path / "envcodex")
@@ -725,6 +752,7 @@ def test_default_roots_uses_the_process_environment_when_none_given(monkeypatch,
 
 def test_discover_with_no_roots_uses_the_defaults(monkeypatch, tmp_path):
     """The zero-argument call the UI will make must work without exploding."""
-    monkeypatch.setattr(discover, "default_roots",
-                        lambda: discover.Roots(user_dirs=(str(tmp_path),)))
+    monkeypatch.setattr(
+        discover, "default_roots", lambda: discover.Roots(user_dirs=(str(tmp_path),))
+    )
     assert discover.discover().findings == ()

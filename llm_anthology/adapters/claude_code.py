@@ -1,9 +1,9 @@
 """Claude Code transcripts (~/.claude/projects/<slug>/...jsonl) -> IR + spawn graph.
 
 The owner's LARGEST store by a wide margin: 27,770 files, of which 162 are SESSIONS
-and 12,613 are SUBAGENT transcripts. `discover.py:318` already finds it — its StoreSpec
+and 12,613 are SUBAGENT transcripts. `discover.py:373` already finds it — its StoreSpec
 carried a note reading "no adapter in this repository reads that shape yet", and this is
-that adapter, so the note has been corrected in place (`discover.py:315-312`).
+that adapter, so the note has been corrected in place (`discover.py:369-369`).
 
 A session is ONE append-only JSONL file, unlike Grok (a directory) and like a Codex
 rollout. Every line is a self-describing record `{type, timestamp, sessionId, uuid,
@@ -75,7 +75,7 @@ Nine traps this adapter is built around:
     result) stays human, because the prose is real.
 
  3. THE ID MUST COME FROM THE PATH, NOT FROM `sessionId`. `conversations.conversation_id`
-    is UNIQUE and `corpus.py:347` (`add_conversation`) OVERWRITES a duplicate — so an id
+    is UNIQUE and `corpus.py:377` (`add_conversation`) OVERWRITES a duplicate — so an id
     collision does not raise, it silently REPLACES the conversation already stored under
     that id. Two independent collision risks, both closed here:
       (That sentence used to say a duplicate was treated as already-present and SILENTLY
@@ -108,7 +108,7 @@ Nine traps this adapter is built around:
     `sessionId` is preserved in `meta['reported_session_id']` so a mismatch is visible
     rather than silent.
 
- 4. THE CHILD OWNS ITS EDGE — deliberately NOT grok's shape. `grok.py:626-636` has the
+ 4. THE CHILD OWNS ITS EDGE — deliberately NOT grok's shape. `grok.py:675-685` has the
     PARENT read its `subagents/` directory. Doing that here would walk the 12,613-file
     subtree twice (once to build a parent's edge list, once to ingest the children as
     documents) and would give one parent a 1,238-element edge list. Instead each child
@@ -118,7 +118,7 @@ Nine traps this adapter is built around:
 
  5. `parentUuid` IS AN INTRA-SESSION MESSAGE CHAIN, not a spawn edge. It is NOT walked:
     records render in FILE order, which is the true order of an append-only log. A DAG
-    walk in the style of `claude.py:175` would pick an "active path" and HIDE turns,
+    walk in the style of `claude.py:199` would pick an "active path" and HIDE turns,
     and nothing measured says Claude Code even writes sibling branches (a rewind may
     truncate instead). What is reported is `meta['branch_points']` — parents with more
     than one child, excluding the null head (several heads in one file are RESUMES).
@@ -145,7 +145,7 @@ Nine traps this adapter is built around:
 
  9. PERFORMANCE IS A FIRST-CLASS CONSTRAINT AT 12,775 FILES. `os.walk` is used instead
     of `glob.glob('**')`: it needs no `glob.escape` around real directory names (a
-    percent/bracket-bearing slug is a genuine hazard — see `grok.py:632-633`), it does not
+    percent/bracket-bearing slug is a genuine hazard — see `grok.py:681-682`), it does not
     follow directory symlinks, and it yields a stable order when sorted. One walk, one
     read per file, one pass per line, O(1) dict updates — nothing is keyed by parent,
     so nothing is quadratic in a session's 78-to-1238 children. `iter_documents` is a
@@ -157,6 +157,7 @@ this module reads nothing outside the root it is given, and it was written WITHO
 opening a single file in the owner's store — the store holds private medical and
 pharmaceutical conversations, so the structure-only spec was the only input.
 """
+
 import json
 import os
 import re
@@ -166,8 +167,8 @@ from datetime import datetime
 from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
-#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1889` surfaces it to
-#: the UI as `provider`. It matches `discover.py:318`'s StoreSpec label so the panel and
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1978` surfaces it to
+#: the UI as `provider`. It matches `discover.py:373`'s StoreSpec label so the panel and
 #: the ingest name one store the same way, and it is deliberately NOT "claude" —
 #: `adapters/claude.py` owns that for the claude.ai account export, which is a different
 #: product and a different shape.
@@ -237,14 +238,13 @@ _AGENT_PREFIX = "agent-"
 _UNTYPED = "(untyped)"
 
 #: Content-block types whose payload is base64 bytes. They become a naming chip: the
-#: renderer has no base64 path (`render_html.py:191-201` needs a LOCAL relative path)
+#: renderer has no base64 path (`render_html.py:241-253` needs a LOCAL relative path)
 #: and an `unknown` block would dump the whole payload into the export — one pasted
 #: screenshot is megabytes. The bytes stay in the source transcript, which is the
 #: faithful copy; what is kept here is the media type / title.
 _MEDIA_BLOCKS = ("image", "document")
 
-_UUID = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 #: Trims an over-long fractional second to the 6 digits `datetime` accepts. The
 #: measured stamp is 24 chars (millisecond precision), which parses everywhere; this
@@ -281,8 +281,9 @@ class ClaudeCodeDoc:
     spawn edge its PATH declares (empty for a session — trap 4). `thread_id` is a
     convenience alias of the node id, matching `codex_rollout.RolloutDoc` and
     `grok.GrokDoc` so the multi-provider loader sees one contract."""
-    conversation: object
-    thread: object
+
+    conversation: ir.Conversation
+    thread: corpus.ThreadMeta
     edges: list = field(default_factory=list)
     transcript_path: str = ""
 
@@ -303,6 +304,7 @@ class Layout:
 
     The default is an anonymous session, so `build_document` works on records alone.
     """
+
     kind: str = _SESSION
     thread_id: str = ""
     parent_id: str = ""
@@ -312,6 +314,7 @@ class Layout:
 
 
 # ------------------------------------------------------------------- time / path
+
 
 def _iso_to_ms(text):
     """An ISO-8601 timestamp -> epoch milliseconds, or None if absent/unparseable.
@@ -337,7 +340,7 @@ def _stem(name):
     """A filename without its `.jsonl` suffix. Deliberately not `os.path.splitext`,
     which returns ('.jsonl', '') for a file named exactly `.jsonl` and would hand back
     the extension as an id."""
-    return name[:-len(_JSONL)] if name.endswith(_JSONL) else name
+    return name[: -len(_JSONL)] if name.endswith(_JSONL) else name
 
 
 def _child_thread_id(parent, workflow, agent):
@@ -373,20 +376,26 @@ def classify_path(path):
             idx = i
             break
     if idx < 0:
-        return Layout(kind=_SESSION, thread_id=_stem(parts[-1]),
-                      slug=parts[-2] if len(parts) > 1 else "")
+        return Layout(
+            kind=_SESSION, thread_id=_stem(parts[-1]), slug=parts[-2] if len(parts) > 1 else ""
+        )
     agent = _stem(parts[-1])
     if agent.startswith(_AGENT_PREFIX):
-        agent = agent[len(_AGENT_PREFIX):]
+        agent = agent[len(_AGENT_PREFIX) :]
     parent = parts[idx - 1]
-    workflow = "/".join(parts[idx + 1:-1])
-    return Layout(kind=_SUBAGENT,
-                  thread_id=_child_thread_id(parent, workflow, agent),
-                  parent_id=parent, workflow=workflow, agent_id=agent,
-                  slug=parts[idx - 2] if idx > 1 else "")
+    workflow = "/".join(parts[idx + 1 : -1])
+    return Layout(
+        kind=_SUBAGENT,
+        thread_id=_child_thread_id(parent, workflow, agent),
+        parent_id=parent,
+        workflow=workflow,
+        agent_id=agent,
+        slug=parts[idx - 2] if idx > 1 else "",
+    )
 
 
 # ------------------------------------------------------------ content -> blocks
+
 
 def _flatten(content):
     """A `tool_result` block's content -> the value the renderer should show.
@@ -397,7 +406,7 @@ def _flatten(content):
     reason `_MEDIA_BLOCKS` exists: a screenshot returned by a tool is megabytes, and
     keeping it here would smuggle the payload past that rule and into the export.
     Anything with no showable part in it is returned UNCHANGED so
-    `render_html.py:163-164` JSON-dumps it — a structured result is worth more as JSON
+    `render_html.py:194-197` JSON-dumps it — a structured result is worth more as JSON
     than as ''.
     """
     if isinstance(content, str):
@@ -424,16 +433,22 @@ def _media_block(item, btype):
     source = source if isinstance(source, dict) else {}
     media_type = _s(source.get("media_type"))
     label = _s(item.get("title")) or media_type or btype
-    return ir.Block("attachment", text=label,
-                    data={"file_name": label, "orig_type": btype,
-                          "media_type": media_type,
-                          "source_kind": _s(source.get("type"))})
+    return ir.Block(
+        "attachment",
+        text=label,
+        data={
+            "file_name": label,
+            "orig_type": btype,
+            "media_type": media_type,
+            "source_kind": _s(source.get("type")),
+        },
+    )
 
 
 def _map_block(item):
     """One Anthropic content block -> an ir.Block, or None when it is empty.
 
-    The mapped vocabulary matches `adapters/claude.py:238-263` (the claude.ai export
+    The mapped vocabulary matches `adapters/claude.py:280-330` (the claude.ai export
     reads the SAME message shape), so both Claude surfaces render identically. The
     spec deliberately does not print `content`, so the inner `type` vocabulary here is
     the PUBLIC Anthropic one and NOT measured — UNVERIFIED which types actually occur;
@@ -452,18 +467,29 @@ def _map_block(item):
         text = _s(item.get("thinking")) or _s(item.get("text"))
         return ir.Block("thinking", text=text) if text.strip() else None
     if btype == "tool_use":
-        return ir.Block("tool_use", text="",
-                        data={"name": _s(item.get("name")),
-                              "input": item.get("input"),
-                              "id": _s(item.get("id"))})
+        return ir.Block(
+            "tool_use",
+            text="",
+            data={
+                "name": _s(item.get("name")),
+                "input": item.get("input"),
+                "id": _s(item.get("id")),
+            },
+        )
     if btype == "tool_result":
         # No `name`: the Anthropic tool_result block carries only `tool_use_id`, and
-        # `render_html.py:161` already falls back to "tool". Inventing a name here
+        # `render_html.py:192` already falls back to "tool". Inventing a name here
         # would put a guess in the export.
-        return ir.Block("tool_result", text="",
-                        data={"name": "", "content": _flatten(item.get("content")),
-                              "is_error": bool(item.get("is_error")),
-                              "tool_use_id": _s(item.get("tool_use_id"))})
+        return ir.Block(
+            "tool_result",
+            text="",
+            data={
+                "name": "",
+                "content": _flatten(item.get("content")),
+                "is_error": bool(item.get("is_error")),
+                "tool_use_id": _s(item.get("tool_use_id")),
+            },
+        )
     if btype in _MEDIA_BLOCKS:
         return _media_block(item, btype)
     return ir.Block("unknown", text="", data={"orig_type": btype, "x_raw": item})
@@ -490,8 +516,7 @@ def _content_blocks(content):
         elif isinstance(item, str):
             block = ir.Block("text", text=item) if item.strip() else None
         else:
-            block = ir.Block("unknown", text="",
-                             data={"orig_type": "", "x_raw": item})
+            block = ir.Block("unknown", text="", data={"orig_type": "", "x_raw": item})
         if block is not None:
             blocks.append(block)
     return blocks
@@ -507,6 +532,7 @@ def _first_text(blocks):
 
 
 # ------------------------------------------------------------ the turn machine
+
 
 class _Turns:
     """Accumulates records into turns.
@@ -657,8 +683,7 @@ class _Reader:
         # codex's cumulative `total_token_usage` which is assigned.
         usage = message.get("usage")
         if isinstance(usage, dict):
-            self.tokens += (_int(usage.get("input_tokens"))
-                            + _int(usage.get("output_tokens")))
+            self.tokens += _int(usage.get("input_tokens")) + _int(usage.get("output_tokens"))
         self.model_id = self.model_id or _s(message.get("model"))
         if blocks:
             self.turns.assistant(blocks, uuid, ts)
@@ -670,7 +695,7 @@ class _Reader:
         layout = self.layout
         turns = self.turns.done()
         tid = layout.thread_id or self.reported_sid
-        title = (self.ai_title or _first_line(self.first_user, 80) or "(untitled)")
+        title = self.ai_title or _first_line(self.first_user, 80) or "(untitled)"
         # The slug is a LOSSY encoding of the cwd (every separator became `-`), so it
         # is never decoded into a path — a wrong path is worse than a raw slug.
         cwd = self.cwd or layout.slug
@@ -678,44 +703,65 @@ class _Reader:
         is_child = layout.kind == _SUBAGENT
 
         thread = corpus.ThreadMeta(
-            id=tid, title=title, model_provider=CLAUDE_CODE_MODEL_VENDOR,
+            id=tid,
+            title=title,
+            model_provider=CLAUDE_CODE_MODEL_VENDOR,
             tokens_used=self.tokens,
             created_at_ms=_iso_to_ms(self.first_ts),
             updated_at_ms=_iso_to_ms(self.last_ts),
-            git_branch=self.git_branch, cwd=cwd,
+            git_branch=self.git_branch,
+            cwd=cwd,
             agent_role=spawn_kind if is_child else _SESSION,
-            agent_nickname=layout.agent_id, preview=self.first_user[:200],
-            rollout_path=transcript_path)
+            agent_nickname=layout.agent_id,
+            preview=self.first_user[:200],
+            rollout_path=transcript_path,
+        )
 
         conv = ir.Conversation(
-            id=tid, title=title, provider=CLAUDE_CODE_PROVIDER, turns=turns,
-            created_at=self.first_ts, updated_at=self.last_ts, account="",
-            meta={"transcript_path": transcript_path, "cwd": cwd,
-                  "slug": layout.slug, "git_branch": self.git_branch,
-                  "kind": layout.kind, "parent_session_id": layout.parent_id,
-                  "workflow": layout.workflow, "agent_id": layout.agent_id,
-                  "reported_session_id": self.reported_sid,
-                  "model_id": self.model_id, "tokens_used": self.tokens,
-                  "record_counts": self.counts, "system_subtypes": self.system,
-                  "attachment_kinds": self.attachments,
-                  "prompt_sources": self.prompts,
-                  "versions": sorted(self.versions),
-                  "sidechain_records": self.sidechain,
-                  "meta_user_records": self.meta_users,
-                  "tool_result_records": self.tool_results,
-                  "branch_points": sum(1 for n in self.parents.values() if n > 1)})
+            id=tid,
+            title=title,
+            provider=CLAUDE_CODE_PROVIDER,
+            turns=turns,
+            created_at=self.first_ts,
+            updated_at=self.last_ts,
+            account="",
+            meta={
+                "transcript_path": transcript_path,
+                "cwd": cwd,
+                "slug": layout.slug,
+                "git_branch": self.git_branch,
+                "kind": layout.kind,
+                "parent_session_id": layout.parent_id,
+                "workflow": layout.workflow,
+                "agent_id": layout.agent_id,
+                "reported_session_id": self.reported_sid,
+                "model_id": self.model_id,
+                "tokens_used": self.tokens,
+                "record_counts": self.counts,
+                "system_subtypes": self.system,
+                "attachment_kinds": self.attachments,
+                "prompt_sources": self.prompts,
+                "versions": sorted(self.versions),
+                "sidechain_records": self.sidechain,
+                "meta_user_records": self.meta_users,
+                "tool_result_records": self.tool_results,
+                "branch_points": sum(1 for n in self.parents.values() if n > 1),
+            },
+        )
 
         edges = []
         # trap 4: the child declares its own edge; a session declares none. A child
         # with no parent yields nothing — half an edge would render as a spawn that
-        # never happened (`grok.py:516-517` makes the same call for the same reason).
+        # never happened (`grok.py:543-544` makes the same call for the same reason).
         if is_child and layout.parent_id:
             edges.append(corpus.SpawnEdge(layout.parent_id, tid, spawn_kind))
-        return ClaudeCodeDoc(conversation=conv, thread=thread, edges=edges,
-                             transcript_path=transcript_path)
+        return ClaudeCodeDoc(
+            conversation=conv, thread=thread, edges=edges, transcript_path=transcript_path
+        )
 
 
 # ---------------------------------------------------------- document builder
+
 
 def build_document(records, transcript_path="", layout=None):
     """Already-parsed transcript records -> one ClaudeCodeDoc.
@@ -734,6 +780,7 @@ def build_document(records, transcript_path="", layout=None):
 
 # ---------------------------------------------------------------- line / file
 
+
 def parse_transcript_lines(lines, transcript_path="", layout=None):
     """Raw JSONL text lines -> (ClaudeCodeDoc, errors).
 
@@ -748,12 +795,17 @@ def parse_transcript_lines(lines, transcript_path="", layout=None):
         try:
             rec = json.loads(line)
         except ValueError as e:
-            errors.append({"file": transcript_path, "line": i, "stage": "parse",
-                           "error": repr(e)})
+            errors.append({"file": transcript_path, "line": i, "stage": "parse", "error": repr(e)})
             continue
         if not isinstance(rec, dict):
-            errors.append({"file": transcript_path, "line": i, "stage": "parse",
-                           "error": "line is not a JSON object"})
+            errors.append(
+                {
+                    "file": transcript_path,
+                    "line": i,
+                    "stage": "parse",
+                    "error": "line is not a JSON object",
+                }
+            )
             continue
         records.append(rec)
     doc = build_document(records, transcript_path=transcript_path, layout=layout)
@@ -770,11 +822,11 @@ def parse_transcript_file(path):
     """
     with open(path, encoding="utf-8", errors="replace") as fh:
         lines = fh.readlines()
-    return parse_transcript_lines(lines, transcript_path=path,
-                                  layout=classify_path(path))
+    return parse_transcript_lines(lines, transcript_path=path, layout=classify_path(path))
 
 
 # ---------------------------------------------------------------------- tree
+
 
 def _transcripts(root):
     """Every `*.jsonl` under `root`, in a stable order (trap 9).
@@ -799,7 +851,7 @@ def iter_documents(root):
     """
     for path in _transcripts(root):
         if classify_path(path) is None:
-            continue                       # trap 6: a `tool-results` sidecar
+            continue  # trap 6: a `tool-results` sidecar
         try:
             doc, errors = parse_transcript_file(path)
         except OSError as e:

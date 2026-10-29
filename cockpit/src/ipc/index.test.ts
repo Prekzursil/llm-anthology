@@ -236,7 +236,7 @@ describe("real adapter Tauri command names", () => {
   it("OMITS an absent optional rather than sending null", async () => {
     // `_opt_int` rejects a non-int with -32602, so an explicit null is NOT "use the default"
     // — the same trap `corpusBuildStatus` documents for `job_id`. The engine then applies its
-    // own default of 50 (`llm_anthology/sidecar.py:1612`).
+    // own default of 50 (`llm_anthology/sidecar.py:1670`).
     invokeMock.mockClear();
     await realIpc.maintenanceRuns();
     expect(invokeMock).toHaveBeenCalledWith("maintenance_runs", { params: {} });
@@ -247,7 +247,7 @@ describe("real adapter Tauri command names", () => {
 
   it("forwards metadata.set VERBATIM, preserving the partial-update tri-state", async () => {
     // Normalising the undefined fields to null/"" here would silently CLEAR tags and notes
-    // on every per-field edit (`llm_anthology/sidecar.py:1333-1335`).
+    // on every per-field edit (`llm_anthology/sidecar.py:1390-1393`).
     invokeMock.mockClear();
     await realIpc.metadataSet({ conversation_id: "c-a", alias: "only the alias" });
     const [, args] = invokeMock.mock.calls[0] as [string, { params: Record<string, unknown> }];

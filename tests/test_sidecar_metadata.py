@@ -15,6 +15,7 @@ Beyond plain CRUD, three properties are load-bearing and each has a test here:
 
 Synthetic fixtures only; every connection is in-memory and closed by the fixture.
 """
+
 import json
 import sqlite3
 
@@ -42,10 +43,14 @@ def _close_connections():
 
 def _mk_conv(conn, cid, provider, title, body, thread_id="", nturns=0):
     conv = ir.Conversation(
-        id=cid, title=title, provider=provider,
+        id=cid,
+        title=title,
+        provider=provider,
         turns=[ir.Turn("human", []) for _ in range(nturns)],
-        created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z",
-        account="acct")
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+        account="acct",
+    )
     corpus.add_conversation(conn, conv, body=body, thread_id=thread_id)
 
 
@@ -67,21 +72,35 @@ def _annot_server():
 
 # ------------------------------------------------------------------------ read
 
+
 def test_metadata_get_unannotated_reads_back_empty_not_an_error():
     srv = _annot_server()
     assert srv.dispatch("metadata.get", {"conversation_id": "c-a"}) == {
-        "conversation_id": "c-a", "alias": "", "tags": [], "notes": "", "is_empty": True}
+        "conversation_id": "c-a",
+        "alias": "",
+        "tags": [],
+        "notes": "",
+        "is_empty": True,
+    }
 
 
 # ----------------------------------------------------------------------- write
 
+
 def test_metadata_set_then_get_roundtrips():
     srv = _annot_server()
-    srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "Refactor run",
-                                  "tags": ["work", "rust"], "notes": "picked up Tuesday"})
+    srv.dispatch(
+        "metadata.set",
+        {
+            "conversation_id": "c-a",
+            "alias": "Refactor run",
+            "tags": ["work", "rust"],
+            "notes": "picked up Tuesday",
+        },
+    )
     out = srv.dispatch("metadata.get", {"conversation_id": "c-a"})
     assert out["alias"] == "Refactor run"
-    assert out["tags"] == ["rust", "work"]        # the store orders tags deterministically
+    assert out["tags"] == ["rust", "work"]  # the store orders tags deterministically
     assert out["notes"] == "picked up Tuesday"
     assert out["is_empty"] is False
 
@@ -89,8 +108,10 @@ def test_metadata_set_then_get_roundtrips():
 def test_metadata_set_is_partial_an_omitted_field_is_untouched():
     """The crux of the per-field contract: editing the alias must not blank tags/notes."""
     srv = _annot_server()
-    srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "first",
-                                  "tags": ["keep"], "notes": "keep me"})
+    srv.dispatch(
+        "metadata.set",
+        {"conversation_id": "c-a", "alias": "first", "tags": ["keep"], "notes": "keep me"},
+    )
     out = srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "second"})
     assert out["alias"] == "second"
     assert out["tags"] == ["keep"]
@@ -114,8 +135,10 @@ def test_metadata_set_rejects_non_list_tags():
 
 def test_metadata_set_rejects_non_string_alias_or_notes():
     srv = _annot_server()
-    for bad in ({"conversation_id": "c-a", "alias": 7},
-                {"conversation_id": "c-a", "notes": ["no"]}):
+    for bad in (
+        {"conversation_id": "c-a", "alias": 7},
+        {"conversation_id": "c-a", "notes": ["no"]},
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("metadata.set", bad)
         assert ei.value.code == -32602
@@ -130,10 +153,10 @@ def test_metadata_set_whitespace_only_id_surfaces_as_a_param_error():
 
 # ----------------------------------------------------------------------- clear
 
+
 def test_metadata_clear_drops_the_annotation():
     srv = _annot_server()
-    srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "gone",
-                                  "tags": ["t"]})
+    srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "gone", "tags": ["t"]})
     assert srv.dispatch("metadata.clear", {"conversation_id": "c-a"})["is_empty"] is True
     assert srv.dispatch("metadata.get", {"conversation_id": "c-a"})["is_empty"] is True
 
@@ -147,6 +170,7 @@ def test_metadata_clear_whitespace_only_id_surfaces_as_a_param_error():
 
 # ---------------------------------------------------------------------- search
 
+
 def test_metadata_search_with_no_filter_returns_nothing():
     """A blank query must not dump the whole catalogue into the UI."""
     srv = _annot_server()
@@ -156,8 +180,10 @@ def test_metadata_search_with_no_filter_returns_nothing():
 
 def test_metadata_search_by_tag_and_by_text_joins_display_columns():
     srv = _annot_server()
-    srv.dispatch("metadata.set", {"conversation_id": "c-a", "alias": "Refactor",
-                                  "tags": ["rust"], "notes": "needle here"})
+    srv.dispatch(
+        "metadata.set",
+        {"conversation_id": "c-a", "alias": "Refactor", "tags": ["rust"], "notes": "needle here"},
+    )
     srv.dispatch("metadata.set", {"conversation_id": "c-b", "tags": ["python"]})
 
     by_tag = srv.dispatch("metadata.search", {"tag": "rust"})
@@ -169,8 +195,9 @@ def test_metadata_search_by_tag_and_by_text_joins_display_columns():
     assert row["turn_count"] == 2
     assert row["annotation"]["tags"] == ["rust"]
 
-    assert [r["conversation_id"] for r in
-            srv.dispatch("metadata.search", {"text": "needle"})] == ["c-a"]
+    assert [r["conversation_id"] for r in srv.dispatch("metadata.search", {"text": "needle"})] == [
+        "c-a"
+    ]
     # the two filters are ANDed, not ORed
     assert srv.dispatch("metadata.search", {"tag": "python", "text": "needle"}) == []
 
@@ -189,17 +216,26 @@ def test_metadata_tags_facet_counts_and_is_empty_when_unannotated():
     srv.dispatch("metadata.set", {"conversation_id": "c-a", "tags": ["shared", "solo"]})
     srv.dispatch("metadata.set", {"conversation_id": "c-b", "tags": ["shared"]})
     assert srv.dispatch("metadata.tags", {}) == [
-        {"tag": "shared", "count": 2}, {"tag": "solo", "count": 1}]
+        {"tag": "shared", "count": 2},
+        {"tag": "solo", "count": 1},
+    ]
 
 
 # -------------------------------------------------------------- sanitize / no corpus
 
+
 def test_metadata_free_text_is_sanitized_on_the_way_out():
     """A hidden zero-width char pasted into an annotation must not reach the UI."""
     srv = _annot_server()
-    out = srv.dispatch("metadata.set", {
-        "conversation_id": "c-a", "alias": "Al" + ZW + "ias",
-        "tags": ["ta" + ZW + "g"], "notes": "no" + ZW + "te"})
+    out = srv.dispatch(
+        "metadata.set",
+        {
+            "conversation_id": "c-a",
+            "alias": "Al" + ZW + "ias",
+            "tags": ["ta" + ZW + "g"],
+            "notes": "no" + ZW + "te",
+        },
+    )
     assert out["alias"] == "Alias"
     assert out["tags"] == ["tag"]
     assert out["notes"] == "note"
@@ -208,11 +244,13 @@ def test_metadata_free_text_is_sanitized_on_the_way_out():
 
 def test_metadata_methods_require_a_corpus():
     srv = sidecar.Sidecar(None)
-    for method, params in (("metadata.get", {"conversation_id": "c"}),
-                           ("metadata.set", {"conversation_id": "c", "alias": "a"}),
-                           ("metadata.clear", {"conversation_id": "c"}),
-                           ("metadata.search", {"text": "x"}),
-                           ("metadata.tags", {})):
+    for method, params in (
+        ("metadata.get", {"conversation_id": "c"}),
+        ("metadata.set", {"conversation_id": "c", "alias": "a"}),
+        ("metadata.clear", {"conversation_id": "c"}),
+        ("metadata.search", {"text": "x"}),
+        ("metadata.tags", {}),
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch(method, params)
         assert ei.value.code == sidecar.CORPUS_NOT_INDEXED, method

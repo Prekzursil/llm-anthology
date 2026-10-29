@@ -51,6 +51,7 @@ COVERAGE BOUNDARY — what is now pinned, and what is not.
 
 This file adds no `llm_anthology` code, so it does not move the 100% coverage gate.
 """
+
 import re
 from pathlib import Path
 
@@ -160,14 +161,16 @@ def _citations(text, engines=None):
                 problems.append(
                     "line %d cites %s:%s, which is not in ENGINES — add it (with its pin "
                     "rows) or remove the citation; an unlisted engine file is verified by "
-                    "nothing" % (lineno, base, m.group(2)))
+                    "nothing" % (lineno, base, m.group(2))
+                )
         for m in _SECONDARY.finditer(line):
             anchor = m.group(1) or m.group(3)
             if not prims:
                 problems.append(
                     "line %d carries the secondary anchor `%s` but no `<file>.py:<line>` "
                     "citation on the SAME line to own it, so its engine file is unknowable. "
-                    "Keep a secondary on its primary's line." % (lineno, m.group(0).strip()))
+                    "Keep a secondary on its primary's line." % (lineno, m.group(0).strip())
+                )
                 continue
             nearest = min(prims, key=lambda p: abs(p[0] - m.start()))
             rows.append((nearest[1], int(anchor)))
@@ -182,219 +185,734 @@ def _citations(text, engines=None):
 #: about what it proves.
 PINS = [
     # ---------------------------------------------------------------- maintenance.py (40)
-    ("mock.ts", "maintenance.py", 295, "PROTECTED_PATH_MARKERS", "the protected-store markers, ported verbatim"),
-    ("mock.ts", "maintenance.py", 384, "def _spells_protected", "the protected-path matcher this ports"),
-    ("mock.ts", "maintenance.py", 452, "def _effective_destination_root", "the effective destination root"),
-    ("mock.ts", "maintenance.py", 463, "def _confirmation_phrase", "the phrase the operator must type"),
-    ("mock.ts", "maintenance.py", 345, "def _classify", "the lexical outside-store-root half"),
-    ("mock.ts", "maintenance.py", 536, "Checked last", "duplicate checked last, so protected wins"),
-    ("mock.ts", "maintenance.py", 549, "warnings.append", "the blocked-target DANGEROUS warning"),
-    ("mock.ts", "maintenance.py", 529, "planned_sources", "duplicate-target detection"),
-    ("mock.ts", "maintenance.py", 419, "def _measured_size", "size measured from disk, not the caller"),
-    ("mock.ts", "maintenance.py", 558, "warnings.append", "a DANGEROUS warning per ALLOWED target"),
-    ("mock.ts", "maintenance.py", 472, "def _unique_name", "the deterministic -N suffix"),
-    ("mock.ts", "maintenance.py", 457, '"deleted"', "a delete quarantines under the checkpoint root"),
-    ("mock.ts", "maintenance.py", 645, "requires_typed_confirmation or not confirmation", "the confirmation gate"),
-    ("mock.ts", "maintenance.py", 669, "if not apply", "the apply branch the gate precedes"),
-    ("mock.ts", "maintenance.py", 670, "moves=preview.plan", "a dry run returns the planned moves"),
-    ("mock.ts", "maintenance.py", 750, 'status = doc.get("status"', "restore's first check"),
-    ("mock.ts", "maintenance.py", 784, "os.path.lexists(relocated)", "the per-entry restore rule"),
-    ("mock.ts", "maintenance.py", 776, "seen_originals", "the duplicate-entry restore guards"),
-    ("types.ts", "maintenance.py", 141, "class MaintenanceAction", "the action enum"),
-    ("types.ts", "maintenance.py", 158, "class SessionStoreKind", "the store-kind enum"),
-    ("types.ts", "maintenance.py", 182, "class SessionCopy", "one session file inside a plan"),
-    ("types.ts", "maintenance.py", 206, "last_write_ms", "epoch ms, or null"),
-    ("types.ts", "maintenance.py", 561, "is_hot", "a hot target raises a REVIEW warning"),
-    ("types.ts", "maintenance.py", 558, "warnings.append", "a DANGEROUS warning per ALLOWED target"),
-    ("types.ts", "maintenance.py", 576, "warnings.append", "the closing INFO summary"),
-    ("types.ts", "maintenance.py", 150, "class MaintenanceWarningSeverity", "the severity enum"),
-    ("types.ts", "maintenance.py", 452, "def _effective_destination_root", "the EFFECTIVE destination"),
-    ("types.ts", "maintenance.py", 587, "requires_checkpoint=True", "always true"),
-    ("types.ts", "maintenance.py", 588, "requires_typed_confirmation=True", "always true"),
-    ("types.ts", "maintenance.py", 463, "def _confirmation_phrase", "the exact phrase, from the ALLOWED count"),
-    ("types.ts", "maintenance.py", 794, "skip_unaccounted", "without it, the whole batch is refused"),
-    ("types.ts", "maintenance.py", 670, 'manifest_path=""', "an empty manifest path on a dry run"),
-    ("types.ts", "maintenance.py", 285, "unaccounted", "recorded originals a restore could not account for"),
-    ("types.ts", "maintenance.py", 849, "def record_run", "one row of the audit ledger"),
-    ("types.ts", "maintenance.py", 823, "MAINTENANCE_SCHEMA", "the ledger schema"),
-    ("types.ts", "maintenance.py", 870, "ORDER BY recorded_at_ms DESC, manifest_path", "newest first, path breaks ties"),
-    ("types.ts", "maintenance.py", 715, '"pending"', "the pending status"),
-    ("types.ts", "maintenance.py", 720, '"executed"', "the executed status"),
-    ("types.ts", "maintenance.py", 808, '"restored"', "the restored status"),
-    ("types.ts", "maintenance.py", 626, "def read_checkpoint", "opens the manifest directly"),
-
+    (
+        "mock.ts",
+        "maintenance.py",
+        309,
+        "PROTECTED_PATH_MARKERS",
+        "the protected-store markers, ported verbatim",
+    ),
+    (
+        "mock.ts",
+        "maintenance.py",
+        399,
+        "def _spells_protected",
+        "the protected-path matcher this ports",
+    ),
+    (
+        "mock.ts",
+        "maintenance.py",
+        468,
+        "def _effective_destination_root",
+        "the effective destination root",
+    ),
+    (
+        "mock.ts",
+        "maintenance.py",
+        479,
+        "def _confirmation_phrase",
+        "the phrase the operator must type",
+    ),
+    ("mock.ts", "maintenance.py", 358, "def _classify", "the lexical outside-store-root half"),
+    ("mock.ts", "maintenance.py", 553, "Checked last", "duplicate checked last, so protected wins"),
+    ("mock.ts", "maintenance.py", 570, "warnings.append", "the blocked-target DANGEROUS warning"),
+    ("mock.ts", "maintenance.py", 546, "planned_sources", "duplicate-target detection"),
+    (
+        "mock.ts",
+        "maintenance.py",
+        434,
+        "def _measured_size",
+        "size measured from disk, not the caller",
+    ),
+    ("mock.ts", "maintenance.py", 582, "warnings.append", "a DANGEROUS warning per ALLOWED target"),
+    ("mock.ts", "maintenance.py", 487, "def _unique_name", "the deterministic -N suffix"),
+    (
+        "mock.ts",
+        "maintenance.py",
+        473,
+        '"deleted"',
+        "a delete quarantines under the checkpoint root",
+    ),
+    (
+        "mock.ts",
+        "maintenance.py",
+        689,
+        "requires_typed_confirmation or not confirmation",
+        "the confirmation gate",
+    ),
+    ("mock.ts", "maintenance.py", 713, "if not apply", "the apply branch the gate precedes"),
+    ("mock.ts", "maintenance.py", 714, "moves=preview.plan", "a dry run returns the planned moves"),
+    ("mock.ts", "maintenance.py", 799, 'status = doc.get("status"', "restore's first check"),
+    ("mock.ts", "maintenance.py", 838, "os.path.lexists(relocated)", "the per-entry restore rule"),
+    ("mock.ts", "maintenance.py", 826, "seen_originals", "the duplicate-entry restore guards"),
+    ("types.ts", "maintenance.py", 144, "class MaintenanceAction", "the action enum"),
+    ("types.ts", "maintenance.py", 163, "class SessionStoreKind", "the store-kind enum"),
+    ("types.ts", "maintenance.py", 190, "class SessionCopy", "one session file inside a plan"),
+    ("types.ts", "maintenance.py", 215, "last_write_ms", "epoch ms, or null"),
+    ("types.ts", "maintenance.py", 588, "is_hot", "a hot target raises a REVIEW warning"),
+    (
+        "types.ts",
+        "maintenance.py",
+        582,
+        "warnings.append",
+        "a DANGEROUS warning per ALLOWED target",
+    ),
+    ("types.ts", "maintenance.py", 613, "warnings.append", "the closing INFO summary"),
+    ("types.ts", "maintenance.py", 154, "class MaintenanceWarningSeverity", "the severity enum"),
+    (
+        "types.ts",
+        "maintenance.py",
+        468,
+        "def _effective_destination_root",
+        "the EFFECTIVE destination",
+    ),
+    ("types.ts", "maintenance.py", 627, "requires_checkpoint=True", "always true"),
+    ("types.ts", "maintenance.py", 628, "requires_typed_confirmation=True", "always true"),
+    (
+        "types.ts",
+        "maintenance.py",
+        479,
+        "def _confirmation_phrase",
+        "the exact phrase, from the ALLOWED count",
+    ),
+    (
+        "types.ts",
+        "maintenance.py",
+        850,
+        "skip_unaccounted",
+        "without it, the whole batch is refused",
+    ),
+    ("types.ts", "maintenance.py", 714, 'manifest_path=""', "an empty manifest path on a dry run"),
+    (
+        "types.ts",
+        "maintenance.py",
+        299,
+        "unaccounted",
+        "recorded originals a restore could not account for",
+    ),
+    ("types.ts", "maintenance.py", 918, "def record_run", "one row of the audit ledger"),
+    ("types.ts", "maintenance.py", 885, "MAINTENANCE_SCHEMA", "the ledger schema"),
+    (
+        "types.ts",
+        "maintenance.py",
+        949,
+        "ORDER BY recorded_at_ms DESC, manifest_path",
+        "newest first, path breaks ties",
+    ),
+    ("types.ts", "maintenance.py", 766, '"pending"', "the pending status"),
+    ("types.ts", "maintenance.py", 770, '"executed"', "the executed status"),
+    ("types.ts", "maintenance.py", 867, '"restored"', "the restored status"),
+    ("types.ts", "maintenance.py", 668, "def read_checkpoint", "opens the manifest directly"),
     # -------------------------------------------------------------------- discover.py (15)
     # Every one of these was re-anchored in the 2026-08-08 sweep; ten of the fourteen
     # originals landed on unrelated code or a blank line.
-    ("mock.ts", "discover.py", 108, "DEFAULT_MAX_PER_GROUP", "the per-group cap the census equals"),
-    ("mock.ts", "discover.py", 248, 'report: str = "base"', "the field the two store shapes differ in"),
-    ("mock.ts", "discover.py", 653, 'spec.report == "subdir"', "where report decides the named path"),
-    ("mock.ts", "discover.py", 654, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
-    ("types.ts", "discover.py", 152, "class Finding:", "the Finding DTO this mirrors"),  # weak
-    ("types.ts", "discover.py", 654, "max(mtimes) if mtimes else 0.0", "0.0 and never null when nothing is datable"),
-    ("types.ts", "discover.py", 770, '"tables": tuple(sorted', "a built index's detail keys"),
-    ("types.ts", "discover.py", 309, 'StoreSpec(provider="codex"', "a Codex store's detail keys"),
-    ("types.ts", "discover.py", 720, '"size_bytes": _size', "an export file's detail keys"),
-    ("types.ts", "discover.py", 50, "Adding a provider is a TABLE EDIT", "why kind/confidence stay plain strings"),
-    ("types.ts", "discover.py", 68, "KIND_BUILT_INDEX", "the kind vocabulary"),
-    ("types.ts", "discover.py", 72, "CONF_HIGH", "the confidence vocabulary"),
-    ("types.ts", "discover.py", 189, "class ScanStats", "what one scan cost"),
-    ("types.ts", "discover.py", 108, "DEFAULT_MAX_PER_GROUP", "the cap that names a truncated group"),
-    ("types.ts", "discover.py", 897, "truncated_groups.append", "where a group is recorded as truncated"),
-
+    ("mock.ts", "discover.py", 109, "DEFAULT_MAX_PER_GROUP", "the per-group cap the census equals"),
+    (
+        "mock.ts",
+        "discover.py",
+        293,
+        'report: str = "base"',
+        "the field the two store shapes differ in",
+    ),
+    (
+        "mock.ts",
+        "discover.py",
+        735,
+        'spec.report == "subdir"',
+        "where report decides the named path",
+    ),
+    (
+        "mock.ts",
+        "discover.py",
+        737,
+        "max(mtimes) if mtimes else 0.0",
+        "0.0 and never null when nothing is datable",
+    ),
+    ("types.ts", "discover.py", 185, "class Finding:", "the Finding DTO this mirrors"),  # weak
+    (
+        "types.ts",
+        "discover.py",
+        737,
+        "max(mtimes) if mtimes else 0.0",
+        "0.0 and never null when nothing is datable",
+    ),
+    ("types.ts", "discover.py", 861, '"tables": tuple(sorted', "a built index's detail keys"),
+    ("types.ts", "discover.py", 358, 'provider="codex"', "a Codex store's detail keys"),
+    ("types.ts", "discover.py", 805, '"size_bytes": _size', "an export file's detail keys"),
+    (
+        "types.ts",
+        "discover.py",
+        50,
+        "Adding a provider is a TABLE EDIT",
+        "why kind/confidence stay plain strings",
+    ),
+    ("types.ts", "discover.py", 69, "KIND_BUILT_INDEX", "the kind vocabulary"),
+    ("types.ts", "discover.py", 73, "CONF_HIGH", "the confidence vocabulary"),
+    ("types.ts", "discover.py", 229, "class ScanStats", "what one scan cost"),
+    (
+        "types.ts",
+        "discover.py",
+        109,
+        "DEFAULT_MAX_PER_GROUP",
+        "the cap that names a truncated group",
+    ),
+    (
+        "types.ts",
+        "discover.py",
+        1000,
+        "truncated_groups.append",
+        "where a group is recorded as truncated",
+    ),
     # ----------------------------------------------------------------------- dedup.py (10)
-    ("mock.ts", "dedup.py", 149, "@property", "has_larger_copy, the truncated-canonical flag"),  # weak
-    ("mock.ts", "dedup.py", 118, "last_write_ms: Optional[int]", "epoch ms, or None"),
-    ("mock.ts", "dedup.py", 244, "def scan_store", "one store root -> copies + errors"),
-    ("mock.ts", "dedup.py", 249, "A missing root", "a missing root is empty, not an error"),
-    ("types.ts", "dedup.py", 117, "store_kind: str = STORE_UNKNOWN", "store_kind is a plain str here"),
-    ("types.ts", "dedup.py", 87, "STORE_LIVE", "the store-kind string vocabulary"),
-    ("types.ts", "dedup.py", 118, "last_write_ms: Optional[int]", "epoch ms, or null"),
-    ("types.ts", "dedup.py", 138, "@property", "duplicate_paths, retained as evidence"),  # weak
-    ("types.ts", "dedup.py", 149, "@property", "has_larger_copy, the truncated-canonical flag"),  # weak
-
+    (
+        "mock.ts",
+        "dedup.py",
+        155,
+        "@property",
+        "has_larger_copy, the truncated-canonical flag",
+    ),  # weak
+    ("mock.ts", "dedup.py", 123, "last_write_ms: Optional[int]", "epoch ms, or None"),
+    ("mock.ts", "dedup.py", 255, "def scan_store", "one store root -> copies + errors"),
+    ("mock.ts", "dedup.py", 260, "A missing root", "a missing root is empty, not an error"),
+    (
+        "types.ts",
+        "dedup.py",
+        122,
+        "store_kind: str = STORE_UNKNOWN",
+        "store_kind is a plain str here",
+    ),
+    ("types.ts", "dedup.py", 88, "STORE_LIVE", "the store-kind string vocabulary"),
+    ("types.ts", "dedup.py", 123, "last_write_ms: Optional[int]", "epoch ms, or null"),
+    ("types.ts", "dedup.py", 144, "@property", "duplicate_paths, retained as evidence"),  # weak
+    (
+        "types.ts",
+        "dedup.py",
+        155,
+        "@property",
+        "has_larger_copy, the truncated-canonical flag",
+    ),  # weak
     # -------------------------------------------------------------------- metadata.py (8)
-    ("mock.ts", "metadata.py", 529, "def tag_counts", "the case-collapsing tag facet"),
-    ("mock.ts", "metadata.py", 214, "def clean_tags", "the engine's tag canonicalisation"),
-    ("mock.ts", "metadata.py", 501, "if not clauses", "neither filter -> empty, not the catalogue"),
-    ("mock.ts", "metadata.py", 243, "def _tags_key", "the sentinel-delimited whole-tag column"),
-    ("mock.ts", "metadata.py", 456, "never LIKE", "whole-tag instr(), never a LIKE"),
-    ("mock.ts", "metadata.py", 470, "instead of an FTS query", "free text is a substring match"),
-    ("types.ts", "metadata.py", 501, "if not clauses", "neither filter -> empty, not the catalogue"),
-    ("types.ts", "metadata.py", 529, "def tag_counts", "the case-collapsing tag facet"),
-
+    ("mock.ts", "metadata.py", 564, "def tag_counts", "the case-collapsing tag facet"),
+    ("mock.ts", "metadata.py", 219, "def clean_tags", "the engine's tag canonicalisation"),
+    ("mock.ts", "metadata.py", 533, "if not clauses", "neither filter -> empty, not the catalogue"),
+    ("mock.ts", "metadata.py", 248, "def _tags_key", "the sentinel-delimited whole-tag column"),
+    ("mock.ts", "metadata.py", 488, "never LIKE", "whole-tag instr(), never a LIKE"),
+    ("mock.ts", "metadata.py", 502, "instead of an FTS query", "free text is a substring match"),
+    (
+        "types.ts",
+        "metadata.py",
+        533,
+        "if not clauses",
+        "neither filter -> empty, not the catalogue",
+    ),
+    ("types.ts", "metadata.py", 564, "def tag_counts", "the case-collapsing tag facet"),
     # --------------------------------------------------------------------- sidecar.py (65)
-    ("mock.ts", "sidecar.py", 348, "JSON-RPC error envelope", "the {code, message} envelope"),
+    ("mock.ts", "sidecar.py", 356, "JSON-RPC error envelope", "the {code, message} envelope"),
     # These five arrived in mock.ts AFTER the engine-side sweep, from a concurrent change
     # outside it. They are listed here rather than left alone because an unpinned citation
     # is the state this file exists to refuse — `test_every_citation_is_pinned` went red on
     # them, which is the gate working, not a defect.
-    ("mock.ts", "sidecar.py", 903, '_reject_nonlocal_path(index_path', "the index_path guard the mock reproduces"),
-    ("mock.ts", "sidecar.py", 956, "Returns immediately", "the build reply means ACCEPTED, not finished"),
-    ("mock.ts", "sidecar.py", 997, "if not sessions_root and not grok_root", "at least one source root must be named"),
-    ("mock.ts", "sidecar.py", 1008, '(sessions_root, "sessions_root")', "each named root refused if UNC or relative"),
-    ("mock.ts", "sidecar.py", 1171, "if snapshot is None", "no job yet is a state, not an error"),
-    ("mock.ts", "sidecar.py", 1176, 'requested is not None and requested != snapshot["job_id"]', "a stale job_id is refused, not answered"),
-    ("mock.ts", "sidecar.py", 1180, '"sessions_root": _clean(snapshot["sessions_root"])', "build_status reports the root the job started with"),
+    (
+        "mock.ts",
+        "sidecar.py",
+        928,
+        "_reject_nonlocal_path(index_path",
+        "the index_path guard the mock reproduces",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        985,
+        "Returns immediately",
+        "the build reply means ACCEPTED, not finished",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1028,
+        "if not sessions_root and not grok_root",
+        "at least one source root must be named",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1042,
+        '(sessions_root, "sessions_root")',
+        "each named root refused if UNC or relative",
+    ),
+    ("mock.ts", "sidecar.py", 1223, "if snapshot is None", "no job yet is a state, not an error"),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1227,
+        'requested is not None and requested != snapshot["job_id"]',
+        "a stale job_id is refused, not answered",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1234,
+        '"sessions_root": _clean(snapshot["sessions_root"])',
+        "build_status reports the root the job started with",
+    ),
     # The corrected `corpus.build` params note, formerly the QUARANTINE row below. The two
     # anchors are the whole correction: 856 shows the param IS `_opt_str`, 858 shows what
     # the engine actually refuses (neither root named) — which is not "codex_home missing".
-    ("types.ts", "sidecar.py", 988, 'sessions_root = _opt_str(params, "sessions_root")', "every corpus.build param is optional"),
-    ("types.ts", "sidecar.py", 997, "if not sessions_root and not grok_root", "the only refusal: NEITHER root named"),
-    ("mock.ts", "sidecar.py", 1175, '"state": "idle"', "idle before any build, rather than erroring"),
-    ("mock.ts", "sidecar.py", 700, "self.research_backend", "the MockBackend fallback"),
-    ("mock.ts", "sidecar.py", 1590, "Partial update: an OMITTED field", "the metadata.set tri-state"),
-    ("mock.ts", "sidecar.py", 1684, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
-    ("mock.ts", "sidecar.py", 1811, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
-    ("mock.ts", "sidecar.py", 1845, "result.executed and result.manifest_path", "only an applied run is recorded"),
-    ("types.ts", "sidecar.py", 912, '"index_path": _clean(index_path)', "corpus.create returns {index_path, created}"),
-    ("types.ts", "sidecar.py", 355, "def _clean", "the hidden-unicode strip, via _sanitize_tree"),
-    ("types.ts", "sidecar.py", 956, "Returns immediately", "the build reply means ACCEPTED, not finished"),
-    ("types.ts", "sidecar.py", 1152, "def _corpus_build_status", "the poll-safe status surface"),
-    ("types.ts", "sidecar.py", 735, '"research.synthesize"', "the research methods exist on the engine"),
-    ("types.ts", "sidecar.py", 700, "self.research_backend", "the MockBackend fallback"),
-    ("types.ts", "sidecar.py", 1541, "research.extract_entities(views, self.research_backend)", "extraction routes through the same backend"),
-    ("types.ts", "sidecar.py", 1574, "return {", "the annotation DTO"),  # weak
-    ("types.ts", "sidecar.py", 1562, "the absorbed csm annotation layer", "annotations are local-only by design"),
-    ("types.ts", "sidecar.py", 1583, "Un-annotated reads back as an EMPTY", "is_empty rather than an error"),
-    ("types.ts", "sidecar.py", 1589, "def _metadata_set", "the metadata.set surface"),
-    ("types.ts", "sidecar.py", 1590, "Partial update: an OMITTED field", "the tri-state is the whole point"),
-    ("types.ts", "sidecar.py", 1596, "if tags is not None and not isinstance", "a non-list tags is -32602"),
-    ("types.ts", "sidecar.py", 1620, "def _metadata_search", "the metadata.search surface"),
-    ("types.ts", "sidecar.py", 1622, "With neither filter the result is empty", "a blank query dumps nothing"),
-    ("types.ts", "sidecar.py", 1632, "return [", "the search row DTO"),  # weak
-    ("types.ts", "sidecar.py", 1652, '{"tag": _clean(tag)', "one entry of the tag facet"),
-    ("types.ts", "sidecar.py", 1655, "Codex physical copies -> one logical session", "dedup is a view, never a delete"),
-    ("types.ts", "sidecar.py", 1658, "The paths it returns are LOCAL filesystem paths", "display-sensitive, absent from MetadataView"),
-    ("types.ts", "sidecar.py", 1671, "return {", "the DedupSession DTO"),  # weak
-    ("types.ts", "sidecar.py", 1697, "return {", "the dedup.scan result"),  # weak
-    ("types.ts", "sidecar.py", 1712, "the ONLY destructive surface", "why the client never sends a preview back"),
-    ("types.ts", "sidecar.py", 1728, '"session_id": copy.session_id', "one session file inside a plan"),
-    ("types.ts", "sidecar.py", 1729, "copy.store_kind.value", "a real enum serialized via .value"),
-    ("types.ts", "sidecar.py", 1732, "def _preview_dto", "the plan preview DTO"),
-    ("types.ts", "sidecar.py", 1740, '"blocked": [{"target"', "a refused target and its reason"),
-    ("types.ts", "sidecar.py", 1742, '"warnings": [{"severity"', "the warning DTO"),
-    ("types.ts", "sidecar.py", 1744, '"plan": [{"session_id"', "the planned moves"),
-    ("types.ts", "sidecar.py", 1753, "return {", "the execute/restore result"),  # weak
-    ("types.ts", "sidecar.py", 1775, "def _maintenance_plan", "maintenance.plan is pure"),
-    ("types.ts", "sidecar.py", 1785, '(("store_root", store_root)', "both roots refused if UNC or relative"),
-    ("types.ts", "sidecar.py", 1791, '_req_str(params, "action")', "an unknown action is -32602"),
-    ("types.ts", "sidecar.py", 1799, "raw_targets, list) or not raw_targets", "targets must be a non-empty array"),
-    ("types.ts", "sidecar.py", 1801, "targets = []", "how the edge builds each target"),  # weak
-    ("types.ts", "sidecar.py", 1805, 'item.get("file_path")', "file_path is required per target"),
-    ("types.ts", "sidecar.py", 1809, 'item.get("session_id"', "session_id defaults to empty"),
-    ("types.ts", "sidecar.py", 1811, "SessionStoreKind.UNKNOWN", "the edge forces every target to UNKNOWN"),
-    ("types.ts", "sidecar.py", 1812, 'item.get("size_bytes", 0) or 0', "size_bytes defaults to 0"),
-    ("types.ts", "sidecar.py", 1824, "def _maintenance_execute", "the execute surface"),
-    ("types.ts", "sidecar.py", 1842, "Consumed only once the engine ACCEPTED it", "a refused confirmation is correctable"),
-    ("types.ts", "sidecar.py", 1849, "def _maintenance_restore", "the restore surface"),
-    ("types.ts", "sidecar.py", 1854, "_reject_nonlocal_path(manifest_path", "manifest_path refused if UNC or relative"),
-    ("types.ts", "sidecar.py", 1684, "Scan the known Codex stores under an EXPLICIT", "dedup.scan requires codex_home"),
-    ("types.ts", "sidecar.py", 348, "JSON-RPC error envelope", "the {code, message} envelope"),
-    ("types.ts", "sidecar.py", 797, "params must be an object", "-32602, wrong params"),
-    ("types.ts", "sidecar.py", 790, "Internal error", "-32603, an unhandled engine fault"),
-    ("types.ts", "sidecar.py", 293, "CORPUS_NOT_INDEXED", "-32000, no corpus attached"),
-    ("types.ts", "sidecar.py", 294, "THREAD_NOT_FOUND", "-32001"),
-    ("types.ts", "sidecar.py", 295, "DB_BUSY", "-32002, sqlite lock/busy"),
-    ("types.ts", "sidecar.py", 296, "the safety model REFUSED", "the maintenance-refused code"),
-    ("types.ts", "sidecar.py", 300, "A second corpus.build while one is still running", "the build-in-progress code"),
-    ("types.ts", "sidecar.py", 303, "cannot run against THIS engine", "the build-unavailable code"),
-    ("types.ts", "sidecar.py", 306, "where a file already exists", "the corpus-exists code"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1017,
+        'sessions_root = _opt_str(params, "sessions_root")',
+        "every corpus.build param is optional",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1028,
+        "if not sessions_root and not grok_root",
+        "the only refusal: NEITHER root named",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1226,
+        '"state": "idle"',
+        "idle before any build, rather than erroring",
+    ),
+    ("mock.ts", "sidecar.py", 710, "self.research_backend", "the MockBackend fallback"),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1649,
+        "Partial update: an OMITTED field",
+        "the metadata.set tri-state",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1743,
+        "Scan the known Codex stores under an EXPLICIT",
+        "dedup.scan requires codex_home",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1890,
+        "SessionStoreKind.UNKNOWN",
+        "the edge forces every target to UNKNOWN",
+    ),
+    (
+        "mock.ts",
+        "sidecar.py",
+        1932,
+        "result.executed and result.manifest_path",
+        "only an applied run is recorded",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        941,
+        '"index_path": _clean(index_path)',
+        "corpus.create returns {index_path, created}",
+    ),
+    ("types.ts", "sidecar.py", 363, "def _clean", "the hidden-unicode strip, via _sanitize_tree"),
+    (
+        "types.ts",
+        "sidecar.py",
+        985,
+        "Returns immediately",
+        "the build reply means ACCEPTED, not finished",
+    ),
+    ("types.ts", "sidecar.py", 1205, "def _corpus_build_status", "the poll-safe status surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        744,
+        '"research.synthesize"',
+        "the research methods exist on the engine",
+    ),
+    ("types.ts", "sidecar.py", 710, "self.research_backend", "the MockBackend fallback"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1601,
+        "research.extract_entities(views, self.research_backend)",
+        "extraction routes through the same backend",
+    ),
+    ("types.ts", "sidecar.py", 1633, "return {", "the annotation DTO"),  # weak
+    (
+        "types.ts",
+        "sidecar.py",
+        1621,
+        "the absorbed csm annotation layer",
+        "annotations are local-only by design",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1642,
+        "Un-annotated reads back as an EMPTY",
+        "is_empty rather than an error",
+    ),
+    ("types.ts", "sidecar.py", 1648, "def _metadata_set", "the metadata.set surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1649,
+        "Partial update: an OMITTED field",
+        "the tri-state is the whole point",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1655,
+        "if tags is not None and not isinstance",
+        "a non-list tags is -32602",
+    ),
+    ("types.ts", "sidecar.py", 1678, "def _metadata_search", "the metadata.search surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1680,
+        "With neither filter the result is empty",
+        "a blank query dumps nothing",
+    ),
+    ("types.ts", "sidecar.py", 1690, "return [", "the search row DTO"),  # weak
+    ("types.ts", "sidecar.py", 1710, '{"tag": _clean(tag)', "one entry of the tag facet"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1714,
+        "Codex physical copies -> one logical session",
+        "dedup is a view, never a delete",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1717,
+        "The paths it returns are LOCAL filesystem paths",
+        "display-sensitive, absent from MetadataView",
+    ),
+    ("types.ts", "sidecar.py", 1730, "return {", "the DedupSession DTO"),  # weak
+    ("types.ts", "sidecar.py", 1756, "return {", "the dedup.scan result"),  # weak
+    (
+        "types.ts",
+        "sidecar.py",
+        1771,
+        "the ONLY destructive surface",
+        "why the client never sends a preview back",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1788,
+        '"session_id": copy.session_id',
+        "one session file inside a plan",
+    ),
+    ("types.ts", "sidecar.py", 1790, "copy.store_kind.value", "a real enum serialized via .value"),
+    ("types.ts", "sidecar.py", 1796, "def _preview_dto", "the plan preview DTO"),
+    ("types.ts", "sidecar.py", 1804, '"blocked": [', "a refused target and its reason"),
+    ("types.ts", "sidecar.py", 1808, '"warnings": [', "the warning DTO"),
+    ("types.ts", "sidecar.py", 1816, '"plan": [', "the planned moves"),
+    ("types.ts", "sidecar.py", 1827, "return {", "the execute/restore result"),  # weak
+    ("types.ts", "sidecar.py", 1851, "def _maintenance_plan", "maintenance.plan is pure"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1861,
+        '(("store_root", store_root)',
+        "both roots refused if UNC or relative",
+    ),
+    ("types.ts", "sidecar.py", 1866, '_req_str(params, "action")', "an unknown action is -32602"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1877,
+        "raw_targets, list) or not raw_targets",
+        "targets must be a non-empty array",
+    ),
+    ("types.ts", "sidecar.py", 1879, "targets = []", "how the edge builds each target"),  # weak
+    ("types.ts", "sidecar.py", 1883, 'item.get("file_path")', "file_path is required per target"),
+    ("types.ts", "sidecar.py", 1888, 'item.get("session_id"', "session_id defaults to empty"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1890,
+        "SessionStoreKind.UNKNOWN",
+        "the edge forces every target to UNKNOWN",
+    ),
+    ("types.ts", "sidecar.py", 1891, 'item.get("size_bytes", 0) or 0', "size_bytes defaults to 0"),
+    ("types.ts", "sidecar.py", 1909, "def _maintenance_execute", "the execute surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1929,
+        "Consumed only once the engine ACCEPTED it",
+        "a refused confirmation is correctable",
+    ),
+    ("types.ts", "sidecar.py", 1936, "def _maintenance_restore", "the restore surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1941,
+        "_reject_nonlocal_path(manifest_path",
+        "manifest_path refused if UNC or relative",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1743,
+        "Scan the known Codex stores under an EXPLICIT",
+        "dedup.scan requires codex_home",
+    ),
+    ("types.ts", "sidecar.py", 356, "JSON-RPC error envelope", "the {code, message} envelope"),
+    ("types.ts", "sidecar.py", 807, "params must be an object", "-32602, wrong params"),
+    ("types.ts", "sidecar.py", 800, "Internal error", "-32603, an unhandled engine fault"),
+    ("types.ts", "sidecar.py", 300, "CORPUS_NOT_INDEXED", "-32000, no corpus attached"),
+    ("types.ts", "sidecar.py", 301, "THREAD_NOT_FOUND", "-32001"),
+    ("types.ts", "sidecar.py", 302, "DB_BUSY", "-32002, sqlite lock/busy"),
+    ("types.ts", "sidecar.py", 303, "the safety model REFUSED", "the maintenance-refused code"),
+    (
+        "types.ts",
+        "sidecar.py",
+        307,
+        "A second corpus.build while one is still running",
+        "the build-in-progress code",
+    ),
+    ("types.ts", "sidecar.py", 310, "cannot run against THIS engine", "the build-unavailable code"),
+    ("types.ts", "sidecar.py", 313, "where a file already exists", "the corpus-exists code"),
     # ONE row, not two: this line was pinned independently by two units within a minute of
     # each other and both landed. The set-based `pinned` lookup made the duplicate a silent
     # no-op, so nothing caught it — merged by hand, keeping both halves of the reason.
-    ("types.ts", "sidecar.py", 319, "INDEX_REBUILD_REQUIRED = -32007",
-     "the index-too-old code CF-22 added, distinct from not-indexed, wired to the UI here"),
-
+    (
+        "types.ts",
+        "sidecar.py",
+        326,
+        "INDEX_REBUILD_REQUIRED = -32007",
+        "the index-too-old code CF-22 added, distinct from not-indexed, wired to the UI here",
+    ),
     # ------------------------------------------------- test_sidecar_maintenance.py (8)
-    ("mock.ts", "test_sidecar_maintenance.py", 104, "def test_a_parent_traversal_root_is_caught_by_the_ENGINE", "traversal is the engine's refusal, not the edge's"),
-    ("mock.ts", "test_sidecar_maintenance.py", 195, "def test_a_refused_confirmation_leaves_the_handle_usable", "a typo is correctable without a re-plan"),
-    ("mock.ts", "test_sidecar_maintenance.py", 307, "def test_a_dry_run_does_not_enter_the_ledger", "only an applied run enters the ledger"),
-    ("types.ts", "test_sidecar_maintenance.py", 155, "def test_plan_is_pure_and_touches_nothing", "plan mutates no filesystem"),
-    ("types.ts", "test_sidecar_maintenance.py", 210, "def test_execute_defaults_to_a_dry_run", "apply defaults to False"),
-    ("types.ts", "test_sidecar_maintenance.py", 195, "def test_a_refused_confirmation_leaves_the_handle_usable", "a typo is correctable without a re-plan"),
-    ("types.ts", "test_sidecar_maintenance.py", 217, 'assert out["executed"] is False', "a dry run reports executed False"),
-    ("types.ts", "test_sidecar_maintenance.py", 307, "def test_a_dry_run_does_not_enter_the_ledger", "only an applied run enters the ledger"),
-
+    (
+        "mock.ts",
+        "test_sidecar_maintenance.py",
+        109,
+        "def test_a_parent_traversal_root_is_caught_by_the_ENGINE",
+        "traversal is the engine's refusal, not the edge's",
+    ),
+    (
+        "mock.ts",
+        "test_sidecar_maintenance.py",
+        205,
+        "def test_a_refused_confirmation_leaves_the_handle_usable",
+        "a typo is correctable without a re-plan",
+    ),
+    (
+        "mock.ts",
+        "test_sidecar_maintenance.py",
+        345,
+        "def test_a_dry_run_does_not_enter_the_ledger",
+        "only an applied run enters the ledger",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_maintenance.py",
+        162,
+        "def test_plan_is_pure_and_touches_nothing",
+        "plan mutates no filesystem",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_maintenance.py",
+        227,
+        "def test_execute_defaults_to_a_dry_run",
+        "apply defaults to False",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_maintenance.py",
+        205,
+        "def test_a_refused_confirmation_leaves_the_handle_usable",
+        "a typo is correctable without a re-plan",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_maintenance.py",
+        235,
+        'assert out["executed"] is False',
+        "a dry run reports executed False",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_maintenance.py",
+        345,
+        "def test_a_dry_run_does_not_enter_the_ledger",
+        "only an applied run enters the ledger",
+    ),
     # ------------------------------------------- the remaining four engine files (12)
-    ("mock.ts", "codex_rollout.py", 357, "MEASURED on a live store", "2043 .zst and zero plain .jsonl"),
-    ("mock.ts", "codex_rollout.py", 416, "patterns = [", "ingest_sessions globs both forms"),  # weak
-    ("mock.ts", "research.py", 91, 'response="", responder=None', "MockBackend returns '' by default"),
-    ("types.ts", "research.py", 91, 'response="", responder=None', "MockBackend returns '' by default"),
-    ("types.ts", "research.py", 78, "def synthesize(self, prompt: str) -> str:", "the Protocol stub, the only other synthesize"),
-    ("mock.ts", "corpus.py", 183, "account", "conversations.account is NOT NULL DEFAULT ''"),
-    ("types.ts", "corpus.py", 179, "CREATE TABLE IF NOT EXISTS conversations", "every column NOT NULL, so no nulls"),
-    ("mock.ts", "test_sidecar_metadata.py", 124, "def test_metadata_set_whitespace_only_id", "a whitespace-only id is -32602"),
-    ("types.ts", "test_sidecar_metadata.py", 84, "the store orders tags deterministically", "tags come back sorted"),
-    ("types.ts", "test_sidecar_metadata.py", 89, "def test_metadata_set_is_partial", "an omitted field is untouched"),
-    ("mock.ts", "test_sidecar_dedup.py", 101, "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error", "a missing home is empty, not an error"),
-    ("mock.ts", "test_sidecar_dedup.py", 170, "def test_dedup_sessions_is_empty_before_any_scan", "no scan yet -> empty"),
-    ("types.ts", "test_sidecar_dedup.py", 101, "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error", "a missing home is empty, not an error"),
-
+    (
+        "mock.ts",
+        "codex_rollout.py",
+        411,
+        "MEASURED on a live store",
+        "2043 .zst and zero plain .jsonl",
+    ),
+    (
+        "mock.ts",
+        "codex_rollout.py",
+        469,
+        "patterns = [",
+        "ingest_sessions globs both forms",
+    ),  # weak
+    (
+        "mock.ts",
+        "research.py",
+        89,
+        'response="", responder=None',
+        "MockBackend returns '' by default",
+    ),
+    (
+        "types.ts",
+        "research.py",
+        89,
+        'response="", responder=None',
+        "MockBackend returns '' by default",
+    ),
+    (
+        "types.ts",
+        "research.py",
+        76,
+        "def synthesize(self, prompt: str) -> str:",
+        "the Protocol stub, the only other synthesize",
+    ),
+    ("mock.ts", "corpus.py", 208, "account", "conversations.account is NOT NULL DEFAULT ''"),
+    (
+        "types.ts",
+        "corpus.py",
+        204,
+        "CREATE TABLE IF NOT EXISTS conversations",
+        "every column NOT NULL, so no nulls",
+    ),
+    (
+        "mock.ts",
+        "test_sidecar_metadata.py",
+        147,
+        "def test_metadata_set_whitespace_only_id",
+        "a whitespace-only id is -32602",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_metadata.py",
+        103,
+        "the store orders tags deterministically",
+        "tags come back sorted",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_metadata.py",
+        108,
+        "def test_metadata_set_is_partial",
+        "an omitted field is untouched",
+    ),
+    (
+        "mock.ts",
+        "test_sidecar_dedup.py",
+        122,
+        "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error",
+        "a missing home is empty, not an error",
+    ),
+    (
+        "mock.ts",
+        "test_sidecar_dedup.py",
+        192,
+        "def test_dedup_sessions_is_empty_before_any_scan",
+        "no scan yet -> empty",
+    ),
+    (
+        "types.ts",
+        "test_sidecar_dedup.py",
+        122,
+        "def test_dedup_scan_of_a_missing_home_is_empty_not_an_error",
+        "a missing home is empty, not an error",
+    ),
     # ------------------------------------------------- the G-5/G-6 export wire (18)
     # Added with the change that made `mode` and `credential_scan` REQUIRED on the two
     # export DTOs. Two of these name files ENGINES did not list until now: the scan
     # and the projection live in export.py/redact.py, not sidecar.py, so before this
     # the IPC sources could not cite their own load-bearing evidence without a
     # silent pass.
-    ("mock.ts", "sidecar.py", 1304, "def _export_plan", "the dry-run surface the mock mirrors"),
-    ("mock.ts", "export.py", 114, "_TEXT_NODE_FIELDS", "the field set a node scan covers"),
-    ("mock.ts", "export.py", 232, "def _project_shareable", "project BEFORE tallying and scanning"),
-    ("mock.ts", "export.py", 248, "def _sorted_findings", "scope/id/field/offset, so a report is diffable"),
-    ("mock.ts", "export.py", 255, "def _located", "what turns a bare alarm into a finding"),
-    ("mock.ts", "export.py", 276, "def _credential_scan", "the findings/coverage_limit/scrubbed block"),
-    ("mock.ts", "export.py", 286, "def scan_for_export", "a dry run scans without writing, so scrubbed is False"),
-    ("mock.ts", "redact.py", 203, "CREDENTIAL_SHAPE_COVERAGE_LIMIT", "the sentence copied verbatim into the mock"),
-    ("mock.ts", "redact.py", 249, "def _mask", "first 4 chars + length, never the run itself"),
-    ("types.ts", "sidecar.py", 1275, "def _export_mode", "absent means full; empty and null are -32602"),
-    ("types.ts", "sidecar.py", 1293, "def _export_scrub", "a real bool or -32602, never a truthiness guess"),
-    ("types.ts", "sidecar.py", 1304, "def _export_plan", "the pre-write warning surface"),
-    ("types.ts", "sidecar.py", 2037, "def _project_export_run", "the ExportResult DTO, scan forwarded on failure"),
-    ("types.ts", "export.py", 103, "EXPORT_MODES", "the mode vocabulary the union mirrors"),
-    ("types.ts", "export.py", 255, "def _located", "why a finding carries scope/id/field/offset"),
-    ("types.ts", "export.py", 276, "def _credential_scan", "the CredentialScan shape"),
-    ("types.ts", "redact.py", 203, "CREDENTIAL_SHAPE_COVERAGE_LIMIT", "coverage_limit is unconditional"),
-    ("types.ts", "redact.py", 280, "def scan_credential_shapes", "the shape/offset/preview finding keys"),]
+    ("mock.ts", "sidecar.py", 1361, "def _export_plan", "the dry-run surface the mock mirrors"),
+    ("mock.ts", "export.py", 115, "_TEXT_NODE_FIELDS", "the field set a node scan covers"),
+    ("mock.ts", "export.py", 250, "def _project_shareable", "project BEFORE tallying and scanning"),
+    (
+        "mock.ts",
+        "export.py",
+        270,
+        "def _sorted_findings",
+        "scope/id/field/offset, so a report is diffable",
+    ),
+    ("mock.ts", "export.py", 276, "def _located", "what turns a bare alarm into a finding"),
+    (
+        "mock.ts",
+        "export.py",
+        300,
+        "def _credential_scan",
+        "the findings/coverage_limit/scrubbed block",
+    ),
+    (
+        "mock.ts",
+        "export.py",
+        310,
+        "def scan_for_export",
+        "a dry run scans without writing, so scrubbed is False",
+    ),
+    (
+        "mock.ts",
+        "redact.py",
+        205,
+        "CREDENTIAL_SHAPE_COVERAGE_LIMIT",
+        "the sentence copied verbatim into the mock",
+    ),
+    ("mock.ts", "redact.py", 250, "def _mask", "first 4 chars + length, never the run itself"),
+    (
+        "types.ts",
+        "sidecar.py",
+        1333,
+        "def _export_mode",
+        "absent means full; empty and null are -32602",
+    ),
+    (
+        "types.ts",
+        "sidecar.py",
+        1350,
+        "def _export_scrub",
+        "a real bool or -32602, never a truthiness guess",
+    ),
+    ("types.ts", "sidecar.py", 1361, "def _export_plan", "the pre-write warning surface"),
+    (
+        "types.ts",
+        "sidecar.py",
+        2141,
+        "def _project_export_run",
+        "the ExportResult DTO, scan forwarded on failure",
+    ),
+    ("types.ts", "export.py", 104, "EXPORT_MODES", "the mode vocabulary the union mirrors"),
+    ("types.ts", "export.py", 276, "def _located", "why a finding carries scope/id/field/offset"),
+    ("types.ts", "export.py", 300, "def _credential_scan", "the CredentialScan shape"),
+    (
+        "types.ts",
+        "redact.py",
+        205,
+        "CREDENTIAL_SHAPE_COVERAGE_LIMIT",
+        "coverage_limit is unconditional",
+    ),
+    (
+        "types.ts",
+        "redact.py",
+        283,
+        "def scan_credential_shapes",
+        "the shape/offset/preview finding keys",
+    ),
+]
 
 #: (ts file, engine file, cited line, the FALSE sentence, why it is not simply re-anchored).
 #:
@@ -473,61 +991,243 @@ PY_TARGETS = {
 #: Same token-containment contract as PINS, and the same honesty rule about weak tokens.
 PY_PINS = [
     # ------------------------------------------------------------------- sidecar.py (16)
-    ("sidecar.py", "codex_rollout.py", 343, '"file": rollout_path', "a producer of the `file` key"),  # weak
-    ("sidecar.py", "codex_rollout.py", 347, '"file": rollout_path', "a producer of the `file` key"),  # weak
-    ("sidecar.py", "codex_rollout.py", 435, '"file": path, "stage": "read"', "the third producer of `file`"),
-    ("sidecar.py", "corpus.py", 303, "sqlite3.connect(path)", "the DEFAULT check_same_thread=True"),
-    ("sidecar.py", "corpus.py", 292, "PRAGMA journal_mode=WAL", "WAL is what lets both connections share the file"),
-    ("sidecar.py", "loaders.py", 452, "corpus.open_index(index_path)", "the worker opens its OWN connection"),
-    ("sidecar.py", "loaders.py", 463, "conn.close()", "...and closes it, inside the worker thread"),
-    ("sidecar.py", "index.py", 171, "if progress is not None", "the only cooperative abort point in the stack"),
-    ("sidecar.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
-    ("sidecar.py", "loaders.py", 461, "progress=progress", "...and DOES forward it — the old premise is dead"),
-    ("sidecar.py", "sidecar.py", 1105, "loaders.load_corpus(", "the worker call that passes none"),
-    ("sidecar.py", "sidecar.py", 1108, "loaders.ingest_exports(", "the SECOND uncancellable call site, added when the export half was wired"),
-    ("sidecar.py", "sidecar.py", 1035, 'codex_home = _opt_str(params, "codex_home")', "codex_home is read OPTIONAL, never required"),
-    ("sidecar.py", "cli.py", 175, "checked = [args.src, args.chatgpt_projects]",
-     "the CLI existence-check the export guard ports, harvest deliberately excluded"),
-    ("sidecar.py", "index.py", 168, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
-    ("sidecar.py", "codex_state.py", 127, "def _db_path", "the LIVE Codex store fallback"),
-    ("sidecar.py", "codex_rollout.py", 425, "glob.glob(pattern", "ingest_sessions globs, so a typo'd root is silent"),
-    ("sidecar.py", "codex_state.py", 96, "is retried then", "a missing/busy state DB is skipped by design"),
-    ("sidecar.py", "loaders.py", 454, "_persist_graph(conn, result)", "the graph commits BEFORE the long ingest"),
-    ("sidecar.py", "loaders.py", 394, "result = corpus.Corpus()", "load_corpus starts from a FRESH Corpus"),
-    ("sidecar.py", "loaders.py", 788, "upsert_thread(conn", "the run is UPSERTed into a previous build's tables"),
+    (
+        "sidecar.py",
+        "codex_rollout.py",
+        392,
+        '"file": rollout_path',
+        "a producer of the `file` key",
+    ),  # weak
+    (
+        "sidecar.py",
+        "codex_rollout.py",
+        397,
+        '"file": rollout_path',
+        "a producer of the `file` key",
+    ),  # weak
+    (
+        "sidecar.py",
+        "codex_rollout.py",
+        488,
+        '"file": path, "stage": "read"',
+        "the third producer of `file`",
+    ),
+    ("sidecar.py", "corpus.py", 328, "sqlite3.connect(path)", "the DEFAULT check_same_thread=True"),
+    (
+        "sidecar.py",
+        "corpus.py",
+        317,
+        "PRAGMA journal_mode=WAL",
+        "WAL is what lets both connections share the file",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        490,
+        "corpus.open_index(index_path)",
+        "the worker opens its OWN connection",
+    ),
+    ("sidecar.py", "loaders.py", 501, "conn.close()", "...and closes it, inside the worker thread"),
+    (
+        "sidecar.py",
+        "index.py",
+        189,
+        "if progress is not None",
+        "the only cooperative abort point in the stack",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        372,
+        "def load_corpus",
+        "load_corpus DOES accept a progress callback",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        499,
+        "progress=progress",
+        "...and DOES forward it — the old premise is dead",
+    ),
+    ("sidecar.py", "sidecar.py", 1159, "loaders.load_corpus(", "the worker call that passes none"),
+    (
+        "sidecar.py",
+        "sidecar.py",
+        1162,
+        "loaders.ingest_exports(",
+        "the SECOND uncancellable call site, added when the export half was wired",
+    ),
+    (
+        "sidecar.py",
+        "sidecar.py",
+        1071,
+        'codex_home = _opt_str(params, "codex_home")',
+        "codex_home is read OPTIONAL, never required",
+    ),
+    (
+        "sidecar.py",
+        "cli.py",
+        222,
+        "checked = [args.src, args.chatgpt_projects]",
+        "the CLI existence-check the export guard ports, harvest deliberately excluded",
+    ),
+    ("sidecar.py", "index.py", 186, "corpus.set_checkpoint", "the per-chunk commit + checkpoint"),
+    ("sidecar.py", "codex_state.py", 131, "def _db_path", "the LIVE Codex store fallback"),
+    (
+        "sidecar.py",
+        "codex_rollout.py",
+        478,
+        "glob.glob(pattern",
+        "ingest_sessions globs, so a typo'd root is silent",
+    ),
+    (
+        "sidecar.py",
+        "codex_state.py",
+        101,
+        "is retried then",
+        "a missing/busy state DB is skipped by design",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        492,
+        "_persist_graph(conn, result)",
+        "the graph commits BEFORE the long ingest",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        431,
+        "result = corpus.Corpus()",
+        "load_corpus starts from a FRESH Corpus",
+    ),
+    (
+        "sidecar.py",
+        "loaders.py",
+        832,
+        "upsert_thread(conn",
+        "the run is UPSERTed into a previous build's tables",
+    ),
     # G-4: why `_archived_conversation` translates the stored leg list into a COUNT instead
     # of relaying it. The cited line is where the absolute-path list is put on every
     # ingested conversation, which is what makes serving stored meta verbatim a leak.
-    ("sidecar.py", "loaders.py", 546, 'conv.meta["rollout_paths"]', "the ingest stores a LIST of absolute leg paths"),
-
+    (
+        "sidecar.py",
+        "loaders.py",
+        588,
+        'conv.meta["rollout_paths"]',
+        "the ingest stores a LIST of absolute leg paths",
+    ),
     # ------------------------------------------------------------------ discover.py (19)
-    ("discover.py", "loaders.py", 64, "never ingest our own output", "loaders already refuses its own output tree"),
-    ("discover.py", "corpus.py", 179, "CREATE TABLE IF NOT EXISTS conversations", "the index schema"),
-    ("discover.py", "corpus.py", 197, "CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts", "its FTS half"),
-    ("discover.py", "codex_state.py", 45, '_DB_NAME = "state_5.sqlite"', "the state-DB marker filename"),
-    ("discover.py", "codex_rollout.py", 1, "Codex CLI session rollout logs", "the rollout store shape"),
-    ("discover.py", "sidecar.py", 258, '"claude-code": (claude_code', "the reparser that makes the finding openable"),
-    ("discover.py", "claude_code.py", 1, "Claude Code transcripts", "the adapter that makes this store openable"),
+    (
+        "discover.py",
+        "loaders.py",
+        75,
+        "never ingest our own output",
+        "loaders already refuses its own output tree",
+    ),
+    (
+        "discover.py",
+        "corpus.py",
+        204,
+        "CREATE TABLE IF NOT EXISTS conversations",
+        "the index schema",
+    ),
+    (
+        "discover.py",
+        "corpus.py",
+        222,
+        "CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts",
+        "its FTS half",
+    ),
+    (
+        "discover.py",
+        "codex_state.py",
+        47,
+        '_DB_NAME = "state_5.sqlite"',
+        "the state-DB marker filename",
+    ),
+    (
+        "discover.py",
+        "codex_rollout.py",
+        1,
+        "Codex CLI session rollout logs",
+        "the rollout store shape",
+    ),
+    (
+        "discover.py",
+        "sidecar.py",
+        259,
+        '"claude-code": (claude_code',
+        "the reparser that makes the finding openable",
+    ),
+    (
+        "discover.py",
+        "claude_code.py",
+        1,
+        "Claude Code transcripts",
+        "the adapter that makes this store openable",
+    ),
     ("discover.py", "grok.py", 1, "Grok Build session store", "the Grok store shape"),
     ("discover.py", "chatgpt.py", 1, "ChatGPT native export", "the ChatGPT export shape"),
     ("discover.py", "cli.py", 8, "llm-anthology chatgpt", "the CLI verb for it"),
     ("discover.py", "claude.py", 1, "Claude native account-export", "the Claude export shape"),
     ("discover.py", "cli.py", 7, "llm-anthology claude", "the CLI verb for it"),
-    ("discover.py", "loaders.py", 46, "users.json, memories.json", "the real sibling set of an export dir"),
+    (
+        "discover.py",
+        "loaders.py",
+        56,
+        "users.json, memories.json",
+        "the real sibling set of an export dir",
+    ),
     ("discover.py", "codex.py", 1, "Codex task export", "the task-export shape"),
     ("discover.py", "cli.py", 9, "llm-anthology codex", "the CLI verb for it"),
     ("discover.py", "gemini.py", 1, 'Google Takeout "Gemini Apps"', "the Takeout activity shape"),
     ("discover.py", "gemini.py", 8, "probed from the real transcript.json", "its probed schema"),
-    ("discover.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "the same home resolution discovery uses"),
-    ("discover.py", "sidecar.py", 607, "def _reject_nonlocal_path", "the path refusal this mirrors"),
-    ("discover.py", "codex_state.py", 11, "READ-ONLY + IMMUTABLE", "why the probe opens mode=ro&immutable=1"),
-
+    (
+        "discover.py",
+        "codex_state.py",
+        133,
+        'os.environ.get("CODEX_HOME")',
+        "the same home resolution discovery uses",
+    ),
+    (
+        "discover.py",
+        "sidecar.py",
+        615,
+        "def _reject_nonlocal_path",
+        "the path refusal this mirrors",
+    ),
+    (
+        "discover.py",
+        "codex_state.py",
+        11,
+        "READ-ONLY + IMMUTABLE",
+        "why the probe opens mode=ro&immutable=1",
+    ),
     # ------------------------------------------------------------------------ cli.py (4)
-    ("cli.py", "loaders.py", 336, "def load_corpus", "load_corpus DOES accept a progress callback"),
-    ("cli.py", "loaders.py", 461, "progress=progress", "...and forwards it after every committed chunk"),
-    ("cli.py", "codex_state.py", 129, 'os.environ.get("CODEX_HOME")', "where the disclosed path resolves from, even when it is NOT read"),
-    ("cli.py", "build.py", 107, "carries NO turns is a silent", "the silent false-success this was bitten by"),
-
+    ("cli.py", "loaders.py", 372, "def load_corpus", "load_corpus DOES accept a progress callback"),
+    (
+        "cli.py",
+        "loaders.py",
+        499,
+        "progress=progress",
+        "...and forwards it after every committed chunk",
+    ),
+    (
+        "cli.py",
+        "codex_state.py",
+        133,
+        'os.environ.get("CODEX_HOME")',
+        "where the disclosed path resolves from, even when it is NOT read",
+    ),
+    (
+        "cli.py",
+        "build.py",
+        145,
+        "carries NO turns is a silent",
+        "the silent false-success this was bitten by",
+    ),
     # ----------------------------------------------------------------- claude_code.py (11)
     # Converted from a FUNCTION-qualified citation (`corpus.add_conversation:278-281`) to
     # the file form, which is the only shape the scraper recognises. As written it was
@@ -535,54 +1235,212 @@ PY_PINS = [
     # it described the pre-reindex early-return — the same dead premise that let
     # `loaders._admit` destroy 47% of the Codex store. Nothing could catch either, because
     # an unrecognised shape is not an unpinned citation, it is an invisible one.
-    ("claude_code.py", "corpus.py", 347, "def add_conversation", "a duplicate id OVERWRITES, it does not drop"),
-    ("claude_code.py", "discover.py", 318, 'StoreSpec(provider="claude-code"', "the StoreSpec that finds this store"),
-    ("claude_code.py", "discover.py", 315, "Claude Code writes one .jsonl transcript", "the corrected openable note"),
-    ("claude_code.py", "grok.py", 626, "def _read_subagents", "grok has the PARENT read `subagents/`"),
-    ("claude_code.py", "claude.py", 175, "def _active_path", "the DAG walk this deliberately does NOT do"),
-    ("claude_code.py", "grok.py", 632, "glob.escape", "the percent/bracket-bearing slug hazard"),
-    ("claude_code.py", "sidecar.py", 1889, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
-    ("claude_code.py", "render_html.py", 191, 'if b.type == "media"', "the renderer needs a LOCAL relative path"),
-    ("claude_code.py", "render_html.py", 163, "body = content if isinstance(content, str)", "a result is JSON-dumped"),
-    ("claude_code.py", "claude.py", 238, 'for item in (m.get("content")', "the claude.ai block vocabulary this matches"),
-    ("claude_code.py", "render_html.py", 161, 'or "tool"', "the renderer already falls back to \"tool\""),
-    ("claude_code.py", "codex_rollout.py", 31, "THE DEVELOPER ENVELOPE", "the shape codex_rollout drops"),
-    ("claude_code.py", "grok.py", 516, "if not parent or not child", "half an edge is never emitted"),
-
+    (
+        "claude_code.py",
+        "corpus.py",
+        377,
+        "def add_conversation",
+        "a duplicate id OVERWRITES, it does not drop",
+    ),
+    (
+        "claude_code.py",
+        "discover.py",
+        373,
+        'provider="claude-code"',
+        "the StoreSpec that finds this store",
+    ),
+    (
+        "claude_code.py",
+        "discover.py",
+        369,
+        "Claude Code writes one .jsonl transcript",
+        "the corrected openable note",
+    ),
+    (
+        "claude_code.py",
+        "grok.py",
+        675,
+        "def _read_subagents",
+        "grok has the PARENT read `subagents/`",
+    ),
+    (
+        "claude_code.py",
+        "claude.py",
+        199,
+        "def _active_path",
+        "the DAG walk this deliberately does NOT do",
+    ),
+    ("claude_code.py", "grok.py", 681, "glob.escape", "the percent/bracket-bearing slug hazard"),
+    (
+        "claude_code.py",
+        "sidecar.py",
+        1978,
+        '"provider": meta.adapter',
+        "the adapter label surfaced as `provider`",
+    ),
+    (
+        "claude_code.py",
+        "render_html.py",
+        241,
+        'if b.type == "media"',
+        "the renderer needs a LOCAL relative path",
+    ),
+    (
+        "claude_code.py",
+        "render_html.py",
+        194,
+        "body = (",
+        "a result is JSON-dumped",
+    ),
+    (
+        "claude_code.py",
+        "claude.py",
+        280,
+        'for item in m.get("content")',
+        "the claude.ai block vocabulary this matches",
+    ),
+    (
+        "claude_code.py",
+        "render_html.py",
+        192,
+        'or "tool"',
+        'the renderer already falls back to "tool"',
+    ),
+    (
+        "claude_code.py",
+        "codex_rollout.py",
+        31,
+        "THE DEVELOPER ENVELOPE",
+        "the shape codex_rollout drops",
+    ),
+    (
+        "claude_code.py",
+        "grok.py",
+        543,
+        "if not parent or not child",
+        "half an edge is never emitted",
+    ),
     # ---------------------------------------------------------------------- loaders.py (7)
     # Pinned but NOT authored here: `loaders.py` is owned by another unit. Two of its nine
     # anchors are broken and are recorded in PY_KNOWN_BROKEN instead of being fixed, because
     # fixing them means editing a file outside this sweep's scope.
-    ("loaders.py", "corpus.py", 347, "def add_conversation", "the re-index that replaced the early-return"),
-    ("loaders.py", "dedup.py", 38, "UNIDENTIFIED COPIES",
-     "CF-18: the blank-id rule, re-pointed at the block that SURVIVED cf371fe"),
-    ("loaders.py", "codex_rollout.py", 296, "tid = _s(ms.get(", "how a Codex thread id is derived"),
-    ("loaders.py", "codex_rollout.py", 274, 'ir.Turn("human"', "a human turn carrying the provider item id"),
-    ("loaders.py", "codex_rollout.py", 283, 'ir.Turn("assistant"', "the assistant turn opened with the first id"),
-    ("loaders.py", "grok.py", 311, "def want", "grok never sets a turn uuid at all"),
-    ("loaders.py", "codex_rollout.py", 96, "convenience alias of the node id", "thread.id is present by construction"),
-    ("loaders.py", "codex_rollout.py", 103, "def thread_id", "the alias property itself"),
-
+    (
+        "loaders.py",
+        "corpus.py",
+        377,
+        "def add_conversation",
+        "the re-index that replaced the early-return",
+    ),
+    (
+        "loaders.py",
+        "dedup.py",
+        38,
+        "UNIDENTIFIED COPIES",
+        "CF-18: the blank-id rule, re-pointed at the block that SURVIVED cf371fe",
+    ),
+    ("loaders.py", "codex_rollout.py", 323, "tid = _s(ms.get(", "how a Codex thread id is derived"),
+    (
+        "loaders.py",
+        "codex_rollout.py",
+        302,
+        'ir.Turn("human"',
+        "a human turn carrying the provider item id",
+    ),
+    (
+        "loaders.py",
+        "codex_rollout.py",
+        310,
+        'ir.Turn("assistant"',
+        "the assistant turn opened with the first id",
+    ),
+    ("loaders.py", "grok.py", 316, "def want", "grok never sets a turn uuid at all"),
+    (
+        "loaders.py",
+        "codex_rollout.py",
+        96,
+        "convenience alias of the node id",
+        "thread.id is present by construction",
+    ),
+    ("loaders.py", "codex_rollout.py", 104, "def thread_id", "the alias property itself"),
     # ----------------------------------------------------------------------- corpus.py (11)
     # `corpus.py` documents WHO cites it, so half of these are BACK-references — a citation
     # pointing at another file's citation. They rot in both directions at once and nothing
     # was watching them: `sidecar.py:737,742` was stale at BOTH sites when this was added.
-    ("corpus.py", "sidecar.py", 856, "check_same_thread=True (corpus.py:303)", "a back-ref: who cites corpus by line"),
-    ("corpus.py", "sidecar.py", 861, "WAL (corpus.py:292)", "the other sidecar back-ref"),
-    ("corpus.py", "discover.py", 285, "# corpus.py:179,197", "discover's schema citation"),
-    ("corpus.py", "claude_code.py", 78, "`corpus.py:347` (`add_conversation`)", "the adapter's add_conversation citation"),
-    ("corpus.py", "loaders.py", 498, "(corpus.py:347-360)", "loaders' re-index citation"),
-    ("corpus.py", "corpus.py", 288, "`conversation_rollouts` appears", "why a new TABLE is a no-op and a COLUMN is not"),
-    ("corpus.py", "corpus.py", 292, 'wal = "PRAGMA journal_mode=WAL"', "the WAL pragma whose line others cite"),
-    ("corpus.py", "corpus.py", 303, "conn = sqlite3.connect(path)", "the connect whose line others cite"),
-    ("corpus.py", "corpus.py", 347, "def add_conversation", "the function whose line others cite"),
-    ("corpus.py", "claude_code.py", 698, '"model_id": self.model_id', "one of the two model_id producers"),
-    ("corpus.py", "grok.py", 556, '"model_id": _s(summary.get("current_model_id"))', "the other model_id producer"),
-
+    (
+        "corpus.py",
+        "sidecar.py",
+        881,
+        "check_same_thread=True (corpus.py:328)",
+        "a back-ref: who cites corpus by line",
+    ),
+    ("corpus.py", "sidecar.py", 886, "WAL (corpus.py:317)", "the other sidecar back-ref"),
+    ("corpus.py", "discover.py", 332, "# corpus.py:204,222", "discover's schema citation"),
+    (
+        "corpus.py",
+        "claude_code.py",
+        78,
+        "`corpus.py:377` (`add_conversation`)",
+        "the adapter's add_conversation citation",
+    ),
+    ("corpus.py", "loaders.py", 535, "(corpus.py:377-390)", "loaders' re-index citation"),
+    (
+        "corpus.py",
+        "corpus.py",
+        313,
+        "`conversation_rollouts` appears",
+        "why a new TABLE is a no-op and a COLUMN is not",
+    ),
+    (
+        "corpus.py",
+        "corpus.py",
+        317,
+        'wal = "PRAGMA journal_mode=WAL"',
+        "the WAL pragma whose line others cite",
+    ),
+    (
+        "corpus.py",
+        "corpus.py",
+        328,
+        "conn = sqlite3.connect(path)",
+        "the connect whose line others cite",
+    ),
+    ("corpus.py", "corpus.py", 377, "def add_conversation", "the function whose line others cite"),
+    (
+        "corpus.py",
+        "claude_code.py",
+        738,
+        '"model_id": self.model_id',
+        "one of the two model_id producers",
+    ),
+    (
+        "corpus.py",
+        "grok.py",
+        596,
+        '"model_id": _s(summary.get("current_model_id"))',
+        "the other model_id producer",
+    ),
     # ------------------------------------------------------------------------ grok.py (3)
-    ("grok.py", "codex_rollout.py", 156, 'ir.Block("thinking"', "what codex does with a reasoning summary"),
-    ("grok.py", "render_html.py", 148, 'if b.type == "thinking"', "a thinking block renders in a collapsed <details>"),
-    ("grok.py", "sidecar.py", 1889, '"provider": meta.adapter', "the adapter label surfaced as `provider`"),
+    (
+        "grok.py",
+        "codex_rollout.py",
+        159,
+        'ir.Block("thinking"',
+        "what codex does with a reasoning summary",
+    ),
+    (
+        "grok.py",
+        "render_html.py",
+        169,
+        'if b.type == "thinking"',
+        "a thinking block renders in a collapsed <details>",
+    ),
+    (
+        "grok.py",
+        "sidecar.py",
+        1978,
+        '"provider": meta.adapter',
+        "the adapter label surfaced as `provider`",
+    ),
 ]
 
 #: Secondary anchors in the engine that belong to a NON-`.py` primary written on an EARLIER
@@ -636,7 +1494,10 @@ PY_ORPHAN_SECONDARIES = {
 #: waiver that cannot expire is how a defect becomes permanent.
 PY_KNOWN_BROKEN = [
     (
-        "loaders.py", "claude_code.py", 263, "uuid",
+        "loaders.py",
+        "claude_code.py",
+        263,
+        "uuid",
         "ANCHOR-DRIFTED. Cited from loaders.py:409 for the two adapters agreeing on the SHAPE "
         "of a turn `uuid` vs `rollout_path`; :263-277 is now the `_int`/`_bump`/`_first_line` "
         "counter helpers, which say nothing about either. Fixing it means editing loaders.py.",
@@ -689,6 +1550,7 @@ def _engine_lines(name):
 
 # ----------------------------------------------------------------- the detector's own control
 
+
 def test_the_scraper_tells_presence_from_absence():
     """The both-states control: the scraper must FIRE on a real citation and stay SILENT on
     the spellings that look like one. Extended with the new engine files, because a control
@@ -700,21 +1562,29 @@ def test_the_scraper_tells_presence_from_absence():
     # THE TRAP: this filename ENDS IN `maintenance.py` but is a different file. A naive
     # `\bmaintenance\.py:(\d+)` graded eight test-file citations against the engine.
     assert _citations("(`tests/test_sidecar_maintenance.py:194-206`)")[0] == [
-        ("test_sidecar_maintenance.py", 194)]
+        ("test_sidecar_maintenance.py", 194)
+    ]
     # Same trap, one directory deeper, and for a file whose basename is not a suffix of another.
     assert _citations("(`llm_anthology/adapters/codex_rollout.py:357-359`)")[0] == [
-        ("codex_rollout.py", 357)]
+        ("codex_rollout.py", 357)
+    ]
     # ...and the windows spelling, since these citations are authored on this box.
     assert _citations(r"(`llm_anthology\sidecar.py:995`)")[0] == [("sidecar.py", 995)]
 
     # A secondary is charged to the NEAREST primary on its line, in either direction.
     assert _citations("(`maintenance.py:645` ahead of `:669`)")[0] == [
-        ("maintenance.py", 669), ("maintenance.py", 645)]
+        ("maintenance.py", 669),
+        ("maintenance.py", 645),
+    ]
     assert _citations("schema at `:823`). ties (`maintenance.py:870`).")[0] == [
-        ("maintenance.py", 823), ("maintenance.py", 870)]
+        ("maintenance.py", 823),
+        ("maintenance.py", 870),
+    ]
     # ...so a secondary beside `metadata.py` is NOT charged to a file named earlier elsewhere.
     assert _citations("(`metadata.py:243`, `:456`)")[0] == [
-        ("metadata.py", 456), ("metadata.py", 243)]
+        ("metadata.py", 456),
+        ("metadata.py", 243),
+    ]
 
     # Both failure shapes must be REPORTED, not swallowed.
     assert "no `<file>.py:<line>` citation on the SAME line" in _citations("stray `:785`")[1][0]
@@ -751,6 +1621,7 @@ def test_the_scrape_finds_citations_at_all():
 
 
 # ------------------------------------------------------------------------------- the pin
+
 
 def test_every_pinned_citation_lands_on_its_construct():
     """Each cited engine line must still contain a token from the construct it is cited for."""
@@ -828,8 +1699,25 @@ _CITATION_SHAPED = re.compile(r"\b([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+):(\d+)")
 
 #: The suffixes `_PRIMARY` can actually resolve. Anything else ending a citation-shaped
 #: token is a spelling the scraper will silently skip.
-_READABLE_SUFFIXES = ("py", "ts", "rs", "json", "html", "md", "toml", "jsonl", "mjs", "yml",
-                      "yaml", "ps1", "sh", "lock", "cfg", "ini", "txt")
+_READABLE_SUFFIXES = (
+    "py",
+    "ts",
+    "rs",
+    "json",
+    "html",
+    "md",
+    "toml",
+    "jsonl",
+    "mjs",
+    "yml",
+    "yaml",
+    "ps1",
+    "sh",
+    "lock",
+    "cfg",
+    "ini",
+    "txt",
+)
 
 
 def test_no_citation_uses_a_shape_the_scraper_cannot_SEE():
@@ -858,11 +1746,12 @@ def test_no_citation_uses_a_shape_the_scraper_cannot_SEE():
             for m in _CITATION_SHAPED.finditer(line):
                 dotted = m.group(1)
                 if dotted.rsplit(".", 1)[-1].lower() in _READABLE_SUFFIXES:
-                    continue                      # a real filename — the scraper reads it
+                    continue  # a real filename — the scraper reads it
                 offenders.append(
                     "%s:%d cites %r, which `_PRIMARY` cannot parse — so nothing verifies "
                     "it. Re-spell it as <file>.py:<line> (name the function in prose if "
-                    "that matters) and add a PINS row." % (name, lineno, m.group(0)))
+                    "that matters) and add a PINS row." % (name, lineno, m.group(0))
+                )
     assert not offenders, "citation shapes the scraper cannot see:\n  " + "\n  ".join(offenders)
 
 
@@ -875,13 +1764,20 @@ def test_the_unreadable_shape_detector_can_actually_fire():
     `claude_code.py`, and the two false-positive shapes that must NOT trip it: an IP:port
     and a dotted version, both of which appear in these files for real.
     """
+
     def unreadable(text):
-        return [m.group(0) for m in _CITATION_SHAPED.finditer(text)
-                if m.group(1).rsplit(".", 1)[-1].lower() not in _READABLE_SUFFIXES]
+        return [
+            m.group(0)
+            for m in _CITATION_SHAPED.finditer(text)
+            if m.group(1).rsplit(".", 1)[-1].lower() not in _READABLE_SUFFIXES
+        ]
 
     assert unreadable("`corpus.add_conversation:278-281` treats a duplicate") == [
-        "corpus.add_conversation:278"], "the shape that actually shipped must be caught"
-    assert unreadable("outbound SynSent to 192.0.2.1:445 (SMB)") == [], "an IP:port is not a citation"
+        "corpus.add_conversation:278"
+    ], "the shape that actually shipped must be caught"
+    assert unreadable("outbound SynSent to 192.0.2.1:445 (SMB)") == [], (
+        "an IP:port is not a citation"
+    )
     assert unreadable("the agent-mail server on 127.0.0.1:8812") == []
     assert unreadable("see corpus.py:347 and mock.ts:1241") == [], "real filenames are readable"
 
@@ -908,8 +1804,9 @@ def test_no_citation_is_split_across_a_line_break():
     before it has cost anything rather than after.
     """
     offenders = []
-    paths = [p for p in sorted((REPO / "llm_anthology").rglob("*.py"))
-             if "__pycache__" not in p.parts]
+    paths = [
+        p for p in sorted((REPO / "llm_anthology").rglob("*.py")) if "__pycache__" not in p.parts
+    ]
     paths += [p for p in TS_FILES.values()]
     for path in paths:
         for label, lineno, joined in _wrapped_citations(_read(path)):
@@ -917,7 +1814,8 @@ def test_no_citation_is_split_across_a_line_break():
                 "%s:%d wraps a citation across the line break [%s]: %r — the scraper matches "
                 "per line, so nothing parses or verifies it. Re-flow the comment so the whole "
                 "`<file>.py:<line>` sits on ONE line."
-                % (path.relative_to(REPO).as_posix(), lineno, label, joined))
+                % (path.relative_to(REPO).as_posix(), lineno, label, joined)
+            )
     assert not offenders, "citations split across a line break:\n  " + "\n  ".join(offenders)
 
 
@@ -930,6 +1828,7 @@ def test_the_wrapped_citation_detector_can_actually_fire():
     reporting them. So this asserts the positive AND pins the exact near-misses that must
     stay silent.
     """
+
     def wraps(*lines):
         return [lab for lab, _n, _t in _wrapped_citations("\n".join(lines))]
 
@@ -937,7 +1836,9 @@ def test_the_wrapped_citation_detector_can_actually_fire():
     assert wraps("settled the same question in dedup.", "py:339-345 already") == ["file. / py:NNN"]
     assert wraps("see llm_anthology/corpus.py:", "347 for the re-index") == ["file.py: / NNN"]
     assert wraps("the rule lives in dedup", ".py:339 as stated") == ["file / .py:NNN"]
-    assert wraps("the producers at codex_rollout.py:343-", "347 both set it") == ["range NNN- / NNN"]
+    assert wraps("the producers at codex_rollout.py:343-", "347 both set it") == [
+        "range NNN- / NNN"
+    ]
     assert wraps("(`maintenance.py:645` ahead of `:", "669`)") == ["`: / NNN"]
 
     # STAYS SILENT — the eight phantom findings were all this shape: a sentence ending in a
@@ -997,7 +1898,8 @@ def test_every_engine_citation_is_pinned():
                     problems.append(
                         "%s: a SECOND orphan anchor `%s` — one waiver excuses one site, so "
                         "this one is unwaived. Give it a primary on its own line, or add a "
-                        "deliberate second entry." % (name, spelling))
+                        "deliberate second entry." % (name, spelling)
+                    )
                     continue
                 exercised.add(key)
                 continue
@@ -1054,8 +1956,7 @@ def test_the_known_broken_list_cannot_grow_unnoticed():
     assert not added, (
         "NEW known-broken waiver(s) not in PY_KNOWN_BROKEN_EXPECTED: %s. A broken anchor is "
         "not closed by waiving it. Fix it if you can; if you genuinely cannot, add it here "
-        "AND say in the row who owns the fix and what decision it is waiting on."
-        % ", ".join(added)
+        "AND say in the row who owns the fix and what decision it is waiting on." % ", ".join(added)
     )
     assert not removed, (
         "waiver(s) %s left PY_KNOWN_BROKEN but are still listed as expected. If the anchor "
@@ -1081,10 +1982,10 @@ def test_a_known_broken_anchor_is_still_broken():
         assert why.strip(), "%s -> %s:%d has no stated reason" % (src, target, cited)
         lines = _read(PY_TARGETS[target]).split("\n")
         if cited > len(lines):
-            continue                                    # still past EOF: still broken
+            continue  # still past EOF: still broken
         actual = lines[cited - 1]
         if token is not None and token not in actual:
-            continue                                    # still landing on the wrong thing
+            continue  # still landing on the wrong thing
         problems.append(
             "%s -> %s:%d now RESOLVES (%r). It was waived as broken because:\n      %s\n"
             "      Move it into PY_PINS with a real token, and delete this row."
@@ -1126,13 +2027,20 @@ def test_a_known_broken_anchor_is_still_broken():
 #: NOT an assertion that they are correct — several are known wrong (see above). It is a
 #: budget: adding one is a deliberate act, and fixing one means lowering a number.
 RS_CITATION_INVENTORY = {
-    "cockpit/src/graph/forest.test.ts": 1, "cockpit/src/graph/forest.ts": 2,
-    "cockpit/src/ipc/index.test.ts": 1, "cockpit/src/ipc/mock.test.ts": 3,
-    "cockpit/src/ipc/mock.ts": 2, "cockpit/src/ipc/real.test.ts": 7,
-    "cockpit/src/ipc/real.ts": 3, "cockpit/src/ipc/types.ts": 7,
-    "cockpit/src/ui/corpusBar.dom.test.ts": 1, "cockpit/src/ui/corpusBar.test.ts": 5,
-    "cockpit/src/ui/corpusBar.ts": 4, "cockpit/src/ui/discoveryPanel.test.ts": 1,
-    "cockpit/src/ui/discoveryPanel.ts": 1, "llm_anthology/sidecar.py": 1,
+    "cockpit/src/graph/forest.test.ts": 1,
+    "cockpit/src/graph/forest.ts": 2,
+    "cockpit/src/ipc/index.test.ts": 1,
+    "cockpit/src/ipc/mock.test.ts": 3,
+    "cockpit/src/ipc/mock.ts": 2,
+    "cockpit/src/ipc/real.test.ts": 7,
+    "cockpit/src/ipc/real.ts": 3,
+    "cockpit/src/ipc/types.ts": 7,
+    "cockpit/src/ui/corpusBar.dom.test.ts": 1,
+    "cockpit/src/ui/corpusBar.test.ts": 5,
+    "cockpit/src/ui/corpusBar.ts": 4,
+    "cockpit/src/ui/discoveryPanel.test.ts": 1,
+    "cockpit/src/ui/discoveryPanel.ts": 1,
+    "llm_anthology/sidecar.py": 1,
 }
 
 _RS_CITATION = re.compile(r"lib\.rs:(\d+)")
@@ -1154,20 +2062,23 @@ def _rs_citation_census():
 def test_no_new_lib_rs_citation_is_added_unwatched():
     """The inventory may SHRINK by a deliberate edit; it may not grow by accident."""
     actual = _rs_citation_census()
-    added = {f: n for f, n in actual.items()
-             if n > RS_CITATION_INVENTORY.get(f, 0)}
+    added = {f: n for f, n in actual.items() if n > RS_CITATION_INVENTORY.get(f, 0)}
     assert not added, (
         "new `lib.rs:<line>` citation(s) in %s. lib.rs is ~1982 lines and moving, and "
         "NOTHING re-anchors these — 5 of the existing 39 already land on a bare `}` or "
         "`///`. Pin the new one properly or do not add it: raise the count here only with "
-        "the anchor verified against the line it names." % sorted(added))
-    gone = {f: RS_CITATION_INVENTORY[f] for f, n in
-            ((f, actual.get(f, 0)) for f in RS_CITATION_INVENTORY)
-            if n < RS_CITATION_INVENTORY[f]}
+        "the anchor verified against the line it names." % sorted(added)
+    )
+    gone = {
+        f: RS_CITATION_INVENTORY[f]
+        for f, n in ((f, actual.get(f, 0)) for f in RS_CITATION_INVENTORY)
+        if n < RS_CITATION_INVENTORY[f]
+    }
     assert not gone, (
         "citation(s) removed from %s without lowering RS_CITATION_INVENTORY. A stale budget "
         "is the decoration hazard every other retirement leg here guards against — it would "
-        "silently re-admit the same number of unverified citations later." % sorted(gone))
+        "silently re-admit the same number of unverified citations later." % sorted(gone)
+    )
 
 
 def test_the_lib_rs_census_can_actually_see_a_citation():
@@ -1233,21 +2144,31 @@ def test_the_scraper_reads_both_secondary_spellings():
     every bare `, :347` would vanish from the pinned set with the suite still green.
     """
     # bare comma secondaries, as sidecar.py:548 writes them
-    rows, problems = _citations("(`codex_rollout.py:343, :347, :435`) every producer",
-                                engines=PY_TARGETS)
+    rows, problems = _citations(
+        "(`codex_rollout.py:343, :347, :435`) every producer", engines=PY_TARGETS
+    )
     assert problems == []
-    assert sorted(rows) == [("codex_rollout.py", 343), ("codex_rollout.py", 347),
-                            ("codex_rollout.py", 435)]
+    assert sorted(rows) == [
+        ("codex_rollout.py", 343),
+        ("codex_rollout.py", 347),
+        ("codex_rollout.py", 435),
+    ]
     # comma-list primaries, as discover.py writes them
     assert sorted(_citations("# corpus.py:179,197 — the index schema", engines=PY_TARGETS)[0]) == [
-        ("corpus.py", 179), ("corpus.py", 197)]
+        ("corpus.py", 179),
+        ("corpus.py", 197),
+    ]
     assert sorted(_citations("# adapters/gemini.py:1,8 — Takeout", engines=PY_TARGETS)[0]) == [
-        ("gemini.py", 1), ("gemini.py", 8)]
+        ("gemini.py", 1),
+        ("gemini.py", 8),
+    ]
     # a lone range still reports only its opening line, as before
     assert _citations("(`loaders.py:64-66`)", engines=PY_TARGETS)[0] == [("loaders.py", 64)]
     # and the backticked spelling still works, so the IPC rows are unaffected
     assert _citations("(`maintenance.py:645` ahead of `:669`)")[0] == [
-        ("maintenance.py", 669), ("maintenance.py", 645)]
+        ("maintenance.py", 669),
+        ("maintenance.py", 645),
+    ]
 
 
 def test_the_recorded_false_premises_are_not_re_asserted():
@@ -1272,18 +2193,23 @@ def test_the_recorded_false_premises_are_not_re_asserted():
     strings below too — so an unverifiable `cli.py:<line>` here would be the exact rot the
     module exists to stop. A construct name survives the edit; a line number does not.)
     """
-    assert FALSE_PREMISES_FIXED, "the record of what was corrected may not be emptied"
-    progress_is_forwarded = ("load_corpus takes `progress` (loaders.py:319) and forwards it "
-                             "(loaders.py:428)")
+    assert len(FALSE_PREMISES_FIXED) > 0, "the record of what was corrected may not be emptied"
+    progress_is_forwarded = (
+        "load_corpus takes `progress` (loaders.py:319) and forwards it (loaders.py:428)"
+    )
     dead = [
-        (REPO / "llm_anthology" / "cli.py",
-         "exposes no progress hook", progress_is_forwarded),
-        (REPO / "llm_anthology" / "sidecar.py",
-         "loaders.load_corpus does not forward one", progress_is_forwarded),
-        (REPO / "llm_anthology" / "discover.py",
-         "# reads that shape yet, so this finding",
-         "adapters/claude_code.py reads the Claude Code shape and sidecar.py:246 wires it "
-         "into _REPARSERS"),
+        (REPO / "llm_anthology" / "cli.py", "exposes no progress hook", progress_is_forwarded),
+        (
+            REPO / "llm_anthology" / "sidecar.py",
+            "loaders.load_corpus does not forward one",
+            progress_is_forwarded,
+        ),
+        (
+            REPO / "llm_anthology" / "discover.py",
+            "# reads that shape yet, so this finding",
+            "adapters/claude_code.py reads the Claude Code shape and sidecar.py:246 wires it "
+            "into _REPARSERS",
+        ),
         # The former QUARANTINE row, resolved on BOTH sides. Pinned as dead phrasings so the
         # resolution cannot be reverted by a later sweep that only reads one of the two.
         # SCOPED TO corpus.build ON PURPOSE, and the scoping is the whole lesson. A bare
@@ -1293,15 +2219,19 @@ def test_the_recorded_false_premises_are_not_re_asserted():
         # false premise was born: corpus.build's docstring copied dedup.scan's rule onto a
         # param it reads with `_opt_str`. So the dead phrasing carries the clause that
         # names dedup.scan, and dedup.scan's own correct sentence stays untouched.
-        (REPO / "llm_anthology" / "sidecar.py",
-         "is REQUIRED and never defaulted, exactly as ``dedup.scan``",
-         "that is corpus.build's docstring, where codex_home is read with _opt_str "
-         "(sidecar.py:876) and the only refusal is NEITHER root named (sidecar.py:858-861). "
-         "It is OPTIONAL there — never DEFAULTED, which is the true half worth keeping. "
-         "dedup.scan is the method that genuinely requires it (_req_str, sidecar.py:1436)"),
-        (TS_FILES["types.ts"],
-         "BOTH are required and neither is defaulted",
-         "all three corpus.build params are read with _opt_str (sidecar.py:856-876)"),
+        (
+            REPO / "llm_anthology" / "sidecar.py",
+            "is REQUIRED and never defaulted, exactly as ``dedup.scan``",
+            "that is corpus.build's docstring, where codex_home is read with _opt_str "
+            "(sidecar.py:876) and the only refusal is NEITHER root named (sidecar.py:858-861). "
+            "It is OPTIONAL there — never DEFAULTED, which is the true half worth keeping. "
+            "dedup.scan is the method that genuinely requires it (_req_str, sidecar.py:1436)",
+        ),
+        (
+            TS_FILES["types.ts"],
+            "BOTH are required and neither is defaulted",
+            "all three corpus.build params are read with _opt_str (sidecar.py:856-876)",
+        ),
     ]
     problems = []
     for path, phrase, why in dead:

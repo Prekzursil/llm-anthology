@@ -72,8 +72,15 @@ export function moreParentId(id: string): string {
 
 /** A bare synthesized node for an id that appears only on an edge — as `aggregate.ts` does. */
 function bareNode(id: string): ThreadNode {
-  return { id, title: "", provider: "", model_provider: "", created_at_ms: null,
-           child_count: 0, depth: 0 };
+  return {
+    id,
+    title: "",
+    provider: "",
+    model_provider: "",
+    created_at_ms: null,
+    child_count: 0,
+    depth: 0,
+  };
 }
 
 /**
@@ -190,9 +197,7 @@ export function capFanOut(
 
   // A carried placeholder is re-emitted below with a merged count, so it must not also
   // survive as an input node — that is what produced two nodes sharing one id.
-  const nodes = allIds
-    .filter((id) => visible.has(id) && !isMoreId(id))
-    .map((id) => index.get(id)!);
+  const nodes = allIds.filter((id) => visible.has(id) && !isMoreId(id)).map((id) => index.get(id)!);
   const edges = keptEdges.filter(
     (e) => visible.has(e.parent) && visible.has(e.child) && !isMoreId(e.child),
   );

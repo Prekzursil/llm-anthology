@@ -10,11 +10,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import {
-  BITMAP_SHA256,
-  FLAGGED_RANGES,
-  UNIDATA_VERSION,
-} from "../src/generated/unicode-data.js";
+import { BITMAP_SHA256, FLAGGED_RANGES, UNIDATA_VERSION } from "../src/generated/unicode-data.js";
 import {
   badgeInvisibles,
   isLocalMediaPath,
@@ -197,7 +193,9 @@ describe("variation-selector smuggling", () => {
     // VS1-16 (U+FE00-FE0F) + VS17-256 (U+E0100-E01EF) are category Mn, so NO
     // category test catches them - a 256-value channel carrying arbitrary bytes.
     const payload = [...Buffer.from("SECRET")]
-      .map((b) => (b < 16 ? String.fromCodePoint(0xfe00 + b) : String.fromCodePoint(0xe0100 + b - 16)))
+      .map((b) =>
+        b < 16 ? String.fromCodePoint(0xfe00 + b) : String.fromCodePoint(0xe0100 + b - 16),
+      )
       .join("");
     const text = "ordinary sentence" + payload;
     expect((neutralizeHtml(text).match(/cp-badge/g) ?? []).length).toBeGreaterThanOrEqual(6);

@@ -71,8 +71,23 @@ describe("parseFeatureFlag — default OFF", () => {
   });
 
   it("reads EVERY other value as OFF, including the plausible negatives", () => {
-    for (const raw of ["", " ", "0", "false", "off", "no", "null", "undefined", "2", "enabled",
-      "{}", "[object Object]", "\u0000", "tru", "1 1"]) {
+    for (const raw of [
+      "",
+      " ",
+      "0",
+      "false",
+      "off",
+      "no",
+      "null",
+      "undefined",
+      "2",
+      "enabled",
+      "{}",
+      "[object Object]",
+      "\u0000",
+      "tru",
+      "1 1",
+    ]) {
       expect(parseFeatureFlag(raw)).toBe(false);
     }
   });
@@ -113,8 +128,9 @@ describe("makeFeatureFlag", () => {
     // A hardened webview with site data disabled throws on access. The corpus store treats
     // that as "nothing remembered"; here it has to fail CLOSED, which is the same direction
     // but for a much sharper reason.
-    expect(makeFeatureFlag(fakeStorage({ [MAINTENANCE_FLAG_KEY]: "1" }, { read: true }))
-      .enabled()).toBe(false);
+    expect(
+      makeFeatureFlag(fakeStorage({ [MAINTENANCE_FLAG_KEY]: "1" }, { read: true })).enabled(),
+    ).toBe(false);
   });
 
   it("survives a WRITE that throws, leaving the flag as it was", () => {
@@ -153,7 +169,7 @@ describe("localFeatureFlag", () => {
     // A DIFFERENT failure from a storage whose METHODS throw, and the reason the probe itself
     // is wrapped rather than only the calls: with site data disabled some webviews throw on the
     // property READ, so there is never an object to call `getItem` on. Same shape as
-    // `corpusBar.test.ts:248-271`, and here it is the difference between failing closed and
+    // `corpusBar.test.ts:239-262`, and here it is the difference between failing closed and
     // taking the whole top bar down with a `SecurityError` out of a constructor.
     const before = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     Object.defineProperty(globalThis, "localStorage", {

@@ -35,7 +35,9 @@ Counts are ENUMERATED AT RUNTIME (see `counts`); nothing here hardcodes 895/1831
 PRIVACY: this adapter reads counts and shapes and copies opaque metadata into the IR;
 it never inspects or emits conversation content. Tests use synthetic fixtures only.
 """
+
 import dataclasses
+from typing import Any
 import os
 import sqlite3
 import time
@@ -75,12 +77,14 @@ _ORDER_PREFERENCE = ("updated_at_ms", "created_at_ms", "updated_at", "created_at
 _EDGE_FIELDS = ("parent_thread_id", "child_thread_id", "status")
 
 
-def _defaults(cls):
+def _defaults(cls) -> dict[str, Any]:
     """Field-name -> default value for a dataclass, using '' for a field that has no
     default (only ThreadMeta.id / SpawnEdge parent+child). A NULL or absent column
     collapses to this, so absent-or-NULL yields one consistent, contract-valid value."""
-    return {f.name: (f.default if f.default is not dataclasses.MISSING else "")
-            for f in dataclasses.fields(cls)}
+    return {
+        f.name: (f.default if f.default is not dataclasses.MISSING else "")
+        for f in dataclasses.fields(cls)
+    }
 
 
 _THREAD_DEFAULTS = _defaults(corpus.ThreadMeta)
@@ -88,6 +92,7 @@ _EDGE_DEFAULTS = _defaults(corpus.SpawnEdge)
 
 
 # --------------------------------------------------------------- public surface
+
 
 def load_corpus(codex_home=None):
     """Read $CODEX_HOME/state_5.sqlite into a fresh Corpus thread graph.
@@ -97,8 +102,7 @@ def load_corpus(codex_home=None):
     SKIPPED (empty Corpus), as is a missing/unopenable DB — the build never crashes.
     """
     path = _db_path(codex_home)
-    return _read_with_retry(lambda: _connect(path),
-                            _RETRIES, _RETRY_DELAY, time.sleep)
+    return _read_with_retry(lambda: _connect(path), _RETRIES, _RETRY_DELAY, time.sleep)
 
 
 def read_corpus(conn, into=None):
@@ -118,11 +122,11 @@ def read_corpus(conn, into=None):
 def counts(conn):
     """Runtime row counts for the graph tables — never a hardcoded constant. A table
     absent from a leaner schema counts as 0 rather than raising."""
-    return {"threads": _count(conn, "threads"),
-            "edges": _count(conn, "thread_spawn_edges")}
+    return {"threads": _count(conn, "threads"), "edges": _count(conn, "thread_spawn_edges")}
 
 
 # ------------------------------------------------------------- db-path + connect
+
 
 def _db_path(codex_home=None):
     """The state_5.sqlite path: an explicit codex_home, else $CODEX_HOME, else ~/.codex."""
@@ -175,6 +179,7 @@ def _read_with_retry(open_conn, retries, retry_delay, sleep):
 
 # ------------------------------------------------------------- schema-tolerant read
 
+
 def _table_columns(conn, table):
     """The column names present in `table`, or [] if the table is absent. `table` is
     only ever a hardcoded literal ('threads' / 'thread_spawn_edges'), never user input,
@@ -182,40 +187,43 @@ def _table_columns(conn, table):
     return [row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)]
 
 
-def _row_kwargs(fields, row, defaults):
+def _row_kwargs(fields, row, defaults) -> dict[str, Any]:
     """Zip selected values onto their target dataclass field names, collapsing a NULL
     to that field's default so absent-or-NULL yields one consistent value."""
-    return {field: (defaults[field] if value is None else value)
-            for field, value in zip(fields, row)}
+    return {
+        field: (defaults[field] if value is None else value) for field, value in zip(fields, row)
+    }
 
 
 def _read_threads(conn):
     cols = _table_columns(conn, "threads")
     present = [c for c in _THREAD_FIELD_MAP if c in cols]
-    if "id" not in present:                 # nothing to key a node by -> no threads
+    if "id" not in present:  # nothing to key a node by -> no threads
         return []
     fields = [_THREAD_FIELD_MAP[c] for c in present]
     order_col = next((c for c in _ORDER_PREFERENCE if c in cols), None)
     sql = "SELECT %s FROM threads" % ",".join(present)
     if order_col:
-        sql += " ORDER BY %s DESC, id" % order_col   # most-recent-first, id tie-break
+        sql += " ORDER BY %s DESC, id" % order_col  # most-recent-first, id tie-break
     else:
-        sql += " ORDER BY id"                        # no timestamp -> deterministic id
-    return [corpus.ThreadMeta(**_row_kwargs(fields, row, _THREAD_DEFAULTS))
-            for row in conn.execute(sql)]
+        sql += " ORDER BY id"  # no timestamp -> deterministic id
+    return [
+        corpus.ThreadMeta(**_row_kwargs(fields, row, _THREAD_DEFAULTS)) for row in conn.execute(sql)
+    ]
 
 
 def _read_edges(conn):
     cols = _table_columns(conn, "thread_spawn_edges")
     present = [c for c in _EDGE_FIELDS if c in cols]
     if "parent_thread_id" not in present or "child_thread_id" not in present:
-        return []                            # can't form a directed edge -> no edges
+        return []  # can't form a directed edge -> no edges
     sql = "SELECT %s FROM thread_spawn_edges" % ",".join(present)
-    return [corpus.SpawnEdge(**_row_kwargs(present, row, _EDGE_DEFAULTS))
-            for row in conn.execute(sql)]
+    return [
+        corpus.SpawnEdge(**_row_kwargs(present, row, _EDGE_DEFAULTS)) for row in conn.execute(sql)
+    ]
 
 
 def _count(conn, table):
-    if not _table_columns(conn, table):      # absent table -> 0, never a raise
+    if not _table_columns(conn, table):  # absent table -> 0, never a raise
         return 0
     return conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]

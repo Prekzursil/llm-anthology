@@ -31,6 +31,7 @@ is ordered by thread id and a rollup is diffable/reproducible.
 PRIVACY: this module reads counts and graph shape only; it never touches conversation
 content. Tests use synthetic fixtures exclusively.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -43,6 +44,7 @@ from llm_anthology.corpus import Corpus
 class RollupMetrics:
     """Aggregated metrics for one node's subtree. Field order matches the cockpit
     contract; every value is a non-negative int. `self_count` is always 1."""
+
     self_tokens: int
     subtree_tokens: int
     self_count: int
@@ -82,7 +84,7 @@ def _walk(corpus: Corpus, root: str):
     queue = deque([(root, 0)])
     while queue:
         tid, depth = queue.popleft()
-        if tid in seen:            # a back-edge / already-reached node: skip
+        if tid in seen:  # a back-edge / already-reached node: skip
             continue
         seen.add(tid)
         subtree_tokens += _tokens_of(corpus, tid)

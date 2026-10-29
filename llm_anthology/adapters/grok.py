@@ -82,8 +82,8 @@ WHAT IS RENDERED, AND WHY (trap 1, stated explicitly because it is a judgement c
 
   user_message_chunk / agent_message_chunk -> `text` blocks. The conversation.
   agent_thought_chunk                      -> `thinking` blocks, KEPT. This mirrors
-      what `codex_rollout.py:156` does with Codex reasoning summaries, and
-      `render_html.py:148` renders a thinking block inside a collapsed <details>, so
+      what `codex_rollout.py:159` does with Codex reasoning summaries, and
+      `render_html.py:169` renders a thinking block inside a collapsed <details>, so
       278 thought chunks cost one disclosure triangle rather than burying the prose.
       Dropping them would discard real model output the renderer already handles.
   tool_call / tool_call_update             -> ONE `tool_use` block per distinct
@@ -102,6 +102,7 @@ WHAT IS RENDERED, AND WHY (trap 1, stated explicitly because it is a judgement c
 PRIVACY: tests use synthetic fixtures only; no real conversation content is committed,
 and nothing in this module reads outside the session root it is given.
 """
+
 import glob
 import json
 import os
@@ -113,7 +114,7 @@ from urllib.parse import unquote
 from llm_anthology import corpus, ir
 
 #: The ADAPTER label — which tool produced the transcript. It goes on
-#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1889` surfaces it to
+#: `Conversation.provider` and on the spawn-graph node; `sidecar.py:1978` surfaces it to
 #: the UI as `provider`. `ThreadMeta` has no model field, so the model id travels in
 #: `Conversation.meta['model_id']`.
 #:
@@ -121,7 +122,7 @@ from llm_anthology import corpus, ir
 #: :data:`GROK_MODEL_VENDOR`. (The comment here previously defended putting this label in
 #: that field on the grounds that the graph node surfaced `model_provider` as the thread's
 #: provider. That WAS true when it was written — `git show a361759:llm_anthology/sidecar.py`
-#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1889`
+#: line 1390 reads `"provider": meta.model_provider` — and is no longer: `sidecar.py:1978`
 #: surfaces `provider = meta.adapter` and passes `model_provider` separately. That old
 #: anchor is deliberately spelled as a GIT REVISION and not as a live `<file>:<line>`,
 #: because line 1390 of today's sidecar is unrelated code in `_metadata_search`: a reader
@@ -205,8 +206,9 @@ class GrokDoc:
     """One parsed session directory: the transcript, the thread-graph node, and any
     spawn edges its `subagents/` directory declared. `thread_id` is a convenience
     alias of the node id, matching `codex_rollout.RolloutDoc`."""
-    conversation: object
-    thread: object
+
+    conversation: ir.Conversation
+    thread: corpus.ThreadMeta
     edges: list = field(default_factory=list)
     session_dir: str = ""
 
@@ -216,6 +218,7 @@ class GrokDoc:
 
 
 # ------------------------------------------------------------------- time / id
+
 
 def _iso_to_ms(s):
     """An ISO-8601 timestamp -> epoch milliseconds, or None if absent/unparseable.
@@ -263,6 +266,7 @@ def _first_line(text, limit):
 
 # ------------------------------------------------------------- content -> text
 
+
 def _text_of(content, depth=0):
     """The visible prose inside an ACP `content` value.
 
@@ -289,6 +293,7 @@ def _text_of(content, depth=0):
 
 # ------------------------------------------------------------ the turn machine
 
+
 class _Turns:
     """Accumulates events into turns, coalescing streamed chunks (trap 2).
 
@@ -306,7 +311,7 @@ class _Turns:
     def __init__(self):
         self.turns = []
         self.cur = None
-        self.pending = None          # (sessionUpdate, [fragments]) or None
+        self.pending = None  # (sessionUpdate, [fragments]) or None
 
     def want(self, role, ts=""):
         """Ensure an open turn for `role`, closing one of the other role first."""
@@ -337,12 +342,18 @@ class _Turns:
         self.pending = None
         text = CHUNK_JOIN.join(parts)
         if text.strip():
-            self.cur.blocks.append(ir.Block(_CHUNK_ROLE[kind][1], text=text))
+            self._open().blocks.append(ir.Block(_CHUNK_ROLE[kind][1], text=text))
 
     def add(self, block):
         """Append a non-chunk block, closing any open chunk run before it."""
         self.flush()
-        self.cur.blocks.append(block)
+        self._open().blocks.append(block)
+
+    def _open(self):
+        """The open turn. Every block arrives after `want()` opened one."""
+        cur = self.cur
+        assert cur is not None, "a block arrived with no open turn"
+        return cur
 
     def close(self):
         """Close the open turn, keeping it only if it carries something."""
@@ -357,6 +368,7 @@ class _Turns:
 
 
 # ---------------------------------------------------------------- tool traffic
+
 
 def _tool_output(update):
     """The text a tool event reports back, from `rawOutput` and/or `content`.
@@ -401,8 +413,11 @@ def _apply_tool(turns, tools, update, anon):
 
     entry = tools.get(key)
     if entry is None:
-        use = ir.Block("tool_use", text="", data={
-            "name": "tool", "input": None, "call_id": cid, "kind": "", "status": ""})
+        use = ir.Block(
+            "tool_use",
+            text="",
+            data={"name": "tool", "input": None, "call_id": cid, "kind": "", "status": ""},
+        )
         turns.add(use)
         entry = tools[key] = {"use": use, "result": None}
 
@@ -424,9 +439,11 @@ def _apply_tool(turns, tools, update, anon):
     if output:
         result = entry["result"]
         if result is None:
-            result = entry["result"] = ir.Block("tool_result", text="", data={
-                "name": use.data["name"], "call_id": cid, "content": "",
-                "is_error": False})
+            result = entry["result"] = ir.Block(
+                "tool_result",
+                text="",
+                data={"name": use.data["name"], "call_id": cid, "content": "", "is_error": False},
+            )
             turns.add(result)
         result.data["content"] = output
         # ACP's status vocabulary is pending|in_progress|completed|failed. `status` is
@@ -438,6 +455,7 @@ def _apply_tool(turns, tools, update, anon):
 
 
 # ------------------------------------------------------------- document builder
+
 
 def build_document(summary, records, subagents=(), session_dir=""):
     """A `summary.json` dict plus already-parsed `updates.jsonl` records -> GrokDoc.
@@ -486,8 +504,17 @@ def build_document(summary, records, subagents=(), session_dir=""):
             turns.close()
         # anything else is counted above and deliberately not rendered (trap 1)
 
-    return _assemble(summary, turns.done(), counts, len(tools), subagents,
-                     first_ts, last_ts, session_dir, session_hint)
+    return _assemble(
+        summary,
+        turns.done(),
+        counts,
+        len(tools),
+        subagents,
+        first_ts,
+        last_ts,
+        session_dir,
+        session_hint,
+    )
 
 
 def _first_user_text(turns):
@@ -519,8 +546,9 @@ def _edges(subagents, session_id):
     return edges
 
 
-def _assemble(summary, turns, counts, tool_calls, subagents, first_ts, last_ts,
-              session_dir, session_hint):
+def _assemble(
+    summary, turns, counts, tool_calls, subagents, first_ts, last_ts, session_dir, session_hint
+):
     """Fold the streamed state into the Conversation, ThreadMeta and spawn edges."""
     info = summary.get("info")
     info = info if isinstance(info, dict) else {}
@@ -528,46 +556,63 @@ def _assemble(summary, turns, counts, tool_calls, subagents, first_ts, last_ts,
     sid = _s(info.get("id")) or session_hint or _dir_id(session_dir)
     cwd = _s(info.get("cwd")) or _decode_cwd(session_dir)
     first_user = _first_user_text(turns)
-    title = (_s(summary.get("generated_title")) or _first_line(first_user, 80)
-             or "(untitled)")
+    title = _s(summary.get("generated_title")) or _first_line(first_user, 80) or "(untitled)"
     # The summary's own bookkeeping wins over the event stream: it covers activity a
     # resumed session may not have re-logged, and the stream is only a lower bound.
     created = _s(summary.get("created_at")) or first_ts
-    updated = (_s(summary.get("last_active_at")) or _s(summary.get("updated_at"))
-               or last_ts)
+    updated = _s(summary.get("last_active_at")) or _s(summary.get("updated_at")) or last_ts
 
     thread = corpus.ThreadMeta(
-        id=sid, title=title, model_provider=GROK_MODEL_VENDOR,
+        id=sid,
+        title=title,
+        model_provider=GROK_MODEL_VENDOR,
         # NO token count exists anywhere in the measured schema — num_messages and
         # num_chat_messages are MESSAGE counts. Deriving a token number from them
         # would be fabrication, so this stays 0 and the real counts travel in meta.
         tokens_used=0,
-        created_at_ms=_iso_to_ms(created), updated_at_ms=_iso_to_ms(updated),
-        git_branch="", cwd=cwd, agent_role=_s(summary.get("session_kind")),
-        agent_nickname=_s(summary.get("agent_name")), preview=first_user[:200],
+        created_at_ms=_iso_to_ms(created),
+        updated_at_ms=_iso_to_ms(updated),
+        git_branch="",
+        cwd=cwd,
+        agent_role=_s(summary.get("session_kind")),
+        agent_nickname=_s(summary.get("agent_name")),
+        preview=first_user[:200],
         # The unit on disk is a DIRECTORY, not one file, so that is what the UI's
         # "where did this come from" pointer names.
-        rollout_path=session_dir)
+        rollout_path=session_dir,
+    )
 
     conv = ir.Conversation(
-        id=sid, title=title, provider=GROK_PROVIDER, turns=turns,
-        created_at=created, updated_at=updated, account="",
-        meta={"session_dir": session_dir, "cwd": cwd,
-              "model_id": _s(summary.get("current_model_id")),
-              "agent_name": _s(summary.get("agent_name")),
-              "session_kind": _s(summary.get("session_kind")),
-              "reasoning_effort": _s(summary.get("reasoning_effort")),
-              "sandbox_profile": _s(summary.get("sandbox_profile")),
-              "reported_messages": _int(summary.get("num_messages")),
-              "reported_chat_messages": _int(summary.get("num_chat_messages")),
-              "event_counts": counts, "tool_call_count": tool_calls,
-              "subagent_count": sum(1 for m in subagents if isinstance(m, dict))})
+        id=sid,
+        title=title,
+        provider=GROK_PROVIDER,
+        turns=turns,
+        created_at=created,
+        updated_at=updated,
+        account="",
+        meta={
+            "session_dir": session_dir,
+            "cwd": cwd,
+            "model_id": _s(summary.get("current_model_id")),
+            "agent_name": _s(summary.get("agent_name")),
+            "session_kind": _s(summary.get("session_kind")),
+            "reasoning_effort": _s(summary.get("reasoning_effort")),
+            "sandbox_profile": _s(summary.get("sandbox_profile")),
+            "reported_messages": _int(summary.get("num_messages")),
+            "reported_chat_messages": _int(summary.get("num_chat_messages")),
+            "event_counts": counts,
+            "tool_call_count": tool_calls,
+            "subagent_count": sum(1 for m in subagents if isinstance(m, dict)),
+        },
+    )
 
-    return GrokDoc(conversation=conv, thread=thread,
-                   edges=_edges(subagents, sid), session_dir=session_dir)
+    return GrokDoc(
+        conversation=conv, thread=thread, edges=_edges(subagents, sid), session_dir=session_dir
+    )
 
 
 # ---------------------------------------------------------------- line / file
+
 
 def parse_updates_lines(lines, updates_path=""):
     """Raw `updates.jsonl` text lines -> (records, errors).
@@ -583,12 +628,17 @@ def parse_updates_lines(lines, updates_path=""):
         try:
             rec = json.loads(line)
         except ValueError as e:
-            errors.append({"file": updates_path, "line": i, "stage": "parse",
-                           "error": repr(e)})
+            errors.append({"file": updates_path, "line": i, "stage": "parse", "error": repr(e)})
             continue
         if not isinstance(rec, dict):
-            errors.append({"file": updates_path, "line": i, "stage": "parse",
-                           "error": "line is not a JSON object"})
+            errors.append(
+                {
+                    "file": updates_path,
+                    "line": i,
+                    "stage": "parse",
+                    "error": "line is not a JSON object",
+                }
+            )
             continue
         records.append(rec)
     return records, errors
@@ -617,8 +667,7 @@ def _load_json(path, stage, errors):
         errors.append({"file": path, "stage": stage, "error": repr(e)})
         return None
     if not isinstance(obj, dict):
-        errors.append({"file": path, "stage": stage,
-                       "error": "file is not a JSON object"})
+        errors.append({"file": path, "stage": stage, "error": "file is not a JSON object"})
         return None
     return obj
 
@@ -651,12 +700,10 @@ def parse_session(session_dir):
     errors = []
     summary = _load_json(os.path.join(session_dir, "summary.json"), "summary", errors)
     updates = os.path.join(session_dir, "updates.jsonl")
-    records, line_errors = parse_updates_lines(_read_lines(updates),
-                                               updates_path=updates)
+    records, line_errors = parse_updates_lines(_read_lines(updates), updates_path=updates)
     errors.extend(line_errors)
     subagents = _read_subagents(session_dir, errors)
-    return build_document(summary, records, subagents=subagents,
-                          session_dir=session_dir), errors
+    return build_document(summary, records, subagents=subagents, session_dir=session_dir), errors
 
 
 def _is_subagent_dir(path):

@@ -26,6 +26,7 @@ de-duplicated by (parent, child)), the CROSS-PROVIDER COLLISION policy, per-sour
 failure isolation, and the end-to-end index (searchable, thread-linked, complete,
 idempotent on a re-run).
 """
+
 import json
 import os
 import sqlite3
@@ -48,6 +49,7 @@ def _fts_postings(conn):
 
 # ------------------------------------------------------------------- fixtures
 
+
 def _write_rollout(day_dir, name, records):
     os.makedirs(day_dir, exist_ok=True)
     path = os.path.join(day_dir, name)
@@ -62,38 +64,62 @@ def _rec(rtype, payload, ts):
 
 
 def _session_meta(sid, ts, **kw):
-    pl = {"session_id": sid, "id": sid, "timestamp": ts, "cwd": "/repo",
-          "model_provider": "openai", "git": {"branch": "feat/x"},
-          "agent_nickname": "Ada", "agent_path": "architect"}
+    pl = {
+        "session_id": sid,
+        "id": sid,
+        "timestamp": ts,
+        "cwd": "/repo",
+        "model_provider": "openai",
+        "git": {"branch": "feat/x"},
+        "agent_nickname": "Ada",
+        "agent_path": "architect",
+    }
     pl.update(kw)
     return _rec("session_meta", pl, ts)
 
 
 def _user(text, ts):
-    return _rec("response_item",
-                {"type": "message", "role": "user",
-                 "content": [{"type": "input_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        ts,
+    )
 
 
 def _assistant(text, ts):
-    return _rec("response_item",
-                {"type": "message", "role": "assistant",
-                 "content": [{"type": "output_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        },
+        ts,
+    )
 
 
 def _sessions_tree(root):
     """Two synthetic rollouts under a DATE-NESTED tree: C1 (spawned by P1) and C2 (a root)."""
     day = os.path.join(root, "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1",
-                      thread_source="spawn"),
-        _user("alpha bravo charlie", "2026-07-24T10:00:01.000Z"),
-        _assistant("delta echo", "2026-07-24T10:00:02.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T11-00-00-0000c2.jsonl", [
-        _session_meta("C2", "2026-07-24T11:00:00.000Z"),
-        _user("foxtrot golf hotel", "2026-07-24T11:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1.jsonl",
+        [
+            _session_meta(
+                "C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1", thread_source="spawn"
+            ),
+            _user("alpha bravo charlie", "2026-07-24T10:00:01.000Z"),
+            _assistant("delta echo", "2026-07-24T10:00:02.000Z"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T11-00-00-0000c2.jsonl",
+        [
+            _session_meta("C2", "2026-07-24T11:00:00.000Z"),
+            _user("foxtrot golf hotel", "2026-07-24T11:00:01.000Z"),
+        ],
+    )
 
 
 def _state_db(codex_home):
@@ -107,9 +133,11 @@ def _state_db(codex_home):
         "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, model_provider TEXT, "
         "tokens_used INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, "
         "git_branch TEXT, cwd TEXT, agent_role TEXT, agent_nickname TEXT, "
-        "preview TEXT, rollout_path TEXT)")
-    conn.execute("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, "
-                 "child_thread_id TEXT, status TEXT)")
+        "preview TEXT, rollout_path TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT)"
+    )
     conn.execute("INSERT INTO threads (id, title) VALUES ('C1', 'STATE_C1')")
     conn.execute("INSERT INTO threads (id, title) VALUES ('S3', 'STATE_S3')")
     conn.execute("INSERT INTO thread_spawn_edges VALUES ('P1', 'C1', 'state')")
@@ -120,6 +148,7 @@ def _state_db(codex_home):
 
 
 # ------------------------------------------------------------------- tests
+
 
 def test_load_corpus_merges_rollouts_state_and_builds_the_index(tmp_path):
     sessions = tmp_path / "sessions"
@@ -141,8 +170,10 @@ def test_load_corpus_merges_rollouts_state_and_builds_the_index(tmp_path):
     # the state-only thread arrives verbatim
     assert c.threads["S3"].title == "STATE_S3"
     # edges de-duplicated by (parent, child): rollout (P1,C1) once + state (C1,S3)
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == \
-        [("C1", "S3"), ("P1", "C1")]
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == [
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
     # the graph is navigable across the merged nodes (P1 is a dangling parent root)
     assert c.roots() == ["C2", "P1"]
     assert c.children_of("P1") == ["C1"] and c.children_of("C1") == ["S3"]
@@ -155,7 +186,8 @@ def test_load_corpus_merges_rollouts_state_and_builds_the_index(tmp_path):
         hits = index.search(conn, "bravo")
         assert [r["conversation_id"] for r in hits] == ["C1"]
         row = conn.execute(
-            "SELECT thread_id FROM conversations WHERE conversation_id='C1'").fetchone()
+            "SELECT thread_id FROM conversations WHERE conversation_id='C1'"
+        ).fetchone()
         assert row["thread_id"] == "C1"
     finally:
         conn.close()
@@ -174,8 +206,9 @@ def test_load_corpus_can_ingest_GROK_ALONE_with_no_codex_store(tmp_path):
     idx = tmp_path / "index.sqlite"
     _grok_store(str(grok_root))
 
-    c, errors = loaders.load_corpus("", str(idx), codex_home=str(tmp_path / "no_codex"),
-                                    grok_root=str(grok_root))
+    c, errors = loaders.load_corpus(
+        "", str(idx), codex_home=str(tmp_path / "no_codex"), grok_root=str(grok_root)
+    )
 
     assert errors == [], f"a Grok-only ingest must not error: {errors}"
     assert c.conversations, "the Grok conversation must be ingested"
@@ -236,8 +269,10 @@ def test_load_corpus_PERSISTS_the_spawn_graph_not_just_the_conversations(tmp_pat
 
     # The persisted graph must match the one load_corpus built in memory.
     assert set(persisted.threads) == set(in_memory.threads) == {"C1", "C2", "S3"}
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in persisted.edges) == \
-        [("C1", "S3"), ("P1", "C1")]
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in persisted.edges) == [
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
 
     # And it must be NAVIGABLE after the round-trip, since that is what the UI does with
     # it — a table holding rows that no longer form a graph would still be a failure.
@@ -268,8 +303,12 @@ def test_load_corpus_forwards_progress_so_a_long_ingest_can_be_reported(tmp_path
     _state_db(str(home))
 
     seen = []
-    loaders.load_corpus(str(sessions), str(idx), codex_home=str(home),
-                        progress=lambda file, offset: seen.append((file, offset)))
+    loaders.load_corpus(
+        str(sessions),
+        str(idx),
+        codex_home=str(home),
+        progress=lambda file, offset: seen.append((file, offset)),
+    )
 
     assert seen, "progress must be called at least once for a non-empty ingest"
     # build_index reports (file, offset) after each committed batch.
@@ -320,7 +359,7 @@ def test_load_corpus_re_run_does_not_duplicate_persisted_graph_rows(tmp_path):
 
 def test_load_corpus_on_empty_inputs_returns_an_empty_corpus_and_index(tmp_path):
     sessions = tmp_path / "empty_sessions"
-    home = tmp_path / "no_state"          # no state_5.sqlite here -> skipped, not fatal
+    home = tmp_path / "no_state"  # no state_5.sqlite here -> skipped, not fatal
     idx = tmp_path / "empty_index.sqlite"
     sessions.mkdir()
     home.mkdir()
@@ -344,14 +383,22 @@ def test_load_corpus_dedupes_a_repeated_rollout_spawn_edge(tmp_path):
     home = tmp_path / "no_state"
     idx = tmp_path / "index.sqlite"
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1"),
-        _user("first leg", "2026-07-24T10:00:01.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z", parent_thread_id="P1"),
-        _user("resumed leg", "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1"),
+            _user("first leg", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z", parent_thread_id="P1"),
+            _user("resumed leg", "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
 
     c, errors = loaders.load_corpus(str(sessions), str(idx), codex_home=str(home))
@@ -374,7 +421,7 @@ def test_load_corpus_is_idempotent_on_a_re_run(tmp_path):
 
     conn = corpus.open_index(str(idx))
     try:
-        assert index.count(conn) == 2          # no duplicate rows on replay
+        assert index.count(conn) == 2  # no duplicate rows on replay
         assert _fts_postings(conn) == 2  # nor duplicate FTS postings
     finally:
         conn.close()
@@ -391,7 +438,7 @@ _G2 = "0198c4d1-2f3a-7b41-9e02-000000000002"
 # NINE fractional digits, the measured Grok stamp width (adapters/grok.py:69-74).
 _GROK_TS = "2026-08-06T12:00:00.123456789Z"
 _GROK_TS2 = "2026-08-06T12:05:30.000000000Z"
-_ENC_CWD = "C%3A%5Cwork%5Crepo"          # the percent-encoded cwd parent directory
+_ENC_CWD = "C%3A%5Cwork%5Crepo"  # the percent-encoded cwd parent directory
 
 
 def _write_text(path, text):
@@ -403,14 +450,20 @@ def _grok_chunk(kind, text, sid, ts=_GROK_TS):
     """One updates.jsonl line: the JSON-RPC envelope whose ACP discriminant is NESTED at
     params.update.sessionUpdate — a reader that looks for it at the top level of the line
     finds nothing (adapters/grok.py:37-40)."""
-    return {"method": "session/update", "timestamp": ts,
-            "params": {"_meta": {}, "sessionId": sid,
-                       "update": {"sessionUpdate": kind,
-                                  "content": {"type": "text", "text": text}}}}
+    return {
+        "method": "session/update",
+        "timestamp": ts,
+        "params": {
+            "_meta": {},
+            "sessionId": sid,
+            "update": {"sessionUpdate": kind, "content": {"type": "text", "text": text}},
+        },
+    }
 
 
-def _grok_session(root, sid, title, user_text, agent_text, child=None,
-                  extra_lines=(), enc_cwd=_ENC_CWD):
+def _grok_session(
+    root, sid, title, user_text, agent_text, child=None, extra_lines=(), enc_cwd=_ENC_CWD
+):
     """A synthetic `<root>/<enc-cwd>/<session-id>/` Grok session DIRECTORY.
 
     `summary.json` + `updates.jsonl`, plus `subagents/sa-0/meta.json` when `child` names
@@ -422,26 +475,47 @@ def _grok_session(root, sid, title, user_text, agent_text, child=None,
     """
     sdir = os.path.join(root, enc_cwd, sid)
     os.makedirs(sdir, exist_ok=True)
-    lines = [json.dumps(_grok_chunk("user_message_chunk", user_text, sid)),
-             json.dumps(_grok_chunk("agent_message_chunk", agent_text, sid,
-                                    ts=_GROK_TS2))]
+    lines = [
+        json.dumps(_grok_chunk("user_message_chunk", user_text, sid)),
+        json.dumps(_grok_chunk("agent_message_chunk", agent_text, sid, ts=_GROK_TS2)),
+    ]
     lines.extend(extra_lines)
     _write_text(os.path.join(sdir, "updates.jsonl"), "\n".join(lines) + "\n")
-    _write_text(os.path.join(sdir, "summary.json"), json.dumps({
-        "agent_name": "grok-build", "chat_format_version": 3,
-        "created_at": _GROK_TS, "current_model_id": "grok-code-fast-1",
-        "generated_title": title, "info": {"cwd": "/work/repo", "id": sid},
-        "last_active_at": _GROK_TS2, "num_chat_messages": 2, "num_messages": 2,
-        "reasoning_effort": "high", "session_kind": "primary",
-        "updated_at": _GROK_TS2}))
+    _write_text(
+        os.path.join(sdir, "summary.json"),
+        json.dumps(
+            {
+                "agent_name": "grok-build",
+                "chat_format_version": 3,
+                "created_at": _GROK_TS,
+                "current_model_id": "grok-code-fast-1",
+                "generated_title": title,
+                "info": {"cwd": "/work/repo", "id": sid},
+                "last_active_at": _GROK_TS2,
+                "num_chat_messages": 2,
+                "num_messages": 2,
+                "reasoning_effort": "high",
+                "session_kind": "primary",
+                "updated_at": _GROK_TS2,
+            }
+        ),
+    )
     _write_text(os.path.join(sdir, "summary.json.lock"), "NOT JSON {{{")
     _write_text(os.path.join(sdir, "updates.jsonl.lock"), "NOT JSON {{{")
     if child is not None:
         meta_dir = os.path.join(sdir, "subagents", "sa-0")
         os.makedirs(meta_dir, exist_ok=True)
-        _write_text(os.path.join(meta_dir, "meta.json"), json.dumps({
-            "child_session_id": child, "parent_session_id": sid,
-            "status": "completed", "subagent_id": "sa-0"}))
+        _write_text(
+            os.path.join(meta_dir, "meta.json"),
+            json.dumps(
+                {
+                    "child_session_id": child,
+                    "parent_session_id": sid,
+                    "status": "completed",
+                    "subagent_id": "sa-0",
+                }
+            ),
+        )
         _write_text(os.path.join(meta_dir, "meta.json.lock"), "NOT JSON {{{")
     return sdir
 
@@ -449,9 +523,10 @@ def _grok_session(root, sid, title, user_text, agent_text, child=None,
 def _grok_store(root):
     """The standard two-session Grok store: _G1 (which spawned _G2) and _G2 itself.
     Returns (parent_session_dir, child_session_dir)."""
-    return (_grok_session(root, _G1, "Grok parent", "india juliett kilo", "lima mike",
-                          child=_G2),
-            _grok_session(root, _G2, "Grok child", "november oscar papa", "quebec"))
+    return (
+        _grok_session(root, _G1, "Grok parent", "india juliett kilo", "lima mike", child=_G2),
+        _grok_session(root, _G2, "Grok child", "november oscar papa", "quebec"),
+    )
 
 
 def _both_stores(tmp_path):
@@ -476,6 +551,7 @@ def _reopen_graph(index_path):
 
 
 # --------------------------------------------------------- multi-provider ingest
+
 
 def test_load_corpus_ingests_a_grok_store_alongside_codex_into_ONE_corpus(tmp_path):
     """The headline: one call, one index, both providers.
@@ -506,8 +582,11 @@ def test_load_corpus_ingests_a_grok_store_alongside_codex_into_ONE_corpus(tmp_pa
     assert c.threads[_G1].title == "Grok parent"
     assert c.threads[_G1].rollout_path == os.path.join(groot, _ENC_CWD, _G1)
     # edges from BOTH providers, still de-duplicated by (parent, child)
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == \
-        [(_G1, _G2), ("C1", "S3"), ("P1", "C1")]
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == [
+        (_G1, _G2),
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
     # ...and the merged graph is navigable across both
     assert c.children_of(_G1) == [_G2]
     assert c.children_of("P1") == ["C1"]
@@ -519,8 +598,9 @@ def test_load_corpus_ingests_a_grok_store_alongside_codex_into_ONE_corpus(tmp_pa
         assert index.count(conn) == 4
         assert [r["conversation_id"] for r in index.search(conn, "juliett")] == [_G1]
         assert [r["conversation_id"] for r in index.search(conn, "bravo")] == ["C1"]
-        row = conn.execute("SELECT thread_id, provider FROM conversations "
-                           "WHERE conversation_id=?", (_G1,)).fetchone()
+        row = conn.execute(
+            "SELECT thread_id, provider FROM conversations WHERE conversation_id=?", (_G1,)
+        ).fetchone()
         assert row["thread_id"] == _G1 and row["provider"] == "grok"
     finally:
         conn.close()
@@ -536,20 +616,20 @@ def test_grok_spawn_edges_reach_DISK_not_just_the_returned_object(tmp_path):
     """
     sessions, home, groot, idx = _both_stores(tmp_path)
 
-    in_memory, errors = loaders.load_corpus(sessions, idx, codex_home=home,
-                                            grok_root=groot)
+    in_memory, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot)
     assert errors == []
     persisted = _reopen_graph(idx)
 
-    assert set(persisted.threads) == set(in_memory.threads) == \
-        {"C1", "C2", "S3", _G1, _G2}
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in persisted.edges) == \
-        [(_G1, _G2), ("C1", "S3"), ("P1", "C1")]
+    assert set(persisted.threads) == set(in_memory.threads) == {"C1", "C2", "S3", _G1, _G2}
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in persisted.edges) == [
+        (_G1, _G2),
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
     # the Grok edge is NAVIGABLE after the round-trip, and carries its status
     assert persisted.children_of(_G1) == [_G2]
     assert persisted.depth(_G2) == 1
-    assert [e.status for e in persisted.edges
-            if e.parent_thread_id == _G1] == ["completed"]
+    assert [e.status for e in persisted.edges if e.parent_thread_id == _G1] == ["completed"]
     # and the Grok node's model VENDOR survived persistence, not just assembly
     assert persisted.threads[_G1].model_provider == "xai"
 
@@ -580,12 +660,11 @@ def test_a_grok_store_is_NEVER_read_unless_grok_root_names_it(tmp_path):
         c, errors = loaders.load_corpus(sessions, idx, codex_home=home)
         assert seen == [], "load_corpus read a Grok store without being given one"
         assert errors == []
-        assert set(c.threads) == {"C1", "C2", "S3"}          # Codex-only, unchanged
+        assert set(c.threads) == {"C1", "C2", "S3"}  # Codex-only, unchanged
 
         # STATE 2 — with grok_root: the same probe FIRES, and with the named root. A
         # detector that stayed silent in both states would measure nothing.
-        loaders.load_corpus(sessions, str(tmp_path / "i2.sqlite"), codex_home=home,
-                            grok_root=groot)
+        loaders.load_corpus(sessions, str(tmp_path / "i2.sqlite"), codex_home=home, grok_root=groot)
         assert seen == [groot]
     finally:
         grok.ingest_sessions = grok_ingest
@@ -604,8 +683,9 @@ def test_a_cross_provider_thread_id_collision_is_REPORTED_and_never_overwrites(t
     """
     sessions, home, groot, idx = _both_stores(tmp_path)
     # a Grok session whose info.id collides with the Codex rollout thread C1
-    collider = _grok_session(groot, "C1", "GROK_C1", "sierra tango", "uniform",
-                             child="C-child", enc_cwd="other%20cwd")
+    collider = _grok_session(
+        groot, "C1", "GROK_C1", "sierra tango", "uniform", child="C-child", enc_cwd="other%20cwd"
+    )
 
     c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot)
 
@@ -615,8 +695,7 @@ def test_a_cross_provider_thread_id_collision_is_REPORTED_and_never_overwrites(t
     assert c.threads["C1"].model_provider == "openai"
     # the refused session contributed no conversation and no edge
     assert {conv.id for conv in c.conversations} == {"C1", "C2", _G1, _G2}
-    assert ("C1", "C-child") not in [(e.parent_thread_id, e.child_thread_id)
-                                     for e in c.edges]
+    assert ("C1", "C-child") not in [(e.parent_thread_id, e.child_thread_id) for e in c.edges]
     # ...and the refusal is REPORTED, attributed, and points at the refused session
     collisions = [e for e in errors if e["stage"] == "thread-id-collision"]
     assert len(collisions) == 1, errors
@@ -641,7 +720,7 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     WHAT THIS TEST USED TO CLAIM, AND WHY IT WAS WRONG. The docstring here said the
     repeat was "already handled (the thread upserts, the conversation dedupes by id)".
     The second half of that stopped being true when `corpus.add_conversation` was changed
-    to RE-INDEX rather than early-return (corpus.py:318-331): "dedupes by id" became
+    to RE-INDEX rather than early-return (corpus.py:344-361): "dedupes by id" became
     "OVERWRITES by id". This test did not notice, because it asserted only on errors,
     thread ids and edges — it never checked that both legs' CONTENT survived. It passed
     throughout the entire period the data loss was live. The content assertions now live
@@ -650,21 +729,28 @@ def test_a_REPEATED_id_from_the_SAME_source_is_not_a_collision(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     groot, idx = str(tmp_path / "grok_sessions"), str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1"),
-        _user("first leg", "2026-07-24T10:00:01.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z", parent_thread_id="P1"),
-        _user("resumed leg", "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z", parent_thread_id="P1"),
+            _user("first leg", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z", parent_thread_id="P1"),
+            _user("resumed leg", "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
     # the SAME Grok session id under two different cwd folders (a copied store)
     _grok_session(groot, _G1, "leg one", "victor whiskey", "xray")
     _grok_session(groot, _G1, "leg two", "yankee zulu", "alfa", enc_cwd="other%20cwd")
 
-    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home),
-                                    grok_root=groot)
+    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home), grok_root=groot)
 
     assert errors == [], "a resumed/repeated same-source id must not be reported"
     assert set(c.threads) == {"C1", _G1}
@@ -692,22 +778,30 @@ def test_TWO_id_less_sessions_both_reach_the_INDEX_not_just_the_corpus(tmp_path)
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
     # No session_meta and no UUID in the filename: the measured way tid comes out blank.
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-first.jsonl",
-                   [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")])
-    _write_rollout(day, "rollout-2026-07-24T11-00-00-second.jsonl",
-                   [_user("octopusgarden", "2026-07-24T11:00:01.000Z")])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-first.jsonl",
+        [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T11-00-00-second.jsonl",
+        [_user("octopusgarden", "2026-07-24T11:00:01.000Z")],
+    )
     home.mkdir()
 
     c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     assert len(c.conversations) == 2, "both id-less sessions are still admitted"
-    assert {conv.meta["thread_id"] for conv in c.conversations} == {""}, \
+    assert {conv.meta["thread_id"] for conv in c.conversations} == {""}, (
         "and neither invents a THREAD id — a blank id still claims no graph node"
+    )
     conn = corpus.open_index(idx)
     try:
         assert index.count(conn) == 2, "both must reach the index, not overwrite each other"
-        assert len(corpus.search(conn, "narwhalpudding")) == 1, \
+        assert len(corpus.search(conn, "narwhalpudding")) == 1, (
             "the FIRST id-less session must stay searchable"
+        )
         assert len(corpus.search(conn, "octopusgarden")) == 1
     finally:
         conn.close()
@@ -722,8 +816,11 @@ def test_an_id_less_session_keeps_its_key_across_a_re_run(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-first.jsonl",
-                   [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-first.jsonl",
+        [_user("narwhalpudding", "2026-07-24T10:00:01.000Z")],
+    )
     home.mkdir()
 
     first, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
@@ -738,19 +835,26 @@ def test_an_id_less_session_keeps_its_key_across_a_re_run(tmp_path):
 
 
 def _user_with_id(text, ts, mid):
-    """A user message carrying the provider's opaque item id (codex_rollout.py:274 reads
+    """A user message carrying the provider's opaque item id (codex_rollout.py:302 reads
     `payload["id"]` into `Turn.uuid`). Needed to exercise the replay case, where the same
     item really does appear in two rollout files of one resumed session."""
-    return _rec("response_item",
-                {"type": "message", "role": "user", "id": mid,
-                 "content": [{"type": "input_text", "text": text}]}, ts)
+    return _rec(
+        "response_item",
+        {
+            "type": "message",
+            "role": "user",
+            "id": mid,
+            "content": [{"type": "input_text", "text": text}],
+        },
+        ts,
+    )
 
 
 def test_a_RESUMED_session_keeps_BOTH_legs_of_the_conversation(tmp_path):
     """MEASURED DATA LOSS on the owner's real store, not a hypothetical.
 
     A resumed Codex session writes a SECOND rollout file under the SAME session_id, and
-    `codex_rollout._assemble` sets `Conversation.id = session_id` (codex_rollout.py:296,
+    `codex_rollout._assemble` sets `Conversation.id = session_id` (codex_rollout.py:323,
     314). Two files therefore yield two Conversations with an IDENTICAL id, both admitted
     (same source, correctly not a collision) and both written to an index whose
     `conversations.conversation_id` is UNIQUE. Since add_conversation now OVERWRITES
@@ -769,22 +873,31 @@ def test_a_RESUMED_session_keeps_BOTH_legs_of_the_conversation(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        _user("zebracrossing on the first leg", "2026-07-24T10:00:01.000Z"),
-        _assistant("acknowledged the first leg", "2026-07-24T10:00:02.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        _user("quokkasandwich on the resumed leg", "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            _user("zebracrossing on the first leg", "2026-07-24T10:00:01.000Z"),
+            _assistant("acknowledged the first leg", "2026-07-24T10:00:02.000Z"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            _user("quokkasandwich on the resumed leg", "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
 
     c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     assert errors == [], "a resume is not an error"
-    assert [conv.id for conv in c.conversations] == ["C1"], \
+    assert [conv.id for conv in c.conversations] == ["C1"], (
         "the two legs are ONE conversation, not two rows fighting over one id"
+    )
     merged = c.conversations[0]
     assert len(merged.turns) == 3, "every turn from both legs survives the merge"
 
@@ -792,8 +905,9 @@ def test_a_RESUMED_session_keeps_BOTH_legs_of_the_conversation(tmp_path):
     try:
         assert index.count(conn) == 1
         # THE REGRESSION THIS PINS: before the fix the first leg matched ZERO rows.
-        assert len(corpus.search(conn, "zebracrossing")) == 1, \
+        assert len(corpus.search(conn, "zebracrossing")) == 1, (
             "the FIRST leg must stay searchable after the session is resumed"
+        )
         assert len(corpus.search(conn, "quokkasandwich")) == 1
     finally:
         conn.close()
@@ -811,55 +925,73 @@ def test_a_RESUMED_session_does_not_DUPLICATE_a_REPLAYED_turn(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        _user_with_id("the shared prefix", "2026-07-24T10:00:01.000Z", "msg_shared"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        _user_with_id("the shared prefix", "2026-07-24T12:00:00.500Z", "msg_shared"),
-        _user_with_id("only in the second leg", "2026-07-24T12:00:01.000Z", "msg_new"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            _user_with_id("the shared prefix", "2026-07-24T10:00:01.000Z", "msg_shared"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            _user_with_id("the shared prefix", "2026-07-24T12:00:00.500Z", "msg_shared"),
+            _user_with_id("only in the second leg", "2026-07-24T12:00:01.000Z", "msg_new"),
+        ],
+    )
     home.mkdir()
 
     c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     merged = c.conversations[0]
-    assert [t.uuid for t in merged.turns] == ["msg_shared", "msg_new"], \
+    assert [t.uuid for t in merged.turns] == ["msg_shared", "msg_new"], (
         "the replayed item appears once, and the new one is appended after it"
+    )
 
 
 def test_a_RESUMED_session_merges_legs_that_carry_NO_item_id(tmp_path):
     """Roughly a third of real rollout items carry no `payload["id"]`, and the Grok
-    adapter never sets `Turn.uuid` at all (grok.py:311). Identity therefore cannot rest on
+    adapter never sets `Turn.uuid` at all (grok.py:316). Identity therefore cannot rest on
     the uuid alone: an id that identifies nothing maps onto nothing (the rule dedup.py and
     _admit already follow), so an id-less turn falls back to its own content.
     """
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        # byte-identical replay of the opening turn: same role, stamp and text
-        _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
-        _user("a genuinely new id-less turn", "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            # byte-identical replay of the opening turn: same role, stamp and text
+            _user("an id-less opening turn", "2026-07-24T10:00:01.000Z"),
+            _user("a genuinely new id-less turn", "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
 
     c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     merged = c.conversations[0]
     texts = [b.text for t in merged.turns for b in t.blocks]
-    assert texts == ["an id-less opening turn", "a genuinely new id-less turn"], \
+    assert texts == ["an id-less opening turn", "a genuinely new id-less turn"], (
         "an id-less replay collapses; an id-less NEW turn survives"
+    )
 
 
 def test_one_item_id_rendered_TWO_ways_keeps_the_fuller_rendering(tmp_path):
-    """`Turn.uuid` marks where a turn STARTS, not how far it extends: codex_rollout.py:283
+    """`Turn.uuid` marks where a turn STARTS, not how far it extends: codex_rollout.py:310
     opens an assistant turn with the first item id of a run and accumulates the rest of
     the run into it, so a resumed leg that cuts the run differently re-states the same id
     with a different body.
@@ -874,28 +1006,50 @@ def test_one_item_id_rendered_TWO_ways_keeps_the_fuller_rendering(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        # the run is cut short here — this leg saw only the opening of the answer
-        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
-                               "content": [{"type": "output_text", "text": "short"}]},
-             "2026-07-24T10:00:01.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
-                               "content": [{"type": "output_text",
-                                            "text": "the whole answer, at length"}]},
-             "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            # the run is cut short here — this leg saw only the opening of the answer
+            _rec(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_run",
+                    "content": [{"type": "output_text", "text": "short"}],
+                },
+                "2026-07-24T10:00:01.000Z",
+            ),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            _rec(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_run",
+                    "content": [{"type": "output_text", "text": "the whole answer, at length"}],
+                },
+                "2026-07-24T12:00:01.000Z",
+            ),
+        ],
+    )
     home.mkdir()
 
     c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     merged = c.conversations[0]
     assert len(merged.turns) == 1, "one provider item stays one turn"
-    assert [b.text for b in merged.turns[0].blocks] == ["the whole answer, at length"], \
+    assert [b.text for b in merged.turns[0].blocks] == ["the whole answer, at length"], (
         "the fuller rendering replaces the truncated one, in place"
+    )
     # a lossy reconciliation must be visible, not silent
     assert merged.meta["merge_divergent_turns"] == 1
 
@@ -908,27 +1062,49 @@ def test_a_leg_that_re_states_a_turn_WORSE_does_not_shrink_it(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
-                               "content": [{"type": "output_text",
-                                            "text": "the whole answer, at length"}]},
-             "2026-07-24T10:00:01.000Z"),
-    ])
-    _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        _rec("response_item", {"type": "message", "role": "assistant", "id": "msg_run",
-                               "content": [{"type": "output_text", "text": "short"}]},
-             "2026-07-24T12:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            _rec(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_run",
+                    "content": [{"type": "output_text", "text": "the whole answer, at length"}],
+                },
+                "2026-07-24T10:00:01.000Z",
+            ),
+        ],
+    )
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            _rec(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg_run",
+                    "content": [{"type": "output_text", "text": "short"}],
+                },
+                "2026-07-24T12:00:01.000Z",
+            ),
+        ],
+    )
     home.mkdir()
 
     c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
 
     merged = c.conversations[0]
     assert [b.text for b in merged.turns[0].blocks] == ["the whole answer, at length"]
-    assert "merge_divergent_turns" not in merged.meta, \
+    assert "merge_divergent_turns" not in merged.meta, (
         "nothing was replaced, so nothing is reported"
+    )
 
 
 def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
@@ -951,14 +1127,22 @@ def test_a_RESUMED_session_records_EVERY_leg_it_merged(tmp_path):
     sessions, home = tmp_path / "sessions", tmp_path / "no_state"
     idx = str(tmp_path / "index.sqlite")
     day = os.path.join(str(sessions), "2026", "07", "24")
-    first = _write_rollout(day, "rollout-2026-07-24T10-00-00-0000c1a.jsonl", [
-        _session_meta("C1", "2026-07-24T10:00:00.000Z"),
-        _user("leg one", "2026-07-24T10:00:01.000Z"),
-    ])
-    second = _write_rollout(day, "rollout-2026-07-24T12-00-00-0000c1b.jsonl", [
-        _session_meta("C1", "2026-07-24T12:00:00.000Z"),
-        _user("leg two", "2026-07-24T12:00:01.000Z"),
-    ])
+    first = _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-0000c1a.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T10:00:00.000Z"),
+            _user("leg one", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
+    second = _write_rollout(
+        day,
+        "rollout-2026-07-24T12-00-00-0000c1b.jsonl",
+        [
+            _session_meta("C1", "2026-07-24T12:00:00.000Z"),
+            _user("leg two", "2026-07-24T12:00:01.000Z"),
+        ],
+    )
     home.mkdir()
 
     c, _ = loaders.load_corpus(str(sessions), idx, codex_home=str(home))
@@ -975,17 +1159,16 @@ def _blank_thread_id_grok_doc(session_dir, conv_id):
     """A Grok doc whose THREAD id is blank, injected rather than fixtured.
 
     Deliberately synthetic, and the reason is the finding: the shipped Grok adapter cannot
-    produce one. `grok.py:523` derives `sid` as
+    produce one. `grok.py:550` derives `sid` as
     `info.id or params.sessionId or _dir_id(session_dir)`, and `_dir_id` is the directory
-    basename (`grok.py:238`), which is never empty for a real session directory — grok.py:64-67
+    basename (`grok.py:241`), which is never empty for a real session directory — grok.py:64-67
     says that fallback exists precisely so an id of "" cannot happen. So a SECOND blank-id
     source does not exist among today's two adapters, and injecting the doc is the only way
     to drive `_admit`'s handling of a blank id. Same stubbing idiom as the grok-root probe
     above.
     """
     conv = ir.Conversation(id=conv_id, title="an id-less session", provider="grok")
-    return grok.GrokDoc(conversation=conv, thread=corpus.ThreadMeta(id=""),
-                        session_dir=session_dir)
+    return grok.GrokDoc(conversation=conv, thread=corpus.ThreadMeta(id=""), session_dir=session_dir)
 
 
 def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, monkeypatch):
@@ -1005,7 +1188,7 @@ def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, mon
     now where it lives.) This pins the same rule in the ingest path.
 
     REACHABILITY, stated honestly. The codex side genuinely produces `thread_id == ""`
-    (`codex_rollout.py:296` falls through to `_id_from_path`, which returns "" when the
+    (`codex_rollout.py:323` falls through to `_id_from_path`, which returns "" when the
     filename carries no UUID) — asserted as a control below so this test cannot pass on a
     fixture that quietly grew an id. The grok side cannot (see the helper above), so today
     the cross-source loss is LATENT rather than live: it becomes reachable the moment any
@@ -1014,17 +1197,23 @@ def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, mon
     sessions = tmp_path / "sessions"
     day = os.path.join(str(sessions), "2026", "07", "24")
     # No session_meta, and no UUID in the filename -> a genuinely blank thread id.
-    _write_rollout(day, "rollout-2026-07-24T10-00-00-plainname.jsonl", [
-        _user("alpha bravo charlie", "2026-07-24T10:00:01.000Z"),
-    ])
+    _write_rollout(
+        day,
+        "rollout-2026-07-24T10-00-00-plainname.jsonl",
+        [
+            _user("alpha bravo charlie", "2026-07-24T10:00:01.000Z"),
+        ],
+    )
     groot = str(tmp_path / "grok_sessions")
     os.makedirs(groot, exist_ok=True)
     grok_dir = os.path.join(groot, _ENC_CWD, "no-id-session")
-    monkeypatch.setattr(grok, "ingest_sessions", lambda root: (
-        [_blank_thread_id_grok_doc(grok_dir, "GROK-NO-THREAD-ID")], []))
+    monkeypatch.setattr(
+        grok,
+        "ingest_sessions",
+        lambda root: ([_blank_thread_id_grok_doc(grok_dir, "GROK-NO-THREAD-ID")], []),
+    )
 
-    c, errors = loaders.load_corpus(str(sessions), str(tmp_path / "index.sqlite"),
-                                    grok_root=groot)
+    c, errors = loaders.load_corpus(str(sessions), str(tmp_path / "index.sqlite"), grok_root=groot)
 
     # CONTROL: the codex fixture really is id-less. Without this the test would still pass
     # if that rollout started carrying an id, and would then be asserting nothing.
@@ -1038,7 +1227,9 @@ def test_BLANK_thread_ids_from_DIFFERENT_sources_are_BOTH_ingested(tmp_path, mon
     # have replaced this one on disk. The Grok doc is untouched because it HAS a
     # conversation id; only the codex rollout, which had none, is given a stable key.
     assert {conv.id for conv in c.conversations} == {
-        "unidentified:rollout-2026-07-24T10-00-00-plainname.jsonl", "GROK-NO-THREAD-ID"}
+        "unidentified:rollout-2026-07-24T10-00-00-plainname.jsonl",
+        "GROK-NO-THREAD-ID",
+    }
     assert "" in c.threads, "and the blank THREAD id is still blank — no node invented"
 
 
@@ -1065,16 +1256,17 @@ def test_a_broken_grok_store_does_not_cost_the_codex_ingest(tmp_path):
     # the Codex half is complete — conversations, threads, edges, and the index
     assert set(c.threads) == {"C1", "C2", "S3"}
     assert {conv.id for conv in c.conversations} == {"C1", "C2"}
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == \
-        [("C1", "S3"), ("P1", "C1")]
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == [
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
     conn = corpus.open_index(idx)
     try:
         assert index.count(conn) == 2
     finally:
         conn.close()
     # ...and the Grok failure is reported, attributed, and names the root it was given
-    assert [(e["source"], e["stage"], e["file"]) for e in errors] == \
-        [("grok", "ingest", groot)]
+    assert [(e["source"], e["stage"], e["file"]) for e in errors] == [("grok", "ingest", groot)]
     assert "unreadable" in errors[0]["error"]
 
 
@@ -1087,14 +1279,20 @@ def test_per_source_errors_are_ATTRIBUTED_to_the_source_that_produced_them(tmp_p
     """
     sessions, home, groot, idx = _both_stores(tmp_path)
     # a truncated tail on a Codex rollout: the shape a log read while being written has
-    _write_text(os.path.join(str(sessions), "2026", "07", "24",
-                             "rollout-2026-07-24T13-00-00-0000c3.jsonl"),
-                json.dumps(_session_meta("C3", "2026-07-24T13:00:00.000Z")) +
-                "\n{not json\n")
+    _write_text(
+        os.path.join(str(sessions), "2026", "07", "24", "rollout-2026-07-24T13-00-00-0000c3.jsonl"),
+        json.dumps(_session_meta("C3", "2026-07-24T13:00:00.000Z")) + "\n{not json\n",
+    )
     # ...and the same on a Grok session's updates.jsonl
-    gdir = _grok_session(groot, "0198c4d1-2f3a-7b41-9e02-000000000003", "Grok third",
-                         "bravo2 charlie2", "delta2", extra_lines=("{not json",),
-                         enc_cwd="third%20cwd")
+    gdir = _grok_session(
+        groot,
+        "0198c4d1-2f3a-7b41-9e02-000000000003",
+        "Grok third",
+        "bravo2 charlie2",
+        "delta2",
+        extra_lines=("{not json",),
+        enc_cwd="third%20cwd",
+    )
 
     c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot)
 
@@ -1123,7 +1321,7 @@ def test_a_grok_inclusive_re_run_duplicates_no_row(tmp_path):
         threads = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
         edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
         assert (threads, edges) == (5, 3), (threads, edges)
-        assert index.count(conn) == 4          # no duplicate conversation rows
+        assert index.count(conn) == 4  # no duplicate conversation rows
         assert _fts_postings(conn) == 4  # nor duplicate FTS postings
     finally:
         conn.close()
@@ -1139,8 +1337,13 @@ def test_progress_is_forwarded_for_grok_sources_too(tmp_path):
     sessions, home, groot, idx = _both_stores(tmp_path)
     seen = []
 
-    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                        progress=lambda file, offset: seen.append((file, offset)))
+    loaders.load_corpus(
+        sessions,
+        idx,
+        codex_home=home,
+        grok_root=groot,
+        progress=lambda file, offset: seen.append((file, offset)),
+    )
 
     assert all(isinstance(f, str) and isinstance(o, int) for f, o in seen), seen
     files = [f for f, _ in seen]
@@ -1161,8 +1364,7 @@ def test_a_grok_only_ingest_needs_no_codex_rollouts(tmp_path):
     home.mkdir()
     _grok_store(groot)
 
-    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home),
-                                    grok_root=groot)
+    c, errors = loaders.load_corpus(str(sessions), idx, codex_home=str(home), grok_root=groot)
 
     assert errors == []
     assert {conv.id for conv in c.conversations} == {_G1, _G2}
@@ -1208,14 +1410,30 @@ def _cc_transcript(path, sid, user_text, agent_text):
     every line repeats `sessionId`/`version` the way a real append-only log does."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     records = [
-        {"type": "user", "timestamp": _CC_TS, "uuid": "u-1", "parentUuid": None,
-         "sessionId": sid, "cwd": "C:/Users/me/work/repo", "gitBranch": "main",
-         "version": "2.1.220",
-         "message": {"role": "user", "content": user_text}},
-        {"type": "assistant", "timestamp": _CC_TS2, "uuid": "a-1", "parentUuid": "u-1",
-         "sessionId": sid, "version": "2.1.220",
-         "message": {"role": "assistant", "model": "claude-opus-5",
-                     "content": [{"type": "text", "text": agent_text}]}},
+        {
+            "type": "user",
+            "timestamp": _CC_TS,
+            "uuid": "u-1",
+            "parentUuid": None,
+            "sessionId": sid,
+            "cwd": "C:/Users/me/work/repo",
+            "gitBranch": "main",
+            "version": "2.1.220",
+            "message": {"role": "user", "content": user_text},
+        },
+        {
+            "type": "assistant",
+            "timestamp": _CC_TS2,
+            "uuid": "a-1",
+            "parentUuid": "u-1",
+            "sessionId": sid,
+            "version": "2.1.220",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": agent_text}],
+            },
+        },
     ]
     _write_text(path, "\n".join(json.dumps(r) for r in records) + "\n")
     return path
@@ -1225,16 +1443,22 @@ def _claude_code_store(root):
     """The standard two-transcript store: one SESSION and one of its subagents.
     Returns (session_path, subagent_path)."""
     session = _cc_transcript(
-        os.path.join(root, _CC_SLUG, _CC_SESSION + ".jsonl"), _CC_SESSION,
-        "tangelo umbrella", "vermilion")
+        os.path.join(root, _CC_SLUG, _CC_SESSION + ".jsonl"),
+        _CC_SESSION,
+        "tangelo umbrella",
+        "vermilion",
+    )
     child = _cc_transcript(
-        os.path.join(root, _CC_SLUG, _CC_SESSION, "subagents",
-                     "agent-%s.jsonl" % _CC_AGENT), _CC_SESSION,
-        "wolfram xenon", "yarrow")
+        os.path.join(root, _CC_SLUG, _CC_SESSION, "subagents", "agent-%s.jsonl" % _CC_AGENT),
+        _CC_SESSION,
+        "wolfram xenon",
+        "yarrow",
+    )
     return session, child
 
 
 # ---------------------------------------------------- multi-provider (Claude Code)
+
 
 def test_load_corpus_can_ingest_CLAUDE_CODE_ALONE_with_no_codex_store(tmp_path):
     """The symmetry Grok already has, for the store that had NO ingest path at all.
@@ -1266,8 +1490,9 @@ def test_load_corpus_can_ingest_CLAUDE_CODE_ALONE_with_no_codex_store(tmp_path):
         assert index.count(conn) == 2
         assert len(corpus.search(conn, "tangelo")) == 1, "the SESSION must be searchable"
         assert len(corpus.search(conn, "wolfram")) == 1, "and so must the SUBAGENT"
-        row = conn.execute("SELECT thread_id, provider FROM conversations "
-                           "WHERE conversation_id=?", (_CC_SESSION,)).fetchone()
+        row = conn.execute(
+            "SELECT thread_id, provider FROM conversations WHERE conversation_id=?", (_CC_SESSION,)
+        ).fetchone()
         assert row["thread_id"] == _CC_SESSION and row["provider"] == "claude-code"
     finally:
         conn.close()
@@ -1284,20 +1509,24 @@ def test_load_corpus_ingests_claude_code_ALONGSIDE_codex_and_grok(tmp_path):
     croot = str(tmp_path / "claude_projects")
     _claude_code_store(croot)
 
-    c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                                    claude_root=croot)
+    c, errors = loaders.load_corpus(
+        sessions, idx, codex_home=home, grok_root=groot, claude_root=croot
+    )
 
     assert errors == []
-    assert {conv.id for conv in c.conversations} == {
-        "C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
+    assert {conv.id for conv in c.conversations} == {"C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
     assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2, _CC_SESSION, _CC_CHILD}
     # each provider keeps its OWN model vendor — the merge must not homogenise them
     assert c.threads[_CC_SESSION].model_provider == "anthropic"
     assert c.threads["C1"].model_provider == "openai"
     assert c.threads[_G1].model_provider == "xai"
     # edges from all three providers, still de-duplicated by (parent, child)
-    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == \
-        [(_G1, _G2), (_CC_SESSION, _CC_CHILD), ("C1", "S3"), ("P1", "C1")]
+    assert sorted((e.parent_thread_id, e.child_thread_id) for e in c.edges) == [
+        (_G1, _G2),
+        (_CC_SESSION, _CC_CHILD),
+        ("C1", "S3"),
+        ("P1", "C1"),
+    ]
     assert c.roots() == [_G1, _CC_SESSION, "C2", "P1"]
 
     # THE INDEX, not the returned corpus: content from EVERY input must be searchable
@@ -1305,9 +1534,14 @@ def test_load_corpus_ingests_claude_code_ALONGSIDE_codex_and_grok(tmp_path):
     conn = corpus.open_index(idx)
     try:
         assert index.count(conn) == 6
-        for word, cid in (("bravo", "C1"), ("foxtrot", "C2"), ("juliett", _G1),
-                          ("oscar", _G2), ("tangelo", _CC_SESSION),
-                          ("wolfram", _CC_CHILD)):
+        for word, cid in (
+            ("bravo", "C1"),
+            ("foxtrot", "C2"),
+            ("juliett", _G1),
+            ("oscar", _G2),
+            ("tangelo", _CC_SESSION),
+            ("wolfram", _CC_CHILD),
+        ):
             assert [r["conversation_id"] for r in index.search(conn, word)] == [cid], word
     finally:
         conn.close()
@@ -1343,12 +1577,17 @@ def test_a_claude_code_store_is_NEVER_read_unless_claude_root_names_it(tmp_path)
         c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot)
         assert seen == [], "load_corpus read a Claude Code store without being given one"
         assert errors == []
-        assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}      # unchanged
+        assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}  # unchanged
 
         # STATE 2 — with claude_root: the same probe FIRES, and with the named root. A
         # detector silent in both states would measure nothing.
-        loaders.load_corpus(sessions, str(tmp_path / "i2.sqlite"), codex_home=home,
-                            grok_root=groot, claude_root=croot)
+        loaders.load_corpus(
+            sessions,
+            str(tmp_path / "i2.sqlite"),
+            codex_home=home,
+            grok_root=groot,
+            claude_root=croot,
+        )
         assert seen == [croot]
     finally:
         claude_code.ingest_sessions = cc_ingest
@@ -1367,11 +1606,13 @@ def test_a_claude_code_thread_id_collision_is_REPORTED_and_never_overwrites(tmp_
     sessions, home, groot, idx = _both_stores(tmp_path)
     croot = str(tmp_path / "claude_projects")
     _claude_code_store(croot)
-    collider = _cc_transcript(os.path.join(croot, _CC_SLUG, "C1.jsonl"), "C1",
-                              "zircon periwinkle", "amaranth")
+    collider = _cc_transcript(
+        os.path.join(croot, _CC_SLUG, "C1.jsonl"), "C1", "zircon periwinkle", "amaranth"
+    )
 
-    c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                                    claude_root=croot)
+    c, errors = loaders.load_corpus(
+        sessions, idx, codex_home=home, grok_root=groot, claude_root=croot
+    )
 
     # the refusal is REPORTED, attributed, and points at the refused transcript
     collisions = [e for e in errors if e["stage"] == "thread-id-collision"]
@@ -1384,12 +1625,12 @@ def test_a_claude_code_thread_id_collision_is_REPORTED_and_never_overwrites(tmp_
     assert c.threads["C1"].git_branch == "feat/x"
     assert _reopen_graph(idx).threads["C1"].model_provider == "openai"
     # the refused transcript contributed no conversation — to the corpus or the index
-    assert {conv.id for conv in c.conversations} == {
-        "C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
+    assert {conv.id for conv in c.conversations} == {"C1", "C2", _G1, _G2, _CC_SESSION, _CC_CHILD}
     conn = corpus.open_index(idx)
     try:
-        assert corpus.search(conn, "zircon") == [], \
+        assert corpus.search(conn, "zircon") == [], (
             "a refused session must not reach the index either"
+        )
         assert index.count(conn) == 6
     finally:
         conn.close()
@@ -1414,14 +1655,16 @@ def test_a_broken_claude_code_store_does_not_cost_the_other_sources(tmp_path):
     cc_ingest = claude_code.ingest_sessions
     claude_code.ingest_sessions = boom
     try:
-        c, errors = loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                                        claude_root=croot)
+        c, errors = loaders.load_corpus(
+            sessions, idx, codex_home=home, grok_root=groot, claude_root=croot
+        )
     finally:
         claude_code.ingest_sessions = cc_ingest
 
     assert set(c.threads) == {"C1", "C2", "S3", _G1, _G2}
-    assert [(e["source"], e["stage"], e["file"]) for e in errors] == \
-        [("claude-code", "ingest", croot)]
+    assert [(e["source"], e["stage"], e["file"]) for e in errors] == [
+        ("claude-code", "ingest", croot)
+    ]
     assert "unreadable" in errors[0]["error"]
 
 
@@ -1432,10 +1675,10 @@ def test_a_claude_code_inclusive_re_run_duplicates_no_row(tmp_path):
     croot = str(tmp_path / "claude_projects")
     _claude_code_store(croot)
 
-    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                        claude_root=croot)
-    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot,
-                        claude_root=croot)  # replay
+    loaders.load_corpus(sessions, idx, codex_home=home, grok_root=groot, claude_root=croot)
+    loaders.load_corpus(
+        sessions, idx, codex_home=home, grok_root=groot, claude_root=croot
+    )  # replay
 
     conn = corpus.open_index(idx)
     try:
@@ -1468,21 +1711,31 @@ def test_a_REPEATED_claude_code_thread_id_MERGES_instead_of_overwriting(tmp_path
     """
     croot = str(tmp_path / "claude_projects")
     idx = str(tmp_path / "index.sqlite")
-    _cc_transcript(os.path.join(croot, _CC_SLUG, _CC_SESSION + ".jsonl"), _CC_SESSION,
-                   "azimuth borealis", "cinnabar")
-    _cc_transcript(os.path.join(croot, "D--other-checkout", _CC_SESSION + ".jsonl"),
-                   _CC_SESSION, "dulcimer eglantine", "fennel")
+    _cc_transcript(
+        os.path.join(croot, _CC_SLUG, _CC_SESSION + ".jsonl"),
+        _CC_SESSION,
+        "azimuth borealis",
+        "cinnabar",
+    )
+    _cc_transcript(
+        os.path.join(croot, "D--other-checkout", _CC_SESSION + ".jsonl"),
+        _CC_SESSION,
+        "dulcimer eglantine",
+        "fennel",
+    )
 
     c, errors = loaders.load_corpus("", idx, claude_root=croot)
 
     assert errors == [], "a same-source repeat is not a collision"
-    assert [conv.id for conv in c.conversations] == [_CC_SESSION], \
+    assert [conv.id for conv in c.conversations] == [_CC_SESSION], (
         "the two files are ONE conversation, not two rows fighting over one id"
+    )
     conn = corpus.open_index(idx)
     try:
         assert index.count(conn) == 1
-        assert len(corpus.search(conn, "azimuth")) == 1, \
+        assert len(corpus.search(conn, "azimuth")) == 1, (
             "the FIRST transcript must stay searchable after the second is merged in"
+        )
         assert len(corpus.search(conn, "dulcimer")) == 1
     finally:
         conn.close()
@@ -1502,8 +1755,9 @@ def test_progress_is_forwarded_for_claude_code_sources_too(tmp_path):
     session, child = _claude_code_store(croot)
     seen = []
 
-    loaders.load_corpus("", idx, claude_root=croot,
-                        progress=lambda file, offset: seen.append((file, offset)))
+    loaders.load_corpus(
+        "", idx, claude_root=croot, progress=lambda file, offset: seen.append((file, offset))
+    )
 
     files = [f for f, _ in seen]
     assert all(isinstance(f, str) and isinstance(o, int) for f, o in seen), seen

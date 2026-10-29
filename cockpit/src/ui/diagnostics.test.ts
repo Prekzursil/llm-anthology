@@ -64,7 +64,11 @@ const DIAGNOSTICS: EngineDiagnostics = {
     "KeyError: <redacted 9 chars>",
   ].join("\n"),
   engine_stderr_cap_bytes: 65536,
-  crash_file: { path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.log", bytes: 812, cap_bytes: 262144 },
+  crash_file: {
+    path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.log",
+    bytes: 812,
+    cap_bytes: 262144,
+  },
   previous_run: {
     path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.prev.log",
     bytes: 640,

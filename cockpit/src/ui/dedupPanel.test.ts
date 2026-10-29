@@ -11,7 +11,7 @@
  * WHAT THESE TESTS CANNOT SETTLE, stated here rather than implied: no test here runs a real
  * `dedup.scan`, so they prove the panel reasons correctly GIVEN the wire shape — not that
  * the wire shape is right. The shape is pinned by reading `llm_anthology/dedup.py`,
- * `llm_anthology/sidecar.py:1405-1453` and `tests/test_sidecar_dedup.py`, and is cited at
+ * `llm_anthology/sidecar.py:1465-1515` and `tests/test_sidecar_dedup.py`, and is cited at
  * each place it matters.
  */
 import { describe, expect, it, vi } from "vitest";
@@ -123,7 +123,7 @@ function discovery(findings: DiscoveryFinding[]): DiscoveryResult {
 // NOTE: sizes are formatted by `ui/exportPanel`'s `formatBytes`, which this module imports
 // rather than re-implementing. Its contract is specified in `exportPanel.test.ts`; the
 // assertions below only pin how this panel USES it (e.g. that a kept copy shows its size at
-// all, and that a zero-byte rollout — a real row in `ipc/mock.ts:551` — still renders).
+// all, and that a zero-byte rollout — a real row in `ipc/mock.ts:550` — still renders).
 
 describe("groupDigits", () => {
   it("groups thousands without reading the host locale", () => {
@@ -145,8 +145,8 @@ describe("groupDigits", () => {
 
 describe("relativeAge", () => {
   it("says the date is unknown rather than showing 1970", () => {
-    // `last_write_ms` is `Optional[int]` (`dedup.py:118`) and the mock carries a real null
-    // (`ipc/mock.ts:553`). `new Date(null)` is 1 January 1970, which reads as a real date.
+    // `last_write_ms` is `Optional[int]` (`dedup.py:123`) and the mock carries a real null
+    // (`ipc/mock.ts:552`). `new Date(null)` is 1 January 1970, which reads as a real date.
     expect(relativeAge(null, NOW)).toBe("date unknown");
   });
 
@@ -195,7 +195,7 @@ describe("checkCodexHome", () => {
   it("refuses a UNC path with the reason the engine would give", () => {
     // Refused BEFORE the call, because the engine's own refusal is a -32602 the user cannot
     // read, and because a UNC root makes the scan emit outbound SMB/NTLM
-    // (`tests/test_sidecar_dedup.py:90-96`, `sidecar.py:494-495`).
+    // (`tests/test_sidecar_dedup.py:111-116`, `sidecar.py:502-503`).
     for (const bad of ["\\\\evil.example\\share\\codex", "//evil.example/share/codex"]) {
       const verdict = checkCodexHome(bad);
       expect(verdict.ok).toBe(false);
@@ -217,7 +217,7 @@ describe("checkCodexHome", () => {
 
 describe("codexHomeCandidates", () => {
   it("offers a discovered Codex store, whose `path` IS the codex home", () => {
-    // `discover.py:298-302` gives the Codex `StoreSpec` `report="base"`, so its finding's
+    // `discover.py:346-350` gives the Codex `StoreSpec` `report="base"`, so its finding's
     // `path` is the BASE (the codex home) and `detail.items_root` is the sessions tree —
     // the same fact `discoveryPanel.deriveBuildParams` relies on to fill `codex_home`.
     const out = codexHomeCandidates(discovery([finding()]), NOW);
@@ -228,13 +228,21 @@ describe("codexHomeCandidates", () => {
 
   it("offers nothing for a non-Codex store, because dedup only reads the Codex layout", () => {
     // `dedup.known_store_roots` builds `<home>/sessions` and `<home>/sessions_backup`
-    // (`dedup.py:105-106`). Pointed at a Grok or Claude Code home those two directories do
+    // (`dedup.py:106-109`). Pointed at a Grok or Claude Code home those two directories do
     // not exist, so the scan returns an EMPTY result that reads as "no duplicates" while
     // actually meaning "wrong layout" — a false clean bill of health about the owner's data.
     const out = codexHomeCandidates(
       discovery([
-        finding({ provider: "grok", path: "C:\\g\\sessions", detail: { items_root: "C:\\g\\sessions" } }),
-        finding({ provider: "claude-code", path: "C:\\c\\projects", detail: { items_root: "C:\\c\\projects" } }),
+        finding({
+          provider: "grok",
+          path: "C:\\g\\sessions",
+          detail: { items_root: "C:\\g\\sessions" },
+        }),
+        finding({
+          provider: "claude-code",
+          path: "C:\\c\\projects",
+          detail: { items_root: "C:\\c\\projects" },
+        }),
       ]),
       NOW,
     );
@@ -263,8 +271,16 @@ describe("codexHomeCandidates", () => {
   });
 
   it("offers the most recently used store first, then breaks the tie on path", () => {
-    const older = finding({ path: "C:\\b\\.codex", newest_mtime: 1_000, detail: { items_root: "C:\\b\\.codex\\sessions" } });
-    const newer = finding({ path: "C:\\z\\.codex", newest_mtime: 2_000, detail: { items_root: "C:\\z\\.codex\\sessions" } });
+    const older = finding({
+      path: "C:\\b\\.codex",
+      newest_mtime: 1_000,
+      detail: { items_root: "C:\\b\\.codex\\sessions" },
+    });
+    const newer = finding({
+      path: "C:\\z\\.codex",
+      newest_mtime: 2_000,
+      detail: { items_root: "C:\\z\\.codex\\sessions" },
+    });
     expect(codexHomeCandidates(discovery([older, newer]), NOW).map((c) => c.path)).toEqual([
       "C:\\z\\.codex",
       "C:\\b\\.codex",
@@ -289,7 +305,7 @@ describe("codexHomeCandidates", () => {
   });
 
   it("says the date is unknown when the scan saw nothing datable", () => {
-    // `newest_mtime` is 0 — never null — when no datable item was seen (`discover.py:552`),
+    // `newest_mtime` is 0 — never null — when no datable item was seen (`discover.py:632`),
     // and 0 through `new Date()` is 1 January 1970.
     const out = codexHomeCandidates(discovery([finding({ newest_mtime: 0 })]), NOW);
     expect(out[0].summary).toContain("date unknown");
@@ -311,7 +327,7 @@ describe("codexHomeCandidates", () => {
 
 describe("emptyReading", () => {
   it("does not call a never-scanned panel clean", () => {
-    // `dedup.sessions` is `[]` before any scan (`tests/test_sidecar_dedup.py:170-171`).
+    // `dedup.sessions` is `[]` before any scan (`tests/test_sidecar_dedup.py:192-193`).
     // That is the absence of a measurement, not the absence of duplicates, and saying "no
     // duplicates" here would be a claim about the owner's data that nothing supports.
     const reading = emptyReading(null, "");
@@ -322,23 +338,32 @@ describe("emptyReading", () => {
 
   it("reads an all-zero scan as nothing found THERE, not as a clean store", () => {
     // A MISSING home produces exactly this tally — zero sessions, zero copies, no errors
-    // (`tests/test_sidecar_dedup.py:101-107`) — so it is indistinguishable from a real but
+    // (`tests/test_sidecar_dedup.py:122-128`) — so it is indistinguishable from a real but
     // empty store. The likely cause is the wrong directory, and the message has to say so.
-    const reading = emptyReading(scanResult({ session_count: 0, copy_count: 0, duplicate_count: 1 }), HOME);
+    const reading = emptyReading(
+      scanResult({ session_count: 0, copy_count: 0, duplicate_count: 1 }),
+      HOME,
+    );
     expect(reading.kind).toBe("no-files");
     expect(reading.label).toContain(HOME);
     expect(reading.label).not.toMatch(/no duplicate|no redundant/i);
   });
 
   it("reads sessions-but-no-duplicates as the genuinely clean result", () => {
-    const reading = emptyReading(scanResult({ session_count: 40, copy_count: 40, duplicate_count: 0 }), HOME);
+    const reading = emptyReading(
+      scanResult({ session_count: 40, copy_count: 40, duplicate_count: 0 }),
+      HOME,
+    );
     expect(reading.kind).toBe("no-duplicates");
     expect(reading.label).toContain("40");
     expect(reading.label).toMatch(/redundant/i);
   });
 
   it("says 'session' when exactly one was found", () => {
-    const reading = emptyReading(scanResult({ session_count: 1, copy_count: 1, duplicate_count: 0 }), HOME);
+    const reading = emptyReading(
+      scanResult({ session_count: 1, copy_count: 1, duplicate_count: 0 }),
+      HOME,
+    );
     expect(reading.label).toContain("1 session found");
   });
 
@@ -362,12 +387,11 @@ describe("partitionSessions", () => {
 
   it("separates an unidentified file from the duplicate groups", () => {
     // `is_identified: false` means no id could be recovered from the file OR its name, so
-    // `consolidate` keyed it by PATH and never merged it (`dedup.py:38-44`, `:174-180`).
+    // `consolidate` keyed it by PATH and never merged it (`dedup.py:38-44`, `:182-188`).
     // Listing it among duplicates would report the one thing it is not.
-    const out = partitionSessions(
-      [session({ session_id: "", is_identified: false }), pair()],
-      { nowMs: NOW },
-    );
+    const out = partitionSessions([session({ session_id: "", is_identified: false }), pair()], {
+      nowMs: NOW,
+    });
     expect(out.duplicates).toHaveLength(1);
     expect(out.unidentified).toHaveLength(1);
     expect(out.unidentified[0].kept.path).toContain("rollout-a.jsonl");
@@ -384,7 +408,7 @@ describe("partitionSessions", () => {
   });
 
   it("claims no size or date for a non-canonical copy, because the wire carries none", () => {
-    // `duplicate_paths` is paths ONLY (`sidecar.py:1421`, `dedup.py:138-141`) — no size, no
+    // `duplicate_paths` is paths ONLY (`sidecar.py:1483`, `dedup.py:144-147`) — no size, no
     // mtime, no store kind. A row that formatted those would be inventing them.
     const out = partitionSessions([pair()], { nowMs: NOW });
     expect(out.duplicates[0].others[0].detail).toBe("");
@@ -483,7 +507,7 @@ describe("truncationWarning", () => {
   });
 
   it("names the fuller copy when there is exactly one other copy it can only be", () => {
-    // `has_larger_copy` means canonical.size < max(all copies) (`dedup.py:163-164`). With a
+    // `has_larger_copy` means canonical.size < max(all copies) (`dedup.py:169-171`). With a
     // single other copy, that copy IS the larger one, so naming it is a deduction.
     const row = pair({ has_larger_copy: true, size_bytes: 1_204 });
     const text = truncationWarning(row);
@@ -508,8 +532,8 @@ describe("truncationWarning", () => {
 
 describe("scanNotes", () => {
   it("attributes the tally to THIS scan and warns the list is cumulative", () => {
-    // `save_sessions` is INSERT OR REPLACE and never deletes (`dedup.py:302-311`) while
-    // `load_sessions` re-consolidates every row in the table (`dedup.py:313-317`). So after
+    // `save_sessions` is INSERT OR REPLACE and never deletes (`dedup.py:317-331`) while
+    // `load_sessions` re-consolidates every row in the table (`dedup.py:333-337`). So after
     // scanning two homes the list holds both and the tally holds only the second — a
     // mismatch that is correct behaviour and would otherwise read as a bug.
     const notes = scanNotes(scanResult());
@@ -524,7 +548,9 @@ describe("scanNotes", () => {
   });
 
   it("counts unreadable locations without pasting raw engine strings", () => {
-    const notes = scanNotes(scanResult({ errors: ["C:\\x: [WinError 5] Access is denied"] })).join(" ");
+    const notes = scanNotes(scanResult({ errors: ["C:\\x: [WinError 5] Access is denied"] })).join(
+      " ",
+    );
     expect(notes).not.toContain("WinError");
   });
 
@@ -556,7 +582,7 @@ describe("scanNotes", () => {
 
 describe("REPORT_ONLY_NOTE", () => {
   it("says plainly that this panel removes nothing", () => {
-    // `dedup` contains no write/delete/move call (`sidecar.py:1398-1403`), and the only
+    // `dedup` contains no write/delete/move call (`sidecar.py:1458-1463`), and the only
     // destructive surface on the wire is `maintenance.execute` (`ipc/types.ts:986-992`).
     // A panel that merely omitted a delete button would still read as one that has not
     // grown one yet.
@@ -643,14 +669,18 @@ describe("DedupPanelController", () => {
 
   it("distinguishes an empty store from a clean one", async () => {
     const empty = harness({
-      dedupScan: vi.fn(async () => scanResult({ session_count: 0, copy_count: 0, duplicate_count: 0 })),
+      dedupScan: vi.fn(async () =>
+        scanResult({ session_count: 0, copy_count: 0, duplicate_count: 0 }),
+      ),
       dedupSessions: vi.fn(async () => []),
     });
     await empty.controller.scan(HOME);
     expect(empty.controller.current.empty.kind).toBe("no-files");
 
     const clean = harness({
-      dedupScan: vi.fn(async () => scanResult({ session_count: 9, copy_count: 9, duplicate_count: 0 })),
+      dedupScan: vi.fn(async () =>
+        scanResult({ session_count: 9, copy_count: 9, duplicate_count: 0 }),
+      ),
       dedupSessions: vi.fn(async () => [session()]),
     });
     await clean.controller.scan(HOME);
@@ -702,7 +732,9 @@ describe("DedupPanelController", () => {
   });
 
   it("re-derives the list when the user expands it, without re-scanning", async () => {
-    const many = Array.from({ length: MAX_GROUP_ROWS + 2 }, (_, i) => pair({ session_id: `id-${i}` }));
+    const many = Array.from({ length: MAX_GROUP_ROWS + 2 }, (_, i) =>
+      pair({ session_id: `id-${i}` }),
+    );
     const dedupSessions = vi.fn(async () => many);
     const { controller, ipc } = harness({ dedupSessions });
     await controller.scan(HOME);

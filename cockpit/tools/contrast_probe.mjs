@@ -108,7 +108,8 @@ const COLLECT = () => {
   const out = [];
   for (const el of document.querySelectorAll("*")) {
     const st = getComputedStyle(el);
-    if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
+    if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0)
+      continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
 
@@ -116,7 +117,8 @@ const COLLECT = () => {
     // labels are `::after { content: attr(data-empty) }`, which has no text node).
     const afterSt = getComputedStyle(el, "::after");
     const after = afterSt.content;
-    const generated = after && after !== "none" && after !== "normal" ? after.replace(/^"|"$/g, "") : "";
+    const generated =
+      after && after !== "none" && after !== "normal" ? after.replace(/^"|"$/g, "") : "";
     const direct = ownText(el);
     const text = direct || generated;
     if (!text) continue;
@@ -128,7 +130,10 @@ const COLLECT = () => {
 
     const fgRaw = parse(styleForText.color);
     if (!fgRaw) continue;
-    const { bg, hadImage, resolved } = effectiveBg(el, direct ? null : parse(afterSt.backgroundColor));
+    const { bg, hadImage, resolved } = effectiveBg(
+      el,
+      direct ? null : parse(afterSt.backgroundColor),
+    );
     const fg = fgRaw.a < 1 ? over(fgRaw, bg) : fgRaw;
 
     const size = parseFloat(styleForText.fontSize) || 16;
@@ -212,7 +217,9 @@ const main = async () => {
   console.log(`  of those, SKIPPED by ui-audit  : ${skipped.length}  (own bg alpha <= 0.1)`);
   console.log(`  failures vs WCAG AA            : ${fails.length}`);
   if (rows.some((r) => r.bgHadImage)) {
-    console.log(`  NOTE: ${rows.filter((r) => r.bgHadImage).length} element(s) sit over a background-image; ratio is colour-only.`);
+    console.log(
+      `  NOTE: ${rows.filter((r) => r.bgHadImage).length} element(s) sit over a background-image; ratio is colour-only.`,
+    );
   }
   for (const f of fails) {
     console.log(
@@ -226,7 +233,9 @@ const main = async () => {
   const worst = [...rows].sort((a, b) => a.ratio - b.ratio).slice(0, 8);
   console.log("\n  tightest 8 (lowest ratio first):");
   for (const w of worst) {
-    console.log(`    ${String(w.ratio).padStart(6)}:1 / ${w.threshold}  ${w.selector}  "${w.text.slice(0, 34)}"`);
+    console.log(
+      `    ${String(w.ratio).padStart(6)}:1 / ${w.threshold}  ${w.selector}  "${w.text.slice(0, 34)}"`,
+    );
   }
 
   if (jsonOut) {
