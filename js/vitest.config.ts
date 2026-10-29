@@ -11,7 +11,9 @@ export default defineConfig({
       thresholds: { lines: 100, functions: 100, statements: 100, branches: 100 },
       include: ["src/**/*.ts"],
       // the text table is not truncated, so every uncovered line is named in the log
-      reporter: ["text-summary", ["text", { maxCols: 1000 }], "json-summary"],
+      // TEMPORARY: text-lcov prints per-branch hit counts (BRDA) to the log; removed again
+      // once js/ reaches 100% branches
+      reporter: ["text-summary", ["text", { maxCols: 1000 }], "json-summary", "text-lcov"],
     },
   },
 });
