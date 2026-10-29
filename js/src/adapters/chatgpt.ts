@@ -162,7 +162,7 @@ function blocksFromMessage(msg: Rec): Block[] {
           blocks.push(
             block("media", {
               text: ptr,
-              data: { path: ptr.split("/").pop() ?? "", pointer: ptr },
+              data: { path: ptr.slice(ptr.lastIndexOf("/") + 1), pointer: ptr },
             }),
           );
         } else {

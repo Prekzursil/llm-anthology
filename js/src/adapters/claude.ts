@@ -155,7 +155,8 @@ function activePath(messages: Rec[]): Array<[Rec, Branch | null]> {
     let cur: Rec | null = root;
     while (cur !== null && !seen.has(get(cur, "uuid"))) {
       seen.add(get(cur, "uuid"));
-      const sibs = children.get(get(cur, "parent_message_uuid")) ?? [];
+      // every message was filed under its own parent key above, so this always hits
+      const sibs = children.get(get(cur, "parent_message_uuid"))!;
       let branch: Branch | null = null;
       if (sibs.length > 1) {
         const ordered = sortedByTs(sibs, ts);
@@ -196,10 +197,11 @@ function activePath(messages: Rec[]): Array<[Rec, Branch | null]> {
  *  on equal keys `max` keeps the FIRST, so iterate forward and use strict >. */
 function argmaxKid(kids: Rec[], submax: Map<unknown, string>): Rec {
   let best = kids[0]!;
-  let bestKey: [string, string] = [submax.get(get(best, "uuid")) ?? ts(best), ts(best)];
+  // subtreeMaxTs memoizes every message's uuid, so both lookups always hit
+  let bestKey: [string, string] = [submax.get(get(best, "uuid"))!, ts(best)];
   for (let i = 1; i < kids.length; i++) {
     const k = kids[i]!;
-    const key: [string, string] = [submax.get(get(k, "uuid")) ?? ts(k), ts(k)];
+    const key: [string, string] = [submax.get(get(k, "uuid"))!, ts(k)];
     if (key[0] > bestKey[0] || (key[0] === bestKey[0] && key[1] > bestKey[1])) {
       best = k;
       bestKey = key;

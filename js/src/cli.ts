@@ -60,8 +60,12 @@ const USAGE = `llm_anthology — render ChatGPT / Claude / Gemini session export
 const ILLEGAL = /[<>:"/\\|?*]/g;
 const WS = /\s+/g;
 
+// One theme per provider this rail renders. Python's build.py also keeps a fallback theme
+// for its codex/grok commands; this rail has neither, so `Provider` is closed and every
+// lookup hits.
+type Provider = "claude" | "chatgpt" | "gemini";
 const THEMES: Record<
-  string,
+  Provider,
   { title: string; bg: string; fg: string; link: string; muted: string }
 > = {
   claude: {
@@ -86,13 +90,6 @@ const THEMES: Record<
     muted: "#9aa0a6",
   },
 };
-const FALLBACK_THEME = {
-  title: "Sessions",
-  bg: "#1b1b1b",
-  fg: "#ededed",
-  link: "#7ab7ff",
-  muted: "#999999",
-};
 
 function blankControls(s: string): string {
   let out = "";
@@ -100,7 +97,7 @@ function blankControls(s: string): string {
   return out;
 }
 
-function safeName(title: string | undefined, idx: number): string {
+export function safeName(title: string | undefined, idx: number): string {
   let base = blankControls(sanitizeForCopy(title || "untitled").replace(ILLEGAL, " "));
   base =
     base
@@ -141,12 +138,12 @@ interface Report {
 function renderCorpus(
   convs: Conversation[],
   outDir: string,
-  provider: string,
+  provider: Provider,
   metaOf: (c: Conversation) => string,
   loadErrors: LoadError[],
   extra: Record<string, unknown> = {},
 ): Report {
-  const theme = THEMES[provider] ?? FALLBACK_THEME;
+  const theme = THEMES[provider];
   const htmlDir = join(outDir, "html");
   const mdDir = join(outDir, "md");
   mkdirSync(htmlDir, { recursive: true });
@@ -548,7 +545,8 @@ export function main(argv: string[]): number {
       console.log(USAGE);
       return 2;
     }
-    mkdirSync(dirname(out) || ".", { recursive: true });
+    // Node's dirname gives "." for a bare file name, never "" as Python's does.
+    mkdirSync(dirname(out), { recursive: true });
     writeText(out, renderConversationHtml(demoConversation()));
     console.log("DEMO_WRITTEN", out);
     return 0;
