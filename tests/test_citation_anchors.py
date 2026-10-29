@@ -2193,7 +2193,7 @@ def test_the_recorded_false_premises_are_not_re_asserted():
     strings below too — so an unverifiable `cli.py:<line>` here would be the exact rot the
     module exists to stop. A construct name survives the edit; a line number does not.)
     """
-    assert FALSE_PREMISES_FIXED, "the record of what was corrected may not be emptied"
+    assert len(FALSE_PREMISES_FIXED) > 0, "the record of what was corrected may not be emptied"
     progress_is_forwarded = (
         "load_corpus takes `progress` (loaders.py:319) and forwards it (loaders.py:428)"
     )

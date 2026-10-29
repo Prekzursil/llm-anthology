@@ -47,6 +47,9 @@ describe("ir, audit, sanitize and verify defaults", () => {
   it("checks every pictographic range, the last one included", () => {
     expect(isPictographic(0x2049)).toBe(true);
     expect(isPictographic(0x41)).toBe(false);
+    // above every pictographic range: the only kind of code point that reaches the
+    // regional-indicator upper bound (that range sits inside the first one)
+    expect(isPictographic(0x20000)).toBe(false);
   });
 
   it("escapes a non-string as the empty string", () => {
