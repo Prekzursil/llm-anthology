@@ -54,7 +54,7 @@
     "prepublishOnly": "npm run build && npm run test:fast"
   },
   "dependencies": {
-    "entities": "^8.1.0",
+    "entities": "^9.0.0",
     "markdown-it": "15.0.3"
   },
   "devDependencies": {
