@@ -87,7 +87,10 @@ PRUNED_DIRS = frozenset({
     "node_modules", "target", "dist", "build", "coverage", ".venv", "venv",
 })
 
-# The one action whose "latest version" is not installable. See R-4 above.
+# The one action whose "latest version" is not always installable (see R-4 above).
+# FLEET RULE 2026-11-03: it is NO LONGER ignored in dependabot.yml -- the guard
+# below now pins it to an exact X.Y.Z in every workflow instead, and a phantom
+# Dependabot bump shows up as a red PR a human closes.
 PHANTOM_VERSION_ACTIONS = ("dtolnay/rust-toolchain",)
 
 # Runtime dependencies whose output IS the product, so a major bump must be a human
@@ -252,16 +255,49 @@ def test_every_listed_manifest_really_exists():
 
 
 @requires_source_tree
-def test_dependabot_ignores_the_actions_whose_refs_run_ahead_of_their_releases():
-    """R-4. Without this, every new phantom branch reopens a guaranteed-red PR."""
-    ignored = ignored_for(DEPENDABOT.read_text(encoding="utf-8"), "github-actions", "/")
-    for action in PHANTOM_VERSION_ACTIONS:
-        assert action in ignored, (
-            "{} publishes a ref per Rust version ahead of the release train, so its "
-            "highest ref is a toolchain rustup 404s on (measured: PR #15, 1.100.0, "
-            "both cockpit legs). It must be on the github-actions ignore list; found "
-            "{}".format(action, sorted(ignored))
-        )
+def test_no_dependency_is_ignored_anywhere_in_dependabot_yml():
+    """FLEET RULE (2026-11-03). Zero tolerated suppression across every rail.
+
+    Superscedes the old R-4 guard, which required `dtolnay/rust-toolchain` to be
+    IGNORED because its refs run ahead of the release train (PR #15 proposed a
+    phantom 1.100.0 and both cockpit legs 404'd, run 31318613838). The fleet rule
+    now takes that cost in the open instead of suppressing updates: a phantom bump
+    arrives as a RED Dependabot PR a human closes, and the exact-version pin guard
+    below keeps main itself from ever floating. Nothing may be muted, ever -- an
+    ignore block here would silently hide the availability of every future update
+    of the ignored dependency, security releases included.
+    """
+    entries = update_entries(DEPENDABOT.read_text(encoding="utf-8"))
+    offenders = {
+        "{}:{}".format(entry["ecosystem"], entry["directory"]): sorted(entry["ignored"])
+        for entry in entries
+        if entry["ignored"]
+    }
+    assert not offenders, (
+        "the fleet rule tolerates ZERO ignored dependencies; these rails still "
+        "ignore some (every ignore hides security updates too): {}".format(offenders)
+    )
+
+
+@requires_source_tree
+def test_the_phantom_ref_actions_are_pinned_to_an_exact_installable_version():
+    """R-4, re-guarded. The pin -- not an ignore -- is the phantom-ref protection.
+
+    `dtolnay/rust-toolchain` publishes a ref per Rust version ahead of the release
+    train, so a floating ref ("stable", "master", a minor-glob) would let a hand
+    edit or a template copy drift onto a toolchain rustup 404s on. An EXACT X.Y.Z
+    pin can only change when a human types it, and the synced-twins test below
+    keeps every copy of it in agreement. Dependabot may still OPEN a phantom bump
+    PR (nothing ignores it any more) -- but it arrives red, in the open.
+    """
+    found = pinned_action_versions("dtolnay/rust-toolchain")
+    assert found, "the toolchain pin disappeared from every workflow"
+    exact = re.compile(r"^\d+\.\d+\.\d+$")
+    floating = {where: ref for where, ref in found.items() if not exact.match(ref)}
+    assert not floating, (
+        "the rust toolchain must be pinned at an exact X.Y.Z so a phantom ref "
+        "cannot ride in: {}".format(floating)
+    )
 
 
 @requires_source_tree
