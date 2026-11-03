@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose an enhancement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or pain point are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What behavior/API/UI should be added or changed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternatives or workarounds you evaluated?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Affected runtime(s)
+      multiple: true
+      options:
+        - Windows
+        - Linux
+        - WSL
+        - CLI
+        - GUI
+    validations:
+      required: false
