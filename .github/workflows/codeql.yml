@@ -1,5 +1,12 @@
 name: CodeQL
 
+# Fleet CODEQL DECISION: ADVANCED configuration.
+#   queries: security-extended + security-and-quality (strictly subsumes the
+#   default suite AND the extended suite), matrix over every language this repo
+#   actually has (python, javascript-typescript, rust), push to main +
+#   pull_request targeting main + weekly schedule, upload-sarif to code
+#   scanning with one category per language. The repo's OWN test/coverage
+#   suite (ci.yml) stays wired beside it and is untouched by this file.
 on:
   push:
     branches: [main]
@@ -22,16 +29,66 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ["python", "javascript-typescript"]
+        include:
+          # Python: stdlib-only rail plus ijson/zstandard/markdown-it-py, but
+          # CodeQL's Python extractor needs no build -- autobuild is a no-op
+          # extraction.
+          - language: python
+            build-mode: autobuild
+          # JS/TS: js/ and cockpit/ are two independent npm trees; the
+          # javascript-typescript extractor walks the whole tree without a
+          # build step.
+          - language: javascript-typescript
+            build-mode: autobuild
+          # Rust: the crate is cockpit/src-tauri, and its tauri-build needs the
+          # GTK/WebKit system libs, the built cockpit frontend in ../dist and
+          # the (possibly empty) resources/engine directory -- the same
+          # preconditions ci.yml's cockpit job establishes, so this leg
+          # replicates them and compiles manually under the tracing build.
+          - language: rust
+            build-mode: manual
     steps:
       - uses: actions/checkout@v7
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          queries: security-and-quality
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v4
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended,security-and-quality
+
+      # ---- rust leg only: the preconditions cargo build needs (mirrors the
+      # cockpit job in ci.yml; see the notes there for why each is required).
+      - name: install the GTK/WebKit toolchain Tauri v2 links against
+        if: matrix.language == 'rust'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf
+      - uses: actions/setup-node@v7
+        if: matrix.language == 'rust'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cockpit/package-lock.json
+      - name: build the cockpit frontend the tauri build resolves frontendDist at
+        if: matrix.language == 'rust'
+        working-directory: cockpit
+        run: |
+          npm ci
+          npm run build
+          mkdir -p src-tauri/resources/engine
+      - name: build the rust crate (traced)
+        if: matrix.language == 'rust'
+        run: cargo build --locked --manifest-path cockpit/src-tauri/Cargo.toml
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
