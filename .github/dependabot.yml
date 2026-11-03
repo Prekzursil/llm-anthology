@@ -82,30 +82,23 @@ updates:
         patterns: ["*"]
 
   # the workflows themselves
+  #
+  # FLEET RULE (2026-11-03): NO ignored updates -- not here, not anywhere in
+  # this file. This rail previously ignored `dtolnay/rust-toolchain` whole,
+  # because that action publishes a git BRANCH per Rust version AHEAD of the
+  # release train (measured 2026-08-10: branches 1.98/1.99/1.100/1.100.0
+  # existed while static.rust-lang.org 404'd those toolchains; Dependabot PR
+  # #15 bumped 1.91.0 -> 1.100.0 and both cockpit legs died on "could not
+  # download nonexistent rust version", run 31318613838).
+  #
+  # The fleet rule now takes the cost instead of the suppression: when the bot
+  # proposes a phantom ref, that PR arrives RED and a human closes it until the
+  # ref is installable. tests/test_dependency_rails.py enforces BOTH halves --
+  # (a) every rail in this file ignores NOTHING, and (b) the workflows pin the
+  # toolchain at an exact X.Y.Z that both copies agree on -- so a phantom bump
+  # can only ever be a visible red PR, never a silent drift of main.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     labels: ["dependencies", "github-actions"]
-    ignore:
-      # dtolnay/rust-toolchain publishes a git BRANCH per Rust version, and it publishes
-      # them AHEAD of the release train. Measured 2026-08-10: the action repo carries
-      # 1.98 / 1.99 / 1.100 / 1.100.0, while
-      # static.rust-lang.org/dist/rust-<v>-x86_64-unknown-linux-gnu.tar.gz.sha256
-      # answers 200 for 1.97.0 and 404 for 1.98.0, 1.99.0 and 1.100.0. So the bot's
-      # "highest version" resolves to a toolchain rustup cannot download: PR #15
-      # proposed 1.91.0 -> 1.100.0 and BOTH cockpit legs died on
-      #   error: could not download nonexistent rust version `1.100.0-...`: ... 404
-      # (run 31318613838, on x86_64-unknown-linux-gnu and x86_64-pc-windows-msvc).
-      # 1.100.0 > 1.91.0 is CORRECT numeric ordering, so this is not a sort bug that a
-      # future Dependabot release fixes.
-      #
-      # Ignoring only today's phantom versions would not stop it: 1.101+ will appear,
-      # and 1.98-1.100 each become real in ~6-week steps, at which point those entries
-      # are wrong in the other direction. A whole-dependency ignore is also the honest
-      # description of how this pin is actually maintained -- ci.yml pins it on purpose
-      # (a floating toolchain plus `clippy -D warnings` turns unrelated PRs red on every
-      # Rust release), release.yml carries a second copy that must move with it, and a
-      # bump needs a clippy pass. tests/test_dependency_rails.py keeps the two copies
-      # equal so a hand bump cannot desync them.
-      - dependency-name: "dtolnay/rust-toolchain"
