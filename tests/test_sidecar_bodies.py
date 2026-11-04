@@ -19,6 +19,7 @@ THREE OUTCOMES, all still reachable, and the middle one is the migration path:
 
 PRIVACY: synthetic fixtures only.
 """
+
 import json
 import os
 import sqlite3
@@ -37,8 +38,9 @@ def _close_connections():
         _OPEN.pop().close()
 
 
-def _rollout(tmp_path, name="rollout-2026-08-10T10-00-00-abc.jsonl",
-             text="the text that only the FILE knows"):
+def _rollout(
+    tmp_path, name="rollout-2026-08-10T10-00-00-abc.jsonl", text="the text that only the FILE knows"
+):
     """A minimal but REAL Codex rollout, parsed by the real adapter."""
     path = tmp_path / name
     path.write_text(
@@ -47,7 +49,8 @@ def _rollout(tmp_path, name="rollout-2026-08-10T10-00-00-abc.jsonl",
         '{"timestamp":"2026-08-10T10:00:01.000Z","type":"response_item",'
         '"payload":{"type":"message","role":"user",'
         '"content":[{"type":"input_text","text":"%s"}]}}\n' % text,
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     return str(path)
 
 
@@ -56,11 +59,16 @@ def _index(turns, rollout_path, cid="c1", meta=None):
     conn.row_factory = sqlite3.Row
     _OPEN.append(conn)
     corpus.init_index(conn)
-    conv = ir.Conversation(id=cid, title="a synthetic title", provider="codex",
-                           account="acct", turns=turns,
-                           created_at="2026-01-01T00:00:00Z",
-                           updated_at="2026-01-02T00:00:00Z",
-                           meta=dict(meta or {}))
+    conv = ir.Conversation(
+        id=cid,
+        title="a synthetic title",
+        provider="codex",
+        account="acct",
+        turns=turns,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-02T00:00:00Z",
+        meta=dict(meta or {}),
+    )
     corpus.add_conversation(conn, conv, rollout_path=rollout_path)
     conn.commit()
     return sidecar.Sidecar(conn), conn
@@ -82,6 +90,7 @@ def _drop_body(conn, cid="c1"):
 
 
 # ------------------------------------------------- 1. served from the archive
+
 
 def test_conversation_get_serves_the_stored_body_after_the_SOURCE_IS_DELETED(tmp_path):
     """THE G-1 PROPERTY, end to end and at the wire. Index a conversation, delete the
@@ -106,8 +115,7 @@ def test_the_archive_is_PREFERRED_over_a_source_file_that_still_exists(tmp_path)
     srv, _conn = _index([_turn("the text the ARCHIVE holds")], path)
     assert os.path.exists(path)
 
-    assert _texts(srv.dispatch("conversation.get", {"id": "c1"})) == [
-        "the text the ARCHIVE holds"]
+    assert _texts(srv.dispatch("conversation.get", {"id": "c1"})) == ["the text the ARCHIVE holds"]
 
 
 def test_serving_from_the_archive_touches_NO_source_file(tmp_path, monkeypatch):
@@ -128,14 +136,27 @@ def test_every_IR_FIELD_survives_the_round_trip_to_the_wire(tmp_path):
     """The archive must not quietly serve a flattened transcript: roles, uuids, timestamps,
     the branch marker and the typed blocks all have to arrive."""
     turns = [
-        ir.Turn(role="human", uuid="u-1", timestamp="2026-01-01T00:00:01Z",
-                blocks=[ir.Block(type="text", text="a question")]),
-        ir.Turn(role="assistant", uuid="u-2", timestamp="2026-01-01T00:00:02Z",
-                branch={"index": 1, "total": 2},
-                blocks=[ir.Block(type="thinking", text="deliberating"),
-                        ir.Block(type="tool_use", text="Read",
-                                 data={"name": "Read"},
-                                 citations=[{"url": "https://example.invalid/d"}])]),
+        ir.Turn(
+            role="human",
+            uuid="u-1",
+            timestamp="2026-01-01T00:00:01Z",
+            blocks=[ir.Block(type="text", text="a question")],
+        ),
+        ir.Turn(
+            role="assistant",
+            uuid="u-2",
+            timestamp="2026-01-01T00:00:02Z",
+            branch={"index": 1, "total": 2},
+            blocks=[
+                ir.Block(type="thinking", text="deliberating"),
+                ir.Block(
+                    type="tool_use",
+                    text="Read",
+                    data={"name": "Read"},
+                    citations=[{"url": "https://example.invalid/d"}],
+                ),
+            ],
+        ),
     ]
     srv, _conn = _index(turns, _rollout(tmp_path))
 
@@ -144,7 +165,9 @@ def test_every_IR_FIELD_survives_the_round_trip_to_the_wire(tmp_path):
     assert [t["role"] for t in out["turns"]] == ["human", "assistant"]
     assert [t["uuid"] for t in out["turns"]] == ["u-1", "u-2"]
     assert [t["timestamp"] for t in out["turns"]] == [
-        "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z"]
+        "2026-01-01T00:00:01Z",
+        "2026-01-01T00:00:02Z",
+    ]
     assert "branch" not in out["turns"][0], "an unset branch is omitted, as before"
     assert out["turns"][1]["branch"] == {"index": 1, "total": 2}
     second = out["turns"][1]["blocks"]
@@ -169,8 +192,7 @@ def test_the_stored_meta_reaches_the_wire_and_is_still_path_redacted(tmp_path):
     """`meta` is stored so the archive answers with the same conversation a re-parse did,
     and the local filesystem layout is still reduced to a basename on the way out."""
     path = _rollout(tmp_path)
-    srv, _conn = _index([_turn("x")], path,
-                        meta={"thread_id": "t7", "rollout_path": path})
+    srv, _conn = _index([_turn("x")], path, meta={"thread_id": "t7", "rollout_path": path})
     out = srv.dispatch("conversation.get", {"id": "c1"})
     assert out["meta"]["thread_id"] == "t7"
     assert out["meta"]["rollout_path"] == os.path.basename(path)
@@ -181,7 +203,7 @@ def test_the_stored_LEG_PATH_LIST_never_reaches_the_wire(tmp_path):
     """A PRIVACY DEFECT THIS UNIT WOULD OTHERWISE HAVE INTRODUCED.
 
     `loaders._bind` puts `meta["rollout_paths"]` — a LIST of absolute local paths, one per
-    resumed leg — on every ingested conversation (`loaders.py:546`, `:705`). Before G-4 that
+    resumed leg — on every ingested conversation (`loaders.py:588`, `:749`). Before G-4 that
     list could not reach the UI: the wire only ever saw a FRESHLY RE-PARSED conversation, and
     an adapter does not produce the key. Storing `meta` faithfully and serving it verbatim
     would have published the caller's whole session-store layout, and `_redact_paths` would
@@ -191,10 +213,17 @@ def test_the_stored_LEG_PATH_LIST_never_reaches_the_wire(tmp_path):
     `_reparse_conversation` already states the policy this restores: the leg PATHS stay off
     the wire, and `meta` carries the COUNT plus the single basenamed resume target.
     """
-    srv, _conn = _index([_turn("x")], "", meta={
-        "thread_id": "t7",
-        "rollout_paths": ["/synthetic/store/2026/07/24/leg-one.jsonl",
-                          "/synthetic/store/2026/07/24/leg-two.jsonl"]})
+    srv, _conn = _index(
+        [_turn("x")],
+        "",
+        meta={
+            "thread_id": "t7",
+            "rollout_paths": [
+                "/synthetic/store/2026/07/24/leg-one.jsonl",
+                "/synthetic/store/2026/07/24/leg-two.jsonl",
+            ],
+        },
+    )
 
     out = srv.dispatch("conversation.get", {"id": "c1"})
 
@@ -211,8 +240,9 @@ def test_a_SINGLE_leg_body_reports_no_leg_count_exactly_as_the_reparse_path_does
     is set only when there really was a fold, because absent means "one file" and that is
     what every conversation looked like before legs existed. The lone path is still reduced
     to a basename."""
-    srv, _conn = _index([_turn("x")], "", meta={
-        "rollout_paths": ["/synthetic/store/only-leg.jsonl"]})
+    srv, _conn = _index(
+        [_turn("x")], "", meta={"rollout_paths": ["/synthetic/store/only-leg.jsonl"]}
+    )
     out = srv.dispatch("conversation.get", {"id": "c1"})
     assert "rollout_legs" not in out["meta"]
     assert "rollout_paths" not in out["meta"]
@@ -229,6 +259,7 @@ def test_a_conversation_with_GENUINELY_ZERO_turns_does_not_reopen_its_rollout(tm
 
 
 # ------------------------------------------- 2. the pre-G-4 fall-back still works
+
 
 def test_an_index_with_NO_stored_body_still_re_parses_its_rollout(tmp_path):
     """THE MIGRATION PATH. Every index built before G-4 has no `conversation_bodies` rows,
@@ -256,6 +287,7 @@ def test_the_fall_back_is_reached_ONLY_when_no_body_row_exists(tmp_path):
 
 
 # --------------------------------------------- 3. the honest stub is still there
+
 
 def test_no_body_and_no_rollout_is_still_an_available_false_stub(tmp_path):
     """The genuinely-unrecoverable case keeps its documented shape. This is the ONLY
@@ -286,8 +318,7 @@ def test_an_unknown_id_is_still_an_error_not_a_stub():
 def test_a_body_whose_meta_is_hostile_text_is_still_sanitized(tmp_path):
     """Stored meta is attacker-influenceable — it can carry whatever an imported export put
     in it — so it goes through the same hidden-unicode strip every other wire string does."""
-    srv, _conn = _index([_turn("x")], _rollout(tmp_path),
-                        meta={"note": "plain​text"})
+    srv, _conn = _index([_turn("x")], _rollout(tmp_path), meta={"note": "plain​text"})
     out = srv.dispatch("conversation.get", {"id": "c1"})
     assert out["meta"]["note"] == "plaintext"
     assert json.dumps(out["meta"]).count("\\u200b") == 0

@@ -60,23 +60,23 @@ model/agent that is later fed the Markdown copy; (c) the build host's filesystem
 
 Invisible codepoints can carry instructions that a human reviewer cannot see but a model
 will read. The neutraliser (`llm_anthology/sanitize.py`) flags, per codepoint and **position-aware**
-(`_flagged_at`, `llm_anthology/sanitize.py:65-77`):
+(`_flagged_at`, `llm_anthology/sanitize.py:66-78`):
 
 | Class | Codepoints | Why | Where |
 |---|---|---|---|
-| TAG block | U+E0000–U+E007F | Encodes an invisible ASCII shadow-alphabet (emoji tag sequences / deprecated language tags) | `llm_anthology/sanitize.py:48-49` |
-| **Variation selectors** | **U+FE00–U+FE0F (VS1–16), U+E0100–U+E01EF (VS17–256)** | Category **Mn** (nonspacing mark), so *no category test catches them*. 256 selectors = a byte-per-selector channel, invisible in every renderer — **the primary modern invisible-text smuggling technique** | `llm_anthology/sanitize.py:50-54` |
-| Zero-width joiner | U+200D | Payload glue when *outside* an emoji sequence | `llm_anthology/sanitize.py:24,73-74,90-93` |
-| Invisible letters | U+115F, U+1160, U+3164, U+FFA0 (Hangul fillers) | Render as nothing but are category **Lo** — again invisible to category tests | `llm_anthology/sanitize.py:26-28,55-56` |
-| Control chars (Cc) | all except TAB/LF/CR | Non-printing controls | `llm_anthology/sanitize.py:23,57-59` |
-| Format chars (Cf) | e.g. zero-width space, soft hyphen, **bidi controls** (Trojan-Source-style reordering) | Invisible or text-reordering | `llm_anthology/sanitize.py:62` |
-| Private use (Co), unassigned (Cn) | — | Undefined rendering, covert channel | `llm_anthology/sanitize.py:62` |
-| Lone surrogates (Cs) | — | Survive `json.loads` but abort a UTF-8 write; previously killed a whole build mid-corpus | `llm_anthology/sanitize.py:60-62` (plus `errors="replace"` write defence, `llm_anthology/build.py`) |
+| TAG block | U+E0000–U+E007F | Encodes an invisible ASCII shadow-alphabet (emoji tag sequences / deprecated language tags) | `llm_anthology/sanitize.py:49-50` |
+| **Variation selectors** | **U+FE00–U+FE0F (VS1–16), U+E0100–U+E01EF (VS17–256)** | Category **Mn** (nonspacing mark), so *no category test catches them*. 256 selectors = a byte-per-selector channel, invisible in every renderer — **the primary modern invisible-text smuggling technique** | `llm_anthology/sanitize.py:51-55` |
+| Zero-width joiner | U+200D | Payload glue when *outside* an emoji sequence | `llm_anthology/sanitize.py:25,74-75,93-96` |
+| Invisible letters | U+115F, U+1160, U+3164, U+FFA0 (Hangul fillers) | Render as nothing but are category **Lo** — again invisible to category tests | `llm_anthology/sanitize.py:27-29,56-57` |
+| Control chars (Cc) | all except TAB/LF/CR | Non-printing controls | `llm_anthology/sanitize.py:24,58-60` |
+| Format chars (Cf) | e.g. zero-width space, soft hyphen, **bidi controls** (Trojan-Source-style reordering) | Invisible or text-reordering | `llm_anthology/sanitize.py:63` |
+| Private use (Co), unassigned (Cn) | — | Undefined rendering, covert channel | `llm_anthology/sanitize.py:63` |
+| Lone surrogates (Cs) | — | Survive `json.loads` but abort a UTF-8 write; previously killed a whole build mid-corpus | `llm_anthology/sanitize.py:61-63` (plus `errors="replace"` write defence, `llm_anthology/build.py`) |
 
 **Emoji are not broken:** a ZWJ *between two pictographs* and a VS16 *immediately after a
-pictograph* are presentation, not payload, and are preserved (`llm_anthology/sanitize.py:31-39,
+pictograph* are presentation, not payload, and are preserved (`llm_anthology/sanitize.py:32-40,
 65-77,90-93`). The pictograph test is an approximation of `Extended_Pictographic`
-(`llm_anthology/sanitize.py:31-39`) — see §7 for the residual.
+(`llm_anthology/sanitize.py:32-40`) — see §7 for the residual.
 
 **Decoded-string requirement:** Claude exports store invisibles as `\uXXXX` JSON escapes,
 so scanning raw file bytes reports a false "clean". All scanning happens *after*
@@ -86,24 +86,24 @@ so scanning raw file bytes reports a false "clean". All scanning happens *after*
 
 1. **HTML text nodes — BADGE (forensic).** Each flagged codepoint becomes a visible inert
    marker: `<span class="cp-badge" data-cp="U+XXXX" title="NAME (hidden)">⚑</span>`
-   (`llm_anthology/sanitize.py:80-87`), applied via `neutralize_html` / `badge_invisibles`
-   (`llm_anthology/sanitize.py:96-114`). The reader — and a diff — sees exactly what was there;
+   (`llm_anthology/sanitize.py:81-90`), applied via `neutralize_html` / `badge_invisibles`
+   (`llm_anthology/sanitize.py:99-117`). The reader — and a diff — sees exactly what was there;
    the invisible char itself never reaches the DOM text.
 2. **HTML attributes — inert numeric character references.** Inside a tag (an `href`, a
    link `title`, an `alt`, a code-fence language) a badge `<span>` would break out of the
    markup, so flagged codepoints become `&#xXXXX;` instead — recorded in the source,
-   never parsed as markup (`llm_anthology/sanitize.py:117-127`; routed by `_badge_text_nodes`,
+   never parsed as markup (`llm_anthology/sanitize.py:120-130`; routed by `_badge_text_nodes`,
    which splits the fragment on tags and NCR-encodes only inside them,
-   `llm_anthology/render_html.py:74-85`; used for `href`/`title` at `llm_anthology/render_html.py:65-68,136-139`).
+   `llm_anthology/render_html.py:87-100`; used for `href`/`title` at `llm_anthology/render_html.py:69-78,155-160`).
 3. **Markdown keep-copy — STRIP.** `sanitize_for_copy` deletes flagged codepoints
-   entirely (`llm_anthology/sanitize.py:140-147`); every Markdown body passes through it
-   (`llm_anthology/render_md.py:62-63`). No invisible payload survives into the file you may
+   entirely (`llm_anthology/sanitize.py:143-150`); every Markdown body passes through it
+   (`llm_anthology/render_md.py:78-79`). No invisible payload survives into the file you may
    re-feed to a model.
 
 Additionally, an **audit sidecar** records every flagged codepoint across *every* text
 surface — title, account, block text, tool `input`/`content` (JSON-serialised if
 structured), `extracted_content`, file names, citation titles and URLs
-(`llm_anthology/audit.py:15-40`; scanning only body text under-reported by roughly 5×,
+(`llm_anthology/audit.py:16-41`; scanning only body text under-reported by roughly 5×,
 `llm_anthology/audit.py:3-6`). The build writes the result to `_hidden-char-audit.json`
 (`llm_anthology/build.py`).
 
@@ -111,36 +111,36 @@ structured), `extracted_content`, file names, citation titles and URLs
 
 - **Raw HTML in bodies is escaped, never parsed.** markdown-it-py runs with
   `html=False` in both the `gfm-like` and `commonmark` fallback configurations
-  (`llm_anthology/render_html.py:22-25`) — matching how chatgpt.com / claude.ai / gemini render
-  bodies as text. `linkify` and `typographer` are also off (`llm_anthology/render_html.py:23`).
+  (`llm_anthology/render_html.py:23-26`) — matching how chatgpt.com / claude.ai / gemini render
+  bodies as text. `linkify` and `typographer` are also off (`llm_anthology/render_html.py:24`).
   Non-markdown surfaces (tool payloads, code blocks, titles) go through `html.escape`
-  plus badging (`llm_anthology/render_html.py:126-127,184-186`, `llm_anthology/sanitize.py:96-103`).
+  plus badging (`llm_anthology/render_html.py:145-146,230-234`, `llm_anthology/sanitize.py:99-106`).
 - **Link scheme allowlist, fail-closed.** `is_safe_url` accepts only `http://` / `https://`
   after strip+lowercase — `javascript:`, `data:`, `file:`, `vbscript:` etc. all fail
-  (`llm_anthology/sanitize.py:150-153`). `_harden_links` rewrites **every** anchor, not just
+  (`llm_anthology/sanitize.py:153-156`). `_harden_links` rewrites **every** anchor, not just
   well-formed ones: an anchor whose `href` cannot be parsed is emitted as a bare `<a>`;
   a disallowed scheme is defanged to inert text carrying `data-unsafe-href` (evidence
   preserved, nothing clickable); allowed links get
-  `rel="noopener noreferrer" target="_blank"` (`llm_anthology/render_html.py:48-71`). Citation
-  pills apply the same gate (`llm_anthology/render_html.py:130-142`).
+  `rel="noopener noreferrer" target="_blank"` (`llm_anthology/render_html.py:51-84`). Citation
+  pills apply the same gate (`llm_anthology/render_html.py:149-163`).
 - **Images are defanged.** A markdown image would emit a remote `<img src>`; instead it is
   replaced by a labelled chip with an explicit *link* ("remote image — not fetched") or
   "(image unavailable)" for unsafe sources — no fetch ever happens
-  (`llm_anthology/render_html.py:88-102`). `media` blocks render an `<img>` only for **local
+  (`llm_anthology/render_html.py:103-121`). `media` blocks render an `<img>` only for **local
   relative paths**; any path containing a scheme (`://`) or protocol-relative `//` prefix
-  is shown as an inert chip (`llm_anthology/render_html.py:192-198`).
+  is shown as an inert chip (`llm_anthology/render_html.py:242-248`).
 - **CSP pins the page shut.** Every conversation page embeds
   `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'
-  data:; base-uri 'none'; form-action 'none'` (`llm_anthology/render_html.py:32-33,228-235`); the
+  data:; base-uri 'none'; form-action 'none'` (`llm_anthology/render_html.py:33-36,288-297`); the
   index page carries `default-src 'none'; style-src 'unsafe-inline'`
   (`llm_anthology/build.py`). No `script-src` is granted and no `<script>` is ever
-  emitted (`llm_anthology/render_html.py:228-235`), so scripts are dead even if an escaping bug
+  emitted (`llm_anthology/render_html.py:288-297`), so scripts are dead even if an escaping bug
   slipped markup through; `img-src 'self' data:` means even an un-defanged remote image
   could not load; `base-uri 'none'` / `form-action 'none'` block base-hijack and form
   exfiltration. `style-src 'unsafe-inline'` exists solely for the tool's own inlined
-  theme `<style>` (`llm_anthology/render_html.py:40-45,232`).
+  theme `<style>` (`llm_anthology/render_html.py:43-48,294`).
 - **Math is preserved verbatim, not rendered** — `$…$`/`$$…$$` spans are held out of the
-  markdown pass and restored escaped (`llm_anthology/render_html.py:36-37,105-123`), so no math
+  markdown pass and restored escaped (`llm_anthology/render_html.py:39-40,124-142`), so no math
   renderer is in the attack surface.
 
 ## 5. Threat: structure forgery in the Markdown keep-copy
@@ -149,15 +149,15 @@ The `.md` copy may be re-fed to a model, so untrusted values must not be able to
 conversation *structure* there:
 
 - **Role-header forgery:** newlines are stripped from single-line fields so a title or
-  file name can never fabricate a `## Human` turn header (`llm_anthology/render_md.py:19-22`).
-- **Link breakout:** link text escapes `\`, `[`, `]` (`llm_anthology/render_md.py:25-28`); link
+  file name can never fabricate a `## Human` turn header (`llm_anthology/render_md.py:31-34`).
+- **Link breakout:** link text escapes `\`, `[`, `]` (`llm_anthology/render_md.py:37-40`); link
   destinations percent-encode `( ) < > " [ ]`, space and TAB and drop CR/LF
-  (`llm_anthology/render_md.py:15-16,36-38`). The scheme gate alone is not enough — a `)` in a URL
+  (`llm_anthology/render_md.py:16-28,48-50`). The scheme gate alone is not enough — a `)` in a URL
   or a `]` in a title would otherwise forge a second, live link
-  (`llm_anthology/render_md.py:75-78`).
+  (`llm_anthology/render_md.py:91-97`).
 - **Code-span breakout:** backticks and newlines are removed from inline code spans
-  (`llm_anthology/render_md.py:31-33`).
-- Unsafe-scheme citations are rendered as plain text, not links (`llm_anthology/render_md.py:77-78`).
+  (`llm_anthology/render_md.py:43-45`).
+- Unsafe-scheme citations are rendered as plain text, not links (`llm_anthology/render_md.py:93-97`).
 
 ## 6. Threat: build-host effects
 
@@ -183,7 +183,7 @@ conversation *structure* there:
 - Markdown structure forgery in the keep-copy — §5.
 - Text-exact fidelity: every `\w+` word token (case-folded, multiset-counted) from `text`
   and `thinking` bodies must reappear in the rendered HTML's visible text or harvested
-  `href|src|alt|title`/`language-*` attributes (`llm_anthology/verify.py:20-27,42-74`). The build
+  `href|src|alt|title`/`language-*` attributes (`llm_anthology/verify.py:21-28,43-75`). The build
   records failures per conversation in `_fidelity-report.json` (`llm_anthology/build.py`).
 
 ### NOT covered (explicit non-goals and blind spots)
@@ -192,15 +192,15 @@ conversation *structure* there:
    (`llm_anthology/verify.py:3-6`). Layout, styling, ordering-on-screen, and anything visual are
    not verified against the live products.
 2. **Token-gate blind spots** (`llm_anthology/verify.py`):
-   - The tokenizer is `\w+` (`llm_anthology/verify.py:15`): dropped **punctuation, emoji,
+   - The tokenizer is `\w+` (`llm_anthology/verify.py:16`): dropped **punctuation, emoji,
      symbols, or whitespace-only content** is invisible to the gate.
-   - Tokens are **case-folded** (`llm_anthology/verify.py:39`) — a case-mangling bug passes.
-   - The comparison is an **order-insensitive multiset** (`llm_anthology/verify.py:64-67`) — words
+   - Tokens are **case-folded** (`llm_anthology/verify.py:40`) — a case-mangling bug passes.
+   - The comparison is an **order-insensitive multiset** (`llm_anthology/verify.py:65-68`) — words
      moved between turns/blocks pass.
-   - Attribute harvesting (`llm_anthology/verify.py:20-27,59`) means a body word that wrongly
+   - Attribute harvesting (`llm_anthology/verify.py:21-28,60`) means a body word that wrongly
      ended up inside an `href`/`alt`/`title` attribute still counts as "visible".
    - **Tool payloads and attachment text are excluded from the prose gate**
-     (`llm_anthology/verify.py:46-51`) — they are rendered escaped (§4) and audited for hidden
+     (`llm_anthology/verify.py:47-52`) — they are rendered escaped (§4) and audited for hidden
      chars (§3), but a silent *drop* there would not fail `verify()`.
    - The gate **reports**; it does not delete or quarantine failing output — failing
      conversations are still written and counted (`llm_anthology/build.py`).
@@ -211,14 +211,14 @@ conversation *structure* there:
    clickable (with `noopener noreferrer`); the no-egress guarantee covers *automatic*
    loads, not a user choosing to follow a hostile-but-well-formed URL.
 5. **Markdown media references are scheme-gated only in HTML.** A `media` block whose
-   path is a remote URL is defanged in HTML (`llm_anthology/render_html.py:192-198`) but the
+   path is a remote URL is defanged in HTML (`llm_anthology/render_html.py:242-248`) but the
    Markdown side emits `![alt](path)` with encoding-only hardening
-   (`llm_anthology/render_md.py:113-116`); a Markdown *previewer* that auto-fetches remote images
+   (`llm_anthology/render_md.py:139-142`); a Markdown *previewer* that auto-fetches remote images
    could egress. In the observed corpora media paths are local names
-   (`llm_anthology/adapters/gemini.py:68-70`, `llm_anthology/adapters/chatgpt.py:134-137`); a hostile
+   (`llm_anthology/adapters/gemini.py:93-95`, `llm_anthology/adapters/chatgpt.py:137-140`); a hostile
    export could differ. UNVERIFIED that any real export carries remote media paths;
    known gap regardless.
-6. **`_is_pictographic` is an approximation** (`llm_anthology/sanitize.py:31-39`): a VS16/ZWJ
+6. **`_is_pictographic` is an approximation** (`llm_anthology/sanitize.py:32-40`): a VS16/ZWJ
    adjacent to characters inside its broad ranges is treated as emoji presentation and
    preserved. Residual covert capacity in that position is on the order of bits, not
    bytes; a bare VS anywhere else is flagged.
@@ -266,8 +266,8 @@ This is a personal, local-only project, but sanitizer bypasses matter beyond it.
 find any of the following, please report it privately:
 
 - a codepoint (or sequence) that renders invisibly in mainstream renderers but is not
-  flagged by `_flagged_at` (`llm_anthology/sanitize.py:65-77`);
-- a URL that passes `is_safe_url` (`llm_anthology/sanitize.py:150-153`) yet executes or exfiltrates;
+  flagged by `_flagged_at` (`llm_anthology/sanitize.py:66-78`);
+- a URL that passes `is_safe_url` (`llm_anthology/sanitize.py:153-156`) yet executes or exfiltrates;
 - markup breakout through the badge / NCR / escaping path (§3–§4);
 - a way for rendered output to trigger a network request despite §4;
 - Markdown structure forgery that survives §5.

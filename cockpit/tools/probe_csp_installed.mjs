@@ -61,7 +61,10 @@ const PORT = 9222;
 
 const SKILL = join(
   process.env.USERPROFILE ?? process.env.HOME ?? "",
-  ".claude", "skills", "ui-audit", "package.json",
+  ".claude",
+  "skills",
+  "ui-audit",
+  "package.json",
 );
 const { chromium } = createRequire(pathToFileURL(SKILL))("playwright");
 
@@ -71,8 +74,7 @@ const check = (name, ok, detail = "") => {
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${detail ? `  -- ${detail}` : ""}`);
 };
 
-const shippedCsp = () =>
-  JSON.parse(readFileSync(CONF, "utf8")).app?.security?.csp ?? null;
+const shippedCsp = () => JSON.parse(readFileSync(CONF, "utf8")).app?.security?.csp ?? null;
 
 /** Kill any stray instance so a previous run cannot be mistaken for this one. */
 function killApp() {
@@ -301,24 +303,33 @@ function report(label, o, expectCspActive) {
     );
   }
 
-  const cspLog = [...consoleMsgs, ...cdpLog].filter((m) =>
-    /Content Security Policy/i.test(m),
-  );
+  const cspLog = [...consoleMsgs, ...cdpLog].filter((m) => /Content Security Policy/i.test(m));
   console.log(`  CSP log entries (${cspLog.length}):`);
   for (const m of cspLog.slice(0, 8)) console.log(`     - ${m.slice(0, 180)}`);
 
   // Q1 boot
-  check(`${label}: app boots at the Tauri custom-protocol origin`,
-    /^https?:\/\/tauri\.localhost$/.test(r.origin), r.origin);
-  check(`${label}: the frontend bundle executed (window.__TAURI_INTERNALS__ + #app painted)`,
-    r.hasTauriInternals && r.appRendered);
+  check(
+    `${label}: app boots at the Tauri custom-protocol origin`,
+    /^https?:\/\/tauri\.localhost$/.test(r.origin),
+    r.origin,
+  );
+  check(
+    `${label}: the frontend bundle executed (window.__TAURI_INTERNALS__ + #app painted)`,
+    r.hasTauriInternals && r.appRendered,
+  );
   // Q2 IPC
-  check(`${label}: a real IPC round trip RESOLVED (corpus-free app_info)`,
-    String(r.ipcCorpusFree).startsWith("resolved"), r.ipcCorpusFree);
+  check(
+    `${label}: a real IPC round trip RESOLVED (corpus-free app_info)`,
+    String(r.ipcCorpusFree).startsWith("resolved"),
+    r.ipcCorpusFree,
+  );
   // A response of EITHER kind is proof of transport, as long as it came from the app rather
   // than from the CSP: an app-authored rejection still crossed the whole webview->Rust bridge.
-  check(`${label}: the IPC bridge answered at all (resolved or app-level rejection)`,
-    /^(resolved|rejected)/.test(String(r.ipc)), r.ipc);
+  check(
+    `${label}: the IPC bridge answered at all (resolved or app-level rejection)`,
+    /^(resolved|rejected)/.test(String(r.ipc)),
+    r.ipc,
+  );
   check(`${label}: IPC used the custom protocol, NOT the postMessage fallback`, !ipcFellBack);
   // The decisive connect-src evidence: the ipc origin must never appear as a BLOCKED URI.
   const ipcRefused = r.violations.some(
@@ -333,27 +344,37 @@ function report(label, o, expectCspActive) {
     (v) => v.directive.startsWith("connect-src") && v.blocked.includes("blocked.invalid"),
   );
   if (expectCspActive) {
-    check(`${label}: connect-src DID refuse a foreign origin (so the check above has teeth)`,
-      foreignRefused);
+    check(
+      `${label}: connect-src DID refuse a foreign origin (so the check above has teeth)`,
+      foreignRefused,
+    );
   } else {
-    check(`${label}: CONTROL -- no connect-src refusal at all without a policy`,
-      !foreignRefused);
+    check(`${label}: CONTROL -- no connect-src refusal at all without a policy`, !foreignRefused);
   }
   // Q3 worker, at the real origin
-  check(`${label}: the ELK web worker constructs at the tauri.localhost origin`,
-    r.worker === "constructed", r.worker);
+  check(
+    `${label}: the ELK web worker constructs at the tauri.localhost origin`,
+    r.worker === "constructed",
+    r.worker,
+  );
   // Q4 nonces
-  check(`${label}: no unreplaced __TAURI_*_NONCE__ token left in the DOM`,
-    r.unreplacedNonceToken === false);
+  check(
+    `${label}: no unreplaced __TAURI_*_NONCE__ token left in the DOM`,
+    r.unreplacedNonceToken === false,
+  );
 
   if (expectCspActive) {
-    check(`${label}: an inline <script> is REFUSED (CSP is live at the real origin)`,
-      r.inlineScriptRan === false);
+    check(
+      `${label}: an inline <script> is REFUSED (CSP is live at the real origin)`,
+      r.inlineScriptRan === false,
+    );
     check(`${label}: an injected <style> is REFUSED`, r.inlineStyleSheetAttached === false);
   } else {
     check(`${label}: CONTROL -- inline <script> RUNS with no CSP`, r.inlineScriptRan === true);
-    check(`${label}: CONTROL -- injected <style> APPLIES with no CSP`,
-      r.inlineStyleSheetAttached === true);
+    check(
+      `${label}: CONTROL -- injected <style> APPLIES with no CSP`,
+      r.inlineStyleSheetAttached === true,
+    );
   }
 }
 
@@ -386,8 +407,10 @@ const main = async () => {
     cspInBinary === expectCspActive,
     `ipc.localhost in binary: ${cspInBinary}`,
   );
-  check("the exe carries the debug port (instrumented build)",
-    exeBytes.includes("remote-debugging-port"));
+  check(
+    "the exe carries the debug port (instrumented build)",
+    exeBytes.includes("remote-debugging-port"),
+  );
 
   const elk = elkAssetName();
   console.log(`  elk worker asset on disk: ${elk ?? "(dist/assets missing)"}`);

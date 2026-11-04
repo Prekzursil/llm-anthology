@@ -1,0 +1,22 @@
+# The pinned Python environment of the QZP lean gate (gates 2, 3 and 6).
+#
+# Users install the package (`pip install llm-anthology`), and pyproject.toml declares the
+# version RANGES this code supports. This file pins one resolved set of those plus the test
+# toolchain, for two reasons:
+#   * the lean gate installs it before the type check, so basedpyright (gate 2) resolves
+#     markdown_it, zstandard, ijson and pytest, and before the tests (gate 3);
+#   * osv-scanner (gate 6) reads pinned requirements files. Without one it scanned none of
+#     the Python dependencies at all.
+# Every transitive dependency is pinned too, so the scanner never settles on an old release.
+# Dependabot's pip rail keeps these current.
+markdown-it-py==4.2.0
+mdurl==0.1.2
+zstandard==0.25.0
+ijson==3.6.0
+pytest==9.1.1
+pytest-cov==7.1.0
+coverage==7.17.0
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+pygments==2.21.0

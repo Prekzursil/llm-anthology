@@ -13,16 +13,22 @@ survives the trip.
 
     python tools/gen-parity-fixture.py
 """
+
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from llm_anthology import sanitize                        # noqa: E402
+from llm_anthology import sanitize  # noqa: E402
 
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "js", "test", "fixtures", "sanitize-parity.json")
+OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "js",
+    "test",
+    "fixtures",
+    "sanitize-parity.json",
+)
 
 
 def cases():
@@ -31,7 +37,7 @@ def cases():
     yield "a < b & c > d"
     yield "<script>alert(1)</script>"
     yield "quotes \" and ' and & together"
-    yield "a\tb\nc\rd"                                   # allowed control chars
+    yield "a\tb\nc\rd"  # allowed control chars
     # one sample per flagged family
     yield "zwsp a​b"
     yield "bidi x‮y"
@@ -41,19 +47,19 @@ def cases():
     yield "surrogate a\ud800b"
     yield "unassigned aࡰb"
     # emoji: legitimate sequences must survive
-    yield "❤️"                                 # heart + VS16
-    yield "\U0001f468‍\U0001f469"                   # man ZWJ woman
-    yield "\U0001f468‍\U0001f469‍\U0001f466"   # family, two ZWJ
-    yield "\U0001f1f7\U0001f1f4"                         # regional indicators
-    yield "a‍b"                                     # BARE zwj = payload
-    yield "a️b"                                     # BARE vs16 = payload
-    yield "❤️‍\U0001f525"                 # heart-on-fire
+    yield "❤️"  # heart + VS16
+    yield "\U0001f468‍\U0001f469"  # man ZWJ woman
+    yield "\U0001f468‍\U0001f469‍\U0001f466"  # family, two ZWJ
+    yield "\U0001f1f7\U0001f1f4"  # regional indicators
+    yield "a‍b"  # BARE zwj = payload
+    yield "a️b"  # BARE vs16 = payload
+    yield "❤️‍\U0001f525"  # heart-on-fire
     # boundaries
-    yield "‍"                                       # zwj alone
-    yield "️"                                       # vs16 alone
-    yield "\U0001f600️"                             # vs16 after astral pictograph
-    yield "‍\U0001f600"                             # zwj with nothing before
-    yield "\U0001f600‍"                             # zwj with nothing after
+    yield "‍"  # zwj alone
+    yield "️"  # vs16 alone
+    yield "\U0001f600️"  # vs16 after astral pictograph
+    yield "‍\U0001f600"  # zwj with nothing before
+    yield "\U0001f600‍"  # zwj with nothing after
     # the modern smuggling channel
     payload = "".join(chr(0xFE00 + b) if b < 16 else chr(0xE0100 + b - 16) for b in b"SECRET")
     yield "ordinary sentence" + payload
@@ -71,18 +77,30 @@ def cases():
 def main():
     data = []
     for s in cases():
-        data.append({
-            "input": s,
-            "neutralize_html": sanitize.neutralize_html(s),
-            "badge_invisibles": sanitize.badge_invisibles(s),
-            "ncr_invisibles": sanitize.ncr_invisibles(s),
-            "sanitize_for_copy": sanitize.sanitize_for_copy(s),
-            "scan_invisibles": [[i, cp] for i, cp in sanitize.scan_invisibles(s)],
-        })
-    urls = ["https://example.com", "http://x.y/z", "javascript:alert(1)",
-            "data:text/html,<script>", "file:///etc/passwd", "  JavaScript:alert(1)",
-            "", "  https://ok.example  ", "HTTPS://SHOUTY.EXAMPLE", "//protocol-relative",
-            "ftp://x", "mailto:a@b"]
+        data.append(
+            {
+                "input": s,
+                "neutralize_html": sanitize.neutralize_html(s),
+                "badge_invisibles": sanitize.badge_invisibles(s),
+                "ncr_invisibles": sanitize.ncr_invisibles(s),
+                "sanitize_for_copy": sanitize.sanitize_for_copy(s),
+                "scan_invisibles": [[i, cp] for i, cp in sanitize.scan_invisibles(s)],
+            }
+        )
+    urls = [
+        "https://example.com",
+        "http://x.y/z",
+        "javascript:alert(1)",
+        "data:text/html,<script>",
+        "file:///etc/passwd",
+        "  JavaScript:alert(1)",
+        "",
+        "  https://ok.example  ",
+        "HTTPS://SHOUTY.EXAMPLE",
+        "//protocol-relative",
+        "ftp://x",
+        "mailto:a@b",
+    ]
     payload = {
         "unidata_version": __import__("unicodedata").unidata_version,
         "cases": data,

@@ -30,9 +30,7 @@ export interface Group {
 /** [Conversation] — one per group, or a single conversation if ungrouped. */
 export function parseAll(records: Rec[], groups?: Group[] | null): Conversation[] {
   if (!groups || !groups.length) {
-    return [
-      parseConversation(records, [...records.keys()], "Gemini activity (ungrouped)", "all"),
-    ];
+    return [parseConversation(records, [...records.keys()], "Gemini activity (ungrouped)", "all")];
   }
   return groups.map((g) =>
     parseConversation(records, g.turn_idxs ?? [], g.title || "(untitled)", g.id || ""),
@@ -88,7 +86,8 @@ function attachmentBlocks(r: Rec): Block[] {
     }
   }
   for (const m of (get(r, "media") as unknown[]) || []) {
-    const path = m !== null && typeof m === "object" ? s(get(m, "on_disk") || get(m, "name")) : s(m);
+    const path =
+      m !== null && typeof m === "object" ? s(get(m, "on_disk") || get(m, "name")) : s(m);
     blocks.push(block("media", { text: path, data: { path } }));
   }
   return blocks;

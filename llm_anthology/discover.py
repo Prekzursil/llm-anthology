@@ -57,6 +57,7 @@ is useless. They embed the local filesystem layout (and therefore the username),
 caller that puts them on a wire is responsible for reducing them exactly as
 ``sidecar._build_error`` does for ingest errors.
 """
+
 import dataclasses
 import fnmatch
 import os
@@ -110,18 +111,48 @@ DEFAULT_MAX_PER_GROUP = 25
 #: Directory names never descended into. Every one is either enormous, machine-
 #: generated, or a place a session export does not live. Pruning them is what keeps a
 #: depth-3 walk of a real Downloads tree under a second.
-PRUNED_DIR_NAMES = frozenset({
-    "node_modules", ".git", ".hg", ".svn", "__pycache__", ".pytest_cache",
-    ".ruff_cache", ".mypy_cache", ".tox", ".nox", "venv", ".venv", "env",
-    "site-packages", "dist-info", "target", "build", "dist", "out",
-    "AppData", "Library", "System Volume Information", "$RECYCLE.BIN",
-    ".cache", ".gradle", ".m2", ".nuget", ".cargo", ".rustup", ".conda",
-    "Windows", "Program Files", "Program Files (x86)",
-    # this app's own rendered output. loaders.py:64-66 already refuses to INGEST a
-    # `_site` tree ("never ingest our own output"); offering one back as a discovery
-    # would recreate that bug from the other end.
-    "_site", "_codex_site",
-})
+PRUNED_DIR_NAMES = frozenset(
+    {
+        "node_modules",
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".tox",
+        ".nox",
+        "venv",
+        ".venv",
+        "env",
+        "site-packages",
+        "dist-info",
+        "target",
+        "build",
+        "dist",
+        "out",
+        "AppData",
+        "Library",
+        "System Volume Information",
+        "$RECYCLE.BIN",
+        ".cache",
+        ".gradle",
+        ".m2",
+        ".nuget",
+        ".cargo",
+        ".rustup",
+        ".conda",
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        # this app's own rendered output. loaders.py:75-77 already refuses to INGEST a
+        # `_site` tree ("never ingest our own output"); offering one back as a discovery
+        # would recreate that bug from the other end.
+        "_site",
+        "_codex_site",
+    }
+)
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SQLITE_SUFFIXES = (".sqlite", ".sqlite3", ".db")
@@ -133,6 +164,7 @@ _SNIFF_BYTES = 64
 
 # --------------------------------------------------------------------- structures
 
+
 @dataclasses.dataclass(frozen=True)
 class Roots:
     """The candidate locations a scan is allowed to look in.
@@ -141,11 +173,12 @@ class Roots:
     tree, and so a UI can offer "also look in ..." without this module growing a
     second search strategy. Every non-empty entry must be an absolute local path.
     """
-    codex_home: str = ""            # $CODEX_HOME, else ~/.codex
-    claude_home: str = ""           # ~/.claude
-    grok_home: str = ""             # $GROK_HOME, else ~/.grok
-    user_dirs: tuple = ()           # Downloads / Documents / Desktop — export landing
-    index_dirs: tuple = ()          # where an already-built corpus index might sit
+
+    codex_home: str = ""  # $CODEX_HOME, else ~/.codex
+    claude_home: str = ""  # ~/.claude
+    grok_home: str = ""  # $GROK_HOME, else ~/.grok
+    user_dirs: tuple = ()  # Downloads / Documents / Desktop — export landing
+    index_dirs: tuple = ()  # where an already-built corpus index might sit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -168,6 +201,7 @@ class Finding:
     pins it as a unique token, and repeating it verbatim here made it match two lines and
     silently disabled that pin.)
     """
+
     provider: str
     kind: str
     path: str
@@ -178,11 +212,17 @@ class Finding:
 
     def as_dict(self):
         """A JSON-ready copy — tuples inside ``detail`` become lists."""
-        return {"provider": self.provider, "kind": self.kind, "path": self.path,
-                "count": self.count, "newest_mtime": self.newest_mtime,
-                "confidence": self.confidence,
-                "detail": {k: list(v) if isinstance(v, tuple) else v
-                           for k, v in sorted(self.detail.items())}}
+        return {
+            "provider": self.provider,
+            "kind": self.kind,
+            "path": self.path,
+            "count": self.count,
+            "newest_mtime": self.newest_mtime,
+            "confidence": self.confidence,
+            "detail": {
+                k: list(v) if isinstance(v, tuple) else v for k, v in sorted(self.detail.items())
+            },
+        }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,6 +233,7 @@ class ScanStats:
     returning partial results as if they were exhaustive is how "I found 0" becomes a
     false negative.
     """
+
     elapsed_seconds: float
     roots_scanned: int
     dirs_visited: int
@@ -202,13 +243,15 @@ class ScanStats:
     errors: tuple
 
     def as_dict(self):
-        return {"elapsed_seconds": self.elapsed_seconds,
-                "roots_scanned": self.roots_scanned,
-                "dirs_visited": self.dirs_visited,
-                "files_examined": self.files_examined,
-                "budget_exhausted": self.budget_exhausted,
-                "truncated_groups": list(self.truncated_groups),
-                "errors": list(self.errors)}
+        return {
+            "elapsed_seconds": self.elapsed_seconds,
+            "roots_scanned": self.roots_scanned,
+            "dirs_visited": self.dirs_visited,
+            "files_examined": self.files_examined,
+            "budget_exhausted": self.budget_exhausted,
+            "truncated_groups": list(self.truncated_groups),
+            "errors": list(self.errors),
+        }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -217,11 +260,11 @@ class ScanResult:
     stats: ScanStats
 
     def as_dict(self):
-        return {"findings": [f.as_dict() for f in self.findings],
-                "stats": self.stats.as_dict()}
+        return {"findings": [f.as_dict() for f in self.findings], "stats": self.stats.as_dict()}
 
 
 # ----------------------------------------------------------------- the registry
+
 
 @dataclasses.dataclass(frozen=True)
 class ItemPattern:
@@ -231,22 +274,24 @@ class ItemPattern:
     cannot currently read, and reporting the total as if it were all loadable would
     promise an ingest that yields nothing.
     """
-    name: str                       # the ``detail`` counter key
-    glob: str                       # fnmatch, on the basename
+
+    name: str  # the ``detail`` counter key
+    glob: str  # fnmatch, on the basename
     ingestable: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
 class StoreSpec:
     """A live on-disk session store: a DIRECTORY shape."""
+
     provider: str
-    root: str                       # which Roots field supplies the base
-    subdir: str = ""                # where the items live, relative to the base
-    item_patterns: tuple = ()       # ItemPattern, or a bare glob string
+    root: str  # which Roots field supplies the base
+    subdir: str = ""  # where the items live, relative to the base
+    item_patterns: tuple = ()  # ItemPattern, or a bare glob string
     item_depth: int = 5
-    markers: tuple = ()             # (detail_key, filename) relative to the base
-    report: str = "base"            # which path the finding names: "base" | "subdir"
-    dir_counter: str = ""           # if set, count distinct item-bearing child dirs
+    markers: tuple = ()  # (detail_key, filename) relative to the base
+    report: str = "base"  # which path the finding names: "base" | "subdir"
+    dir_counter: str = ""  # if set, count distinct item-bearing child dirs
     confidence: str = CONF_HIGH
     kind: str = KIND_SESSION_STORE
 
@@ -254,11 +299,12 @@ class StoreSpec:
 @dataclasses.dataclass(frozen=True)
 class ExportSpec:
     """A downloaded export FILE, matched by name in a user landing directory."""
+
     provider: str
-    patterns: tuple                 # fnmatch on the basename, case-insensitive
-    dir_any: tuple = ()             # containing-dir names that CONFIRM the provider
-    sibling_any: tuple = ()         # sibling entry names that CONFIRM the provider
-    require_json: bool = True       # gate on the structural first-byte sniff
+    patterns: tuple  # fnmatch on the basename, case-insensitive
+    dir_any: tuple = ()  # containing-dir names that CONFIRM the provider
+    sibling_any: tuple = ()  # sibling entry names that CONFIRM the provider
+    require_json: bool = True  # gate on the structural first-byte sniff
     confidence: str = CONF_MEDIUM
     kind: str = KIND_EXPORT_FILE
 
@@ -266,9 +312,10 @@ class ExportSpec:
 @dataclasses.dataclass(frozen=True)
 class IndexSpec:
     """An already-built corpus index, identified by its SCHEMA rather than its name."""
+
     provider: str
     required_tables: tuple
-    count_table: str = ""           # optional COUNT(*) for a useful size signal
+    count_table: str = ""  # optional COUNT(*) for a useful size signal
     confidence: str = CONF_HIGH
     kind: str = KIND_BUILT_INDEX
 
@@ -282,13 +329,14 @@ class IndexSpec:
 #: is known — Grok/xAI joined the table that way, once `.scratch/GROK-SCHEMA.md`
 #: measured its store and `adapters/grok.py` could read it.
 PROVIDERS = (
-    # corpus.py:179,197 — the index schema; conversations + conversations_fts identify
+    # corpus.py:204,222 — the index schema; conversations + conversations_fts identify
     # an index this app wrote, regardless of what the file is called.
-    IndexSpec(provider="anthology",
-              required_tables=("conversations", "conversations_fts"),
-              count_table="conversations"),
-
-    # adapters/codex_state.py:45 (state_5.sqlite) and adapters/codex_rollout.py:1
+    IndexSpec(
+        provider="anthology",
+        required_tables=("conversations", "conversations_fts"),
+        count_table="conversations",
+    ),
+    # adapters/codex_state.py:47 (state_5.sqlite) and adapters/codex_rollout.py:1
     # (sessions/YYYY/MM/DD/rollout-*.jsonl).
     #
     # COUPLED TO THE ENGINE — re-check this flag when codex_rollout changes.
@@ -306,19 +354,30 @@ PROVIDERS = (
     # capability flag understates the product as confidently as a wrong one overstates it.
     # ~/.codex/archived_sessions is deliberately NOT counted: `subdir` is the single
     # tree an ingest is pointed at, and the archive is a sibling of it.
-    StoreSpec(provider="codex", root="codex_home", subdir="sessions",
-              item_patterns=(ItemPattern("rollouts_jsonl", "rollout-*.jsonl"),
-                             ItemPattern("rollouts_zst", "rollout-*.jsonl.zst")),
-              markers=(("state_db", "state_5.sqlite"),),
-              item_depth=5, report="base"),
-
+    StoreSpec(
+        provider="codex",
+        root="codex_home",
+        subdir="sessions",
+        item_patterns=(
+            ItemPattern("rollouts_jsonl", "rollout-*.jsonl"),
+            ItemPattern("rollouts_zst", "rollout-*.jsonl.zst"),
+        ),
+        markers=(("state_db", "state_5.sqlite"),),
+        item_depth=5,
+        report="base",
+    ),
     # Claude Code writes one .jsonl transcript per session under ~/.claude/projects/<slug>/.
     # This finding IS openable: `adapters/claude_code.py:1-6` reads that shape and
-    # `sidecar.py:258` wires it in. (Said "no adapter reads it yet" until that adapter landed.)
-    StoreSpec(provider="claude-code", root="claude_home", subdir="projects",
-              item_patterns=("*.jsonl",), item_depth=2, report="subdir",
-              dir_counter="project_dirs"),
-
+    # `sidecar.py:259` wires it in. (Said "no adapter reads it yet" until that adapter landed.)
+    StoreSpec(
+        provider="claude-code",
+        root="claude_home",
+        subdir="projects",
+        item_patterns=("*.jsonl",),
+        item_depth=2,
+        report="subdir",
+        dir_counter="project_dirs",
+    ),
     # adapters/grok.py:1 — Grok Build keeps a LIVE store at
     # <grok_home>/sessions/<percent-encoded-cwd>/<session-id>/, one DIRECTORY per
     # session. `updates.jsonl` is the counted item because it is the conversation;
@@ -334,10 +393,15 @@ PROVIDERS = (
     #
     # No markers: an empty ~/.grok must report nothing, and the item count is the
     # only honest evidence a store is there.
-    StoreSpec(provider="grok", root="grok_home", subdir="sessions",
-              item_patterns=(ItemPattern("session_updates", "updates.jsonl"),),
-              item_depth=3, report="subdir", dir_counter="session_dirs"),
-
+    StoreSpec(
+        provider="grok",
+        root="grok_home",
+        subdir="sessions",
+        item_patterns=(ItemPattern("session_updates", "updates.jsonl"),),
+        item_depth=3,
+        report="subdir",
+        dir_counter="session_dirs",
+    ),
     # adapters/chatgpt.py:1 and cli.py:8 — the native export is conversations.json.
     # Claude's export uses the SAME filename, so neither claims it alone; `chat.html`
     # is the disambiguating sibling (OBSERVED beside a real ChatGPT export on this
@@ -346,36 +410,41 @@ PROVIDERS = (
     # `conversations-NNN.json` is the CHUNKED form a large history arrives in. It is
     # observed on disk rather than documented, and it collides with nothing (Claude's
     # file carries no `-NNN`), so it is unambiguous and needs no sibling to confirm.
-    ExportSpec(provider="chatgpt",
-               patterns=("conversations.json", "conversations-*.json"),
-               sibling_any=("chat.html",)),
-
-    # adapters/claude.py:1 and cli.py:7. loaders.py:46-47 names the real sibling set
+    ExportSpec(
+        provider="chatgpt",
+        patterns=("conversations.json", "conversations-*.json"),
+        sibling_any=("chat.html",),
+    ),
+    # adapters/claude.py:1 and cli.py:7. loaders.py:56-57 names the real sibling set
     # that a Claude export directory carries — that is what disambiguates it from a
     # ChatGPT export of the same filename, without opening either file.
-    ExportSpec(provider="claude", patterns=("conversations.json",),
-               sibling_any=("users.json", "memories.json", "design_chats",
-                            "reflections", "projects.json")),
-
+    ExportSpec(
+        provider="claude",
+        patterns=("conversations.json",),
+        sibling_any=("users.json", "memories.json", "design_chats", "reflections", "projects.json"),
+    ),
     # adapters/codex.py:1 and cli.py:9 — the task export. A unique filename.
     ExportSpec(provider="codex", patterns=("codex.json",), confidence=CONF_HIGH),
-
     # adapters/gemini.py:1,8 — Google Takeout "Gemini Apps" activity, probed from the
     # real transcript.json. transcript.json is a generic name, so it is only LOW on its
     # own and is confirmed by the Takeout folder shape around it.
-    ExportSpec(provider="gemini", patterns=("transcript.json",),
-               dir_any=("Gemini Apps", "Takeout", "*Gemini*"),
-               confidence=CONF_LOW),
+    ExportSpec(
+        provider="gemini",
+        patterns=("transcript.json",),
+        dir_any=("Gemini Apps", "Takeout", "*Gemini*"),
+        confidence=CONF_LOW,
+    ),
 )
 
 
 # ------------------------------------------------------------------ public entry
 
+
 def default_roots(home=None, env=None):
     """The candidate roots for this machine.
 
     ``$CODEX_HOME`` wins over ``~/.codex`` because that is the precedence
-    ``adapters/codex_state.py:129`` already uses — a discovery that disagreed with the
+    ``adapters/codex_state.py:133`` already uses — a discovery that disagreed with the
     loader would point at a store the ingest then ignores. ``$GROK_HOME`` is the same
     shape one level over: the override names the HOME, and the sessions tree hangs off
     it, so the default resolves to ``~/.grok/sessions``. UNVERIFIED whether Grok reads
@@ -385,17 +454,19 @@ def default_roots(home=None, env=None):
     """
     home = home if home is not None else os.path.expanduser("~")
     env = env if env is not None else os.environ
-    user_dirs = tuple(os.path.join(home, name)
-                      for name in ("Downloads", "Documents", "Desktop"))
-    return Roots(codex_home=env.get("CODEX_HOME") or os.path.join(home, ".codex"),
-                 claude_home=os.path.join(home, ".claude"),
-                 grok_home=env.get("GROK_HOME") or os.path.join(home, ".grok"),
-                 user_dirs=user_dirs,
-                 index_dirs=user_dirs)
+    user_dirs = tuple(os.path.join(home, name) for name in ("Downloads", "Documents", "Desktop"))
+    return Roots(
+        codex_home=env.get("CODEX_HOME") or os.path.join(home, ".codex"),
+        claude_home=os.path.join(home, ".claude"),
+        grok_home=env.get("GROK_HOME") or os.path.join(home, ".grok"),
+        user_dirs=user_dirs,
+        index_dirs=user_dirs,
+    )
 
 
-def discover(roots=None, specs=None, file_budget=DEFAULT_FILE_BUDGET,
-             max_per_group=DEFAULT_MAX_PER_GROUP):
+def discover(
+    roots=None, specs=None, file_budget=DEFAULT_FILE_BUDGET, max_per_group=DEFAULT_MAX_PER_GROUP
+):
     """Scan the candidate roots and return everything found, sorted and bounded.
 
     Read-only and content-blind (see the module docstring). Raises ``ValueError`` for a
@@ -412,16 +483,21 @@ def discover(roots=None, specs=None, file_budget=DEFAULT_FILE_BUDGET,
     findings = []
     findings.extend(_scan_stores(roots, specs, state))
     findings.extend(_scan_files(roots, specs, state))
-    return ScanResult(findings=_finalize(findings, max_per_group, state),
-                      stats=state.stats())
+    return ScanResult(findings=_finalize(findings, max_per_group, state), stats=state.stats())
 
 
 # ------------------------------------------------------------------- path guard
 
+
 def _all_roots(roots):
     """Every configured root path, in a stable order, skipping unset ones."""
-    return [p for p in (roots.codex_home, roots.claude_home, roots.grok_home)
-            + tuple(roots.user_dirs) + tuple(roots.index_dirs) if p]
+    return [
+        p
+        for p in (roots.codex_home, roots.claude_home, roots.grok_home)
+        + tuple(roots.user_dirs)
+        + tuple(roots.index_dirs)
+        if p
+    ]
 
 
 def _reject_nonlocal(path):
@@ -429,7 +505,7 @@ def _reject_nonlocal(path):
 
     A crafted ``\\\\host\\share`` target coerces an outbound SMB/NTLM authentication —
     the Windows hash-leak class — so it is refused rather than stat'ed. Mirrors
-    ``sidecar._reject_nonlocal_path`` (sidecar.py:607).
+    ``sidecar._reject_nonlocal_path`` (sidecar.py:615).
     """
     if path.replace("/", "\\").startswith("\\\\"):
         raise ValueError("root must be a local path, not a UNC/network path: %s" % path)
@@ -438,6 +514,7 @@ def _reject_nonlocal(path):
 
 
 # ------------------------------------------------------------------ scan state
+
 
 class _Scan:
     """Mutable counters shared by every walk in one scan."""
@@ -459,16 +536,19 @@ class _Scan:
         self.errors.append("%s: %s" % (path, exc))
 
     def stats(self):
-        return ScanStats(elapsed_seconds=round(time.monotonic() - self.started, 4),
-                         roots_scanned=self.roots_scanned,
-                         dirs_visited=self.dirs_visited,
-                         files_examined=self.files_examined,
-                         budget_exhausted=self.exhausted,
-                         truncated_groups=tuple(sorted(self.truncated_groups)),
-                         errors=tuple(self.errors))
+        return ScanStats(
+            elapsed_seconds=round(time.monotonic() - self.started, 4),
+            roots_scanned=self.roots_scanned,
+            dirs_visited=self.dirs_visited,
+            files_examined=self.files_examined,
+            budget_exhausted=self.exhausted,
+            truncated_groups=tuple(sorted(self.truncated_groups)),
+            errors=tuple(self.errors),
+        )
 
 
 # ------------------------------------------------------------------- the walker
+
 
 def _walk(base, max_depth, state):
     """Yield ``(dirpath, entry, sibling_names)`` for every FILE at most ``max_depth``
@@ -547,7 +627,7 @@ def _is_dir(entry, state):
     """
     try:
         return entry.is_dir(follow_symlinks=False)
-    except OSError as exc:                       # pragma: no cover - needs a race
+    except OSError as exc:  # pragma: no cover - needs a race
         state.note_error(entry.path, exc)
         return False
 
@@ -568,7 +648,7 @@ def _is_link(entry, state):
     try:
         if not entry.is_symlink():
             return False
-    except OSError as exc:                       # a race, or a vanished entry
+    except OSError as exc:  # a race, or a vanished entry
         state.note_error(entry.path, exc)
         return True
     state.note_error(entry.path, "skipped: a symbolic link is never read through")
@@ -581,12 +661,12 @@ def _existing_dir(path):
 
 # ------------------------------------------------------------------ store scan
 
+
 def _item_patterns(spec):
     """``StoreSpec.item_patterns`` normalised — a bare glob string becomes an
     ``ItemPattern`` named after itself, so adding a store provider can stay a one-line
     table edit when it needs no per-shape breakdown."""
-    return tuple(p if isinstance(p, ItemPattern) else ItemPattern(p, p)
-                 for p in spec.item_patterns)
+    return tuple(p if isinstance(p, ItemPattern) else ItemPattern(p, p) for p in spec.item_patterns)
 
 
 def _scan_stores(roots, specs, state):
@@ -613,7 +693,7 @@ def _scan_one_store(spec, base, state):
     told they have a Codex store.
     """
     patterns = _item_patterns(spec)
-    counts = dict((p.name, 0) for p in patterns)
+    counts: dict[str, int] = {p.name: 0 for p in patterns}
     mtimes = []
     item_dirs = set()
     scan_root = os.path.join(base, spec.subdir) if spec.subdir else base
@@ -628,7 +708,7 @@ def _scan_one_store(spec, base, state):
             mtimes.append(_mtime(entry, state))
             item_dirs.add(dirpath)
 
-    detail = dict(counts)
+    detail: dict[str, int | str] = dict(counts)
     for key, filename in spec.markers:
         marker = os.path.join(base, filename)
         found = os.path.isfile(marker)
@@ -649,13 +729,19 @@ def _scan_one_store(spec, base, state):
         detail["items_root"] = scan_root
     if spec.dir_counter:
         detail[spec.dir_counter] = len(item_dirs)
-    return Finding(provider=spec.provider, kind=spec.kind,
-                   path=scan_root if spec.report == "subdir" else base,
-                   count=total, newest_mtime=max(mtimes) if mtimes else 0.0,
-                   confidence=spec.confidence, detail=detail)
+    return Finding(
+        provider=spec.provider,
+        kind=spec.kind,
+        path=scan_root if spec.report == "subdir" else base,
+        count=total,
+        newest_mtime=max(mtimes) if mtimes else 0.0,
+        confidence=spec.confidence,
+        detail=detail,
+    )
 
 
 # ------------------------------------------------------------------- file scan
+
 
 def _scan_files(roots, specs, state):
     """One bounded walk per user/index root, offering each file to every file spec.
@@ -706,8 +792,7 @@ def _match_exports(dirpath, entry, names, specs, state):
     if any(s.require_json for s in hits) and not _looks_like_json(entry.path, state):
         return []
 
-    confirmed = [s for s in hits
-                 if s.sibling_any and _any_match(names, s.sibling_any)]
+    confirmed = [s for s in hits if s.sibling_any and _any_match(names, s.sibling_any)]
     if confirmed:
         hits, forced = confirmed, True
     else:
@@ -720,11 +805,17 @@ def _match_exports(dirpath, entry, names, specs, state):
         detail = {"size_bytes": _size(entry, state)}
         if others:
             detail["ambiguous_with"] = others
-        out.append(Finding(
-            provider=spec.provider, kind=spec.kind, path=entry.path, count=1,
-            newest_mtime=_mtime(entry, state),
-            confidence=_export_confidence(spec, forced, ancestry, others),
-            detail=detail))
+        out.append(
+            Finding(
+                provider=spec.provider,
+                kind=spec.kind,
+                path=entry.path,
+                count=1,
+                newest_mtime=_mtime(entry, state),
+                confidence=_export_confidence(spec, forced, ancestry, others),
+                detail=detail,
+            )
+        )
     return out
 
 
@@ -770,10 +861,17 @@ def _match_index(entry, specs, state):
         detail = {"tables": tuple(sorted(spec.required_tables))}
         if spec.count_table:
             detail[spec.count_table] = counts.get(spec.count_table, 0)
-        out.append(Finding(provider=spec.provider, kind=spec.kind, path=entry.path,
-                           count=counts.get(spec.count_table, 0),
-                           newest_mtime=_mtime(entry, state),
-                           confidence=spec.confidence, detail=detail))
+        out.append(
+            Finding(
+                provider=spec.provider,
+                kind=spec.kind,
+                path=entry.path,
+                count=counts.get(spec.count_table, 0),
+                newest_mtime=_mtime(entry, state),
+                confidence=spec.confidence,
+                detail=detail,
+            )
+        )
     return out
 
 
@@ -795,18 +893,21 @@ def _sqlite_shape(path, specs, state):
     # session data found in the usual places" with the index sitting in the scanned folder.
     # Escaping `%` LAST would re-escape the `%` of `%3f`/`%23` into `%253f`/`%2523` and
     # break the two cases this line already handled.
-    esc = (path.replace("%", "%25").replace("?", "%3f").replace("#", "%23"))
+    esc = path.replace("%", "%25").replace("?", "%3f").replace("#", "%23")
     conn = None
     try:
         conn = sqlite3.connect("file:%s?mode=ro&immutable=1" % esc, uri=True)
-        tables = set(r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('table','view')"))
+        tables = set(
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+        )
         counts = {}
         for spec in specs:
             name = spec.count_table
             if name and name in tables and name not in counts:
                 counts[name] = conn.execute(
-                    "SELECT COUNT(*) FROM \"%s\"" % name.replace('"', '""')).fetchone()[0]
+                    'SELECT COUNT(*) FROM "%s"' % name.replace('"', '""')
+                ).fetchone()[0]
         return tables, counts
     except sqlite3.Error as exc:
         state.note_error(path, exc)
@@ -817,6 +918,7 @@ def _sqlite_shape(path, specs, state):
 
 
 # ------------------------------------------------------------------- tiny probes
+
 
 def _matches_low(low_name, pattern):
     """Case-insensitive fnmatch against an ALREADY-LOWERED basename.
@@ -864,7 +966,7 @@ def _looks_like_json(path, state):
 def _mtime(entry, state):
     try:
         return entry.stat(follow_symlinks=False).st_mtime
-    except OSError as exc:                       # pragma: no cover - needs a race
+    except OSError as exc:  # pragma: no cover - needs a race
         state.note_error(entry.path, exc)
         return 0.0
 
@@ -872,12 +974,13 @@ def _mtime(entry, state):
 def _size(entry, state):
     try:
         return entry.stat(follow_symlinks=False).st_size
-    except OSError as exc:                       # pragma: no cover - needs a race
+    except OSError as exc:  # pragma: no cover - needs a race
         state.note_error(entry.path, exc)
         return 0
 
 
 # --------------------------------------------------------------------- assembly
+
 
 def _finalize(findings, max_per_group, state):
     """Cap each (provider, kind) group NEWEST-FIRST, then sort the survivors.
@@ -897,5 +1000,4 @@ def _finalize(findings, max_per_group, state):
             state.truncated_groups.append("%s/%s" % key)
             items = sorted(items, key=lambda f: (-f.newest_mtime, f.path))[:max_per_group]
         kept.extend(items)
-    return tuple(sorted(kept, key=lambda f: (_KIND_RANK.get(f.kind, 9),
-                                             f.provider, f.path)))
+    return tuple(sorted(kept, key=lambda f: (_KIND_RANK.get(f.kind, 9), f.provider, f.path)))

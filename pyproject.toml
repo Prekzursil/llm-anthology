@@ -97,6 +97,17 @@ include = [
     "/ARCHITECTURE.md",
 ]
 
+[tool.ruff]
+# QZP lean gate, gate 1: `ruff check` + `ruff format --check` run with this config.
+# 100 columns is the width this codebase was written to; the target version is
+# inferred from requires-python.
+line-length = 100
+
+[tool.basedpyright]
+# QZP lean gate, gate 2: the standard bar, zero errors. The environment it resolves
+# imports against is requirements.txt (pinned runtime deps + the test toolchain).
+typeCheckingMode = "standard"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

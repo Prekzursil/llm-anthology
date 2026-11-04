@@ -94,7 +94,9 @@ const main = async () => {
     });
     if (t) ctlReached.add(t);
   }
-  console.log(`  control (plain list, ${control} rows): reached ${ctlReached.size} in ${MAX_TABS} tabs`);
+  console.log(
+    `  control (plain list, ${control} rows): reached ${ctlReached.size} in ${MAX_TABS} tabs`,
+  );
   if (ctlReached.size < 100) {
     console.log("  CONTROL FAILED -- the harness cannot observe a healthy walk; verdict void");
     await browser.close();
@@ -118,15 +120,19 @@ const main = async () => {
     else if (where.idx !== undefined) reached.add(where.idx);
   }
 
-  console.log(`  virtualized: Tab x${MAX_TABS} -> ${reached.size} distinct rows reached, `
-    + `focus fell to <body> ${fellToBody}x`);
+  console.log(
+    `  virtualized: Tab x${MAX_TABS} -> ${reached.size} distinct rows reached, ` +
+      `focus fell to <body> ${fellToBody}x`,
+  );
 
   await browser.close();
   console.log();
   const ok = reached.size >= 100;
   if (!ok) {
-    console.log(`FAILED:keyboard-reach ${reached.size}/${ITEMS} rows reachable `
-      + `(control reached ${ctlReached.size}, so the harness works)`);
+    console.log(
+      `FAILED:keyboard-reach ${reached.size}/${ITEMS} rows reachable ` +
+        `(control reached ${ctlReached.size}, so the harness works)`,
+    );
     process.exit(1);
   }
   console.log(`SUCCESS:keyboard-reach ${reached.size} rows reachable`);

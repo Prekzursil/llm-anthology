@@ -74,14 +74,14 @@ const main = async () => {
     // Force a repaint that is NOT a keystroke: resize the container.
     box.style.height = "360px";
     await settle();
-    const afterResize = document.activeElement === document.body
-      ? "(body)" : document.activeElement.textContent;
+    const afterResize =
+      document.activeElement === document.body ? "(body)" : document.activeElement.textContent;
 
     // And one driven by a programmatic scroll, still not a keystroke.
     box.scrollTop = 200;
     await settle();
-    const afterScroll = document.activeElement === document.body
-      ? "(body)" : document.activeElement.textContent;
+    const afterScroll =
+      document.activeElement === document.body ? "(body)" : document.activeElement.textContent;
 
     return { before, afterResize, afterScroll };
   });

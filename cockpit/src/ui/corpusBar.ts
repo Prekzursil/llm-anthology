@@ -90,10 +90,7 @@ export function corpusLabel(path: string | null): CorpusLabel {
  * "database is locked") is far more useful than a generic apology.
  */
 const REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
-  [
-    /no corpus attached/i,
-    "No corpus is attached yet — choose a corpus index file to open one.",
-  ],
+  [/no corpus attached/i, "No corpus is attached yet — choose a corpus index file to open one."],
 ];
 
 /** The bare Tauri/JSON-RPC command identifier, scrubbed out of any surviving detail. */
@@ -385,9 +382,7 @@ export class CorpusBarController {
       // lie about the engine's actual state, so only the error line changes.
       this.emit({
         ...this.view,
-        error: remembered
-          ? restoreFailureMessage(indexPath, err)
-          : openFailureMessage(err),
+        error: remembered ? restoreFailureMessage(indexPath, err) : openFailureMessage(err),
         busy: false,
       });
     } finally {
@@ -420,12 +415,7 @@ export class CorpusBar {
     onOpened: CorpusOpenedListener,
     store: CorpusStore = localCorpusStore(),
   ) {
-    this.controller = new CorpusBarController(
-      ipc,
-      store,
-      (view) => this.paint(view),
-      onOpened,
-    );
+    this.controller = new CorpusBarController(ipc, store, (view) => this.paint(view), onOpened);
     this.onClick = () => void this.pick();
     this.button.addEventListener("click", this.onClick);
     this.paint(this.controller.current);

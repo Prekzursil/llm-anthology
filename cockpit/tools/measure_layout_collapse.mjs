@@ -75,7 +75,8 @@ const RUN = async ({ threshold, budgetMs }) => {
     for (let lvl = 0; lvl < MAX_DEPTH && cur < rest.length; lvl++) {
       const here = rest.slice(cur, cur + perLevel);
       cur += here.length;
-      for (let k = 0; k < here.length; k++) es.push({ parent: `n${prev[k % prev.length]}`, child: `n${here[k]}` });
+      for (let k = 0; k < here.length; k++)
+        es.push({ parent: `n${prev[k % prev.length]}`, child: `n${here[k]}` });
       prev = here;
     }
   }
@@ -99,8 +100,14 @@ const RUN = async ({ threshold, budgetMs }) => {
       for (const k of kids.slice(0, threshold)) kept.push({ parent, child: k });
       for (const k of kids.slice(threshold)) dropped.add(k);
       const placeholder = `more__${parent}`;
-      extra.push({ id: placeholder, title: `+${kids.length - threshold} more`, provider: "",
-                   created_at_ms: null, child_count: 0, depth: 0 });
+      extra.push({
+        id: placeholder,
+        title: `+${kids.length - threshold} more`,
+        provider: "",
+        created_at_ms: null,
+        child_count: 0,
+        depth: 0,
+      });
       kept.push({ parent, child: placeholder });
     }
     // A dropped node's own descendants go with it — that is what "collapsed" means.
@@ -129,7 +136,9 @@ const RUN = async ({ threshold, budgetMs }) => {
   if (!globalThis.__collapseEngine) {
     globalThis.__collapseEngine = new elkMod.ElkLayoutEngine(budgetMs);
     const warm = layoutMod.buildElkGraph({
-      nodes: [{ id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 }],
+      nodes: [
+        { id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 },
+      ],
       edges: [],
     });
     try {
@@ -147,7 +156,9 @@ const RUN = async ({ threshold, budgetMs }) => {
     const res = await engine.layout(graph);
     placed = (res.children || []).length;
   } catch (e) {
-    error = `${e && e.name}`.includes("Timeout") ? `>${budgetMs}ms` : String(e && e.message).slice(0, 50);
+    error = `${e && e.name}`.includes("Timeout")
+      ? `>${budgetMs}ms`
+      : String(e && e.message).slice(0, 50);
   }
   // A timeout terminates the worker, so a later case would run against a dead engine. Drop the
   // cached one after any error and let the next case build a live one.
@@ -206,12 +217,17 @@ const main = async () => {
     // Only "ok" when EVERY repeat fit the guard — a threshold that passes 2 of 3 is not safe
     // to recommend, and reporting the median alone would hide that.
     const ok = errored === 0 && times[times.length - 1] < 8000;
-    const verdict = errored === REPEATS ? `FAILED (${errored}/${REPEATS})`
-      : errored > 0 ? `UNSTABLE (${errored}/${REPEATS} failed)`
-        : ok ? `ok (${r.placed} placed)` : "over the 8s guard";
+    const verdict =
+      errored === REPEATS
+        ? `FAILED (${errored}/${REPEATS})`
+        : errored > 0
+          ? `UNSTABLE (${errored}/${REPEATS} failed)`
+          : ok
+            ? `ok (${r.placed} placed)`
+            : "over the 8s guard";
     console.log(
       `  ${label.padEnd(12)} ${String(r.visible).padStart(9)} ${String(r.edges).padStart(8)} ` +
-      `${String(median).padStart(7)}ms  ${String(times[0]).padStart(5)}-${String(times[times.length - 1]).padEnd(6)} ${verdict}`,
+        `${String(median).padStart(7)}ms  ${String(times[0]).padStart(5)}-${String(times[times.length - 1]).padEnd(6)} ${verdict}`,
     );
   }
 
@@ -220,7 +236,9 @@ const main = async () => {
 
   const ran = results.filter((r) => !r.error || r.error.startsWith(">"));
   if (ran.length === 0) {
-    console.log(`  every case failed WITHOUT laying out — harness failure. First: ${results[0].error}`);
+    console.log(
+      `  every case failed WITHOUT laying out — harness failure. First: ${results[0].error}`,
+    );
     console.log("FAILED:layout-collapse no conclusion available");
     process.exit(2);
   }

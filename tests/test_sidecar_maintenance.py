@@ -17,6 +17,7 @@ second step.
 
 Every path is a tmp_path; no test touches a real session store, and no test emits real SMB.
 """
+
 import os
 import sqlite3
 from pathlib import Path
@@ -65,8 +66,7 @@ def _plan(srv, tmp_path, action, paths, store_root, **kw):
         "store_root": store_root,
         "checkpoint_root": str(tmp_path / "checkpoints"),
         "action": action,
-        "targets": [{"session_id": "s%d" % i, "file_path": p}
-                    for i, p in enumerate(paths)],
+        "targets": [{"session_id": "s%d" % i, "file_path": p} for i, p in enumerate(paths)],
     }
     params.update(kw)
     return srv.dispatch("maintenance.plan", params)
@@ -74,19 +74,24 @@ def _plan(srv, tmp_path, action, paths, store_root, **kw):
 
 # ------------------------------------------------------------------ param guarding
 
+
 def test_plan_rejects_a_unc_or_relative_root(tmp_path):
     """A UNC root must never reach the engine: os.makedirs on \\\\host\\share initiates an
     outbound SMB/NTLM authentication, which this offline-only tool forbids."""
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
-    for key, bad in (("store_root", r"\\evil.example\share\store"),
-                     ("checkpoint_root", r"\\evil.example\share\cp"),
-                     ("destination_root", r"\\evil.example\share\dst"),
-                     ("store_root", "relative/store")):
-        params = {"store_root": store_root,
-                  "checkpoint_root": str(tmp_path / "cp"),
-                  "action": "delete",
-                  "targets": [{"session_id": "s", "file_path": paths[0]}]}
+    for key, bad in (
+        ("store_root", r"\\evil.example\share\store"),
+        ("checkpoint_root", r"\\evil.example\share\cp"),
+        ("destination_root", r"\\evil.example\share\dst"),
+        ("store_root", "relative/store"),
+    ):
+        params = {
+            "store_root": store_root,
+            "checkpoint_root": str(tmp_path / "cp"),
+            "action": "delete",
+            "targets": [{"session_id": "s", "file_path": paths[0]}],
+        }
         params[key] = bad
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("maintenance.plan", params)
@@ -131,8 +136,7 @@ def test_plan_rejects_an_unknown_action(tmp_path):
 def test_plan_rejects_malformed_targets(tmp_path):
     srv = _server()
     store_root, _ = _store(tmp_path, "a.jsonl")
-    base = {"store_root": store_root, "checkpoint_root": str(tmp_path / "cp"),
-            "action": "delete"}
+    base = {"store_root": store_root, "checkpoint_root": str(tmp_path / "cp"), "action": "delete"}
     for targets in ([], "a.jsonl", [["a"]], [{"session_id": "s"}], [{"file_path": ""}]):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("maintenance.plan", dict(base, targets=targets))
@@ -143,14 +147,17 @@ def test_execute_rejects_non_boolean_apply_and_bad_confirmation_type(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
-    for bad in ({"plan_id": preview["plan_id"], "apply": "yes"},
-                {"plan_id": preview["plan_id"], "confirmation": 5}):
+    for bad in (
+        {"plan_id": preview["plan_id"], "apply": "yes"},
+        {"plan_id": preview["plan_id"], "confirmation": 5},
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("maintenance.execute", bad)
         assert ei.value.code == -32602
 
 
 # --------------------------------------------------------------- plan is pure
+
 
 def test_plan_is_pure_and_touches_nothing(tmp_path):
     srv = _server()
@@ -181,15 +188,18 @@ def test_plan_blocks_a_target_outside_the_store_root(tmp_path):
 
 # --------------------------------------------------------- confirmation + dry run
 
+
 def test_execute_refuses_without_the_typed_confirmation(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
     with pytest.raises(sidecar.RpcError) as ei:
-        srv.dispatch("maintenance.execute",
-                     {"plan_id": preview["plan_id"], "confirmation": "wrong", "apply": True})
+        srv.dispatch(
+            "maintenance.execute",
+            {"plan_id": preview["plan_id"], "confirmation": "wrong", "apply": True},
+        )
     assert ei.value.code == sidecar.MAINTENANCE_REFUSED
-    assert os.path.isfile(paths[0])          # the file is still there
+    assert os.path.isfile(paths[0])  # the file is still there
 
 
 def test_a_refused_confirmation_leaves_the_handle_usable(tmp_path):
@@ -198,12 +208,19 @@ def test_a_refused_confirmation_leaves_the_handle_usable(tmp_path):
     store_root, paths = _store(tmp_path, "a.jsonl")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
     with pytest.raises(sidecar.RpcError):
-        srv.dispatch("maintenance.execute",
-                     {"plan_id": preview["plan_id"], "confirmation": "nope", "apply": True})
+        srv.dispatch(
+            "maintenance.execute",
+            {"plan_id": preview["plan_id"], "confirmation": "nope", "apply": True},
+        )
     # same handle, right phrase -> accepted
-    out = srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"], "apply": True})
+    out = srv.dispatch(
+        "maintenance.execute",
+        {
+            "plan_id": preview["plan_id"],
+            "confirmation": preview["required_typed_confirmation"],
+            "apply": True,
+        },
+    )
     assert out["executed"] is True
 
 
@@ -211,9 +228,10 @@ def test_execute_defaults_to_a_dry_run_that_changes_nothing(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
-    out = srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"]})
+    out = srv.dispatch(
+        "maintenance.execute",
+        {"plan_id": preview["plan_id"], "confirmation": preview["required_typed_confirmation"]},
+    )
     assert out["executed"] is False
     assert out["manifest_path"] == ""
     assert os.path.isfile(paths[0])
@@ -222,6 +240,7 @@ def test_execute_defaults_to_a_dry_run_that_changes_nothing(tmp_path):
 
 # ------------------------------------------------------------- handle lifecycle
 
+
 def test_an_unknown_or_replayed_handle_is_refused(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
@@ -229,16 +248,21 @@ def test_an_unknown_or_replayed_handle_is_refused(tmp_path):
     phrase = preview["required_typed_confirmation"]
 
     with pytest.raises(sidecar.RpcError) as ei:
-        srv.dispatch("maintenance.execute", {"plan_id": "plan-999",
-                                             "confirmation": phrase, "apply": True})
+        srv.dispatch(
+            "maintenance.execute", {"plan_id": "plan-999", "confirmation": phrase, "apply": True}
+        )
     assert ei.value.code == sidecar.MAINTENANCE_REFUSED
 
-    srv.dispatch("maintenance.execute", {"plan_id": preview["plan_id"],
-                                         "confirmation": phrase, "apply": True})
+    srv.dispatch(
+        "maintenance.execute",
+        {"plan_id": preview["plan_id"], "confirmation": phrase, "apply": True},
+    )
     # the same handle cannot be replayed
     with pytest.raises(sidecar.RpcError) as ei:
-        srv.dispatch("maintenance.execute", {"plan_id": preview["plan_id"],
-                                             "confirmation": phrase, "apply": True})
+        srv.dispatch(
+            "maintenance.execute",
+            {"plan_id": preview["plan_id"], "confirmation": phrase, "apply": True},
+        )
     assert ei.value.code == sidecar.MAINTENANCE_REFUSED
 
 
@@ -252,26 +276,33 @@ def test_plan_ids_are_distinct_per_plan(tmp_path):
 
 # ------------------------------------------------------- apply, restore, ledger
 
+
 def test_apply_then_restore_round_trips_the_file(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     original = Path(paths[0]).read_text(encoding="utf-8")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
 
-    done = srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"], "apply": True})
+    done = srv.dispatch(
+        "maintenance.execute",
+        {
+            "plan_id": preview["plan_id"],
+            "confirmation": preview["required_typed_confirmation"],
+            "apply": True,
+        },
+    )
     assert done["executed"] is True
     assert done["manifest_path"]
-    assert not os.path.isfile(paths[0])              # the delete really happened
+    assert not os.path.isfile(paths[0])  # the delete really happened
 
     # a restore dry-run changes nothing ...
     dry = srv.dispatch("maintenance.restore", {"manifest_path": done["manifest_path"]})
     assert dry["executed"] is False
     assert not os.path.isfile(paths[0])
     # ... and an applied restore brings the file back byte-identical
-    back = srv.dispatch("maintenance.restore",
-                        {"manifest_path": done["manifest_path"], "apply": True})
+    back = srv.dispatch(
+        "maintenance.restore", {"manifest_path": done["manifest_path"], "apply": True}
+    )
     assert back["executed"] is True
     restored = Path(paths[0]).read_text(encoding="utf-8")
     assert restored == original
@@ -279,10 +310,12 @@ def test_apply_then_restore_round_trips_the_file(tmp_path):
 
 def test_restore_rejects_a_unc_manifest_path_and_bad_flags(tmp_path):
     srv = _server()
-    for bad in ({"manifest_path": r"\\evil.example\share\m.json"},
-                {"manifest_path": "relative/m.json"},
-                {"manifest_path": str(tmp_path / "m.json"), "apply": "yes"},
-                {"manifest_path": str(tmp_path / "m.json"), "skip_unaccounted": 1}):
+    for bad in (
+        {"manifest_path": r"\\evil.example\share\m.json"},
+        {"manifest_path": "relative/m.json"},
+        {"manifest_path": str(tmp_path / "m.json"), "apply": "yes"},
+        {"manifest_path": str(tmp_path / "m.json"), "skip_unaccounted": 1},
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("maintenance.restore", bad)
         assert ei.value.code == -32602, bad
@@ -294,9 +327,14 @@ def test_an_applied_run_lands_in_the_audit_ledger(tmp_path):
     assert srv.dispatch("maintenance.runs", {}) == []
 
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
-    done = srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"], "apply": True})
+    done = srv.dispatch(
+        "maintenance.execute",
+        {
+            "plan_id": preview["plan_id"],
+            "confirmation": preview["required_typed_confirmation"],
+            "apply": True,
+        },
+    )
 
     runs = srv.dispatch("maintenance.runs", {})
     assert len(runs) == 1
@@ -308,9 +346,10 @@ def test_a_dry_run_does_not_enter_the_ledger(tmp_path):
     srv = _server()
     store_root, paths = _store(tmp_path, "a.jsonl")
     preview = _plan(srv, tmp_path, "delete", paths, store_root)
-    srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"]})
+    srv.dispatch(
+        "maintenance.execute",
+        {"plan_id": preview["plan_id"], "confirmation": preview["required_typed_confirmation"]},
+    )
     assert srv.dispatch("maintenance.runs", {}) == []
 
 
@@ -319,14 +358,20 @@ def test_runs_respects_a_limit(tmp_path):
     store_root, paths = _store(tmp_path, "a.jsonl", "b.jsonl")
     for path in paths:
         preview = _plan(srv, tmp_path, "delete", [path], store_root)
-        srv.dispatch("maintenance.execute", {
-            "plan_id": preview["plan_id"],
-            "confirmation": preview["required_typed_confirmation"], "apply": True})
+        srv.dispatch(
+            "maintenance.execute",
+            {
+                "plan_id": preview["plan_id"],
+                "confirmation": preview["required_typed_confirmation"],
+                "apply": True,
+            },
+        )
     assert len(srv.dispatch("maintenance.runs", {})) == 2
     assert len(srv.dispatch("maintenance.runs", {"limit": 1})) == 1
 
 
 # --------------------------------------------------------------- archive / move
+
 
 def test_archive_moves_into_the_destination_root(tmp_path):
     srv = _server()
@@ -336,9 +381,14 @@ def test_archive_moves_into_the_destination_root(tmp_path):
     assert len(preview["plan"]) == 1
     assert preview["plan"][0]["destination"].startswith(dest)
 
-    out = srv.dispatch("maintenance.execute", {
-        "plan_id": preview["plan_id"],
-        "confirmation": preview["required_typed_confirmation"], "apply": True})
+    out = srv.dispatch(
+        "maintenance.execute",
+        {
+            "plan_id": preview["plan_id"],
+            "confirmation": preview["required_typed_confirmation"],
+            "apply": True,
+        },
+    )
     assert out["executed"] is True
     assert not os.path.isfile(paths[0])
     assert os.path.isfile(out["moves"][0]["destination"])
@@ -346,15 +396,23 @@ def test_archive_moves_into_the_destination_root(tmp_path):
 
 # ------------------------------------------------------------------ no corpus
 
+
 def test_maintenance_methods_require_a_corpus():
     srv = sidecar.Sidecar(None)
     for method, params in (
-            ("maintenance.plan", {"store_root": "C:/s", "checkpoint_root": "C:/c",
-                                  "action": "delete",
-                                  "targets": [{"session_id": "s", "file_path": "C:/s/a"}]}),
-            ("maintenance.execute", {"plan_id": "plan-1"}),
-            ("maintenance.restore", {"manifest_path": "C:/c/m.json"}),
-            ("maintenance.runs", {})):
+        (
+            "maintenance.plan",
+            {
+                "store_root": "C:/s",
+                "checkpoint_root": "C:/c",
+                "action": "delete",
+                "targets": [{"session_id": "s", "file_path": "C:/s/a"}],
+            },
+        ),
+        ("maintenance.execute", {"plan_id": "plan-1"}),
+        ("maintenance.restore", {"manifest_path": "C:/c/m.json"}),
+        ("maintenance.runs", {}),
+    ):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch(method, params)
         assert ei.value.code == sidecar.CORPUS_NOT_INDEXED, method
@@ -367,6 +425,5 @@ def test_maintenance_action_enum_values_are_all_plannable(tmp_path):
     store_root, paths = _store(tmp_path, "a.jsonl")
     dest = str(tmp_path / "dst")
     for action in list(maintenance.MaintenanceAction):
-        out = _plan(srv, tmp_path, action.value, paths, store_root,
-                    destination_root=dest)
+        out = _plan(srv, tmp_path, action.value, paths, store_root, destination_root=dest)
         assert out["action"] == action.value

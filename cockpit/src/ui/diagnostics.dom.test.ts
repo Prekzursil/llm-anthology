@@ -11,13 +11,14 @@
  * `probe_keyboard_reach` / dead-button audits exist for), and that `destroy` really unbinds.
  * The bundle's CONTENT is proven in `diagnostics.test.ts` under node.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   BUTTON_LABEL,
   COPIED_MESSAGE,
   DiagnosticsButton,
   mountDiagnosticsButton,
+  systemClipboardWrite,
   type DiagnosticsDeps,
 } from "./diagnostics";
 
@@ -38,7 +39,10 @@ describe("mountDiagnosticsButton", () => {
     const host = document.createElement("div");
     document.body.append(host);
 
-    mountDiagnosticsButton(host, deps(async () => undefined));
+    mountDiagnosticsButton(
+      host,
+      deps(async () => undefined),
+    );
 
     const button = host.querySelector("button");
     expect(button).not.toBeNull();
@@ -130,8 +134,49 @@ describe("DiagnosticsButton.destroy", () => {
     const button = document.createElement("button");
     const status = document.createElement("span");
     document.body.append(button, status);
-    const panel = new DiagnosticsButton(button, status, deps(async () => undefined));
+    const panel = new DiagnosticsButton(
+      button,
+      status,
+      deps(async () => undefined),
+    );
     expect(status.textContent).toBe("");
     panel.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// systemClipboardWrite — the DEFAULT writer, which the button tests above never invoke
+// (they inject a `copy` dep, so the real path was never measured in this environment)
+// ---------------------------------------------------------------------------
+
+describe("systemClipboardWrite", () => {
+  const original = navigator.clipboard;
+
+  /** happy-dom exposes `clipboard` as a getter-only accessor, so install/restore by
+   * definition rather than assignment. */
+  function setClipboard(value: unknown): void {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  }
+
+  afterEach(() => {
+    setClipboard(original);
+  });
+
+  it("writes through the clipboard API when one is present", async () => {
+    const writeText = vi.fn(async () => undefined);
+    setClipboard({ writeText });
+    await expect(systemClipboardWrite("bundle")).resolves.toBeUndefined();
+    expect(writeText).toHaveBeenCalledWith("bundle");
+  });
+
+  it("rejects with the readable reason when the API is absent", async () => {
+    setClipboard(undefined);
+    await expect(systemClipboardWrite("bundle")).rejects.toThrow(
+      "this environment has no clipboard API",
+    );
   });
 });

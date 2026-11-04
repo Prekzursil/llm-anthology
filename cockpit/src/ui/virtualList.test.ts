@@ -280,9 +280,7 @@ describe("VirtualList windowing", () => {
     const { renderedFor } = mount({ count: 1000, viewportHeight: 100 });
 
     // 13 renderRow calls for 1000 items is the entire point of the component.
-    expect(renderedFor).toEqual(
-      Array.from({ length: 13 }, (_, i) => `item-${i}`),
-    );
+    expect(renderedFor).toEqual(Array.from({ length: 13 }, (_, i) => `item-${i}`));
   });
 
   it("falls back to one row's height when the viewport has no measured height", () => {

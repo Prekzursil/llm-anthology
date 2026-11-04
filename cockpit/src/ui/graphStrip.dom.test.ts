@@ -121,7 +121,9 @@ describe("GraphStrip construction", () => {
     expect(el?.style.getPropertyValue("padding-top")).toBe("var(--space-3)");
     expect(el?.style.getPropertyValue("padding-left")).toBe("var(--space-4)");
     // And nothing reached the element as a mangled shorthand.
-    expect(el?.style.getPropertyValue("border-bottom")).not.toContain("var(--border) var(--border)");
+    expect(el?.style.getPropertyValue("border-bottom")).not.toContain(
+      "var(--border) var(--border)",
+    );
   });
 });
 

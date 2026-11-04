@@ -6,9 +6,15 @@ suite still passes, that claim has no test behind it.
 
 Run:  python tools/mutcheck.py
 """
+
 import pathlib
+import shutil
 import subprocess
 import sys
+
+# npx is `npx.cmd` on Windows, which CreateProcess only finds through a shell. Resolving
+# it up front lets the argv run without one.
+NPX = shutil.which("npx") or "npx"
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "ui" / "discoveryPanel.ts"
 
@@ -69,11 +75,10 @@ for label, find, replace in MUTATIONS:
     SRC.write_text(original.replace(find, replace), encoding="utf-8")
     try:
         proc = subprocess.run(
-            ["npx", "vitest", "run", "--reporter=dot", "--testTimeout=5000"],
+            [NPX, "vitest", "run", "--reporter=dot", "--testTimeout=5000"],
             cwd=str(SRC.parent.parent.parent),
             capture_output=True,
             text=True,
-            shell=True,
             timeout=300,
         )
     finally:

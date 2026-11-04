@@ -43,8 +43,8 @@ export const MAINTENANCE_GATE_LABEL = "Maintenance tools";
  * can weigh, "moves and deletes files" tells them exactly what they are switching on.
  */
 export const MAINTENANCE_GATE_HINT =
-  "Off by default. Turns on tools that move, archive and delete files in your session stores. "
-  + "Every action still plans first, needs a typed confirmation and writes an undo checkpoint.";
+  "Off by default. Turns on tools that move, archive and delete files in your session stores. " +
+  "Every action still plans first, needs a typed confirmation and writes an undo checkpoint.";
 
 /** The gate's own declarations, longhand, from theme tokens. */
 const GATE_STYLE: ReadonlyArray<readonly [string, string]> = [

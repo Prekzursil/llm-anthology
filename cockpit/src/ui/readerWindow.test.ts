@@ -20,12 +20,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import {
-  moreButtonLabel,
-  READER_TURN_CHUNK,
-  turnWindow,
-  windowStatus,
-} from "./readerWindow";
+import { moreButtonLabel, READER_TURN_CHUNK, turnWindow, windowStatus } from "./readerWindow";
 
 describe("turnWindow", () => {
   it("renders a whole short transcript in one step, with nothing held back", () => {
@@ -62,12 +57,12 @@ describe("turnWindow", () => {
       const covered: number[] = [];
       for (;;) {
         const w = turnWindow(total, shown);
-        expect(w.from).toBe(shown);                       // no gap, no re-render
+        expect(w.from).toBe(shown); // no gap, no re-render
         expect(w.end - w.from).toBeLessThanOrEqual(READER_TURN_CHUNK);
         for (let i = w.from; i < w.end; i++) covered.push(i);
         shown = w.end;
         if (w.remaining === 0) break;
-        expect(w.end).toBeGreaterThan(w.from);            // it MUST advance
+        expect(w.end).toBeGreaterThan(w.from); // it MUST advance
         // A cap that cannot be hit is not a test. Ten chunks covers 2,562 at 200; this
         // fires long before a non-advancing window could spin the suite.
         expect(++steps).toBeLessThan(50);

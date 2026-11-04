@@ -31,8 +31,15 @@ import type { RootsParams, SpawnEdge, ThreadNode } from "../ipc/types";
 const NOW = 1_770_000_000_000;
 
 function threadNode(id: string, createdMs: number | null = 1): ThreadNode {
-  return { id, title: id, provider: "codex", model_provider: "", created_at_ms: createdMs,
-           child_count: 0, depth: 0 };
+  return {
+    id,
+    title: id,
+    provider: "codex",
+    model_provider: "",
+    created_at_ms: createdMs,
+    child_count: 0,
+    depth: 0,
+  };
 }
 
 /**
@@ -68,8 +75,10 @@ function fakeIpc(over: Partial<ForestIpc> = {}): ForestIpc & { calls: string[] }
     },
     async graphSubtree(id) {
       calls.push(`graphSubtree(${id})`);
-      return { nodes: [threadNode(id), threadNode(`${id}-kid`)],
-               edges: [{ parent: id, child: `${id}-kid` }] };
+      return {
+        nodes: [threadNode(id), threadNode(`${id}-kid`)],
+        edges: [{ parent: id, child: `${id}-kid` }],
+      };
     },
   };
   return Object.assign({ calls }, base, over);
@@ -128,8 +137,10 @@ describe("loadForest", () => {
     const api = fakeIpc({
       graphAt: undefined,
       async graphSubtree() {
-        return { nodes: [threadNode("shared"), threadNode("kid")],
-                 edges: [{ parent: "shared", child: "kid" }] };
+        return {
+          nodes: [threadNode("shared"), threadNode("kid")],
+          edges: [{ parent: "shared", child: "kid" }],
+        };
       },
     });
     const out = await loadForest(api, NOW);
@@ -199,15 +210,16 @@ describe("loadForest", () => {
     // pays one request per 2,000 roots rather than one per root. Measured against this
     // fixture before the fix: 9,000 serial round-trips for one render, no progress shown.
     //
-    // `rootsApi` slices by `offset`/`limit` exactly the way `sidecar.py:1010` does
+    // `rootsApi` slices by `offset`/`limit` exactly the way `sidecar.py:1046` does
     // (`nodes[offset:offset + limit]`), so a walk that failed to advance its offset would
     // spin here rather than quietly passing — an earlier test in this file was vacuous for
     // precisely that reason.
     const roots = rootsApi(MAX_FOREST_ROOTS * 3);
     const api = fakeIpc({ graphAt: undefined, graphRoots: roots.graphRoots });
     await loadForest(api, NOW);
-    expect(api.calls.filter((c) => c.startsWith("graphSubtree(")).length)
-      .toBeLessThanOrEqual(MAX_FOREST_ROOTS);
+    expect(api.calls.filter((c) => c.startsWith("graphSubtree(")).length).toBeLessThanOrEqual(
+      MAX_FOREST_ROOTS,
+    );
   });
 
   it("keeps the ceiling clear of the measured corpus, and of one root page", () => {
@@ -371,11 +383,7 @@ describe("loadAllRoots deduplicates across page seams", () => {
     // Real for this app: it ingests LIVE sessions, so a row can shift between offset-based
     // page requests and arrive twice. Two identical rows in the sidebar both open the same
     // thread — confusing, and the same silently-wrong class as the truncation being fixed.
-    const { roots } = await loadAllRoots(overlappingApi([
-      ["a", "b"],
-      ["b", "c"],
-      [],
-    ]), 2);
+    const { roots } = await loadAllRoots(overlappingApi([["a", "b"], ["b", "c"], []]), 2);
     expect(roots.map((r) => r.id)).toEqual(["a", "b", "c"]);
   });
 

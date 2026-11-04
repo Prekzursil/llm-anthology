@@ -59,7 +59,7 @@ const REPO_ROOT = path.resolve(COCKPIT, "..");
 const DEFAULT_DB = path.join(REPO_ROOT, ".scratch", "fixture", "synthetic.db");
 
 // A fixed synthetic session id, shaped like a real Codex one so `dedup` can recover it from
-// the rollout body (`tests/test_sidecar_dedup.py:29`).
+// the rollout body (`tests/test_sidecar_dedup.py:30`).
 const SYNTH_SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 // The tag the probe writes, then searches for. Deliberately not one of the mock's seeds, so a
 // hit proves the probe's own write round-tripped rather than matching pre-existing data.
@@ -171,12 +171,20 @@ function diffShape(pathStr, a, b, out) {
     const keysB = [...b.fields.keys()].sort();
     for (const k of keysA) {
       if (!b.fields.has(k)) {
-        out.push({ sev: "diff", path: `${pathStr}.${k}`, msg: "present on ENGINE, missing on MOCK" });
+        out.push({
+          sev: "diff",
+          path: `${pathStr}.${k}`,
+          msg: "present on ENGINE, missing on MOCK",
+        });
       }
     }
     for (const k of keysB) {
       if (!a.fields.has(k)) {
-        out.push({ sev: "diff", path: `${pathStr}.${k}`, msg: "present on MOCK, missing on ENGINE" });
+        out.push({
+          sev: "diff",
+          path: `${pathStr}.${k}`,
+          msg: "present on MOCK, missing on ENGINE",
+        });
       }
     }
     for (const k of keysA) {
@@ -310,7 +318,7 @@ class Engine {
 // synthetic workspace
 // ---------------------------------------------------------------------------
 
-/** A minimal but realistic Codex rollout (`tests/test_sidecar_dedup.py:45-61`). */
+/** A minimal but realistic Codex rollout (`tests/test_sidecar_dedup.py:46-81`). */
 function rolloutLines(sessionId, pad = 0) {
   const lines = [
     {
@@ -391,9 +399,9 @@ function setupWorkspace(dbSource) {
   const plainTarget = path.join(storeRoot2, "c.jsonl");
   fs.writeFileSync(plainTarget, "synthetic-body-c\n", "utf-8");
   // A path that SPELLS a protected marker — `\.codex\sessions\`
-  // (`llm_anthology/maintenance.py:277-281`) — while still living inside `storeRoot2`, so it
+  // (`llm_anthology/maintenance.py:290-294`) — while still living inside `storeRoot2`, so it
   // passes `_classify` and is then refused by `_is_protected`. Real file, real mtime: the
-  // guard resolves `os.path.realpath` as well as the literal string (`maintenance.py:383`).
+  // guard resolves `os.path.realpath` as well as the literal string (`maintenance.py:398`).
   const protectedDir = path.join(storeRoot2, ".codex", "sessions");
   fs.mkdirSync(protectedDir, { recursive: true });
   const protectedTarget = path.join(protectedDir, "live.jsonl");
@@ -402,7 +410,7 @@ function setupWorkspace(dbSource) {
   // A Codex store whose rollout has a TORN last line. This is the lever that populates
   // `dedup.scan.errors[]`: `scan_store` passes `codex_rollout.ingest_sessions`' errors through
   // verbatim and its docstring is explicit that a MISSING root is "an empty result, not an
-  // error" (`llm_anthology/dedup.py:244-252`) — so a nonexistent path yields nothing to
+  // error" (`llm_anthology/dedup.py:255-263`) — so a nonexistent path yields nothing to
   // compare, and only a partial parse does.
   const codexHomeTorn = path.join(base, "codex_home_torn");
   const tornDir = path.join(codexHomeTorn, "sessions");
@@ -637,7 +645,7 @@ function buildCases(ws) {
       // Populates `unaccounted[]` on the ENGINE. The applied run above quarantined the
       // originals into `<checkpoint>/deleted`; deleting those copies leaves BOTH ends of every
       // recorded move missing, which is exactly the unaccounted condition
-      // (`llm_anthology/maintenance.py:735`). `skip_unaccounted` is required or the engine
+      // (`llm_anthology/maintenance.py:784`). `skip_unaccounted` is required or the engine
       // refuses the batch outright (`:742-747`), and `apply: false` keeps this a pure read —
       // a dry restore still computes and returns the list (`:750-753`), so NO new execute and
       // no further filesystem mutation is needed.
@@ -679,7 +687,11 @@ async function observations(engine, mockIpc, ws, rows) {
   const out = [];
   const blocked = rows.find((r) => r.rpc === "maintenance.plan (protected+dup)");
   if (blocked !== undefined && blocked.engineSample !== undefined) {
-    const reasons = (v) => (v.blocked ?? []).map((b) => b.reason).sort().join(",") || "(none)";
+    const reasons = (v) =>
+      (v.blocked ?? [])
+        .map((b) => b.reason)
+        .sort()
+        .join(",") || "(none)";
     out.push(
       `blocked reasons      engine=[${reasons(blocked.engineSample)}] ` +
         `mock=[${reasons(blocked.mockSample)}]`,
@@ -694,7 +706,7 @@ async function observations(engine, mockIpc, ws, rows) {
 
   // FALSIFICATION of "give the target a real mtime". The engine builds its `SessionCopy` from
   // ONLY session_id / file_path / size_bytes and hardcodes `store_kind=UNKNOWN`
-  // (`llm_anthology/sidecar.py:1551-1555`); it never stats the file and never reads a
+  // (`llm_anthology/sidecar.py:1610-1615`); it never stats the file and never reads a
   // client-supplied `last_write_ms` or `is_hot`. If that reading is wrong, the values below
   // come back echoed and this line disproves it.
   const echo = await engine.result("maintenance.plan", {
@@ -773,18 +785,8 @@ function selfTest() {
       "DIFF",
       "$[].nested.k",
     ],
-    [
-      "an array empty on ONE side is UNCMP, never PASS",
-      { a: [row], b: [] },
-      "UNCMP",
-      "$[]",
-    ],
-    [
-      "an array empty on BOTH sides is UNCMP, never PASS",
-      { a: [], b: [] },
-      "UNCMP",
-      "$[]",
-    ],
+    ["an array empty on ONE side is UNCMP, never PASS", { a: [row], b: [] }, "UNCMP", "$[]"],
+    ["an array empty on BOTH sides is UNCMP, never PASS", { a: [], b: [] }, "UNCMP", "$[]"],
     [
       "a field null on BOTH sides is UNCMP, never PASS",
       { a: [{ ...row, n: null }], b: [{ ...row, n: null }] },
@@ -803,15 +805,11 @@ function selfTest() {
   for (const [name, { a, b }, want, wantPath] of cases) {
     const got = compare(a, b);
     const pathOk =
-      wantPath === null ||
-      got.findings.some((f) => f.path === wantPath && f.sev !== "note");
+      wantPath === null || got.findings.some((f) => f.path === wantPath && f.sev !== "note");
     const ok = got.verdict === want && pathOk;
     if (!ok) failed += 1;
-    const detail =
-      wantPath === null ? "" : ` [expect a finding at ${wantPath}]`;
-    console.log(
-      `${ok ? "ok  " : "FAIL"} ${name} -> ${got.verdict} (want ${want})${detail}`,
-    );
+    const detail = wantPath === null ? "" : ` [expect a finding at ${wantPath}]`;
+    console.log(`${ok ? "ok  " : "FAIL"} ${name} -> ${got.verdict} (want ${want})${detail}`);
     if (!ok) {
       for (const f of got.findings) console.log(`       ${f.sev} ${f.path}: ${f.msg}`);
     }

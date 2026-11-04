@@ -75,6 +75,7 @@ PRIVACY: local-only. Every entry point takes an EXPLICIT root or connection — 
 resolves `$CODEX_HOME`, `~/.codex` or AppData, nothing opens a socket, and only file paths,
 sizes and mtimes are recorded. Tests use synthetic fixtures.
 """
+
 import os
 from dataclasses import dataclass, field
 from typing import Optional
@@ -102,16 +103,20 @@ def known_store_roots(codex_home):
     """[(root, store_kind)] for the two stores Codex is known to write — a port of
     `KnownStoreLocator.GetKnownStores`. PURE path arithmetic: it does not stat, list or
     open anything, so naming a home directory never reads the owner's real sessions."""
-    return [(os.path.join(codex_home, "sessions"), STORE_LIVE),
-            (os.path.join(codex_home, "sessions_backup"), STORE_BACKUP)]
+    return [
+        (os.path.join(codex_home, "sessions"), STORE_LIVE),
+        (os.path.join(codex_home, "sessions_backup"), STORE_BACKUP),
+    ]
 
 
 # ------------------------------------------------------------------- dataclasses
+
 
 @dataclass(frozen=True)
 class PhysicalCopy:
     """One session file found on disk. Frozen: a copy is EVIDENCE, so consolidation can
     reorder references to it but can never edit or drop the record."""
+
     session_id: str
     file_path: str
     store_kind: str = STORE_UNKNOWN
@@ -126,6 +131,7 @@ class LogicalSession:
     `copies` is the full set in preference order and `copies[0] is canonical`; the tuple
     (not a list) is what makes "dedup never deletes" structural rather than a promise.
     """
+
     session_id: str
     canonical: PhysicalCopy
     copies: tuple = field(default_factory=tuple)
@@ -161,10 +167,12 @@ class LogicalSession:
         silently resolved. A UI can offer the larger copy; the canonical rule stays
         single-implementation."""
         return self.canonical.size_bytes < max(
-            (c.size_bytes for c in self.copies), default=self.canonical.size_bytes)
+            (c.size_bytes for c in self.copies), default=self.canonical.size_bytes
+        )
 
 
 # ----------------------------------------------------------------- the two rules
+
 
 def _is_blank(session_id):
     """Blank in the C# `string.IsNullOrWhiteSpace` sense (whitespace counts as blank)."""
@@ -185,17 +193,18 @@ def _preference_key(copy):
     Total by construction — the raw path is the final key — so the winner is independent
     of input order."""
     ms = copy.last_write_ms
-    return (store_rank(copy.store_kind),
-            -copy.size_bytes,
-            (0, -ms) if ms is not None else (1, 0),
-            copy.file_path.casefold(),
-            copy.file_path)
+    return (
+        store_rank(copy.store_kind),
+        -copy.size_bytes,
+        (0, -ms) if ms is not None else (1, 0),
+        copy.file_path.casefold(),
+        copy.file_path,
+    )
 
 
 def _session_key(session):
     """Result ordering: by session id (ordinal, like the C#), then canonical path."""
-    return (session.session_id, session.canonical.file_path.casefold(),
-            session.canonical.file_path)
+    return (session.session_id, session.canonical.file_path.casefold(), session.canonical.file_path)
 
 
 def consolidate(copies):
@@ -211,13 +220,15 @@ def consolidate(copies):
     sessions = []
     for members in groups.values():
         ordered = tuple(sorted(members, key=_preference_key))
-        sessions.append(LogicalSession(session_id=ordered[0].session_id,
-                                       canonical=ordered[0], copies=ordered))
+        sessions.append(
+            LogicalSession(session_id=ordered[0].session_id, canonical=ordered[0], copies=ordered)
+        )
     sessions.sort(key=_session_key)
     return sessions
 
 
 # ---------------------------------------------------------------------- scanning
+
 
 def _trusted_id(derived_id):
     """A scan-derived id, or `""` when it does not look like a Codex session id.
@@ -255,11 +266,15 @@ def scan_store(sessions_root, store_kind=STORE_UNKNOWN):
     for doc in docs:
         # Only files ingest_sessions could already READ reach here, so stat cannot fail.
         stat = os.stat(doc.rollout_path)
-        copies.append(PhysicalCopy(session_id=_trusted_id(doc.thread_id),
-                                   file_path=doc.rollout_path,
-                                   store_kind=store_kind,
-                                   last_write_ms=int(stat.st_mtime * 1000),
-                                   size_bytes=stat.st_size))
+        copies.append(
+            PhysicalCopy(
+                session_id=_trusted_id(doc.thread_id),
+                file_path=doc.rollout_path,
+                store_kind=store_kind,
+                last_write_ms=int(stat.st_mtime * 1000),
+                size_bytes=stat.st_size,
+            )
+        )
     return copies, errors
 
 
@@ -302,12 +317,17 @@ def ensure_schema(conn):
 def save_sessions(conn, sessions):
     """Record every physical copy of every session. INSERT OR REPLACE on file_path, so a
     re-scan updates a copy in place and NEVER deletes one it did not see this time."""
-    sql = ("INSERT OR REPLACE INTO %s(%s, is_canonical) VALUES (?,?,?,?,?,?)"
-           % (COPIES_TABLE, ",".join(_COPY_COLS)))
+    sql = "INSERT OR REPLACE INTO %s(%s, is_canonical) VALUES (?,?,?,?,?,?)" % (
+        COPIES_TABLE,
+        ",".join(_COPY_COLS),
+    )
     for session in sessions:
         for copy in session.copies:
-            conn.execute(sql, tuple(getattr(copy, c) for c in _COPY_COLS)
-                         + (1 if copy is session.canonical else 0,))
+            conn.execute(
+                sql,
+                tuple(getattr(copy, c) for c in _COPY_COLS)
+                + (1 if copy is session.canonical else 0,),
+            )
 
 
 def load_sessions(conn):

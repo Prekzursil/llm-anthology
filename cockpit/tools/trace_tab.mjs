@@ -26,7 +26,13 @@ const SETUP = async ({ items }) => {
   box.style.width = "300px";
   document.body.append(before, box);
   window.__paints = 0;
-  box.addEventListener("scroll", () => { window.__paints++; }, { passive: true });
+  box.addEventListener(
+    "scroll",
+    () => {
+      window.__paints++;
+    },
+    { passive: true },
+  );
   const list = new mod.VirtualList(box, {
     itemHeight: 40,
     emptyLabel: "empty",
@@ -47,7 +53,9 @@ const main = async () => {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errs = [];
   page.on("pageerror", (e) => errs.push(String(e)));
-  page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
+  page.on("console", (m) => {
+    if (m.type() === "error") errs.push(m.text());
+  });
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForSelector("#app");
   await page.evaluate(SETUP, { items: 1000 });
@@ -60,8 +68,9 @@ const main = async () => {
     const s = await page.evaluate(() => {
       const a = document.activeElement;
       const box = document.getElementById("probe-list");
-      const rows = [...document.querySelectorAll("[data-vl-index]")]
-        .map((r) => Number(r.dataset.vlIndex));
+      const rows = [...document.querySelectorAll("[data-vl-index]")].map((r) =>
+        Number(r.dataset.vlIndex),
+      );
       const win = rows.length ? `${Math.min(...rows)}..${Math.max(...rows)}` : "(none)";
       let who = "(body)";
       let idx = "";
@@ -72,8 +81,10 @@ const main = async () => {
       }
       return { who: String(who).slice(0, 20), idx, top: box ? box.scrollTop : -1, win };
     });
-    console.log(`  ${String(i).padStart(3)} | ${s.who.padEnd(20)} | ${String(s.idx).padStart(7)} `
-      + `| ${String(s.top).padStart(9)} | ${s.win}`);
+    console.log(
+      `  ${String(i).padStart(3)} | ${s.who.padEnd(20)} | ${String(s.idx).padStart(7)} ` +
+        `| ${String(s.top).padStart(9)} | ${s.win}`,
+    );
   }
   console.log();
   console.log("  page errors captured: " + errs.length);

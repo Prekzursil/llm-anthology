@@ -64,7 +64,11 @@ const DIAGNOSTICS: EngineDiagnostics = {
     "KeyError: <redacted 9 chars>",
   ].join("\n"),
   engine_stderr_cap_bytes: 65536,
-  crash_file: { path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.log", bytes: 812, cap_bytes: 262144 },
+  crash_file: {
+    path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.log",
+    bytes: 812,
+    cap_bytes: 262144,
+  },
   previous_run: {
     path: "~\\AppData\\Local\\LLM Anthology\\logs\\engine-stderr.prev.log",
     bytes: 640,
@@ -331,6 +335,15 @@ describe("systemClipboardWrite", () => {
     // The node runner has no `navigator.clipboard`, and neither does a browser preview over
     // plain HTTP. `Cannot read properties of undefined` tells a reporter nothing.
     await expect(systemClipboardWrite("x")).rejects.toThrow("no clipboard API");
+  });
+
+  it("survives `navigator` itself being absent (node < 21) with the same readable reason", async () => {
+    // `globalThis.navigator?.clipboard` guards a runner with NO navigator at all — node
+    // before 21. Stubbing the global away exercises that arm deterministically on any
+    // node this suite runs on.
+    vi.stubGlobal("navigator", undefined);
+    await expect(systemClipboardWrite("x")).rejects.toThrow("no clipboard API");
+    vi.unstubAllGlobals();
   });
 });
 

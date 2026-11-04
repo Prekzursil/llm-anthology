@@ -10,8 +10,15 @@ import {
 
 /** Build a synthetic ThreadNode; `tokens` omitted (undefined) unless given. */
 function tn(id: string, title: string, tokens?: number, provider = "claude"): ThreadNode {
-  const n: ThreadNode = { id, title, provider, model_provider: "", created_at_ms: 1,
-    child_count: 0, depth: 0 };
+  const n: ThreadNode = {
+    id,
+    title,
+    provider,
+    model_provider: "",
+    created_at_ms: 1,
+    child_count: 0,
+    depth: 0,
+  };
   if (tokens !== undefined) n.tokens = tokens;
   return n;
 }
@@ -64,7 +71,15 @@ describe("collapseLinearChains", () => {
   it("folds a maximal 3-node chain and passes everything else through as singles", () => {
     const out = collapseLinearChains(NODES, EDGES);
     const expected: AggregateNode[] = [
-      { id: "P", kind: "single", label: "Papa", members: ["P"], representative: P, tokens: 5, count: 1 },
+      {
+        id: "P",
+        kind: "single",
+        label: "Papa",
+        members: ["P"],
+        representative: P,
+        tokens: 5,
+        count: 1,
+      },
       {
         id: "chain:a",
         kind: "chain",
@@ -74,12 +89,60 @@ describe("collapseLinearChains", () => {
         tokens: 30, // 10 + 20 + (c has no tokens -> 0)
         count: 3,
       },
-      { id: "g", kind: "single", label: "Golf", members: ["g"], representative: g, tokens: 7, count: 1 },
-      { id: "h", kind: "single", label: "Hotel", members: ["h"], representative: h, tokens: 9, count: 1 },
-      { id: "m", kind: "single", label: "Mike", members: ["m"], representative: m, tokens: 2, count: 1 },
-      { id: "n", kind: "single", label: "November", members: ["n"], representative: n, tokens: 3, count: 1 },
-      { id: "x", kind: "single", label: "Xray", members: ["x"], representative: x, tokens: 8, count: 1 },
-      { id: "z", kind: "single", label: "z", members: ["z"], representative: z, tokens: 0, count: 1 },
+      {
+        id: "g",
+        kind: "single",
+        label: "Golf",
+        members: ["g"],
+        representative: g,
+        tokens: 7,
+        count: 1,
+      },
+      {
+        id: "h",
+        kind: "single",
+        label: "Hotel",
+        members: ["h"],
+        representative: h,
+        tokens: 9,
+        count: 1,
+      },
+      {
+        id: "m",
+        kind: "single",
+        label: "Mike",
+        members: ["m"],
+        representative: m,
+        tokens: 2,
+        count: 1,
+      },
+      {
+        id: "n",
+        kind: "single",
+        label: "November",
+        members: ["n"],
+        representative: n,
+        tokens: 3,
+        count: 1,
+      },
+      {
+        id: "x",
+        kind: "single",
+        label: "Xray",
+        members: ["x"],
+        representative: x,
+        tokens: 8,
+        count: 1,
+      },
+      {
+        id: "z",
+        kind: "single",
+        label: "z",
+        members: ["z"],
+        representative: z,
+        tokens: 0,
+        count: 1,
+      },
     ];
     expect(out.nodes).toEqual(expected);
   });
@@ -128,10 +191,13 @@ describe("collapseLinearChains", () => {
     // 'root' has no node row; it is the head of root -> k1 -> k2.
     const k1 = tn("k1", "K1", 1);
     const k2 = tn("k2", "K2", 2);
-    const out = collapseLinearChains([k1, k2], [
-      { parent: "root", child: "k1" },
-      { parent: "k1", child: "k2" },
-    ]);
+    const out = collapseLinearChains(
+      [k1, k2],
+      [
+        { parent: "root", child: "k1" },
+        { parent: "k1", child: "k2" },
+      ],
+    );
     const chain = out.nodes.find((node) => node.id === "chain:root");
     expect(chain?.members).toEqual(["k1", "k2", "root"]);
     expect(chain?.count).toBe(3);
@@ -180,9 +246,33 @@ describe("foldSubtree", () => {
     const out = foldSubtree(nodes, edges, rollupById, "r");
 
     expect(out.nodes).toEqual([
-      { id: "P", kind: "single", label: "Papa", members: ["P"], representative: P, tokens: 100, count: 1 },
-      { id: "o1", kind: "single", label: "O1", members: ["o1"], representative: o1, tokens: 200, count: 1 },
-      { id: "o2", kind: "single", label: "O2", members: ["o2"], representative: o2, tokens: 300, count: 1 },
+      {
+        id: "P",
+        kind: "single",
+        label: "Papa",
+        members: ["P"],
+        representative: P,
+        tokens: 100,
+        count: 1,
+      },
+      {
+        id: "o1",
+        kind: "single",
+        label: "O1",
+        members: ["o1"],
+        representative: o1,
+        tokens: 200,
+        count: 1,
+      },
+      {
+        id: "o2",
+        kind: "single",
+        label: "O2",
+        members: ["o2"],
+        representative: o2,
+        tokens: 300,
+        count: 1,
+      },
       {
         id: "subtree:r",
         kind: "subtree",

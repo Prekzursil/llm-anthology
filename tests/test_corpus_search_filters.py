@@ -34,6 +34,7 @@ THREE DESIGN CHOICES THESE TESTS PIN, because each has a wrong-looking-right alt
 
 PRIVACY: synthetic fixtures only. No real conversation, title, provider account or path.
 """
+
 import sqlite3
 
 import pytest
@@ -61,9 +62,14 @@ def _conv(cid, text, provider="codex", created="2026-01-01T00:00:00Z"):
     """One one-turn conversation. `text` is both the title and the block body, so it is
     reachable by MATCH through the contentless FTS index."""
     return ir.Conversation(
-        id=cid, title=text, provider=provider, account="acct",
+        id=cid,
+        title=text,
+        provider=provider,
+        account="acct",
         turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=text)])],
-        created_at=created, updated_at=created)
+        created_at=created,
+        updated_at=created,
+    )
 
 
 #: The fixture corpus every filter test below reads. Deliberately spans two providers, four
@@ -91,12 +97,18 @@ def _ids(rows):
 
 # ------------------------------------------------------------------ the provider facet
 
+
 def test_an_unfiltered_search_still_returns_every_provider():
     """The old call shape must keep its old answer — the filters are additive."""
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget")) == [
-        "apr-codex", "jan-codex", "mar01-codex", "mar15-chatgpt", "mar31-codex",
-        "undated-grok"]
+        "apr-codex",
+        "jan-codex",
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+        "undated-grok",
+    ]
 
 
 def test_the_provider_filter_keeps_only_that_provider():
@@ -120,10 +132,14 @@ def test_the_provider_filter_is_exact_not_a_prefix():
 
 # --------------------------------------------------------------- the temporal bounds
 
+
 def test_a_day_bound_is_inclusive_on_both_ends():
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget", since="2026-03-01", until="2026-03-31")) == [
-        "mar01-codex", "mar15-chatgpt", "mar31-codex"]
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+    ]
 
 
 def test_the_until_bound_survives_a_time_of_day_and_both_utc_spellings():
@@ -132,28 +148,45 @@ def test_the_until_bound_survives_a_time_of_day_and_both_utc_spellings():
     other end — it is the spelling `datetime.isoformat()` produces, and it sorts BELOW `Z`."""
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget", until="2026-03-31")) == [
-        "jan-codex", "mar01-codex", "mar15-chatgpt", "mar31-codex"]
+        "jan-codex",
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+    ]
     assert _ids(corpus.search(conn, "widget", since="2026-03-01", until="2026-03-01")) == [
-        "mar01-codex"]
+        "mar01-codex"
+    ]
 
 
 def test_a_month_bound_covers_the_whole_month_with_no_calendar_arithmetic():
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget", since="2026-03", until="2026-03")) == [
-        "mar01-codex", "mar15-chatgpt", "mar31-codex"]
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+    ]
 
 
 def test_a_year_bound_covers_the_whole_year():
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget", since="2026", until="2026")) == [
-        "apr-codex", "jan-codex", "mar01-codex", "mar15-chatgpt", "mar31-codex"]
+        "apr-codex",
+        "jan-codex",
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+    ]
     assert corpus.search(conn, "widget", since="2027") == []
 
 
 def test_a_since_bound_alone_is_open_ended_upward():
     conn = _loaded()
     assert _ids(corpus.search(conn, "widget", since="2026-03")) == [
-        "apr-codex", "mar01-codex", "mar15-chatgpt", "mar31-codex"]
+        "apr-codex",
+        "mar01-codex",
+        "mar15-chatgpt",
+        "mar31-codex",
+    ]
 
 
 def test_either_date_bound_excludes_a_conversation_the_ingest_could_not_date():
@@ -170,9 +203,22 @@ def test_a_malformed_bound_raises_instead_of_silently_matching_nothing():
     and return nothing at all. Answering a typo with an empty result set is the worst
     available behaviour: it looks like "you wrote nothing in March"."""
     conn = _loaded()
-    for bad in ["2026-3", "26-03", "2026-13", "2026-00", "2026-02-32", "2026-03-00",
-                "march", "", "2026-03-15T10:00:00Z", "2026/03/15", "20x6", "2026-0a",
-                "2026-03-15-01", "٢٠٢٦"]:
+    for bad in [
+        "2026-3",
+        "26-03",
+        "2026-13",
+        "2026-00",
+        "2026-02-32",
+        "2026-03-00",
+        "march",
+        "",
+        "2026-03-15T10:00:00Z",
+        "2026/03/15",
+        "20x6",
+        "2026-0a",
+        "2026-03-15-01",
+        "٢٠٢٦",
+    ]:
         with pytest.raises(ValueError):
             corpus.search(conn, "widget", since=bad)
         with pytest.raises(ValueError):
@@ -196,7 +242,8 @@ def test_a_well_formed_but_nonexistent_day_behaves_as_an_inclusive_month_bound()
     which is what a calendar table would have computed."""
     conn = _loaded()
     assert corpus.search(conn, "widget", until="2026-02-30") == corpus.search(
-        conn, "widget", until="2026-02")
+        conn, "widget", until="2026-02"
+    )
 
 
 def test_a_non_string_bound_raises():
@@ -207,12 +254,13 @@ def test_a_non_string_bound_raises():
 
 # ------------------------------------------------------------------- the facets compose
 
+
 def test_march_in_codex_only_is_answerable_in_one_call():
     """The question DECISION D-3 exists for."""
     conn = _loaded()
-    assert _ids(corpus.search(conn, "widget", provider="codex",
-                              since="2026-03", until="2026-03")) == [
-        "mar01-codex", "mar31-codex"]
+    assert _ids(
+        corpus.search(conn, "widget", provider="codex", since="2026-03", until="2026-03")
+    ) == ["mar01-codex", "mar31-codex"]
 
 
 def test_the_limit_still_applies_under_a_filter():
@@ -226,8 +274,7 @@ def test_a_filter_does_not_reorder_the_rows_it_keeps():
     test does not quietly re-specify bm25."""
     conn = _loaded()
     unfiltered = [row["conversation_id"] for row in corpus.search(conn, "widget")]
-    filtered = [row["conversation_id"] for row in corpus.search(conn, "widget",
-                                                                provider="codex")]
+    filtered = [row["conversation_id"] for row in corpus.search(conn, "widget", provider="codex")]
     assert filtered == [cid for cid in unfiltered if cid in set(filtered)]
     assert len(filtered) == 4
 
@@ -242,6 +289,7 @@ def test_search_still_returns_the_retrievable_columns_under_a_filter():
 
 
 # ------------------------------------------------------------ the WHERE-fragment seam
+
 
 def test_search_filter_sql_is_empty_when_nothing_is_filtered():
     """The unfiltered path must add no SQL at all, so the pre-D-3 query plan is untouched."""
@@ -258,17 +306,26 @@ def test_search_filter_sql_ands_each_bound_and_binds_every_value():
 
 # ------------------------------------------------------------- the hits-over-time roll-up
 
+
 def test_the_histogram_buckets_by_month_in_ascending_order():
     conn = _loaded()
     assert corpus.search_histogram(conn, "widget") == [
-        ("", 1), ("2026-01", 1), ("2026-03", 3), ("2026-04", 1)]
+        ("", 1),
+        ("2026-01", 1),
+        ("2026-03", 3),
+        ("2026-04", 1),
+    ]
 
 
 def test_the_histogram_counts_sum_to_the_number_of_matching_rows():
     """The invariant that makes the roll-up safe to draw beside the result list."""
     conn = _loaded()
-    for kw in [{}, {"provider": "codex"}, {"since": "2026-03"},
-               {"provider": "codex", "since": "2026-01", "until": "2026-03"}]:
+    for kw in [
+        {},
+        {"provider": "codex"},
+        {"since": "2026-03"},
+        {"provider": "codex", "since": "2026-01", "until": "2026-03"},
+    ]:
         rows = corpus.search(conn, "widget", limit=1000, **kw)
         buckets = corpus.search_histogram(conn, "widget", **kw)
         assert sum(count for _b, count in buckets) == len(rows), kw
@@ -276,11 +333,10 @@ def test_the_histogram_counts_sum_to_the_number_of_matching_rows():
 
 def test_the_histogram_takes_year_and_day_granularity_too():
     conn = _loaded()
-    assert corpus.search_histogram(conn, "widget", bucket="year") == [
-        ("", 1), ("2026", 5)]
-    assert corpus.search_histogram(conn, "widget", bucket="day", provider="codex",
-                                   since="2026-03", until="2026-03") == [
-        ("2026-03-01", 1), ("2026-03-31", 1)]
+    assert corpus.search_histogram(conn, "widget", bucket="year") == [("", 1), ("2026", 5)]
+    assert corpus.search_histogram(
+        conn, "widget", bucket="day", provider="codex", since="2026-03", until="2026-03"
+    ) == [("2026-03-01", 1), ("2026-03-31", 1)]
 
 
 def test_the_histogram_honours_every_filter_the_search_does():

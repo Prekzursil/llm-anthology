@@ -1,0 +1,30 @@
+# QZP lean gate — zero tolerance (any finding of any severity fails).
+# Thin caller of quality-zero-platform's reusable workflow, pinned to an exact
+# commit. Gate changes happen in quality-zero-platform, never here; this repo
+# adopts them by bumping the pin below. See CONTRIBUTING.md.
+name: quality
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  # a merge queue's synthetic commit must report the required check too
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  # a pull request's runs share one group, so a newer push cancels the superseded
+  # run; every other event (a push, a merge-queue commit) gets a group of its own
+  # commit, so no commit's run is ever replaced while it waits or left untested
+  group: quality-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    uses: Prekzursil/quality-zero-platform/.github/workflows/reusable-quality.yml@f84b146aca9432cd852092251d31fec3ab3169d7
+    with:
+      deps-severity-floor: any

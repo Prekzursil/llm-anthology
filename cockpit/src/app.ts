@@ -295,7 +295,7 @@ export class CockpitApp {
           title: "Duplicate session copies",
           // First reveal only. `load()` calls `discover.sources`, which walks the
           // filesystem; it also deliberately does NOT scan — a scan reads the owner's live
-          // Codex sessions and is always their own click (`ui/dedupPanel.ts:641-644`).
+          // Codex sessions and is always their own click (`ui/dedupPanel.ts:645-648`).
           onShow: (firstShow) => {
             if (firstShow) void dedup.load();
           },
@@ -308,9 +308,7 @@ export class CockpitApp {
           // region's name carries the subject. Nothing here re-derives what the panel
           // computes — the panel computes no such label.
           title: () =>
-            this.metadataSubject === null
-              ? "Annotations"
-              : `Annotations — ${this.metadataSubject}`,
+            this.metadataSubject === null ? "Annotations" : `Annotations — ${this.metadataSubject}`,
           onShow: () => void this.syncMetadata(),
         },
         {
@@ -425,12 +423,7 @@ export class CockpitApp {
     // A new corpus has its own timeline; carrying the previous one's scrub position
     // forward would time-travel the new graph to a meaningless instant.
     this.scrubAsOf = null;
-    await Promise.all([
-      this.loadHealth(),
-      this.loadStats(),
-      this.loadRoots(),
-      this.loadRollup(),
-    ]);
+    await Promise.all([this.loadHealth(), this.loadStats(), this.loadRoots(), this.loadRollup()]);
     await this.showForest();
     await this.mountScrubber();
   }
@@ -527,7 +520,7 @@ export class CockpitApp {
     const sub = await ipc.graphSubtree(threadId);
     await this.present({ nodes: sub.nodes, edges: sub.edges }, threadId);
     // `present` highlights the node through `canvas.select()`, which is documented at
-    // `canvas.ts:104` as NOT firing the selection callback — so arriving here from the
+    // `canvas.ts:100` as NOT firing the selection callback — so arriving here from the
     // sidebar or a search hit moved the graph while leaving the detail pane showing the
     // previous thread, or nothing at all. Clicking a thread and being told nothing about it
     // is not a graph feature.
@@ -561,7 +554,7 @@ export class CockpitApp {
     // Decide the pane FIRST, and for a second reason beyond tidiness: when this render is the
     // one that ends a collapse, the canvas has to have a real box before `setGraph` fits a
     // graph to it. `fitToView` reads a size only the `ResizeObserver` refreshes
-    // (`graph/canvas.ts:175-182`), and the awaited ELK round-trip below is the gap in which
+    // (`graph/canvas.ts:168-175`), and the awaited ELK round-trip below is the gap in which
     // that observer fires. Revealing after the fit would fit to a 0x0 viewport.
     this.applyGraphPaneState(input.nodes.length);
     if (input.nodes.length === 0) {
@@ -585,7 +578,7 @@ export class CockpitApp {
       this.graphStatusEl.textContent = `${positioned.nodes.length} nodes · ${positioned.edges.length} edges · ${crossCount} cross-provider${hidden}`;
     } catch (err) {
       const msg =
-      err instanceof LayoutTimeoutError ? err.message : engineErrorText(err, "layout failed");
+        err instanceof LayoutTimeoutError ? err.message : engineErrorText(err, "layout failed");
       this.graphStatusEl.textContent = msg;
     }
   }
@@ -599,12 +592,14 @@ export class CockpitApp {
    */
   private applyGraphPaneState(nodeCount: number): void {
     this.graphNodeCount = nodeCount;
-    this.graphStrip.apply(graphStripState({
-      nodeCount,
-      complete: this.currentComplete,
-      conversations: this.conversationCount,
-      discoveryShowing: this.discoveryShowing(),
-    }));
+    this.graphStrip.apply(
+      graphStripState({
+        nodeCount,
+        complete: this.currentComplete,
+        conversations: this.conversationCount,
+        discoveryShowing: this.discoveryShowing(),
+      }),
+    );
   }
 
   /**
@@ -908,13 +903,13 @@ export class CockpitApp {
         ["parent", parentNode?.title || parent],
         [
           "why",
-          "the graph draws a bounded number of children per node — layout cost is driven by "
-          + "the widest single layer, not by how big the graph is",
+          "the graph draws a bounded number of children per node — layout cost is driven by " +
+            "the widest single layer, not by how big the graph is",
         ],
         [
           "to see them",
-          "open the parent in the thread list; a list holds thousands of siblings, a "
-          + "laid-out graph cannot",
+          "open the parent in the thread list; a list holds thousands of siblings, a " +
+            "laid-out graph cannot",
         ],
       ],
       null,
@@ -932,11 +927,7 @@ export class CockpitApp {
     );
   }
 
-  private paintDetail(
-    title: string,
-    rows: Array<[string, string]>,
-    preview: string | null,
-  ): void {
+  private paintDetail(title: string, rows: Array<[string, string]>, preview: string | null): void {
     const frag = document.createDocumentFragment();
     const h = document.createElement("h2");
     h.textContent = title;
@@ -982,4 +973,3 @@ export class CockpitApp {
     legend.replaceChildren(frag);
   }
 }
-

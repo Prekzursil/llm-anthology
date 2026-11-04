@@ -32,6 +32,7 @@ data cannot make it recurse.
 
 Tests use SYNTHETIC fixtures only; this module never reads the real corpus.
 """
+
 from dataclasses import dataclass, field, fields
 
 from .corpus import Corpus
@@ -50,6 +51,7 @@ class CorpusDiff:
     An all-empty CorpusDiff (the default) means the two corpora are structurally
     identical; is_empty() reports that.
     """
+
     added_nodes: list = field(default_factory=list)
     removed_nodes: list = field(default_factory=list)
     added_edges: list = field(default_factory=list)
@@ -58,8 +60,13 @@ class CorpusDiff:
 
     def is_empty(self):
         """True iff there is no structural difference at all."""
-        return not (self.added_nodes or self.removed_nodes or self.added_edges
-                    or self.removed_edges or self.changed_nodes)
+        return not (
+            self.added_nodes
+            or self.removed_nodes
+            or self.added_edges
+            or self.removed_edges
+            or self.changed_nodes
+        )
 
 
 def _node_ids(corpus):

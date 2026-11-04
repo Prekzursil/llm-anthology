@@ -156,7 +156,7 @@ export interface ProviderOption {
 export function providerOptions(providers: Record<string, number>): ProviderOption[] {
   const present = Object.entries(providers).filter(([, n]) => n > 0);
   if (present.length < 2) return [];
-  present.sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1));
+  present.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   const total = present.reduce((sum, [, n]) => sum + n, 0);
   return [
     { value: "", label: `All providers (${grouped(total)})` },

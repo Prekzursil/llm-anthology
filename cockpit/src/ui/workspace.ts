@@ -93,11 +93,15 @@ export class Workspace {
     // A capture listener on `document` runs before any bubble listener on `document`, so
     // this observes the reader while it is still open. When it is, this returns without
     // calling `preventDefault`, leaving the press to the reader untouched.
-    document.addEventListener("keydown", (e) => {
-      if (this.root.hidden || e.key !== "Escape" || this.escapeBlocked()) return;
-      e.preventDefault();
-      this.close();
-    }, true);
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (this.root.hidden || e.key !== "Escape" || this.escapeBlocked()) return;
+        e.preventDefault();
+        this.close();
+      },
+      true,
+    );
   }
 
   /** The showing pane's key, or null when the workspace is closed. */

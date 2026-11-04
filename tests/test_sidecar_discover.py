@@ -9,6 +9,7 @@ and re-testing it here would duplicate that suite rather than test the wiring.
 No real session data is read. `discover.discover` is substituted where a fixed payload is what
 is under test, and the one live call asserts only structure.
 """
+
 import json
 
 import pytest
@@ -21,9 +22,13 @@ def _fake_result(findings=()):
     return discover.ScanResult(
         findings=tuple(findings),
         stats=discover.ScanStats(
-            elapsed_seconds=0.5, roots_scanned=3, dirs_visited=10,
-            files_examined=99, budget_exhausted=False,
-            truncated_groups=(), errors=(),
+            elapsed_seconds=0.5,
+            roots_scanned=3,
+            dirs_visited=10,
+            files_examined=99,
+            budget_exhausted=False,
+            truncated_groups=(),
+            errors=(),
         ),
     )
 
@@ -47,8 +52,8 @@ def test_discover_works_with_NO_corpus_attached(monkeypatch):
     for the only user who needs it and the app is a dead end again.
     """
     monkeypatch.setattr(
-        discover, "discover",
-        lambda: _fake_result([_finding("C:/synthetic/.codex")]))
+        discover, "discover", lambda: _fake_result([_finding("C:/synthetic/.codex")])
+    )
 
     out = sidecar.Sidecar(None).dispatch("sources.discover", {})
 
@@ -59,22 +64,36 @@ def test_discover_works_with_NO_corpus_attached(monkeypatch):
 def test_discover_payload_survives_the_rpc_boundary(monkeypatch):
     """Whatever it returns has to serialise: the transport is line-delimited JSON."""
     monkeypatch.setattr(
-        discover, "discover",
-        lambda: _fake_result([
-            _finding("C:/synthetic/.codex", detail={"rollouts_zst": 2024, "ingestable": 0}),
-            _finding("C:/synthetic/idx.sqlite", provider="corpus",
-                     kind=discover.KIND_BUILT_INDEX),
-        ]))
+        discover,
+        "discover",
+        lambda: _fake_result(
+            [
+                _finding("C:/synthetic/.codex", detail={"rollouts_zst": 2024, "ingestable": 0}),
+                _finding(
+                    "C:/synthetic/idx.sqlite", provider="corpus", kind=discover.KIND_BUILT_INDEX
+                ),
+            ]
+        ),
+    )
 
     out = sidecar.Sidecar(None).dispatch("sources.discover", {})
-    payload = json.dumps(out)          # must not raise
+    payload = json.dumps(out)  # must not raise
 
     assert "rollouts_zst" in payload
     assert {f["kind"] for f in out["findings"]} == {
-        discover.KIND_SESSION_STORE, discover.KIND_BUILT_INDEX}
+        discover.KIND_SESSION_STORE,
+        discover.KIND_BUILT_INDEX,
+    }
     # The per-finding contract the UI codes against.
-    assert set(out["findings"][0]) == {"provider", "kind", "path", "count",
-                                       "newest_mtime", "confidence", "detail"}
+    assert set(out["findings"][0]) == {
+        "provider",
+        "kind",
+        "path",
+        "count",
+        "newest_mtime",
+        "confidence",
+        "detail",
+    }
 
 
 def test_discover_sanitizes_strings_bound_for_the_ui(monkeypatch):
@@ -85,19 +104,20 @@ def test_discover_sanitizes_strings_bound_for_the_ui(monkeypatch):
     display a spoofed path, and it is why this goes through _sanitize_tree rather than
     returning as_dict() directly.
     """
-    nasty = "C:/synthetic/\u202egnp.exe"          # U+202E RIGHT-TO-LEFT OVERRIDE
+    nasty = "C:/synthetic/\u202egnp.exe"  # U+202E RIGHT-TO-LEFT OVERRIDE
     monkeypatch.setattr(discover, "discover", lambda: _fake_result([_finding(nasty)]))
 
     out = sidecar.Sidecar(None).dispatch("sources.discover", {})
 
-    assert "\u202e" not in out["findings"][0]["path"], \
-        "a bidi override must not reach the UI"
+    assert "\u202e" not in out["findings"][0]["path"], "a bidi override must not reach the UI"
 
 
 def test_discover_translates_a_rejected_root_into_an_invalid_params_error(monkeypatch):
     """`discover` raises ValueError for a UNC/relative root; the RPC layer owes -32602."""
+
     def boom():
         raise ValueError("refusing a UNC root: //host/share")
+
     monkeypatch.setattr(discover, "discover", boom)
 
     with pytest.raises(sidecar.RpcError) as excinfo:
@@ -123,7 +143,8 @@ def test_discover_ignores_caller_supplied_roots(monkeypatch):
     monkeypatch.setattr(discover, "discover", only_defaults)
 
     sidecar.Sidecar(None).dispatch(
-        "sources.discover", {"roots": ["C:/somewhere/else", "//host/share"]})
+        "sources.discover", {"roots": ["C:/somewhere/else", "//host/share"]}
+    )
 
     assert seen == [((), {})], f"discover must be called with no arguments, got {seen}"
 
@@ -150,7 +171,10 @@ def test_discover_runs_for_real_and_reports_structure(monkeypatch):
     assert out["stats"]["elapsed_seconds"] >= 0
     json.dumps(out)
     for f in out["findings"]:
-        assert f["kind"] in {discover.KIND_BUILT_INDEX, discover.KIND_SESSION_STORE,
-                             discover.KIND_EXPORT_FILE}
+        assert f["kind"] in {
+            discover.KIND_BUILT_INDEX,
+            discover.KIND_SESSION_STORE,
+            discover.KIND_EXPORT_FILE,
+        }
         # A count and a path are the contract; conversation text never is.
         assert isinstance(f["count"], int)

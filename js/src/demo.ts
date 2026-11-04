@@ -12,7 +12,9 @@ export function demoConversation(): Conversation {
     created_at: "2026-07-19",
     turns: [
       turn("human", [
-        block("attachment", { data: { file_name: "notes.pdf", file_type: "pdf", file_size: 12345 } }),
+        block("attachment", {
+          data: { file_name: "notes.pdf", file_type: "pdf", file_size: 12345 },
+        }),
         block("text", {
           text:
             "Summarize **reductive amination** with a table + code. " +
@@ -40,7 +42,9 @@ export function demoConversation(): Conversation {
       turn(
         "assistant",
         [
-          block("tool_use", { data: { name: "web_search", input: { query: "NaBH3CN selectivity pH" } } }),
+          block("tool_use", {
+            data: { name: "web_search", input: { query: "NaBH3CN selectivity pH" } },
+          }),
           block("tool_result", {
             data: {
               name: "web_search",

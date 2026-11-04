@@ -105,11 +105,7 @@ function fallbackTip(mapping: Rec): unknown {
     if (msg === null || typeof msg !== "object") continue;
     const rawTs = get(msg, "create_time");
     const isLeaf = ((get(node, "children") as unknown[]) || []).length === 0;
-    const cand: [boolean, number, unknown] = [
-      isLeaf,
-      typeof rawTs === "number" ? rawTs : -1,
-      nid,
-    ];
+    const cand: [boolean, number, unknown] = [isLeaf, typeof rawTs === "number" ? rawTs : -1, nid];
     if (best === null || cand[0] > best[0] || (cand[0] === best[0] && cand[1] > best[1])) {
       best = cand;
     }
@@ -135,7 +131,8 @@ function blocksFromMessage(msg: Rec): Block[] {
     for (const th of (get(content, "thoughts") as Rec[]) || []) {
       if (th !== null && typeof th === "object") {
         const body = s(get(th, "content")) || s(get(th, "summary"));
-        if (body) blocks.push(block("thinking", { text: body, data: { summary: s(get(th, "summary")) } }));
+        if (body)
+          blocks.push(block("thinking", { text: body, data: { summary: s(get(th, "summary")) } }));
       }
     }
     const body = s(get(content, "content"));
@@ -165,11 +162,13 @@ function blocksFromMessage(msg: Rec): Block[] {
           blocks.push(
             block("media", {
               text: ptr,
-              data: { path: ptr.split("/").pop() ?? "", pointer: ptr },
+              data: { path: ptr.slice(ptr.lastIndexOf("/") + 1), pointer: ptr },
             }),
           );
         } else {
-          blocks.push(block("unknown", { data: { orig_type: s(get(part, "content_type")), x_raw: part } }));
+          blocks.push(
+            block("unknown", { data: { orig_type: s(get(part, "content_type")), x_raw: part } }),
+          );
         }
       }
     }

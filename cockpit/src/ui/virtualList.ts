@@ -129,7 +129,10 @@ export class VirtualList<T> {
   private paint(preserveFocus = true): void {
     const total = this.items.length;
     const viewportHeight = this.viewport.clientHeight || this.itemHeight;
-    const first = Math.max(0, Math.floor(this.viewport.scrollTop / this.itemHeight) - this.overscan);
+    const first = Math.max(
+      0,
+      Math.floor(this.viewport.scrollTop / this.itemHeight) - this.overscan,
+    );
     const visibleCount = Math.ceil(viewportHeight / this.itemHeight) + this.overscan * 2;
     const last = Math.min(total, first + visibleCount);
 
@@ -170,9 +173,10 @@ export class VirtualList<T> {
   /** Put focus back on the equivalent control in the rebuilt row, if it is still rendered. */
   private restoreFocus(held: { index: string; position: number }): void {
     const row = this.sizer.querySelector<HTMLElement>(
-      `[data-vl-index="${CSS.escape(held.index)}"]`);
-    if (row === null) return;    // scrolled out of the window; nothing to hold on to
-    const target = held.position < 0 ? row : focusablesIn(row)[held.position] ?? row;
+      `[data-vl-index="${CSS.escape(held.index)}"]`,
+    );
+    if (row === null) return; // scrolled out of the window; nothing to hold on to
+    const target = held.position < 0 ? row : (focusablesIn(row)[held.position] ?? row);
     // `preventScroll` is load-bearing: focusing normally scrolls the element into view, which
     // fires another scroll event, which repaints again. Without it this fix can chase its
     // own tail instead of settling.
@@ -182,7 +186,10 @@ export class VirtualList<T> {
 
 /** The focusable descendants of `row`, in document order. */
 function focusablesIn(row: HTMLElement): HTMLElement[] {
-  return [...row.querySelectorAll<HTMLElement>(
-    'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),'
-    + 'textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')];
+  return [
+    ...row.querySelectorAll<HTMLElement>(
+      "a[href],button:not([disabled]),input:not([disabled]),select:not([disabled])," +
+        'textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+    ),
+  ];
 }

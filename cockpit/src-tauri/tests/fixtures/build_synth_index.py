@@ -31,6 +31,7 @@ real stdio JSON-RPC transport):
   export.run     => ok, graph_gate, transcript_gate all true; a real artifact on disk whose
                     graph re-parses to {child-b, child-c, root-a}
 """
+
 import sys
 
 from llm_anthology import corpus, ir
@@ -39,25 +40,50 @@ from llm_anthology.corpus import SpawnEdge, ThreadMeta
 
 def _add_conv(conn, cid, provider, title, thread_id, nturns):
     conv = ir.Conversation(
-        id=cid, title=title, provider=provider,
+        id=cid,
+        title=title,
+        provider=provider,
         turns=[ir.Turn("human", []) for _ in range(nturns)],
-        created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z",
-        account="acct")
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+        account="acct",
+    )
     corpus.add_conversation(conn, conv, body=title, thread_id=thread_id)
 
 
 def build(path):
     conn = corpus.open_index(path)
     try:
-        corpus.upsert_thread(conn, ThreadMeta(
-            id="root-a", title="root alpha", model_provider="codex",
-            created_at_ms=1000, tokens_used=100))
-        corpus.upsert_thread(conn, ThreadMeta(
-            id="child-b", title="child beta", model_provider="codex",
-            created_at_ms=1100, tokens_used=20))
-        corpus.upsert_thread(conn, ThreadMeta(
-            id="child-c", title="child gamma", model_provider="claude",
-            created_at_ms=1200, tokens_used=3))
+        corpus.upsert_thread(
+            conn,
+            ThreadMeta(
+                id="root-a",
+                title="root alpha",
+                model_provider="codex",
+                created_at_ms=1000,
+                tokens_used=100,
+            ),
+        )
+        corpus.upsert_thread(
+            conn,
+            ThreadMeta(
+                id="child-b",
+                title="child beta",
+                model_provider="codex",
+                created_at_ms=1100,
+                tokens_used=20,
+            ),
+        )
+        corpus.upsert_thread(
+            conn,
+            ThreadMeta(
+                id="child-c",
+                title="child gamma",
+                model_provider="claude",
+                created_at_ms=1200,
+                tokens_used=3,
+            ),
+        )
         corpus.upsert_edge(conn, SpawnEdge("root-a", "child-b", "completed"))
         corpus.upsert_edge(conn, SpawnEdge("root-a", "child-c", "completed"))
         _add_conv(conn, "conv-1", "codex", "alpha", "root-a", 2)

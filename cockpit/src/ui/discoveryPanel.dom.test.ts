@@ -222,7 +222,11 @@ describe("the panel skeleton", () => {
   });
 
   it("shows the scan notes", async () => {
-    const shell = mount({}, { now: (): number => NOW }, scan([builtIndex()], { errors: ["x: nope"] }));
+    const shell = mount(
+      {},
+      { now: (): number => NOW },
+      scan([builtIndex()], { errors: ["x: nope"] }),
+    );
     await shell.panel.scan();
     expect(text(shell.container, ".discovery-notes")).toContain("Scanned 5 locations in 1.8s.");
     expect(text(shell.container, ".discovery-notes")).toContain("1 location was skipped");
@@ -460,7 +464,10 @@ describe("row actions", () => {
         },
       },
       { now: (): number => NOW },
-      scan([builtIndex(), ...Array.from({ length: 12 }, (_, i) => finding({ path: `/d${i}/c.json` }))]),
+      scan([
+        builtIndex(),
+        ...Array.from({ length: 12 }, (_, i) => finding({ path: `/d${i}/c.json` })),
+      ]),
     );
     await shell.panel.scan();
     section(shell, "anthology").querySelector<HTMLButtonElement>(".discovery-action")?.click();
@@ -488,15 +495,15 @@ describe("row actions", () => {
     expect(shell.container.querySelector(".discovery-action")?.className).toContain(
       "discovery-dismiss",
     );
-    expect(
-      shell.container.querySelector(".discovery-row .discovery-action")?.textContent,
-    ).toBe("Open");
+    expect(shell.container.querySelector(".discovery-row .discovery-action")?.textContent).toBe(
+      "Open",
+    );
   });
 
   it("puts the reason in a tooltip on a button that is present but unpressable", () => {
     // A DIRECT call to the private renderer, and deliberately so: `DiscoveryAction.enabled`
     // documents a "button that cannot be pressed yet", but no arm of `deriveAction`
-    // (`discoveryPanel.ts:367-388`) currently returns `enabled: false` with a kind other than
+    // (`discoveryPanel.ts:372-393`) currently returns `enabled: false` with a kind other than
     // "none", so this guard is defensive and has no route through the public API. It is
     // exercised here rather than deleted, because deleting it would silently drop the tooltip
     // the moment a future action does use that state.
@@ -553,7 +560,10 @@ describe("collapsing", () => {
     };
   }
 
-  const chooseNew = { now: (): number => NOW, chooseDestination: async (): Promise<string | null> => "C:\\new.db" };
+  const chooseNew = {
+    now: (): number => NOW,
+    chooseDestination: async (): Promise<string | null> => "C:\\new.db",
+  };
 
   it("hands the pane back to the graph after a corpus is opened", async () => {
     const shell = mount();
@@ -617,7 +627,10 @@ describe("collapsing", () => {
     const shell = mount(
       skipping(40),
       chooseNew,
-      scan([codexStore(), ...Array.from({ length: 12 }, (_, i) => finding({ path: `/d${i}/c.json` }))]),
+      scan([
+        codexStore(),
+        ...Array.from({ length: 12 }, (_, i) => finding({ path: `/d${i}/c.json` })),
+      ]),
     );
     await shell.panel.scan();
     section(shell, "codex").querySelector<HTMLButtonElement>(".discovery-action")?.click();
@@ -732,7 +745,10 @@ describe("importing through the shell", () => {
           return { state: "failed", error: "disk is full", indexed_conversations: 0, errors: [] };
         },
       },
-      { now: (): number => NOW, chooseDestination: async (): Promise<string | null> => "C:\\new.db" },
+      {
+        now: (): number => NOW,
+        chooseDestination: async (): Promise<string | null> => "C:\\new.db",
+      },
     );
     await shell.panel.scan();
     section(shell, "codex").querySelector<HTMLButtonElement>(".discovery-action")?.click();

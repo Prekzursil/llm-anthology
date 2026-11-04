@@ -21,6 +21,7 @@ primitive. This one pins the three things only the RPC edge can get wrong:
 
 PRIVACY: synthetic fixtures only.
 """
+
 import sqlite3
 
 import pytest
@@ -39,9 +40,14 @@ def _close_connections():
 
 def _conv(cid, text, provider, created):
     return ir.Conversation(
-        id=cid, title=text, provider=provider, account="acct",
+        id=cid,
+        title=text,
+        provider=provider,
+        account="acct",
         turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=text)])],
-        created_at=created, updated_at=created)
+        created_at=created,
+        updated_at=created,
+    )
 
 
 #: Two providers, four months, both UTC spellings the adapters really emit, one undated row.
@@ -79,6 +85,7 @@ def _bad(params):
 
 # --------------------------------------------------------- the pre-D-3 shape is preserved
 
+
 def test_the_pre_d3_call_shape_is_unchanged():
     """Exactly the three keys the cockpit already reads, and NO histogram key."""
     out = _server().dispatch("search.query", {"q": "widget"})
@@ -99,16 +106,19 @@ def test_a_non_string_provider_is_still_invalid_params():
 
 # ------------------------------------------------------------------- the temporal bounds
 
+
 def test_since_and_until_narrow_both_the_hits_and_the_total():
     out = _server().dispatch(
-        "search.query", {"q": "widget", "since": "2026-03-01", "until": "2026-03-31"})
+        "search.query", {"q": "widget", "since": "2026-03-01", "until": "2026-03-31"}
+    )
     assert out["total"] == 3
     assert _ids(out) == ["mar01-codex", "mar15-chatgpt", "mar31-codex"]
 
 
 def test_a_month_bound_covers_the_whole_month_over_the_wire():
-    out = _server().dispatch("search.query", {"q": "widget", "since": "2026-03",
-                                              "until": "2026-03"})
+    out = _server().dispatch(
+        "search.query", {"q": "widget", "since": "2026-03", "until": "2026-03"}
+    )
     assert _ids(out) == ["mar01-codex", "mar15-chatgpt", "mar31-codex"]
 
 
@@ -131,17 +141,20 @@ def test_a_facet_search_survives_punctuation_the_way_an_unfiltered_one_does():
     from a real search box faces exactly the same FTS5 syntax hazard as an unfiltered one."""
     for raw in ["widget(", "widget AND", '"widget', "NEAR/", "*"]:
         out = _server().dispatch(
-            "search.query", {"q": raw, "provider": "codex", "since": "2026-01"})
+            "search.query", {"q": raw, "provider": "codex", "since": "2026-01"}
+        )
         assert isinstance(out["total"], int)
 
 
 def test_a_query_with_no_usable_token_is_zero_hits_not_a_crash_under_filters():
-    out = _server().dispatch("search.query", {"q": "((", "provider": "codex",
-                                              "since": "2026-01", "histogram": "month"})
+    out = _server().dispatch(
+        "search.query", {"q": "((", "provider": "codex", "since": "2026-01", "histogram": "month"}
+    )
     assert out["total"] == 0 and out["hits"] == [] and out["histogram"] == []
 
 
 # ---------------------------------------------------------- the hits-over-time histogram
+
 
 def test_the_histogram_is_absent_unless_a_granularity_is_asked_for():
     assert "histogram" not in _server().dispatch("search.query", {"q": "widget"})
@@ -153,29 +166,42 @@ def test_the_histogram_is_a_list_of_bucket_count_dtos_ascending():
         {"bucket": "", "count": 1},
         {"bucket": "2026-01", "count": 1},
         {"bucket": "2026-03", "count": 3},
-        {"bucket": "2026-04", "count": 1}]
+        {"bucket": "2026-04", "count": 1},
+    ]
 
 
 def test_the_histogram_counts_sum_to_the_total_it_is_drawn_beside():
     """The invariant a paged UI depends on: the roll-up describes the SAME result set the
     list is paging through, so a bar chart cannot disagree with the result count."""
     srv = _server()
-    for extra in [{}, {"provider": "codex"}, {"since": "2026-03"},
-                  {"provider": "codex", "since": "2026-01", "until": "2026-03"}]:
+    for extra in [
+        {},
+        {"provider": "codex"},
+        {"since": "2026-03"},
+        {"provider": "codex", "since": "2026-01", "until": "2026-03"},
+    ]:
         params = dict({"q": "widget", "histogram": "month", "limit": 2}, **extra)
         out = srv.dispatch("search.query", params)
         assert sum(b["count"] for b in out["histogram"]) == out["total"], params
-        assert len(out["hits"]) <= 2                     # the roll-up is NOT page-scoped
+        assert len(out["hits"]) <= 2  # the roll-up is NOT page-scoped
 
 
 def test_the_histogram_takes_year_and_day_granularity():
     srv = _server()
-    assert srv.dispatch("search.query", {"q": "widget", "histogram": "year"})["histogram"] \
-        == [{"bucket": "", "count": 1}, {"bucket": "2026", "count": 5}]
-    assert srv.dispatch("search.query", {
-        "q": "widget", "histogram": "day", "provider": "codex",
-        "since": "2026-03", "until": "2026-03"})["histogram"] == [
-            {"bucket": "2026-03-01", "count": 1}, {"bucket": "2026-03-31", "count": 1}]
+    assert srv.dispatch("search.query", {"q": "widget", "histogram": "year"})["histogram"] == [
+        {"bucket": "", "count": 1},
+        {"bucket": "2026", "count": 5},
+    ]
+    assert srv.dispatch(
+        "search.query",
+        {
+            "q": "widget",
+            "histogram": "day",
+            "provider": "codex",
+            "since": "2026-03",
+            "until": "2026-03",
+        },
+    )["histogram"] == [{"bucket": "2026-03-01", "count": 1}, {"bucket": "2026-03-31", "count": 1}]
 
 
 def test_an_unknown_histogram_granularity_is_invalid_params():
@@ -185,25 +211,39 @@ def test_an_unknown_histogram_granularity_is_invalid_params():
 
 def test_the_march_in_codex_only_question_is_one_rpc_call():
     """The question DECISION D-3 exists for, end to end over the RPC surface."""
-    out = _server().dispatch("search.query", {
-        "q": "widget", "provider": "codex", "since": "2026-03", "until": "2026-03",
-        "histogram": "day"})
+    out = _server().dispatch(
+        "search.query",
+        {
+            "q": "widget",
+            "provider": "codex",
+            "since": "2026-03",
+            "until": "2026-03",
+            "histogram": "day",
+        },
+    )
     assert out["total"] == 2
     assert _ids(out) == ["mar01-codex", "mar31-codex"]
-    assert out["histogram"] == [{"bucket": "2026-03-01", "count": 1},
-                                {"bucket": "2026-03-31", "count": 1}]
+    assert out["histogram"] == [
+        {"bucket": "2026-03-01", "count": 1},
+        {"bucket": "2026-03-31", "count": 1},
+    ]
 
 
 def test_paging_still_partitions_the_filtered_set():
     srv = _server()
     first = srv.dispatch("search.query", {"q": "widget", "provider": "codex", "limit": 2})
-    second = srv.dispatch("search.query", {"q": "widget", "provider": "codex", "limit": 2,
-                                          "offset": 2})
+    second = srv.dispatch(
+        "search.query", {"q": "widget", "provider": "codex", "limit": 2, "offset": 2}
+    )
     assert first["total"] == second["total"] == 4
     assert len(first["hits"]) == len(second["hits"]) == 2
     assert not set(_ids(first)) & set(_ids(second))
     assert sorted(_ids(first) + _ids(second)) == [
-        "apr-codex", "jan-codex", "mar01-codex", "mar31-codex"]
+        "apr-codex",
+        "jan-codex",
+        "mar01-codex",
+        "mar31-codex",
+    ]
 
 
 def test_a_filtered_hit_still_carries_its_timestamp_and_thread_linkage_rules():
@@ -235,9 +275,9 @@ def test_a_bucket_key_crosses_the_wire_sanitized():
     _OPEN.append(conn)
     corpus.init_index(conn)
     corpus.add_conversation(
-        conn, _conv("smuggled", "widget golf", "codex", "2026-0%s3-15T00:00:00Z" % zero_width))
-    out = sidecar.Sidecar(conn).dispatch("search.query", {"q": "widget",
-                                                         "histogram": "month"})
+        conn, _conv("smuggled", "widget golf", "codex", "2026-0%s3-15T00:00:00Z" % zero_width)
+    )
+    out = sidecar.Sidecar(conn).dispatch("search.query", {"q": "widget", "histogram": "month"})
     assert len(out["histogram"]) == 1
     assert zero_width not in out["histogram"][0]["bucket"]
 

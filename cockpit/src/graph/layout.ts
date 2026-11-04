@@ -224,7 +224,14 @@ export function extractLayout(laidOut: ElkNode, input: LayoutInput): PositionedG
     maxY = Math.max(maxY, y + height);
     const node =
       index.get(c.id) ??
-      ({ id: c.id, title: "", provider: "", created_at_ms: null, child_count: 0, depth: 0 } as ThreadNode);
+      ({
+        id: c.id,
+        title: "",
+        provider: "",
+        created_at_ms: null,
+        child_count: 0,
+        depth: 0,
+      } as ThreadNode);
     return { id: c.id, x, y, width, height, node };
   });
 

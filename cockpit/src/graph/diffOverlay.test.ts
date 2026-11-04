@@ -41,11 +41,7 @@ describe("DIFF_STYLES", () => {
   });
 
   it("gives each kind a distinct colour", () => {
-    const colors = [
-      DIFF_STYLES.added.color,
-      DIFF_STYLES.removed.color,
-      DIFF_STYLES.changed.color,
-    ];
+    const colors = [DIFF_STYLES.added.color, DIFF_STYLES.removed.color, DIFF_STYLES.changed.color];
     expect(new Set(colors).size).toBe(3);
     for (const c of colors) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
   });
@@ -72,9 +68,7 @@ describe("diffToOverlay", () => {
   });
 
   it("classifies changed nodes as 'changed' with a field-delta tooltip", () => {
-    const overlay = diffToOverlay(
-      makeDiff({ changed_nodes: { N5: { tokens_used: [100, 250] } } }),
-    );
+    const overlay = diffToOverlay(makeDiff({ changed_nodes: { N5: { tokens_used: [100, 250] } } }));
     expect(overlay.nodeClass).toEqual({ N5: "changed" });
     expect(overlay.tooltips).toEqual({ N5: "tokens_used: 100 -> 250" });
   });
@@ -106,16 +100,12 @@ describe("diffToOverlay", () => {
   });
 
   it("classifies added edges as 'added', keyed by edgeKey", () => {
-    const overlay = diffToOverlay(
-      makeDiff({ added_edges: [{ parent: "A", child: "B" }] }),
-    );
+    const overlay = diffToOverlay(makeDiff({ added_edges: [{ parent: "A", child: "B" }] }));
     expect(overlay.edgeClass).toEqual({ [edgeKey("A", "B")]: "added" });
   });
 
   it("classifies removed edges as 'removed', keyed by edgeKey", () => {
-    const overlay = diffToOverlay(
-      makeDiff({ removed_edges: [{ parent: "C", child: "D" }] }),
-    );
+    const overlay = diffToOverlay(makeDiff({ removed_edges: [{ parent: "C", child: "D" }] }));
     expect(overlay.edgeClass).toEqual({ [edgeKey("C", "D")]: "removed" });
   });
 
@@ -208,8 +198,6 @@ describe("diffToOverlay", () => {
       removed_edges: [{ parent: "C", child: "D" }],
       changed_nodes: { E: { title: ["x", "y"], tokens_used: [1, 2] } },
     });
-    expect(JSON.stringify(diffToOverlay(input))).toBe(
-      JSON.stringify(diffToOverlay(input)),
-    );
+    expect(JSON.stringify(diffToOverlay(input))).toBe(JSON.stringify(diffToOverlay(input)));
   });
 });

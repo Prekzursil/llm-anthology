@@ -83,6 +83,7 @@ PRIVACY: synthetic fixtures only in tests; this module never reads the real corp
 Determinism: outputs are sorted by stable id and written as UTF-8 bytes (no newline
 translation), so an artifact is byte-identical on Linux / macOS / Windows.
 """
+
 import json
 import os
 from dataclasses import fields as dc_fields, replace as dc_replace
@@ -111,8 +112,16 @@ _EDGE_FIELDS = tuple(f.name for f in dc_fields(SpawnEdge))
 # key (sanitizing it would silently re-identify the node and break the graph), and
 # the numeric fields are not text — so neither is sanitized. The edge `status` is the
 # only free-text edge field; the parent/child ids are structural keys.
-_TEXT_NODE_FIELDS = ("title", "model_provider", "git_branch", "cwd",
-                     "agent_role", "agent_nickname", "preview", "rollout_path")
+_TEXT_NODE_FIELDS = (
+    "title",
+    "model_provider",
+    "git_branch",
+    "cwd",
+    "agent_role",
+    "agent_nickname",
+    "preview",
+    "rollout_path",
+)
 
 
 class ExportPathError(ValueError):
@@ -128,6 +137,7 @@ class ExportModeError(ValueError):
 
 # --------------------------------------------------------------- graph codec
 
+
 def serialize_graph(corpus):
     """Corpus spawn-graph -> deterministic JSON string.
 
@@ -135,13 +145,13 @@ def serialize_graph(corpus):
     is carried verbatim. sort_keys makes the per-record key order stable too, so the
     whole string is byte-identical across runs and platforms.
     """
-    nodes = [{f: getattr(meta, f) for f in _NODE_FIELDS}
-             for meta in corpus.threads.values()]
+    nodes = [{f: getattr(meta, f) for f in _NODE_FIELDS} for meta in corpus.threads.values()]
     nodes.sort(key=lambda n: n["id"])
     edges = [{f: getattr(edge, f) for f in _EDGE_FIELDS} for edge in corpus.edges]
     edges.sort(key=lambda e: (e["parent_thread_id"], e["child_thread_id"]))
-    return json.dumps({"nodes": nodes, "edges": edges},
-                      ensure_ascii=False, sort_keys=True, indent=2)
+    return json.dumps(
+        {"nodes": nodes, "edges": edges}, ensure_ascii=False, sort_keys=True, indent=2
+    )
 
 
 def parse_graph(serialized):
@@ -164,6 +174,7 @@ def graph_fidelity_gate(corpus):
 
 # --------------------------------------------------------------- sanitization
 
+
 def _map_text_fields(corpus, fn):
     """A NEW Corpus with `fn` applied to every free-text node field and to the edge
     status. Pure: the input corpus is never mutated (mirrors diff_corpus's discipline).
@@ -178,8 +189,7 @@ def _map_text_fields(corpus, fn):
         for f in _TEXT_NODE_FIELDS:
             values[f] = fn(values[f])
         threads[values["id"]] = ThreadMeta(**values)
-    edges = [SpawnEdge(e.parent_thread_id, e.child_thread_id, fn(e.status))
-             for e in corpus.edges]
+    edges = [SpawnEdge(e.parent_thread_id, e.child_thread_id, fn(e.status)) for e in corpus.edges]
     return Corpus(threads=threads, edges=edges)
 
 
@@ -202,13 +212,20 @@ def _scrub_conversation(conv):
     credential would be reported as lost content. Scrubbing both sides identically keeps
     the gate sensitive to real loss (proved by a test that still catches a dropped word).
     """
-    turns = [dc_replace(turn, blocks=[
-        dc_replace(b, text=redact.scrub_credential_shapes(b.text)) for b in turn.blocks])
-        for turn in conv.turns]
+    turns = [
+        dc_replace(
+            turn,
+            blocks=[
+                dc_replace(b, text=redact.scrub_credential_shapes(b.text)) for b in turn.blocks
+            ],
+        )
+        for turn in conv.turns
+    ]
     return dc_replace(conv, turns=turns)
 
 
 # ------------------------------------------------------- G-6 shareable projection
+
 
 def export_graph(corpus, *, mode=MODE_FULL, home=None):
     """The corpus AS AN ARTIFACT OF `mode` WOULD CARRY IT: hidden-unicode sanitized, then
@@ -223,8 +240,9 @@ def export_graph(corpus, *, mode=MODE_FULL, home=None):
     something it believed was a privacy mode is never handed archive-of-record bytes.
     """
     if mode not in EXPORT_MODES:
-        raise ExportModeError("unknown export mode %r (expected one of %s)"
-                              % (mode, ", ".join(EXPORT_MODES)))
+        raise ExportModeError(
+            "unknown export mode %r (expected one of %s)" % (mode, ", ".join(EXPORT_MODES))
+        )
     clean = _sanitize_corpus(corpus)
     return _project_shareable(clean, home=home) if mode == MODE_SHAREABLE else clean
 
@@ -238,18 +256,21 @@ def _project_shareable(corpus, home=None):
     Applied BEFORE the fidelity gate, so the gate proves the artifact reconstructs
     exactly what was written rather than failing on the deliberate projection.
     """
-    return Corpus(threads={tid: redact.shareable_thread(meta, home=home)
-                           for tid, meta in corpus.threads.items()},
-                  edges=list(corpus.edges))
+    return Corpus(
+        threads={
+            tid: redact.shareable_thread(meta, home=home) for tid, meta in corpus.threads.items()
+        },
+        edges=list(corpus.edges),
+    )
 
 
 # ------------------------------------------- G-5 credential-shape scan (WARN, no mutate)
 
+
 def _sorted_findings(findings):
     """A stable order for the report: scope, then id, then field, then offset. Two runs
     over the same corpus produce the same list, so a report is diffable."""
-    return sorted(findings,
-                  key=lambda f: (f["scope"], f["id"], f["field"], f["offset"]))
+    return sorted(findings, key=lambda f: (f["scope"], f["id"], f["field"], f["offset"]))
 
 
 def _located(hits, scope, ident, field):
@@ -265,11 +286,14 @@ def _graph_findings(corpus):
     out = []
     for meta in corpus.threads.values():
         for f in _TEXT_NODE_FIELDS:
-            out += _located(redact.scan_credential_shapes(getattr(meta, f)),
-                            "thread", meta.id, f)
+            out += _located(redact.scan_credential_shapes(getattr(meta, f)), "thread", meta.id, f)
     for e in corpus.edges:
-        out += _located(redact.scan_credential_shapes(e.status), "edge",
-                        "%s->%s" % (e.parent_thread_id, e.child_thread_id), "status")
+        out += _located(
+            redact.scan_credential_shapes(e.status),
+            "edge",
+            "%s->%s" % (e.parent_thread_id, e.child_thread_id),
+            "status",
+        )
     return out
 
 
@@ -295,18 +319,18 @@ def scan_for_export(corpus, *, mode=MODE_FULL, home=None):
     A dry run is where this warning is most useful: it is the only point at which the user
     can still choose a different mode, or opt into a scrub, BEFORE the bytes land.
     """
-    return _credential_scan(
-        _graph_findings(export_graph(corpus, mode=mode, home=home)), False)
+    return _credential_scan(_graph_findings(export_graph(corpus, mode=mode, home=home)), False)
 
 
 # --------------------------------------------------------------- path safety
+
 
 def _norm_local(raw, label):
     """os.PathLike | str -> a PureWindowsPath, rejecting UNC / protocol-relative
     inputs up front. PureWindowsPath models Windows path semantics on every host, so
     the same rule runs identically on Linux / macOS / Windows."""
     text = os.fspath(raw)
-    if text.replace("/", "\\").startswith("\\\\"):        # \\host\share, //host/share
+    if text.replace("/", "\\").startswith("\\\\"):  # \\host\share, //host/share
         raise ExportPathError("refusing UNC / non-local %s: %r" % (label, text))
     return PureWindowsPath(text)
 
@@ -321,16 +345,17 @@ def _confined_target(dest_path, root):
     dest = _norm_local(dest_path, "destination")
     root_w = _norm_local(root, "export root")
     if ".." in dest.parts:
-        raise ExportPathError(
-            "refusing parent-traversal in destination: %r" % os.fspath(dest_path))
+        raise ExportPathError("refusing parent-traversal in destination: %r" % os.fspath(dest_path))
     if not dest.is_relative_to(root_w):
         raise ExportPathError(
             "destination is not within the export root: %r not under %r"
-            % (os.fspath(dest_path), os.fspath(root)))
+            % (os.fspath(dest_path), os.fspath(root))
+        )
     return Path(os.fspath(dest_path))
 
 
 # --------------------------------------------------------------- artifact write
+
 
 def _write_artifact(target, serialized_graph, conv_out, mode):
     """Write the deterministic export bundle as UTF-8 bytes (no newline
@@ -352,8 +377,10 @@ def _write_artifact(target, serialized_graph, conv_out, mode):
 
 # --------------------------------------------------------------- the gate
 
-def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
-                     mode=MODE_FULL, scrub=False, home=None):
+
+def export_with_gate(
+    corpus, dest_path, conversations=None, *, root=None, mode=MODE_FULL, scrub=False, home=None
+):
     """Sanitize, project for `mode`, SCAN for credential shapes, gate on structural +
     textual fidelity, and write the artifact only if both gates pass.
 
@@ -399,7 +426,7 @@ def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
         See llm_anthology.redact.CREDENTIAL_SHAPE_COVERAGE_LIMIT.
     A finding never blocks the write; only the two fidelity gates do.
     """
-    clean = export_graph(corpus, mode=mode, home=home)   # validates `mode`, fails closed
+    clean = export_graph(corpus, mode=mode, home=home)  # validates `mode`, fails closed
     if root is None:
         root = Path.cwd()
     target = _confined_target(dest_path, root)
@@ -408,10 +435,11 @@ def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
 
     missing = {}
     conv_out = []
-    for conv, html in (conversations or []):
+    for conv, html in conversations or []:
         clean_html = sanitize_for_copy(html)
-        findings += _located(redact.scan_credential_shapes(clean_html),
-                             "conversation", conv.id, "html")
+        findings += _located(
+            redact.scan_credential_shapes(clean_html), "conversation", conv.id, "html"
+        )
         if scrub:
             clean_html = redact.scrub_credential_shapes(clean_html)
             conv = _scrub_conversation(conv)
@@ -434,8 +462,7 @@ def export_with_gate(corpus, dest_path, conversations=None, *, root=None,
         "path": None,
         "mode": mode,
         "added": {"nodes": graph_diff.added_nodes, "edges": graph_diff.added_edges},
-        "removed": {"nodes": graph_diff.removed_nodes,
-                    "edges": graph_diff.removed_edges},
+        "removed": {"nodes": graph_diff.removed_nodes, "edges": graph_diff.removed_edges},
         "changed": graph_diff.changed_nodes,
         "missing_tokens": missing,
         "credential_scan": _credential_scan(findings, scrub),

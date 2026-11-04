@@ -88,17 +88,13 @@ describe("openFailureMessage", () => {
   it("replaces the engine dead-end string instead of echoing it", () => {
     // This exact string (src-tauri/src/lib.rs:45) is what the app used to display with no
     // way to act on it. It names an internal command, so it must never reach the user.
-    const msg = openFailureMessage(
-      new Error("no corpus attached: call open_corpus first"),
-    );
+    const msg = openFailureMessage(new Error("no corpus attached: call open_corpus first"));
     expect(msg).not.toContain("open_corpus");
     expect(msg).toContain("choose a corpus index file");
   });
 
   it("keeps a real cause but scrubs the internal command name out of it", () => {
-    const msg = openFailureMessage(
-      new Error("open_corpus failed: unable to open database file"),
-    );
+    const msg = openFailureMessage(new Error("open_corpus failed: unable to open database file"));
     expect(msg).not.toContain("open_corpus");
     expect(msg).toContain("unable to open database file");
   });
@@ -122,9 +118,7 @@ describe("openFailureMessage", () => {
   it("still wraps an INTERNAL failure, which has no user-facing prose of its own", () => {
     // The other branch of the same rule: a bare `spawn ENOENT` with no context is worse
     // than a wrapped one, so verbatim passthrough must NOT be the default.
-    expect(openFailureMessage("spawn ENOENT")).toBe(
-      "Could not open that corpus: spawn ENOENT",
-    );
+    expect(openFailureMessage("spawn ENOENT")).toBe("Could not open that corpus: spawn ENOENT");
   });
 
   it("degrades to a bare sentence when the error carries no message", () => {
@@ -156,10 +150,7 @@ describe("restoreFailureMessage", () => {
   });
 
   it("does not double the full stop when the engine prose already ends in one", () => {
-    const msg = restoreFailureMessage(
-      "/x/y.db",
-      new Error("no corpus index at /x/y.db."),
-    );
+    const msg = restoreFailureMessage("/x/y.db", new Error("no corpus index at /x/y.db."));
     expect(msg).toBe("no corpus index at /x/y.db. Choose a corpus to continue.");
   });
 
@@ -540,7 +531,12 @@ describe("CF-1: where the default corpus index lives", () => {
     };
     return {
       views,
-      controller: new CorpusBarController(ipc, store, (v) => views.push(v), () => {}),
+      controller: new CorpusBarController(
+        ipc,
+        store,
+        (v) => views.push(v),
+        () => {},
+      ),
     };
   }
 

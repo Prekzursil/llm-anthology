@@ -42,7 +42,10 @@ const CONF = join(COCKPIT, "src-tauri", "tauri.conf.json");
 // Same vendored playwright the other probes use, so this adds no dependency.
 const SKILL = join(
   process.env.USERPROFILE ?? process.env.HOME ?? "",
-  ".claude", "skills", "ui-audit", "package.json",
+  ".claude",
+  "skills",
+  "ui-audit",
+  "package.json",
 );
 const { chromium } = createRequire(pathToFileURL(SKILL))("playwright");
 
@@ -67,7 +70,10 @@ function shippedCsp() {
  * --self-test to manufacture a known-broken policy.
  */
 function override(policy, directive, sources) {
-  const parts = policy.split(";").map((p) => p.trim()).filter(Boolean);
+  const parts = policy
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const at = parts.findIndex((p) => p.split(/\s+/)[0].toLowerCase() === directive);
   const replacement = `${directive} ${sources}`;
   if (at === -1) parts.push(replacement);
@@ -174,9 +180,10 @@ async function inspect(url, workerAsset) {
     // This asserts that stays true rather than assuming it.
     try {
       document.body.style.background = "rgb(1, 2, 3)";
-      r.cssomStyle = getComputedStyle(document.body).backgroundColor === "rgb(1, 2, 3)"
-        ? "applied"
-        : "not applied";
+      r.cssomStyle =
+        getComputedStyle(document.body).backgroundColor === "rgb(1, 2, 3)"
+          ? "applied"
+          : "not applied";
     } catch (e) {
       r.cssomStyle = `threw: ${e.name}`;
     }
@@ -246,7 +253,9 @@ async function journey(url) {
   await page.addInitScript(() => {
     window.__cspViolations = [];
     document.addEventListener("securitypolicyviolation", (e) =>
-      window.__cspViolations.push(`${e.effectiveDirective || e.violatedDirective} <- ${e.blockedURI}`),
+      window.__cspViolations.push(
+        `${e.effectiveDirective || e.violatedDirective} <- ${e.blockedURI}`,
+      ),
     );
   });
   await page.goto(url, { waitUntil: "networkidle" });
@@ -290,8 +299,14 @@ async function journey(url) {
   violations.push(...(await page.evaluate(() => window.__cspViolations.slice())));
   await browser.close();
   return {
-    hits, readerOpened, readerClosed, violations,
-    panesOpened, dedupRows, annotationRows, planIdle,
+    hits,
+    readerOpened,
+    readerClosed,
+    violations,
+    panesOpened,
+    dedupRows,
+    annotationRows,
+    planIdle,
   };
 }
 
@@ -317,10 +332,16 @@ async function verifyShippedPolicy() {
   );
 
   const r = await inspect(url, workerAsset);
-  check("no uncaught page errors during boot", r.pageErrors.length === 0,
-    r.pageErrors.slice(0, 2).join(" | "));
-  check("the app's own boot causes ZERO csp violations", r.bootViolations.length === 0,
-    r.bootViolations.map((v) => `${v.directive} <- ${v.blocked}`).join(" | "));
+  check(
+    "no uncaught page errors during boot",
+    r.pageErrors.length === 0,
+    r.pageErrors.slice(0, 2).join(" | "),
+  );
+  check(
+    "the app's own boot causes ZERO csp violations",
+    r.bootViolations.length === 0,
+    r.bootViolations.map((v) => `${v.directive} <- ${v.blocked}`).join(" | "),
+  );
   check("the ELK web worker is permitted", r.worker === "constructed", r.worker);
   check("a CSSOM style write still applies", r.cssomStyle === "applied", r.cssomStyle);
 
@@ -330,29 +351,46 @@ async function verifyShippedPolicy() {
     r.violations.some((v) => v.directive.startsWith(name) && v.blocked.includes(needle));
   check("an injected <style> element is REFUSED", r.inlineStyleSheetAttached === false);
   check("a style= attribute is REFUSED", r.styleAttrApplied === false);
-  check("those style refusals were reported as style-src violations",
-    byDirective("style-src", "inline"));
+  check(
+    "those style refusals were reported as style-src violations",
+    byDirective("style-src", "inline"),
+  );
   check("an inline <script> is REFUSED", r.inlineScriptRan === false);
-  check("a foreign origin is REFUSED by connect-src",
-    byDirective("connect-src", "blocked.invalid"));
-  check("the Tauri IPC origin is NOT refused by connect-src",
-    !byDirective("connect-src", "ipc.localhost"));
-  check("violations were also seen on the CDP log channel", r.cdpViolations.length > 0,
-    `${r.cdpViolations.length} entries`);
+  check(
+    "a foreign origin is REFUSED by connect-src",
+    byDirective("connect-src", "blocked.invalid"),
+  );
+  check(
+    "the Tauri IPC origin is NOT refused by connect-src",
+    !byDirective("connect-src", "ipc.localhost"),
+  );
+  check(
+    "violations were also seen on the CDP log channel",
+    r.cdpViolations.length > 0,
+    `${r.cdpViolations.length} entries`,
+  );
 
   const j = await journey(url);
   check("search returns rows under the policy", j.hits > 0, `${j.hits} rows`);
   check("Read opens the reader under the policy", j.readerOpened);
   check("Escape closes the reader under the policy", j.readerClosed);
-  check("all three workspace panels open under the policy",
-    j.panesOpened.length === 3 && j.panesOpened.every(Boolean), j.panesOpened.join(","));
+  check(
+    "all three workspace panels open under the policy",
+    j.panesOpened.length === 3 && j.panesOpened.every(Boolean),
+    j.panesOpened.join(","),
+  );
   // Content, not containers: a panel whose stylesheet or paint were refused would leave an
   // open-but-empty pane, and the check above alone could not tell the difference.
-  check("their engine-fed content renders under the policy",
+  check(
+    "their engine-fed content renders under the policy",
     j.dedupRows > 0 && j.annotationRows > 0 && j.planIdle !== "",
-    `${j.dedupRows} dedup rows, ${j.annotationRows} annotation rows`);
-  check("the whole journey — search, Read, Escape, all three panels — causes ZERO csp violations",
-    j.violations.length === 0, j.violations.join(" | "));
+    `${j.dedupRows} dedup rows, ${j.annotationRows} annotation rows`,
+  );
+  check(
+    "the whole journey — search, Read, Escape, all three panels — causes ZERO csp violations",
+    j.violations.length === 0,
+    j.violations.join(" | "),
+  );
 
   await new Promise((res) => server.close(res));
 }
@@ -378,16 +416,41 @@ async function selfTest() {
   const bundle = readdirSync(join(DIST, "assets")).find((f) => /^index-.*\.js$/.test(f));
   const stylesheet = readdirSync(join(DIST, "assets")).find((f) => /^index-.*\.css$/.test(f));
   const cases = [
-    ["script-src 'none' blocks the app's own bundle",
-      override(base, "script-src", "'none'"), "script-src", bundle, true],
-    ["style-src 'none' blocks the app's own stylesheet",
-      override(base, "style-src", "'none'"), "style-src", stylesheet, true],
-    ["worker-src 'none' blocks the ELK worker",
-      override(base, "worker-src", "'none'"), "worker-src", "elk-worker", true],
-    ["connect-src 'none' blocks the Tauri IPC origin",
-      override(base, "connect-src", "'none'"), "connect-src", "ipc.localhost", true],
-    ["DROPPING worker-src does NOT fire (falls back to default-src 'self')",
-      dropDirective(base, "worker-src"), "worker-src", "elk-worker", false],
+    [
+      "script-src 'none' blocks the app's own bundle",
+      override(base, "script-src", "'none'"),
+      "script-src",
+      bundle,
+      true,
+    ],
+    [
+      "style-src 'none' blocks the app's own stylesheet",
+      override(base, "style-src", "'none'"),
+      "style-src",
+      stylesheet,
+      true,
+    ],
+    [
+      "worker-src 'none' blocks the ELK worker",
+      override(base, "worker-src", "'none'"),
+      "worker-src",
+      "elk-worker",
+      true,
+    ],
+    [
+      "connect-src 'none' blocks the Tauri IPC origin",
+      override(base, "connect-src", "'none'"),
+      "connect-src",
+      "ipc.localhost",
+      true,
+    ],
+    [
+      "DROPPING worker-src does NOT fire (falls back to default-src 'self')",
+      dropDirective(base, "worker-src"),
+      "worker-src",
+      "elk-worker",
+      false,
+    ],
   ];
 
   for (const [name, policy, directive, needle, expectFire] of cases) {
@@ -408,7 +471,9 @@ const main = async () => {
     process.exit(2);
   }
   const selfTestMode = process.argv.includes("--self-test");
-  console.log(selfTestMode ? "MODE: detector control (--self-test)\n" : "MODE: verify shipped policy\n");
+  console.log(
+    selfTestMode ? "MODE: detector control (--self-test)\n" : "MODE: verify shipped policy\n",
+  );
   if (selfTestMode) await selfTest();
   else await verifyShippedPolicy();
 

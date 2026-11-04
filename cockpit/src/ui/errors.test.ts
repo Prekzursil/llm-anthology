@@ -51,7 +51,10 @@ describe("engineStatusText", () => {
 
   it("does NOT go silent for a genuine fault", () => {
     // Silence for a real error would be a worse defect than the redundancy it replaced.
-    const out = engineStatusText(new Error("database disk image is malformed"), "stats unavailable");
+    const out = engineStatusText(
+      new Error("database disk image is malformed"),
+      "stats unavailable",
+    );
     expect(out).toContain("stats unavailable");
     expect(out).toContain("malformed");
   });

@@ -10,6 +10,7 @@
   (Math via KaTeX and server-side code highlighting are documented follow-ups;
   math is currently preserved VERBATIM rather than rendered.)
 """
+
 import html
 import json
 import os
@@ -21,20 +22,22 @@ from llm_anthology import sanitize
 
 try:
     _MD = MarkdownIt("gfm-like", {"html": False, "linkify": False, "typographer": False})
-except (KeyError, ValueError):        # pragma: no cover - version fallback: the pinned
-    _MD = MarkdownIt("commonmark", {"html": False})   # markdown-it-py has the preset
+except (KeyError, ValueError):  # pragma: no cover - version fallback: the pinned
+    _MD = MarkdownIt("commonmark", {"html": False})  # markdown-it-py has the preset
 
 _THEME_DIR = os.path.join(os.path.dirname(__file__), "themes")
 _A_ANY = re.compile(r"<a\s+([^>]*)>", re.IGNORECASE)
 _IMG = re.compile(r'<img\s+[^>]*src="([^"]*)"[^>]*>', re.IGNORECASE)
 _TAG_SPLIT = re.compile(r"(<[^>]*>)")
 
-_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
-        "font-src 'self' data:; base-uri 'none'; form-action 'none'")
+_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
+    "font-src 'self' data:; base-uri 'none'; form-action 'none'"
+)
 
 # $$display$$ or $inline$ on a single line; held out of markdown escaping entirely
 _MATH = re.compile(r"\$\$[^\n]+?\$\$|\$[^\n$]+?\$")
-_MATH_PH = "zMaThSpAnZ"          # plain-word sentinel: markdown leaves it untouched
+_MATH_PH = "zMaThSpAnZ"  # plain-word sentinel: markdown leaves it untouched
 
 
 def _load_theme(name):
@@ -53,6 +56,7 @@ def _harden_links(frag):
     emits those today, but a markdown-it upgrade or an attrs plugin would silently
     disable the only href control. Match any anchor and drop what we can't verify.
     """
+
     def repl(m):
         attrs = m.group(1)
         href = re.search(r"""href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""", attrs, re.IGNORECASE)
@@ -62,12 +66,21 @@ def _harden_links(frag):
         # preserve the link title (sanitised) — dropping it would lose real content
         tm = re.search(r"""title\s*=\s*("([^"]*)"|'([^']*)')""", attrs, re.IGNORECASE)
         title = (tm.group(2) or tm.group(3) or "") if tm else ""
-        title_attr = (' title="%s"' % sanitize.ncr_invisibles(html.escape(title, quote=True))) if title else ""
+        title_attr = (
+            (' title="%s"' % sanitize.ncr_invisibles(html.escape(title, quote=True)))
+            if title
+            else ""
+        )
         if sanitize.is_safe_url(url.replace("&amp;", "&")):
-            return ('<a href="%s"%s rel="noopener noreferrer" target="_blank">'
-                    % (sanitize.ncr_invisibles(html.escape(url, quote=True)), title_attr))
-        return ('<a class="unsafe" data-unsafe-href="%s"%s>'
-                % (html.escape(url, quote=True), title_attr))
+            return '<a href="%s"%s rel="noopener noreferrer" target="_blank">' % (
+                sanitize.ncr_invisibles(html.escape(url, quote=True)),
+                title_attr,
+            )
+        return '<a class="unsafe" data-unsafe-href="%s"%s>' % (
+            html.escape(url, quote=True),
+            title_attr,
+        )
+
     return _A_ANY.sub(repl, frag)
 
 
@@ -80,25 +93,31 @@ def _badge_text_nodes(frag):
     Inside a tag, emit an inert numeric character reference instead.
     """
     return "".join(
-        sanitize.ncr_invisibles(part) if part.startswith("<") and part.endswith(">")
+        sanitize.ncr_invisibles(part)
+        if part.startswith("<") and part.endswith(">")
         else sanitize.badge_invisibles(part)
-        for part in _TAG_SPLIT.split(frag))
+        for part in _TAG_SPLIT.split(frag)
+    )
 
 
 def _defang_images(frag):
     """A markdown image would emit a REMOTE <img src>. CSP blocks the load, so it
     renders as a broken image and quietly contradicts the no-egress promise.
     Replace it with a chip naming the alt text plus an explicit link."""
+
     def repl(m):
         tag = m.group(0)
         src = m.group(1)
         alt_m = re.search(r'alt="([^"]*)"', tag, re.IGNORECASE)
         alt = html.escape(alt_m.group(1) if alt_m else "image", quote=False)
         if sanitize.is_safe_url(src.replace("&amp;", "&")):
-            return ('<span class="chip">🖼 %s <a href="%s" rel="noopener noreferrer" '
-                    'target="_blank">(remote image — not fetched)</a></span>'
-                    % (alt, html.escape(src, quote=True)))
+            return (
+                '<span class="chip">🖼 %s <a href="%s" rel="noopener noreferrer" '
+                'target="_blank">(remote image — not fetched)</a></span>'
+                % (alt, html.escape(src, quote=True))
+            )
         return '<span class="chip">🖼 %s (image unavailable)</span>' % alt
+
     return _IMG.sub(repl, frag)
 
 
@@ -118,7 +137,7 @@ def _md_to_html(text):
         return "%s%d%s" % (_MATH_PH, len(spans) - 1, _MATH_PH)
 
     frag = _MD.render(_MATH.sub(_stash, text))
-    for i, raw in enumerate(spans):                      # restore BEFORE badging
+    for i, raw in enumerate(spans):  # restore BEFORE badging
         frag = frag.replace("%s%d%s" % (_MATH_PH, i, _MATH_PH), html.escape(raw, quote=False))
     return _badge_text_nodes(_harden_links(_defang_images(frag)))
 
@@ -129,14 +148,16 @@ def _pre(text):
 
 def _citations_html(cites):
     pills = []
-    for c in (cites or []):
+    for c in cites or []:
         url = c.get("url") or ""
         label = sanitize.neutralize_html(c.get("title") or url)
         if sanitize.is_safe_url(url):
             # href is an ATTRIBUTE: neutralise invisibles as inert numeric refs,
             # never as a badge span (that would break out of the attribute)
-            pills.append('<a href="%s" rel="noopener noreferrer" target="_blank">%s</a>'
-                         % (sanitize.ncr_invisibles(html.escape(url, quote=True)), label))
+            pills.append(
+                '<a href="%s" rel="noopener noreferrer" target="_blank">%s</a>'
+                % (sanitize.ncr_invisibles(html.escape(url, quote=True)), label)
+            )
         else:
             pills.append("<span>%s</span>" % label)
     return ('<div class="cites">%s</div>' % "".join(pills)) if pills else ""
@@ -148,46 +169,75 @@ def _block_html(b):
     if b.type == "thinking":
         # claude.ai may WITHHOLD this from the reader; surfacing it silently would
         # misrepresent what the conversation actually showed. Mark it.
-        label = "Thought process (hidden in claude.ai)" if b.data.get("hidden") else "Thought process"
-        return ('<details class="thinking"><summary>%s</summary>'
-                '<div class="md">%s</div></details>' % (label, _md_to_html(b.text)))
+        label = (
+            "Thought process (hidden in claude.ai)" if b.data.get("hidden") else "Thought process"
+        )
+        return (
+            '<details class="thinking"><summary>%s</summary>'
+            '<div class="md">%s</div></details>' % (label, _md_to_html(b.text))
+        )
     if b.type == "tool_use":
         name = sanitize.neutralize_html(b.data.get("name") or "tool")
         inp = b.data.get("input")
         body = json.dumps(inp, ensure_ascii=False, indent=2) if inp is not None else ""
-        disp = ('<div class="tool-disp">%s</div>' % sanitize.neutralize_html(b.text)) if b.text else ""
-        return '<div class="tool"><div class="tool-head">🔧 %s</div>%s%s</div>' % (name, disp, _pre(body))
+        disp = (
+            ('<div class="tool-disp">%s</div>' % sanitize.neutralize_html(b.text)) if b.text else ""
+        )
+        return '<div class="tool"><div class="tool-head">🔧 %s</div>%s%s</div>' % (
+            name,
+            disp,
+            _pre(body),
+        )
     if b.type == "tool_result":
         name = sanitize.neutralize_html(b.data.get("name") or "tool")
         content = b.data.get("content")
-        body = content if isinstance(content, str) else (
-            json.dumps(content, ensure_ascii=False, indent=2) if content is not None else "")
+        body = (
+            content
+            if isinstance(content, str)
+            else (json.dumps(content, ensure_ascii=False, indent=2) if content is not None else "")
+        )
         err = bool(b.data.get("is_error"))
         head = ("⚠️ %s" if err else "↩️ %s") % name
-        disp = ('<div class="tool-disp">%s</div>' % sanitize.neutralize_html(b.text)) if b.text else ""
+        disp = (
+            ('<div class="tool-disp">%s</div>' % sanitize.neutralize_html(b.text)) if b.text else ""
+        )
         return '<div class="tool%s"><div class="tool-head">%s</div>%s%s</div>' % (
-            " err" if err else "", head, disp, _pre(body))
+            " err" if err else "",
+            head,
+            disp,
+            _pre(body),
+        )
     if b.type == "attachment":
-        chip = '<span class="chip">📎 %s</span>' % sanitize.neutralize_html(b.data.get("file_name") or "attachment")
+        chip = '<span class="chip">📎 %s</span>' % sanitize.neutralize_html(
+            b.data.get("file_name") or "attachment"
+        )
         # the uploaded document's TEXT is real content — it must not be dropped
         # from the faithful copy just because the bytes aren't in the export
         extracted = b.data.get("extracted_content")
         if isinstance(extracted, str) and extracted.strip():
-            chip += ('<details class="thinking"><summary>Attached document text</summary>'
-                     '%s</details>' % _pre(extracted))
+            chip += (
+                '<details class="thinking"><summary>Attached document text</summary>'
+                "%s</details>" % _pre(extracted)
+            )
         return chip
     if b.type == "file":
-        return ('<span class="chip">📎 %s <em>(no bytes in export)</em></span>'
-                % sanitize.neutralize_html(b.data.get("file_name") or "file"))
+        return (
+            '<span class="chip">📎 %s <em>(no bytes in export)</em></span>'
+            % sanitize.neutralize_html(b.data.get("file_name") or "file")
+        )
     if b.type == "code":
         lang = b.data.get("language") or ""
         cls = ' class="language-%s"' % html.escape(lang, quote=True) if lang else ""
         return "<pre><code%s>%s</code></pre>" % (
-            cls, sanitize.badge_invisibles(html.escape(b.text or "", quote=False)))
+            cls,
+            sanitize.badge_invisibles(html.escape(b.text or "", quote=False)),
+        )
     if b.type == "event":
         # a Gemini feature event (Used / Canvas / feedback) — never a fabricated reply
-        return ('<div class="tool"><div class="tool-head">✨ %s</div></div>'
-                % sanitize.neutralize_html(b.text or b.data.get("name") or "event"))
+        return (
+            '<div class="tool"><div class="tool-head">✨ %s</div></div>'
+            % sanitize.neutralize_html(b.text or b.data.get("name") or "event")
+        )
     if b.type == "media":
         path = b.data.get("path") or ""
         # LOCAL relative media only; anything else is shown as a chip, never fetched.
@@ -196,8 +246,10 @@ def _block_html(b):
         # browsers normalise "\" to "/" after it runs, so /\host/x.png fetched remotely.
         if sanitize.is_local_media_path(path):
             rel = path if "/" in path else ("../media/" + path)
-            return ('<figure class="media"><img src="%s" alt="%s" loading="lazy"></figure>'
-                    % (html.escape(rel, quote=True), html.escape(path, quote=True)))
+            return '<figure class="media"><img src="%s" alt="%s" loading="lazy"></figure>' % (
+                html.escape(rel, quote=True),
+                html.escape(path, quote=True),
+            )
         return '<span class="chip">🖼 %s</span>' % sanitize.neutralize_html(path or "media")
     if b.type == "unknown":
         # show the payload, not just the type name — a future block type may carry
@@ -207,8 +259,10 @@ def _block_html(b):
             body = json.dumps(raw, ensure_ascii=False, indent=2) if raw is not None else ""
         except (TypeError, ValueError):
             body = str(raw)
-        return ('<div class="tool"><div class="tool-head">unrendered %s block</div>%s</div>'
-                % (sanitize.neutralize_html(str(b.data.get("orig_type"))), _pre(body)))
+        return '<div class="tool"><div class="tool-head">unrendered %s block</div>%s</div>' % (
+            sanitize.neutralize_html(str(b.data.get("orig_type"))),
+            _pre(body),
+        )
     return '<div class="md">%s</div>' % _md_to_html(b.text)
 
 
@@ -216,17 +270,25 @@ def _turn_html(turn):
     role = "human" if turn.role == "human" else "assistant"
     who = "You" if role == "human" else "Claude"
     av = "Y" if role == "human" else "C"
-    branch = ('<span class="branch">%d/%d</span>' % (turn.branch["index"], turn.branch["total"])) if turn.branch else ""
+    branch = (
+        ('<span class="branch">%d/%d</span>' % (turn.branch["index"], turn.branch["total"]))
+        if turn.branch
+        else ""
+    )
     blocks = "".join(_block_html(b) for b in turn.blocks)
-    return ('<div class="turn %s"><div class="role"><span class="avatar">%s</span>%s%s</div>'
-            '<div class="bubble">%s</div></div>' % (role, av, who, branch, blocks))
+    return (
+        '<div class="turn %s"><div class="role"><span class="avatar">%s</span>%s%s</div>'
+        '<div class="bubble">%s</div></div>' % (role, av, who, branch, blocks)
+    )
 
 
 def render_conversation_html(conv, theme="claude"):
     css = _load_theme(theme)
     title_plain = html.escape(sanitize.sanitize_for_copy(conv.title or "(untitled)"), quote=True)
     title_disp = sanitize.neutralize_html(conv.title or "(untitled)")
-    meta = sanitize.neutralize_html(" · ".join(x for x in [conv.provider, conv.account, conv.created_at] if x))
+    meta = sanitize.neutralize_html(
+        " · ".join(x for x in [conv.provider, conv.account, conv.created_at] if x)
+    )
     turns = "".join(_turn_html(t) for t in conv.turns)
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'

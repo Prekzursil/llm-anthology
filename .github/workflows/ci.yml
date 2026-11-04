@@ -92,7 +92,7 @@ jobs:
       # the js job red at the source of the drift instead of letting the two rails separate
       # silently. Byte-stability is not assumed: the generator writes with newline="\n",
       # sort_keys and ensure_ascii, and every timestamp is anchored with tz=timezone.utc
-      # (chatgpt.py:75), which was confirmed by regenerating under TZ=Asia/Tokyo and getting
+      # (chatgpt.py:79), which was confirmed by regenerating under TZ=Asia/Tokyo and getting
       # an identical md5.
       - name: regenerate the committed adapter-parity fixture from the python adapters
         run: python test/fixtures/gen-adapter-parity-synthetic.py

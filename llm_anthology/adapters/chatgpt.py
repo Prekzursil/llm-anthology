@@ -23,6 +23,7 @@ parsed with 0 errors and 0 empty conversations. That export carried only text,
 thoughts, multimodal_text and reasoning_recap at the message level — no canvas/canmore,
 tool calls, or execution_output — so those paths remain synthetic-tested only.
 """
+
 from llm_anthology import ir
 
 _HIDDEN_ROLES = {"system"}
@@ -48,12 +49,14 @@ def parse_conversation(conv):
         if turns and turns[-1].role == role == "assistant" and not turns[-1].branch:
             turns[-1].blocks.extend(blocks)
         else:
-            turns.append(ir.Turn(role=role, blocks=blocks, uuid=_s(msg.get("id")),
-                                 timestamp=_ts(msg)))
+            turns.append(
+                ir.Turn(role=role, blocks=blocks, uuid=_s(msg.get("id")), timestamp=_ts(msg))
+            )
     return ir.Conversation(
         id=_s(conv.get("id")) or _s(conv.get("conversation_id")),
         title=_s(conv.get("title")) or "(untitled)",
-        provider="chatgpt", turns=turns,
+        provider="chatgpt",
+        turns=turns,
         created_at=_ts_top(conv.get("create_time")),
         updated_at=_ts_top(conv.get("update_time")),
         meta={},
@@ -71,6 +74,7 @@ def _ts(msg):
 def _ts_top(v):
     if isinstance(v, (int, float)):
         from datetime import datetime, timezone
+
         try:
             return datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
         except (OverflowError, OSError, ValueError):
@@ -108,13 +112,12 @@ def _walk_up(mapping, nid):
 def _fallback_tip(mapping):
     """The most likely active tip when current_node is unusable: prefer a leaf
     (no children) and, among candidates, the newest by create_time."""
-    best = None                     # (is_leaf, create_time, nid)
+    best = None  # (is_leaf, create_time, nid)
     for nid, node in mapping.items():
         if not isinstance(node, dict) or not isinstance(node.get("message"), dict):
             continue
         ts = node["message"].get("create_time")
-        cand = (not (node.get("children") or []),
-                ts if isinstance(ts, (int, float)) else -1.0, nid)
+        cand = (not (node.get("children") or []), ts if isinstance(ts, (int, float)) else -1.0, nid)
         if best is None or cand[:2] > best[:2]:
             best = cand
     return best[2] if best else None
@@ -129,7 +132,7 @@ def _role(msg):
         return None
     if role == "user":
         return "human"
-    return "assistant"          # assistant + tool both render on the model side
+    return "assistant"  # assistant + tool both render on the model side
 
 
 def _blocks_from_message(msg):
@@ -138,12 +141,13 @@ def _blocks_from_message(msg):
     blocks = []
 
     if ctype in _THINKING_TYPES:
-        for th in (content.get("thoughts") or []):
+        for th in content.get("thoughts") or []:
             if isinstance(th, dict):
                 body = _s(th.get("content")) or _s(th.get("summary"))
                 if body:
-                    blocks.append(ir.Block("thinking", text=body,
-                                           data={"summary": _s(th.get("summary"))}))
+                    blocks.append(
+                        ir.Block("thinking", text=body, data={"summary": _s(th.get("summary"))})
+                    )
         body = _s(content.get("content"))
         if body:
             blocks.append(ir.Block("thinking", text=body))
@@ -151,15 +155,22 @@ def _blocks_from_message(msg):
 
     if ctype == "code":
         text = _s(content.get("text"))
-        return [ir.Block("code", text=text, data={"language": _s(content.get("language"))})] if text else []
+        return (
+            [ir.Block("code", text=text, data={"language": _s(content.get("language"))})]
+            if text
+            else []
+        )
 
     if ctype == "execution_output":
         text = _s(content.get("text"))
-        return [ir.Block("tool_result", text="", data={"name": "execution_output",
-                                                       "content": text})] if text else []
+        return (
+            [ir.Block("tool_result", text="", data={"name": "execution_output", "content": text})]
+            if text
+            else []
+        )
 
     if ctype in ("text", "multimodal_text", ""):
-        for part in (content.get("parts") or []):
+        for part in content.get("parts") or []:
             if isinstance(part, str):
                 if part.strip():
                     blocks.append(ir.Block("text", text=part))
@@ -175,8 +186,7 @@ def _blocks_from_message(msg):
 
 def _asset_block(ptr):
     """A file-service asset pointer -> media block."""
-    return ir.Block("media", text=ptr,
-                    data={"path": ptr.rsplit("/", 1)[-1], "pointer": ptr})
+    return ir.Block("media", text=ptr, data={"path": ptr.rsplit("/", 1)[-1], "pointer": ptr})
 
 
 def _part_block(part):

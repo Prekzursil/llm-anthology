@@ -4,6 +4,7 @@ Scanning only Block.text under-reported by roughly 5x: an injected payload is mo
 likely to sit in uploaded-document text (attachment.extracted_content), tool input
 or output, a citation title, or the conversation TITLE — none of which were checked.
 """
+
 import json
 
 from llm_anthology import sanitize
@@ -33,7 +34,7 @@ def audit_texts(conv):
                         yield json.dumps(v, ensure_ascii=False)
                     except (TypeError, ValueError):
                         pass  # not JSON-serialisable: no text form to scan, so nothing to yield
-            for c in (b.citations or []):
+            for c in b.citations or []:
                 if isinstance(c, dict):
                     for k in ("title", "url"):
                         if isinstance(c.get(k), str):

@@ -111,7 +111,9 @@ const RUN = async ({ nodes, hub }) => {
   if (!globalThis.__scaleEngine) {
     globalThis.__scaleEngine = new elkMod.ElkLayoutEngine();
     const warm = layoutMod.buildElkGraph({
-      nodes: [{ id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 }],
+      nodes: [
+        { id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 },
+      ],
       edges: [],
     });
     try {
@@ -181,13 +183,20 @@ const main = async () => {
       // failure for the app even if the browser would eventually finish.
       r = await page.evaluate(RUN, { nodes: c.nodes, hub: c.hub });
     } catch (e) {
-      r = { edges: -1, buildMs: -1, layoutMs: -1, extractMs: -1, positioned: 0, error: String(e).slice(0, 90) };
+      r = {
+        edges: -1,
+        buildMs: -1,
+        layoutMs: -1,
+        extractMs: -1,
+        positioned: 0,
+        error: String(e).slice(0, 90),
+      };
     }
     const verdict = r.error ? `FAILED ${r.error}`.slice(0, 40) : `ok (${r.positioned} placed)`;
     console.log(
       `  ${c.name.padEnd(17)} ${String(c.nodes).padStart(7)} ${String(r.edges).padStart(8)} ` +
-      `${String(r.buildMs).padStart(6)}ms ${String(r.layoutMs).padStart(6)}ms ` +
-      `${String(r.extractMs).padStart(6)}ms  ${verdict}`,
+        `${String(r.buildMs).padStart(6)}ms ${String(r.layoutMs).padStart(6)}ms ` +
+        `${String(r.extractMs).padStart(6)}ms  ${verdict}`,
     );
     if (r.error && !firstFailure) firstFailure = c.name;
   }

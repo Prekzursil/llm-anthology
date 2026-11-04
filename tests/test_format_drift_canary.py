@@ -35,6 +35,7 @@ leg has no `tomllib` either -- the same reasoning as `tests/test_dependency_rail
 default, and each has a test at the bottom feeding it a deliberately broken input, because a
 reader that silently returns nothing turns this whole file into a vacuous green.
 """
+
 import pathlib
 import re
 
@@ -50,7 +51,7 @@ SOURCE_TREE_MARKER = REPO / ".github" / "workflows" / "release.yml"
 requires_source_tree = pytest.mark.skipif(
     not SOURCE_TREE_MARKER.is_file(),
     reason="not a source checkout ({} is absent, so this is an unpacked sdist and "
-           ".github/ is legitimately missing)".format(SOURCE_TREE_MARKER),
+    ".github/ is legitimately missing)".format(SOURCE_TREE_MARKER),
 )
 
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -76,6 +77,7 @@ CORPUS_TOOL = "tools/gen-adapter-parity.py"
 
 
 # ------------------------------------------------------------------ readers (they RAISE)
+
 
 def canary_text():
     """The canary workflow's text. RAISES if it is missing or empty."""
@@ -116,6 +118,7 @@ def without_comments(text):
 
 # ---------------------------------------------------------------------------- the gate
 
+
 @requires_source_tree
 def test_the_canary_workflow_exists_and_is_not_empty():
     assert len(canary_text().splitlines()) > 20
@@ -136,7 +139,8 @@ def test_it_is_scheduled_weekly_and_can_also_be_run_by_hand():
     assert dow != "*", "day-of-week is a wildcard, so this runs DAILY: %r" % (crons[0],)
     assert minute != "0", (
         "minute 0 is the congested top of the hour, where GitHub delays or drops "
-        "scheduled runs: %r" % (crons[0],))
+        "scheduled runs: %r" % (crons[0],)
+    )
     assert hour != "*", "hour is a wildcard, so this runs hourly: %r" % (crons[0],)
     # A canary nobody can trigger cannot be verified after an edit, and a scheduled-only
     # workflow is unreachable for a week.
@@ -164,19 +168,22 @@ def test_each_fixture_is_proven_tracked_before_its_diff_verdict_is_trusted():
     verdict = index_of(text, "git diff --exit-code")
     for fixture in COMMITTED_FIXTURES:
         detector = index_of(text, "git ls-files --error-unmatch " + fixture)
-        assert detector < verdict, (
-            "%s is diffed before it is proven tracked" % fixture)
+        assert detector < verdict, "%s is diffed before it is proven tracked" % fixture
 
 
 @requires_source_tree
 def test_it_runs_the_real_corpus_generator_that_no_other_workflow_runs():
     text = canary_text()
     assert CORPUS_TOOL in text
-    others = [p.name for p in sorted(WORKFLOWS.glob("*.yml"))
-              if p.name != CANARY.name and CORPUS_TOOL in p.read_text(encoding="utf-8")]
+    others = [
+        p.name
+        for p in sorted(WORKFLOWS.glob("*.yml"))
+        if p.name != CANARY.name and CORPUS_TOOL in p.read_text(encoding="utf-8")
+    ]
     assert others == [], (
         "%s is now also referenced by %r -- update this test deliberately rather than "
-        "letting two workflows drift" % (CORPUS_TOOL, others))
+        "letting two workflows drift" % (CORPUS_TOOL, others)
+    )
 
 
 @requires_source_tree
@@ -213,9 +220,9 @@ def test_the_local_real_corpus_fixture_must_stay_untracked():
     text = canary_text()
     assert "git ls-files --error-unmatch " + LOCAL_FIXTURE in text
     # Negated: the assertion must be that the path is ABSENT from the index.
-    assert re.search(
-        r"if\s+git ls-files --error-unmatch " + re.escape(LOCAL_FIXTURE), text), (
-        "the untracked-ness of %s is not asserted as a failure condition" % LOCAL_FIXTURE)
+    assert re.search(r"if\s+git ls-files --error-unmatch " + re.escape(LOCAL_FIXTURE), text), (
+        "the untracked-ness of %s is not asserted as a failure condition" % LOCAL_FIXTURE
+    )
 
 
 @requires_source_tree
@@ -231,12 +238,15 @@ def test_it_carries_a_negative_control_that_proves_the_gate_can_fail():
     control = index_of(text, "negative control")
     assert "MUTANT-" in text, "nothing in the canary mutates the fixture"
     assert "FAILED:negative-control" in text, (
-        "the control does not fail loudly when a detector stays silent")
+        "the control does not fail loudly when a detector stays silent"
+    )
     assert "git diff --quiet" in text, "the control never checks the staleness detector"
     assert index_of(text, "npx vitest run test/adapter-parity.test.ts") > control, (
-        "the control never checks that the CONSUMING suite goes red")
+        "the control never checks that the CONSUMING suite goes red"
+    )
     assert index_of(text, "git checkout -- " + COMMITTED_FIXTURES[0]) > control, (
-        "the control mutates the fixture and never restores it")
+        "the control mutates the fixture and never restores it"
+    )
 
 
 @requires_source_tree
@@ -261,7 +271,7 @@ def test_the_canary_never_names_the_owners_private_corpus():
 def test_the_canary_asks_for_no_more_permission_than_it_needs():
     text = canary_text()
     at = index_of(text, "permissions:")
-    assert "contents: read" in text[at:at + 120]
+    assert "contents: read" in text[at : at + 120]
     for write in ("contents: write", "pull-requests: write", "id-token: write"):
         assert write not in text, "the canary requests %r" % (write,)
 
@@ -277,10 +287,12 @@ def test_the_canary_floats_the_interpreter_the_per_push_job_pins():
     """
     text = canary_text()
     assert re.search(r'python-version:\s*"3\.x"', text), (
-        "the canary pins its interpreter, so it cannot see toolchain-side drift")
+        "the canary pins its interpreter, so it cannot see toolchain-side drift"
+    )
 
 
 # -------------------------------------------------------- the readers' own failure modes
+
 
 def test_index_of_raises_when_the_needle_is_absent():
     with pytest.raises(AssertionError, match="not found in the workflow"):
@@ -315,5 +327,5 @@ def test_cron_expressions_ignores_a_commented_out_schedule():
     """A `#`-prefixed cron is documentation, not a trigger; counting it would let a
     disabled schedule satisfy the weekly assertion above."""
     assert cron_expressions(
-        "  schedule:\n    # - cron: \"0 0 * * *\"\n    - cron: \"17 6 * * 1\"\n"
+        '  schedule:\n    # - cron: "0 0 * * *"\n    - cron: "17 6 * * 1"\n'
     ) == ["17 6 * * 1"]

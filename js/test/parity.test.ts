@@ -40,7 +40,11 @@ const fixture = JSON.parse(
 
 /** So a failure names the offending codepoints instead of printing invisibles. */
 const show = (s: string): string =>
-  [...s].map((c) => (c.codePointAt(0)! < 0x7f ? c : `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)).join("");
+  [...s]
+    .map((c) =>
+      c.codePointAt(0)! < 0x7f ? c : `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`,
+    )
+    .join("");
 
 describe("python <-> js parity", () => {
   it("was generated against the same Unicode version the table was built from", () => {
