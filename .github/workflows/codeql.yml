@@ -1,5 +1,19 @@
 name: CodeQL
 
+# Fleet CODEQL DECISION: ADVANCED configuration.
+#   queries: security-extended + security-and-quality (strictly subsumes the
+#   default suite AND the extended suite), matrix over every language this repo
+#   actually has (python, javascript-typescript, rust), push to main +
+#   pull_request targeting main + weekly schedule, upload-sarif to code
+#   scanning with one category per language. The repo's OWN test/coverage
+#   suite (ci.yml) stays wired beside it and is untouched by this file.
+#
+# build-mode: none for EVERY leg. Measured on this PR's first run: this
+# CodeQL CLI supports no other mode for these languages -- "Python does not
+# support the autobuild build mode", "JavaScript/TypeScript does not support
+# the autobuild build mode", "Rust does not support the manual build mode".
+# All three extractors are source-based; the rust crate is still compiled and
+# tested on two OSes by ci.yml's cockpit job.
 on:
   push:
     branches: [main]
@@ -22,16 +36,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ["python", "javascript-typescript"]
+        language: ["python", "javascript-typescript", "rust"]
     steps:
       - uses: actions/checkout@v7
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          queries: security-and-quality
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v4
+          build-mode: none
+          queries: security-extended,security-and-quality
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
