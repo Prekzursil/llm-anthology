@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 // `ui/`; only this test does, to reuse the treatment table that `ui/exportPanel.test.ts`
 // holds to `redact.shareable_thread`.
 import { SHAREABLE_TREATMENT } from "../ui/exportPanel";
-import type { ThreadNode } from "./types";
+import type { SpawnEdge, ThreadNode } from "./types";
 
 import {
   createMockIpc,
@@ -12,6 +12,7 @@ import {
   MockGraph,
   mockIpc,
   projectNode,
+  scanGraph,
   MOCK_DEDUP_SESSIONS,
   MOCK_EDGES,
   MOCK_THREADS,
@@ -2445,5 +2446,53 @@ describe("the export projection matches the ENGINE field for field", () => {
     };
     const [full, shareable] = await only({ agent_nickname: "synthuser@desktop" });
     expect(shareable).toBeLessThan(full);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanGraph — the finding ORDER (engine `export.py:270`: scope, id, field, offset)
+// ---------------------------------------------------------------------------
+
+describe("scanGraph ordering (the four-level tie-break)", () => {
+  /** A node whose one field carries every shape run the case needs. */
+  function leaky(id: string, field: "title" | "git_branch" | "cwd", text: string): ThreadNode {
+    return {
+      id,
+      title: field === "title" ? text : "plain",
+      git_branch: field === "git_branch" ? text : "plain",
+      cwd: field === "cwd" ? text : "plain",
+      provider: "codex",
+      model_provider: "openai",
+      created_at_ms: 0,
+      preview: "",
+      child_count: 0,
+      depth: 0,
+    } as ThreadNode;
+  }
+
+  it("sorts by scope, then id, then field, then offset — every level reachable", () => {
+    const nodes: ThreadNode[] = [
+      // One thread leaking in TWO fields (title at two offsets, git_branch at one) — the
+      // field and offset levels — plus two other threads for the id level.
+      leaky("t-b", "title", "xxxxx sk-aaaaaaaaaaaaaaaa; sk-bbbbbbbbbbbbbbbb"),
+      leaky("t-b", "git_branch", "sk-eeeeeeeeeeeeeeee"),
+      leaky("t-a", "cwd", "sk-dddddddddddddddd"),
+    ];
+    // An edge finding (scope "edge") vs thread findings — the scope level.
+    const edges = [
+      { parent: "t-a", child: "t-z", status: "Bearer abcdefghijklmnopq" },
+    ] as SpawnEdge[];
+    const key = (f: { scope: string; id: string; field: string; offset: number }) =>
+      `${f.scope} ${f.id} ${f.field} ${f.offset}`;
+    // The exact engine order: scope ("edge" < "thread"), then id, then field, then NUMERIC
+    // offset — 6 before 27, where a STRING offset sort would say "27" < "6" and flip them;
+    // that flip is exactly what this assertion exists to catch.
+    expect(scanGraph(nodes, edges).map(key)).toEqual([
+      "edge t-a->t-z status 0",
+      "thread t-a cwd 0",
+      "thread t-b git_branch 0",
+      "thread t-b title 6",
+      "thread t-b title 27",
+    ]);
   });
 });

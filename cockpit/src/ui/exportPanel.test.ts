@@ -5,14 +5,16 @@ import { CREDENTIAL_SHAPE_COVERAGE_LIMIT } from "../ipc/mock";
 // the credential-shape parity check. NOT `node:fs`: this tsconfig is browser-only.
 // @ts-ignore — vite resolves `?raw` to the file text; there is no ambient declaration.
 import REDACT_PY from "../../../llm_anthology/redact.py?raw";
-import type { CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
+import type { CredentialFinding, CredentialScan, ExportMode, ExportPlan } from "../ipc/types";
 import {
   asExportMode,
   derivePreview,
+  deriveScan,
   exportIpcFrom,
   deriveVerdict,
   ExportPanel,
   formatBytes,
+  listed,
   modeLabel,
   renderView,
   SHAREABLE_TREATMENT,
@@ -36,6 +38,19 @@ function scanFixture(over: Partial<CredentialScan> = {}): CredentialScan {
     findings: [],
     coverage_limit: CREDENTIAL_SHAPE_COVERAGE_LIMIT,
     scrubbed: false,
+    ...over,
+  };
+}
+
+/** One MASKED finding, exactly as the wire emits it — never a raw secret. */
+function finding(over: Partial<CredentialFinding> = {}): CredentialFinding {
+  return {
+    shape: "aws_access_key",
+    offset: 12,
+    preview: "AKIA••••••••",
+    scope: "thread",
+    id: "thread-7",
+    field: "preview",
     ...over,
   };
 }
@@ -898,5 +913,48 @@ describe("shareable treatment parity with redact.shareable_thread", () => {
     const label = modeLabel("shareable");
     expect(label).toMatch(/D:|non-home|only home/i);
     expect(label).not.toMatch(/anonymi[sz]ed|safe to share|removes all/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveScan — the finding-count headline (singular/plural × scrub state)
+// ---------------------------------------------------------------------------
+
+describe("deriveScan headline", () => {
+  it("one finding with scrub OFF: singular, and honest that bytes are untouched", () => {
+    const view = deriveScan(scanFixture({ findings: [finding()], scrubbed: false }));
+    expect(view.headline).toBe("1 credential shape found — warning only, bytes untouched.");
+  });
+
+  it("several findings with scrub ON: plural, and REPLACED in the written bytes", () => {
+    const view = deriveScan(
+      scanFixture({
+        findings: [finding(), finding({ shape: "github_token", offset: 4 })],
+        scrubbed: true,
+      }),
+    );
+    expect(view.headline).toBe("2 credential shapes found and REPLACED in the written bytes.");
+  });
+
+  it("renders each finding as one masked line and carries the coverage limit verbatim", () => {
+    const view = deriveScan(
+      scanFixture({ findings: [finding({ shape: "slack_webhook", scope: "edge", id: "p->c" })] }),
+    );
+    expect(view.findings).toEqual(["slack_webhook in edge p->c field preview: AKIA••••••••"]);
+    expect(view.coverageLimit).toBe(CREDENTIAL_SHAPE_COVERAGE_LIMIT);
+  });
+});
+
+describe("listed — the 0/1/N arms modeLabel cannot reach today", () => {
+  it("says (none) for an empty list rather than an empty sentence", () => {
+    expect(listed([])).toBe("(none)");
+  });
+
+  it("prints a single field with no separator", () => {
+    expect(listed(["cwd"])).toBe("cwd");
+  });
+
+  it("joins many with commas and a final and", () => {
+    expect(listed(["a", "b", "c"])).toBe("a, b and c");
   });
 });

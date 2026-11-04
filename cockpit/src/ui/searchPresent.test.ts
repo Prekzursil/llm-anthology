@@ -239,3 +239,29 @@ describe("providerOptions", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// hitLabel's defensive snippet arm + providerOptions' count tie-break, both reachable
+// only from inputs the happy path never produces
+// ---------------------------------------------------------------------------
+
+describe("hitLabel defensive arm", () => {
+  it("treats a wire that omitted `snippet` as untitled rather than crashing", () => {
+    // `SearchHit.snippet` is required by contract; `?? ""` guards a malformed wire. The
+    // cast is the honest way to pin what happens when the contract is broken.
+    const hit = { conversation_id: "c0", score: 1, provider: "codex" } as unknown as Parameters<
+      typeof hitLabel
+    >[0];
+    expect(hitLabel(hit)).toBe("untitled · c0");
+  });
+});
+
+describe("providerOptions count ties", () => {
+  it("breaks equal counts by name in BOTH directions", () => {
+    const asc = providerOptions({ codex: 5, grok: 5, openai: 5 });
+    expect(asc.map((o) => o.value)).toEqual(["", "codex", "grok", "openai"]);
+    // Insertion order must not matter — the tie-break is on the NAME, not the map order.
+    const shuffled = providerOptions({ openai: 5, grok: 5, codex: 5 });
+    expect(shuffled.map((o) => o.value)).toEqual(["", "codex", "grok", "openai"]);
+  });
+});

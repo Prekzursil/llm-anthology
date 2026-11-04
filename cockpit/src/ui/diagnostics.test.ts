@@ -336,6 +336,15 @@ describe("systemClipboardWrite", () => {
     // plain HTTP. `Cannot read properties of undefined` tells a reporter nothing.
     await expect(systemClipboardWrite("x")).rejects.toThrow("no clipboard API");
   });
+
+  it("survives `navigator` itself being absent (node < 21) with the same readable reason", async () => {
+    // `globalThis.navigator?.clipboard` guards a runner with NO navigator at all — node
+    // before 21. Stubbing the global away exercises that arm deterministically on any
+    // node this suite runs on.
+    vi.stubGlobal("navigator", undefined);
+    await expect(systemClipboardWrite("x")).rejects.toThrow("no clipboard API");
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("CF-19: the dep is the CLIENT method, not a general-purpose invoke", () => {

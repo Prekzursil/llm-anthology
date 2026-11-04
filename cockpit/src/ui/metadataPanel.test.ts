@@ -654,3 +654,20 @@ describe("MetadataController", () => {
     expect(ipc.calls.filter((c) => c === "tags()")).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// normalizeTags: the fold-comparator's BOTH arms (needs a 3+-tag sort)
+// ---------------------------------------------------------------------------
+
+describe("normalizeTags fold order", () => {
+  it("orders case-insensitively across mixed-case tags in both comparison directions", () => {
+    // Three-plus survivors force the sort comparator through its `<` AND `>` arms; a
+    // two-tag list only ever exercises one.
+    expect(normalizeTags(["delta", "Bravo", "alpha", "charlie"])).toEqual([
+      "alpha",
+      "Bravo",
+      "charlie",
+      "delta",
+    ]);
+  });
+});

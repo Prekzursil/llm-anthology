@@ -1601,3 +1601,28 @@ describe("DiscoveryPanelController.toggleGroup", () => {
     expect(h.controller.current.groups).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ordering: the LAST tiebreak (the key), which only a full rank+recency tie reaches
+// ---------------------------------------------------------------------------
+
+describe("groupFindings ordering: full tie falls through to the key", () => {
+  it("equal kind and equal newest mtime order by provider key deterministically", () => {
+    // Three same-kind groups with IDENTICAL mtimes: rank ties, recency ties, and the
+    // comparator's final arm must order them by key in both comparison directions (a
+    // three-element sort exercises `a < b` and `a > b` arms of the tiebreak).
+    const groups = groupFindings(
+      scan([
+        finding({ provider: "chatgpt", newest_mtime: NOW_SEC }),
+        finding({ provider: "grok", newest_mtime: NOW_SEC }),
+        finding({ provider: "zap", newest_mtime: NOW_SEC }),
+      ]),
+      { ...OPEN_CTX, nowMs: NOW },
+    );
+    expect(groups.map((g) => g.key)).toEqual([
+      "chatgpt/export_file",
+      "grok/export_file",
+      "zap/export_file",
+    ]);
+  });
+});

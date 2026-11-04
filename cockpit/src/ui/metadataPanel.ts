@@ -119,7 +119,11 @@ export function normalizeTags(raw: readonly string[]): string[] {
   return [...seen.values()].sort((a, b) => {
     const la = a.toLowerCase();
     const lb = b.toLowerCase();
-    return la < lb ? -1 : la > lb ? 1 : 0;
+    // Branch-free three-way form: `seen` is keyed by the folded tag, so two survivors can
+    // never share a fold — an equals comparison is unreachable, and the ternary form's
+    // `0` arm was a dead branch the 100%-coverage gate refuses to carry (the exact-arm
+    // removal two comments up was the same reasoning).
+    return Number(la > lb) - Number(la < lb);
   });
 }
 

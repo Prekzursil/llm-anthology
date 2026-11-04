@@ -1282,8 +1282,16 @@ function relativizeHome(path: string): string {
   return m ? `~${m.groups?.rest ?? ""}` : path;
 }
 
-/** The credential scan over the graph AS PROJECTED, sorted the way the engine sorts it. */
-function scanGraph(nodes: ThreadNode[], graphEdges: SpawnEdge[]): CredentialFinding[] {
+/**
+ * The credential scan over the graph AS PROJECTED, sorted the way the engine sorts it.
+ *
+ * EXPORTED for the test that pins the sort itself: the shipped mock forest carries no
+ * credential-shaped runs by design (it must scan clean so the UI's clean-scan path is the
+ * one a dev run shows), so `exportPlan`/`exportRun` can never produce the two+ findings a
+ * comparison through `_sorted_findings`'s four-level tie-break needs. Same extract-for-test
+ * pattern as `projectNode` above; pure, and behaviour is unchanged.
+ */
+export function scanGraph(nodes: ThreadNode[], graphEdges: SpawnEdge[]): CredentialFinding[] {
   const found: CredentialFinding[] = [];
   for (const n of nodes) {
     for (const f of SCANNED_NODE_FIELDS) {
