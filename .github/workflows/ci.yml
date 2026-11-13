@@ -257,7 +257,7 @@ jobs:
       # Pinned rather than @stable: `clippy -D warnings` would turn every
       # unrelated PR red the day a new Rust release adds a lint. 1.91.0 is the
       # toolchain this code is developed against.
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@f00cc37de62c899691b45db1cc585604520c95a7 # 1.91.0
         with:
           components: clippy
 
@@ -265,7 +265,7 @@ jobs:
       # cold Rust/Tauri build is 10-20 min per leg, which the pip and npm installs
       # above are not. cache-on-failure keeps a red lint run from re-paying that
       # cost on every fix iteration.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: cockpit/src-tauri -> target
           shared-key: cockpit
