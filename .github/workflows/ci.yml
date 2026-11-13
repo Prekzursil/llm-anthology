@@ -32,7 +32,12 @@ jobs:
           # Enforcing the percentage where the measurement is trustworthy keeps the gate
           # honest instead of contorting production code around an EOL interpreter's
           # tracing. Coverage is still gated at 100% on three OSes.
-          - { os: ubuntu-latest, python: "3.9", covgate: "0" }
+          # ubuntu-24.04 PIN, not ubuntu-latest: the runner image rolled to
+          # 26.04 on 2026-11-13 and python-versions publishes no 3.9 build
+          # for it ("The version '3.9' ... was not found for Ubuntu 26.04"),
+          # which broke this leg on every fresh run. 3.9 stays a supported
+          # target per requires-python; 24.04 still ships it.
+          - { os: ubuntu-24.04, python: "3.9", covgate: "0" }
           - { os: ubuntu-latest, python: "3.13", covgate: "100" }
           - { os: windows-latest, python: "3.13", covgate: "100" }
           - { os: macos-latest, python: "3.13", covgate: "100" }
