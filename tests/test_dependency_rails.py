@@ -292,11 +292,17 @@ def test_the_phantom_ref_actions_are_pinned_to_an_exact_installable_version():
     """
     found = pinned_action_versions("dtolnay/rust-toolchain")
     assert found, "the toolchain pin disappeared from every workflow"
+    # An exact X.Y.Z tag OR the commit SHA of one -- a SHA is strictly
+    # stronger (unforgeable, satisfies actions/unpinned-tag), and the
+    # version must ride along as the trailing comment so a human can still
+    # read it. A floating ref (branch, "stable", a minor glob) fails.
     exact = re.compile(r"^\d+\.\d+\.\d+$")
-    floating = {where: ref for where, ref in found.items() if not exact.match(ref)}
+    sha = re.compile(r"^[0-9a-f]{40}$")
+    floating = {where: ref for where, ref in found.items()
+                if not (exact.match(ref) or sha.match(ref))}
     assert not floating, (
-        "the rust toolchain must be pinned at an exact X.Y.Z so a phantom ref "
-        "cannot ride in: {}".format(floating)
+        "the rust toolchain must be pinned at an exact X.Y.Z or its commit "
+        "SHA so a phantom ref cannot ride in: {}".format(floating)
     )
 
 
