@@ -33,10 +33,17 @@ jobs:
       security-events: write # upload results to the Security tab
       actions: read
       contents: read
+    # Key the upload to the PR HEAD commit, not the merge commit, so
+    # required-code-scanning merge rules (where configured) see an analysis
+    # for the head SHA.
+    env:
+      GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
-        language: ["python", "javascript-typescript", "rust"]
+        # actions = the CodeQL language for .github/workflows/* (action
+        # injection detection); every repo that runs workflows "has" it.
+        language: ["python", "javascript-typescript", "rust", "actions"]
     steps:
       - uses: actions/checkout@v7
 

@@ -32,7 +32,12 @@ jobs:
           # Enforcing the percentage where the measurement is trustworthy keeps the gate
           # honest instead of contorting production code around an EOL interpreter's
           # tracing. Coverage is still gated at 100% on three OSes.
-          - { os: ubuntu-latest, python: "3.9", covgate: "0" }
+          # ubuntu-24.04 PIN, not ubuntu-latest: the runner image rolled to
+          # 26.04 on 2026-11-13 and python-versions publishes no 3.9 build
+          # for it ("The version '3.9' ... was not found for Ubuntu 26.04"),
+          # which broke this leg on every fresh run. 3.9 stays a supported
+          # target per requires-python; 24.04 still ships it.
+          - { os: ubuntu-24.04, python: "3.9", covgate: "0" }
           - { os: ubuntu-latest, python: "3.13", covgate: "100" }
           - { os: windows-latest, python: "3.13", covgate: "100" }
           - { os: macos-latest, python: "3.13", covgate: "100" }
@@ -252,7 +257,7 @@ jobs:
       # Pinned rather than @stable: `clippy -D warnings` would turn every
       # unrelated PR red the day a new Rust release adds a lint. 1.91.0 is the
       # toolchain this code is developed against.
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@f00cc37de62c899691b45db1cc585604520c95a7 # 1.91.0
         with:
           components: clippy
 
@@ -260,7 +265,7 @@ jobs:
       # cold Rust/Tauri build is 10-20 min per leg, which the pip and npm installs
       # above are not. cache-on-failure keeps a red lint run from re-paying that
       # cost on every fix iteration.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: cockpit/src-tauri -> target
           shared-key: cockpit

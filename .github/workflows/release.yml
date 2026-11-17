@@ -103,7 +103,7 @@ jobs:
       # It does NOT weaken the gate: a CHANGED file at an existing version is still an
       # error, because PyPI forbids overwriting and skip-existing only skips identical
       # filenames it already has.
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           skip-existing: true
 
@@ -275,7 +275,7 @@ jobs:
 
       # Pinned to match ci.yml's cockpit job: a floating @stable would change the
       # compiler under a release build.
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@f00cc37de62c899691b45db1cc585604520c95a7 # 1.91.0
 
       # NOTE: deliberately no Swatinem/rust-cache here, unlike ci.yml. CI caches to
       # keep fix iterations cheap; a release build is rare and should not be able to
