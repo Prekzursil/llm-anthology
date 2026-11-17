@@ -12,6 +12,23 @@
 # ignoreUntil = 2027-01-31
 # reason = "Why this advisory cannot affect this repository, with evidence."
 
+# glib VariantStrIter unsoundness (GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429), patched in
+# glib 0.20.0. NO FIXED RELEASE EXISTS in this repository's dependency chain:
+# cockpit/src-tauri pins tauri 2.12.5 (latest stable; req gtk ^0.18), tauri
+# 3.0.0-alpha.6 also pins gtk ^0.18, and the gtk crate itself maxes at 0.19.0
+# - every path resolves glib ^0.18.x (verified via crates.io dependency APIs
+# on 2026-11-17). Re-checked at expiry; remove once a tauri release accepts
+# gtk 0.20+ / glib 0.20+.
+[[IgnoredVulns]]
+id = "GHSA-wrw7-89jp-8q8g"
+ignoreUntil = 2027-01-31
+reason = "glib 0.20.0 is unreachable: tauri 2.12.5 (and 3.0.0-alpha.6) pin gtk ^0.18 and gtk max is 0.19.0, so the lockfile cannot resolve glib >= 0.20. Upstream must move first."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+ignoreUntil = 2027-01-31
+reason = "Same glib advisory as GHSA-wrw7-89jp-8q8g; no fixed release reachable through the tauri 2 gtk-0.18 stack."
+
 # The four advisories below are informational UNMAINTAINED notices: they describe no
 # vulnerability, there is no fixed version to move to, and each crate arrives only through
 # the Tauri 2 stack, which cannot drop it. Each expires so it is re-checked.
