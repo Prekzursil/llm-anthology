@@ -1,11 +1,16 @@
 """Text-exact fidelity gate: every prose word in the source IR must appear in the
 rendered HTML (multiset containment). Proves rendering drops no content."""
+
 from llm_anthology import verify, render_html, ir
 
 
 def _c(text):
-    return ir.Conversation(id="c", title="t", provider="claude",
-                           turns=[ir.Turn("assistant", [ir.Block("text", text=text)])])
+    return ir.Conversation(
+        id="c",
+        title="t",
+        provider="claude",
+        turns=[ir.Turn("assistant", [ir.Block("text", text=text)])],
+    )
 
 
 def test_verify_passes_when_all_prose_present():
@@ -16,7 +21,7 @@ def test_verify_passes_when_all_prose_present():
 
 def test_verify_detects_a_dropped_word():
     conv = _c("alpha beta gamma delta epsilon")
-    broken = render_html.render_conversation_html(conv).replace("gamma", "")   # simulate a drop
+    broken = render_html.render_conversation_html(conv).replace("gamma", "")  # simulate a drop
     r = verify.verify(conv, broken)
     assert not r["ok"] and "gamma" in r["missing_tokens"]
 
@@ -24,13 +29,24 @@ def test_verify_detects_a_dropped_word():
 def test_verify_ignores_markdown_and_chrome():
     conv = _c("# Heading\n\nsome **bold** and `code` text")
     r = verify.verify(conv, render_html.render_conversation_html(conv))
-    assert r["ok"]        # markdown syntax + role/label chrome never cause a false miss
+    assert r["ok"]  # markdown syntax + role/label chrome never cause a false miss
 
 
 def test_verify_counts_thinking_prose():
-    conv = ir.Conversation(id="c", title="t", provider="claude", turns=[
-        ir.Turn("assistant", [ir.Block("thinking", text="hidden reasoning tokens"), ir.Block("text", text="answer")]),
-    ])
+    conv = ir.Conversation(
+        id="c",
+        title="t",
+        provider="claude",
+        turns=[
+            ir.Turn(
+                "assistant",
+                [
+                    ir.Block("thinking", text="hidden reasoning tokens"),
+                    ir.Block("text", text="answer"),
+                ],
+            ),
+        ],
+    )
     r = verify.verify(conv, render_html.render_conversation_html(conv))
     assert r["ok"]
 
@@ -69,6 +85,6 @@ def test_verify_does_not_mask_words_matching_css_class_names():
 
 
 def test_verify_invisible_chars_do_not_break_it():
-    conv = _c("before​after")     # zero-width space between words
+    conv = _c("before​after")  # zero-width space between words
     r = verify.verify(conv, render_html.render_conversation_html(conv))
     assert r["ok"]

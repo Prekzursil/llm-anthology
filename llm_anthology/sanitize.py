@@ -17,10 +17,11 @@ IMPORTANT: callers must pass DECODED strings. Claude exports store invisibles as
 `\\uXXXX` JSON escapes, so scanning the raw file bytes reports a false "clean";
 json.load decodes them first (verified twice this session).
 """
+
 import html
 import unicodedata
 
-_WS_CC_OK = frozenset({0x09, 0x0A, 0x0D})   # tab, LF, CR are legitimate
+_WS_CC_OK = frozenset({0x09, 0x0A, 0x0D})  # tab, LF, CR are legitimate
 _ZWJ = 0x200D
 _VS16 = 0xFE0F
 # Invisible Hangul fillers — render as nothing but are category Lo, so no
@@ -34,7 +35,7 @@ def _is_pictographic(cp):
         0x1F000 <= cp <= 0x1FAFF
         or 0x2600 <= cp <= 0x27BF
         or 0x2B00 <= cp <= 0x2BFF
-        or 0x1F1E6 <= cp <= 0x1F1FF        # regional indicators
+        or 0x1F1E6 <= cp <= 0x1F1FF  # regional indicators
         or cp in (0x2764, 0x2665, 0x203C, 0x2049)
     )
 
@@ -45,7 +46,7 @@ def _is_flagged(cp):
     Position-sensitive cases (ZWJ inside an emoji sequence, VS16 straight after a
     pictograph) are decided by _flagged_at(), which is what callers must use.
     """
-    if 0xE0000 <= cp <= 0xE007F:            # TAG block (emoji-tag / deprecated)
+    if 0xE0000 <= cp <= 0xE007F:  # TAG block (emoji-tag / deprecated)
         return True
     # Variation selectors are category Mn, so NO category test catches them. This
     # is the 256-value channel behind modern invisible-text smuggling — arbitrary
@@ -83,8 +84,10 @@ def _badge(cp):
         name = unicodedata.name(chr(cp))
     except ValueError:
         name = "unnamed"
-    return ('<span class="cp-badge" data-cp="%s" title="%s (hidden)">⚑</span>'
-            % (code, html.escape(name, quote=True)))
+    return '<span class="cp-badge" data-cp="%s" title="%s (hidden)">⚑</span>' % (
+        code,
+        html.escape(name, quote=True),
+    )
 
 
 def _zwj_in_emoji(s, i):
@@ -170,8 +173,8 @@ def is_local_media_path(p):
         return False
     # normalise FIRST -- the browser will, so the check must too
     norm = p.replace("\\", "/")
-    if "://" in norm or norm.startswith("/"):      # scheme, root-relative, protocol-relative
+    if "://" in norm or norm.startswith("/"):  # scheme, root-relative, protocol-relative
         return False
-    if norm.startswith("data:") or ":" in norm.split("/")[0]:   # data:, C:, any drive/scheme
+    if norm.startswith("data:") or ":" in norm.split("/")[0]:  # data:, C:, any drive/scheme
         return False
-    return not any(seg == ".." for seg in norm.split("/"))      # no parent traversal
+    return not any(seg == ".." for seg in norm.split("/"))  # no parent traversal

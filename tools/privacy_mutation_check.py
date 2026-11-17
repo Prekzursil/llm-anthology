@@ -18,6 +18,7 @@ exact bytes on disk at start — never `git checkout --`, which silently reverts
 and destroys an UNCOMMITTED fix. A snapshot restore is correct whether or not the work
 has been committed yet.
 """
+
 import pathlib
 import subprocess
 import sys
@@ -28,8 +29,12 @@ import sys
 # privacy boundary is mutation-pinned. A security assurance nobody can execute is
 # worse than none, because it is believed.
 REPO = pathlib.Path(__file__).resolve().parents[1]
-TESTS = ["tests/test_redact.py", "tests/test_research.py",
-         "tests/test_redaction_e2e.py", "tests/test_sidecar.py"]
+TESTS = [
+    "tests/test_redact.py",
+    "tests/test_research.py",
+    "tests/test_redaction_e2e.py",
+    "tests/test_sidecar.py",
+]
 
 TARGETS = {
     "research": REPO / "llm_anthology" / "research.py",
@@ -54,7 +59,9 @@ def _write(path, text):
 def _run_suite():
     r = subprocess.run(
         [sys.executable, "-m", "pytest", *TESTS, "-q", "-o", "addopts="],
-        cwd=REPO, capture_output=True, text=True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
     )
     tail = [ln for ln in r.stdout.strip().splitlines() if ln.strip()][-1:]
     return r.returncode, (tail[0] if tail else "(no output)")
@@ -77,8 +84,7 @@ def mutate_research():
         '              "created_at", "updated_at", "title")',
     ).replace(
         '        "  char_count: %d" % p["char_count"],',
-        '        "  char_count: %d" % p["char_count"],\n'
-        '        "  title: %s" % p["title"],',
+        '        "  char_count: %d" % p["char_count"],\n        "  title: %s" % p["title"],',
     )
     assert out != src, "M1 anchors not found — update the mutation script"
     _write(p, out)
@@ -93,23 +99,26 @@ def mutate_redact():
     # TypeError at import and every test ERRORED. That is a BOGUS mutation: the suite
     # went red because Python rejected the class, not because the leak detector fired.
     # A mutation must produce a WORKING, LEAKY build, or it proves nothing.
-    out = src.replace(
-        "    conversation_id: str\n    provider: str\n    account: str\n",
-        "    conversation_id: str\n    provider: str\n    account: str\n"
-        "    title: str\n",
-    ).replace(
-        "        conversation_id=conv.id,\n        provider=conv.provider,\n"
-        "        account=conv.account,\n",
-        "        conversation_id=conv.id,\n        provider=conv.provider,\n"
-        "        account=conv.account,\n        title=conv.title,\n",
-    ).replace(
-        '        conversation_id=d.get("conversation_id", ""),\n'
-        '        provider=d.get("provider", ""),\n'
-        '        account=d.get("account", ""),\n',
-        '        conversation_id=d.get("conversation_id", ""),\n'
-        '        provider=d.get("provider", ""),\n'
-        '        account=d.get("account", ""),\n'
-        '        title=d.get("title", ""),\n',
+    out = (
+        src.replace(
+            "    conversation_id: str\n    provider: str\n    account: str\n",
+            "    conversation_id: str\n    provider: str\n    account: str\n    title: str\n",
+        )
+        .replace(
+            "        conversation_id=conv.id,\n        provider=conv.provider,\n"
+            "        account=conv.account,\n",
+            "        conversation_id=conv.id,\n        provider=conv.provider,\n"
+            "        account=conv.account,\n        title=conv.title,\n",
+        )
+        .replace(
+            '        conversation_id=d.get("conversation_id", ""),\n'
+            '        provider=d.get("provider", ""),\n'
+            '        account=d.get("account", ""),\n',
+            '        conversation_id=d.get("conversation_id", ""),\n'
+            '        provider=d.get("provider", ""),\n'
+            '        account=d.get("account", ""),\n'
+            '        title=d.get("title", ""),\n',
+        )
     )
     assert out != src, "M2 anchors not found — update the mutation script"
     _write(p, out)
@@ -128,7 +137,7 @@ def main():
         ("M2 redact.py re-adds title field", mutate_redact),
     ):
         try:
-            _restore_all()          # isolate: only THIS mutation is active
+            _restore_all()  # isolate: only THIS mutation is active
             mutate()
             rc, line = _run_suite()
         finally:
@@ -145,8 +154,12 @@ def main():
     print(f"POST-RUN re-verify: exit={post_rc} :: {post_line}")
 
     ok = all(results.values()) and restored_ok and post_rc == 0
-    print("VERDICT:", "BOTH LAYERS MUTATION-PINNED (real detector)"
-          if ok else "*** COVERAGE THEATER — a mutation SURVIVED (or restore failed) ***")
+    print(
+        "VERDICT:",
+        "BOTH LAYERS MUTATION-PINNED (real detector)"
+        if ok
+        else "*** COVERAGE THEATER — a mutation SURVIVED (or restore failed) ***",
+    )
     return 0 if ok else 1
 
 

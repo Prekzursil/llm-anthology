@@ -5,10 +5,12 @@ prompt-injection. The renderer must PRESERVE evidence (visible inert badge) but
 NEUTRALIZE it (never emit the raw invisible; never let it reach a copy surface),
 while never breaking legitimate emoji (VS16 / in-sequence ZWJ).
 """
+
 from llm_anthology import sanitize
 
 
 # --- HTML escaping (raw HTML in message bodies must be inert, matching real UIs) ---
+
 
 def test_plain_text_html_escaped():
     assert sanitize.neutralize_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
@@ -22,10 +24,11 @@ def test_script_tag_is_escaped_not_live():
 
 # --- invisible / dangerous codepoints become visible inert badges ---
 
+
 def test_zero_width_space_badged():
     out = sanitize.neutralize_html("a​b")
     assert 'data-cp="U+200B"' in out
-    assert "​" not in out            # raw invisible removed
+    assert "​" not in out  # raw invisible removed
     assert out.startswith("a") and out.endswith("b")
 
 
@@ -50,8 +53,9 @@ def test_newline_and_tab_not_flagged():
 
 # --- legitimate emoji must survive ---
 
+
 def test_vs16_preserved():
-    out = sanitize.neutralize_html("❤️")      # red heart + VS16
+    out = sanitize.neutralize_html("❤️")  # red heart + VS16
     assert "️" in out
     assert "data-cp" not in out
 
@@ -68,6 +72,7 @@ def test_bare_zwj_badged():
 
 # --- scan (for the forensic audit sidecar) ---
 
+
 def test_scan_invisibles_reports_codepoints():
     hits = sanitize.scan_invisibles("a​b‮c")
     cps = {cp for _, cp in hits}
@@ -80,6 +85,7 @@ def test_scan_clean_text_empty():
 
 # --- copy/agent-feed surface must be stripped, not badged ---
 
+
 def test_sanitize_for_copy_strips_invisibles():
     assert sanitize.sanitize_for_copy("a​‮b") == "ab"
 
@@ -90,6 +96,7 @@ def test_sanitize_for_copy_keeps_emoji():
 
 # --- link scheme allowlist ---
 
+
 def test_is_safe_url_allows_http_https():
     assert sanitize.is_safe_url("https://example.com")
     assert sanitize.is_safe_url("http://x.y/z")
@@ -99,7 +106,7 @@ def test_is_safe_url_blocks_dangerous_schemes():
     assert not sanitize.is_safe_url("javascript:alert(1)")
     assert not sanitize.is_safe_url("data:text/html,<script>")
     assert not sanitize.is_safe_url("file:///etc/passwd")
-    assert not sanitize.is_safe_url("  JavaScript:alert(1)")   # trimmed + cased
+    assert not sanitize.is_safe_url("  JavaScript:alert(1)")  # trimmed + cased
     assert not sanitize.is_safe_url("")
 
 
@@ -148,13 +155,13 @@ def test_variation_selector_smuggling_is_neutralised():
     payload = "".join(chr(0xFE00 + b) if b < 16 else chr(0xE0100 + b - 16) for b in b"SECRET")
     text = "ordinary sentence" + payload
     assert sanitize.neutralize_html(text).count("cp-badge") >= 6
-    assert sanitize.sanitize_for_copy(text) == "ordinary sentence"   # agent-feed copy is clean
-    assert len(sanitize.scan_invisibles(text)) >= 6                  # audit sees it
+    assert sanitize.sanitize_for_copy(text) == "ordinary sentence"  # agent-feed copy is clean
+    assert len(sanitize.scan_invisibles(text)) >= 6  # audit sees it
 
 
 def test_bare_vs16_flagged_but_emoji_vs16_preserved():
-    assert 'data-cp="U+FE0F"' in sanitize.neutralize_html("a️b")   # bare VS16 = payload
-    assert "data-cp" not in sanitize.neutralize_html("❤️")           # after a pictograph = legit
+    assert 'data-cp="U+FE0F"' in sanitize.neutralize_html("a️b")  # bare VS16 = payload
+    assert "data-cp" not in sanitize.neutralize_html("❤️")  # after a pictograph = legit
 
 
 def test_invisible_hangul_filler_is_flagged():
@@ -172,7 +179,7 @@ def test_lone_surrogate_is_badged_not_crashing():
     neutralised to a badge so a single poisoned message cannot truncate a build."""
     out = sanitize.neutralize_html("a\ud800b")
     assert 'data-cp="U+D800"' in out
-    out.encode("utf-8")            # must not raise
+    out.encode("utf-8")  # must not raise
     assert sanitize.sanitize_for_copy("a\ud800b") == "ab"
 
 

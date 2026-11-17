@@ -18,12 +18,7 @@
  * is treated as data at every point.
  */
 
-import type {
-  IpcClient,
-  Conversation,
-  ConversationAvailable,
-  ConversationTurn,
-} from "../ipc";
+import type { IpcClient, Conversation, ConversationAvailable, ConversationTurn } from "../ipc";
 import { engineErrorText } from "./errors";
 import {
   blockClass,
@@ -55,7 +50,10 @@ export class ReaderOverlay {
   private moreStatusEl: HTMLElement | null = null;
   private moreBtn: HTMLButtonElement | null = null;
 
-  constructor(private readonly ipc: IpcClient, container: HTMLElement) {
+  constructor(
+    private readonly ipc: IpcClient,
+    container: HTMLElement,
+  ) {
     this.root = container;
     this.root.classList.add("reader");
     this.root.setAttribute("role", "dialog");
@@ -170,8 +168,9 @@ export class ReaderOverlay {
       note.className = "reader-stub";
       // A real case: a rollout of pure bookkeeping parses cleanly into zero turns. Saying
       // so beats an empty pane that is indistinguishable from a failed render.
-      note.textContent = "This session parsed successfully but contains no messages — it "
-        + "holds only bookkeeping records.";
+      note.textContent =
+        "This session parsed successfully but contains no messages — it " +
+        "holds only bookkeeping records.";
       this.resetBody();
       this.bodyEl.append(note);
       return;
@@ -275,24 +274,27 @@ export class ReaderOverlay {
     if (turn.timestamp) when.dateTime = turn.timestamp;
     meta.append(who, when);
 
-    el.append(meta, ...turn.blocks.map((raw) => {
-      const shown = blockDisplay(raw);
-      const wrap = document.createElement("div");
-      wrap.className = `reader-block reader-block-${blockClass(shown.kind)}`;
-      if (shown.label !== "") {
-        const badge = document.createElement("span");
-        badge.className = "reader-badge";
-        badge.textContent = shown.label;
-        wrap.append(badge);
-      }
-      const body = document.createElement("pre");
-      body.className = "reader-text";
-      // `pre` + textContent: transcripts are whitespace-significant (code, diffs, tool
-      // output) and are never interpreted as markup.
-      body.textContent = shown.body;
-      wrap.append(body);
-      return wrap;
-    }));
+    el.append(
+      meta,
+      ...turn.blocks.map((raw) => {
+        const shown = blockDisplay(raw);
+        const wrap = document.createElement("div");
+        wrap.className = `reader-block reader-block-${blockClass(shown.kind)}`;
+        if (shown.label !== "") {
+          const badge = document.createElement("span");
+          badge.className = "reader-badge";
+          badge.textContent = shown.label;
+          wrap.append(badge);
+        }
+        const body = document.createElement("pre");
+        body.className = "reader-text";
+        // `pre` + textContent: transcripts are whitespace-significant (code, diffs, tool
+        // output) and are never interpreted as markup.
+        body.textContent = shown.body;
+        wrap.append(body);
+        return wrap;
+      }),
+    );
     return el;
   }
 }

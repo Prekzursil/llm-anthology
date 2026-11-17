@@ -50,6 +50,7 @@ frozen wire contract (cockpit types.ts `Timeline.undated_count`) documents.
 PRIVACY: this module reads birth-time ints and graph shape only; it never touches
 conversation content. Tests use synthetic fixtures exclusively.
 """
+
 from __future__ import annotations
 
 from llm_anthology.corpus import Corpus
@@ -83,8 +84,9 @@ def corpus_as_of(corpus: Corpus, as_of_ms: int) -> Corpus:
     for tid in sorted(corpus.threads):
         if _is_born(_birth(corpus, tid), as_of_ms):
             snapshot.add_thread(corpus.threads[tid])
-    for edge in sorted(corpus.edges,
-                       key=lambda e: (e.parent_thread_id, e.child_thread_id, e.status)):
+    for edge in sorted(
+        corpus.edges, key=lambda e: (e.parent_thread_id, e.child_thread_id, e.status)
+    ):
         if _is_born(_birth(corpus, edge.child_thread_id), as_of_ms):
             snapshot.add_edge(edge)
     return snapshot

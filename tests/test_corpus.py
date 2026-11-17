@@ -13,6 +13,7 @@ Two things are pinned:
      valid rather than asserted as a string, and the row<->dataclass mapping the
      parallel build agents target.
 """
+
 import sqlite3
 
 import pytest
@@ -42,6 +43,7 @@ def _close_connections():
     while _OPEN:
         _OPEN.pop().close()
 
+
 def _tm(tid="t1", **kw):
     return corpus.ThreadMeta(id=tid, **kw)
 
@@ -58,11 +60,24 @@ def _turn(blocks=None, role="human"):
     return ir.Turn(role=role, blocks=blocks if blocks is not None else [])
 
 
-def _conv(cid="c1", title="A title", provider="codex", account="acct",
-          turns=None, created="2026-01-01", updated="2026-01-02"):
-    return ir.Conversation(id=cid, title=title, provider=provider,
-                           turns=turns if turns is not None else [],
-                           created_at=created, updated_at=updated, account=account)
+def _conv(
+    cid="c1",
+    title="A title",
+    provider="codex",
+    account="acct",
+    turns=None,
+    created="2026-01-01",
+    updated="2026-01-02",
+):
+    return ir.Conversation(
+        id=cid,
+        title=title,
+        provider=provider,
+        turns=turns if turns is not None else [],
+        created_at=created,
+        updated_at=updated,
+        account=account,
+    )
 
 
 def _mem_index():
@@ -73,6 +88,7 @@ def _mem_index():
 
 
 # --------------------------------------------------------- dataclass surface
+
 
 def test_threadmeta_defaults_are_schema_tolerant():
     """id is the only required field; everything else defaults so a partial row from
@@ -86,12 +102,21 @@ def test_threadmeta_defaults_are_schema_tolerant():
 
 
 def test_threadmeta_carries_every_contracted_field():
-    m = corpus.ThreadMeta(id="t1", title="root", model_provider="codex",
-                          tokens_used=42, created_at_ms=1000, updated_at_ms=2000,
-                          git_branch="feat/x", cwd="/repo", agent_role="architect",
-                          agent_nickname="Ada", preview="hello", rollout_path="/a.jsonl")
-    assert (m.id, m.tokens_used, m.updated_at_ms, m.agent_nickname) == \
-        ("t1", 42, 2000, "Ada")
+    m = corpus.ThreadMeta(
+        id="t1",
+        title="root",
+        model_provider="codex",
+        tokens_used=42,
+        created_at_ms=1000,
+        updated_at_ms=2000,
+        git_branch="feat/x",
+        cwd="/repo",
+        agent_role="architect",
+        agent_nickname="Ada",
+        preview="hello",
+        rollout_path="/a.jsonl",
+    )
+    assert (m.id, m.tokens_used, m.updated_at_ms, m.agent_nickname) == ("t1", 42, 2000, "Ada")
 
 
 def test_spawnedge_status_defaults_to_empty():
@@ -110,6 +135,7 @@ def test_corpus_version_is_an_int():
 
 # ------------------------------------------------------------ graph builders
 
+
 def test_add_thread_keys_by_id_and_returns_it():
     c = corpus.Corpus()
     m = c.add_thread(_tm("x", title="hi"))
@@ -123,6 +149,7 @@ def test_add_edge_appends_and_returns_it():
 
 
 # ---------------------------------------------------------------- roots()
+
 
 def test_an_isolated_thread_is_its_own_root():
     c = corpus.Corpus()
@@ -157,6 +184,7 @@ def test_roots_are_sorted_for_deterministic_rendering():
 
 # ------------------------------------------------------------ children_of()
 
+
 def test_children_of_returns_sorted_distinct_children():
     c = corpus.Corpus()
     c.add_edge(_edge("p", "z"))
@@ -173,6 +201,7 @@ def test_children_of_a_leaf_is_empty():
 
 # ---------------------------------------------------------------- fan_out()
 
+
 def test_fan_out_counts_distinct_children():
     c = corpus.Corpus()
     c.add_edge(_edge("p", "a"))
@@ -186,6 +215,7 @@ def test_fan_out_is_zero_for_a_leaf():
 
 
 # ------------------------------------------------------------------ depth()
+
 
 def test_depth_of_a_root_is_zero():
     c = corpus.Corpus()
@@ -205,9 +235,9 @@ def test_depth_takes_the_shortest_path_when_a_node_has_two_parents():
     The shorter path defines its depth, so the helper is min() — a first-parent or a
     max() implementation would return 2 here and both fail."""
     c = corpus.Corpus()
-    c.add_edge(_edge("root", "mid"))   # mid -> depth 1
-    c.add_edge(_edge("root", "c"))     # c via root  -> 1
-    c.add_edge(_edge("mid", "c"))      # c via mid   -> 2
+    c.add_edge(_edge("root", "mid"))  # mid -> depth 1
+    c.add_edge(_edge("root", "c"))  # c via root  -> 1
+    c.add_edge(_edge("mid", "c"))  # c via mid   -> 2
     assert c.depth("c") == 1
 
 
@@ -220,6 +250,7 @@ def test_depth_is_finite_on_a_cycle_never_infinite_recursion():
 
 
 # ------------------------------------------------------- schema as a constant
+
 
 def test_index_schema_declares_a_contentless_detail_full_fts5_over_records():
     """WHY THIS ASSERTS AGAINST THE EXECUTED SCHEMA AND NOT THE TEMPLATE STRING.
@@ -236,8 +267,7 @@ def test_index_schema_declares_a_contentless_detail_full_fts5_over_records():
     the one that lives beside the other schema-constant tests.
     """
     conn = _track(corpus.init_index(sqlite3.connect(":memory:")))
-    ddl = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+    ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
     assert "content=''" in ddl and "detail=full" in ddl
     assert "detail=none" not in ddl
 
@@ -253,12 +283,18 @@ def test_index_schema_declares_the_threads_edges_and_checkpoint_tables():
 
 # ---------------------------------------------------- schema executed for real
 
+
 def test_init_index_creates_every_contract_table():
     conn = _track(corpus.init_index(sqlite3.connect(":memory:")))
-    names = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"conversations", "conversations_fts", "threads", "thread_spawn_edges",
-            "ingest_checkpoint", "conversation_bodies"} <= names
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {
+        "conversations",
+        "conversations_fts",
+        "threads",
+        "thread_spawn_edges",
+        "ingest_checkpoint",
+        "conversation_bodies",
+    } <= names
 
 
 def test_open_index_enables_wal_on_a_file_db(tmp_path):
@@ -274,15 +310,26 @@ def test_open_index_creates_the_file_on_disk(tmp_path):
 
 # ------------------------------------------------------- thread persistence
 
+
 def test_upsert_thread_round_trips_including_a_null_updated_at_ms(tmp_path):
     """The whole ThreadMeta survives a write/read, and a None updated_at_ms stays
     None through NULL rather than becoming 0 — the schema-tolerance guarantee for the
     legacy DB that lacks the column."""
     conn = _open(str(tmp_path / "i.sqlite"))
-    m = corpus.ThreadMeta(id="t1", title="root", model_provider="codex",
-                          tokens_used=1234, created_at_ms=1000, updated_at_ms=None,
-                          git_branch="feat/x", cwd="/repo", agent_role="architect",
-                          agent_nickname="Ada", preview="hello", rollout_path="/a/b.jsonl")
+    m = corpus.ThreadMeta(
+        id="t1",
+        title="root",
+        model_provider="codex",
+        tokens_used=1234,
+        created_at_ms=1000,
+        updated_at_ms=None,
+        git_branch="feat/x",
+        cwd="/repo",
+        agent_role="architect",
+        agent_nickname="Ada",
+        preview="hello",
+        rollout_path="/a/b.jsonl",
+    )
     corpus.upsert_thread(conn, m)
     got = corpus.load_corpus(conn).threads["t1"]
     assert got == m
@@ -298,13 +345,17 @@ def test_upsert_thread_replaces_rather_than_duplicating_the_same_id(tmp_path):
 
 # --------------------------------------------------------- edge persistence
 
+
 def test_upsert_edge_round_trips(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
     corpus.upsert_edge(conn, corpus.SpawnEdge("p", "c", "completed"))
     edges = corpus.load_corpus(conn).edges
     assert len(edges) == 1
-    assert (edges[0].parent_thread_id, edges[0].child_thread_id, edges[0].status) == \
-        ("p", "c", "completed")
+    assert (edges[0].parent_thread_id, edges[0].child_thread_id, edges[0].status) == (
+        "p",
+        "c",
+        "completed",
+    )
 
 
 def test_upsert_edge_is_idempotent_on_the_parent_child_pair(tmp_path):
@@ -324,13 +375,15 @@ def test_load_corpus_on_an_empty_index_is_empty(tmp_path):
 
 # -------------------------------------------------- conversation FTS indexing
 
+
 def test_add_conversation_indexes_a_computed_body_for_fts_search():
     """With no explicit body the searchable text is the title plus every block's
     text; an empty-string block contributes nothing (the falsy filter) while the
     title and a real block are indexed."""
     conn = _mem_index()
-    conv = _conv(cid="c1", title="Widgets",
-                 turns=[_turn([_block("alpha beta"), _block("")]), _turn([])])
+    conv = _conv(
+        cid="c1", title="Widgets", turns=[_turn([_block("alpha beta"), _block("")]), _turn([])]
+    )
     corpus.add_conversation(conn, conv)
     rows = corpus.search(conn, "alpha")
     assert len(rows) == 1 and rows[0]["conversation_id"] == "c1"
@@ -359,11 +412,16 @@ def test_add_conversation_is_idempotent_and_does_not_double_index(tmp_path):
 
 def test_search_returns_the_retrievable_columns_including_thread_linkage():
     conn = _mem_index()
-    conv = _conv(cid="c9", title="Report", provider="codex", account="me",
-                 turns=[_turn([_block("delta")])], created="2026-05-01",
-                 updated="2026-05-02")
-    corpus.add_conversation(conn, conv, body="delta", thread_id="t9",
-                            rollout_path="/r/9.jsonl")
+    conv = _conv(
+        cid="c9",
+        title="Report",
+        provider="codex",
+        account="me",
+        turns=[_turn([_block("delta")])],
+        created="2026-05-01",
+        updated="2026-05-02",
+    )
+    corpus.add_conversation(conn, conv, body="delta", thread_id="t9", rollout_path="/r/9.jsonl")
     row = corpus.search(conn, "delta")[0]
     assert row["conversation_id"] == "c9" and row["provider"] == "codex"
     assert row["account"] == "me" and row["title"] == "Report"
@@ -387,6 +445,7 @@ def test_search_with_no_match_returns_an_empty_list():
 
 # ---------------------------------------------------- ingest checkpoints
 
+
 def test_get_checkpoint_is_none_before_any_write(tmp_path):
     conn = _open(str(tmp_path / "i.sqlite"))
     assert corpus.get_checkpoint(conn, "rollout.jsonl") is None
@@ -404,6 +463,7 @@ def test_checkpoint_round_trips_and_replaces_on_a_re_ingest(tmp_path):
 
 
 # --------------------------------------------------------------- end to end
+
 
 def test_a_small_corpus_persists_and_reloads_as_a_navigable_graph(tmp_path):
     """The whole contract in one flow: write threads + spawn edges, reload into a

@@ -24,6 +24,7 @@ Path semantics are asserted with pure PureWindowsPath rules so the suite is
 byte-identical on Linux/macOS/Windows CI; the real file write uses the host-native
 tmp_path, so the write path is exercised on every platform.
 """
+
 import json
 
 import pytest
@@ -32,6 +33,7 @@ from llm_anthology import corpus, diff, export, ir, render_html, sanitize
 
 
 # --------------------------------------------------------------------- fixtures
+
 
 def _tm(tid, **kw):
     return corpus.ThreadMeta(id=tid, **kw)
@@ -51,8 +53,12 @@ def _corpus(threads=(), edges=()):
 
 
 def _conv(cid, text):
-    return ir.Conversation(id=cid, title="t", provider="claude",
-                           turns=[ir.Turn("assistant", [ir.Block("text", text=text)])])
+    return ir.Conversation(
+        id=cid,
+        title="t",
+        provider="claude",
+        turns=[ir.Turn("assistant", [ir.Block("text", text=text)])],
+    )
 
 
 def _rendered(conv):
@@ -61,33 +67,48 @@ def _rendered(conv):
 
 # ------------------------------------------------------- serialize / parse codec
 
+
 def test_serialize_parse_roundtrip_preserves_every_field():
     """A full corpus (all ThreadMeta fields, an Optional None, an edge status)
     round-trips to a structurally identical corpus."""
-    c = _corpus(threads=[
-        _tm("b", title="B", model_provider="codex", tokens_used=42,
-            created_at_ms=1000, updated_at_ms=2000, git_branch="main",
-            cwd="/work", agent_role="impl", agent_nickname="nick",
-            preview="prev", rollout_path="/r/b.jsonl"),
-        _tm("a", created_at_ms=None, updated_at_ms=None),
-    ], edges=[_edge("a", "b", status="failed")])
+    c = _corpus(
+        threads=[
+            _tm(
+                "b",
+                title="B",
+                model_provider="codex",
+                tokens_used=42,
+                created_at_ms=1000,
+                updated_at_ms=2000,
+                git_branch="main",
+                cwd="/work",
+                agent_role="impl",
+                agent_nickname="nick",
+                preview="prev",
+                rollout_path="/r/b.jsonl",
+            ),
+            _tm("a", created_at_ms=None, updated_at_ms=None),
+        ],
+        edges=[_edge("a", "b", status="failed")],
+    )
     reparsed = export.parse_graph(export.serialize_graph(c))
     assert diff.diff_corpus(c, reparsed).is_empty()
-    assert reparsed.threads["b"].tokens_used == 42          # int preserved as int
-    assert reparsed.threads["a"].created_at_ms is None       # None preserved (not 0)
-    assert reparsed.edges[0].status == "failed"              # edge status preserved
+    assert reparsed.threads["b"].tokens_used == 42  # int preserved as int
+    assert reparsed.threads["a"].created_at_ms is None  # None preserved (not 0)
+    assert reparsed.edges[0].status == "failed"  # edge status preserved
 
 
 def test_serialize_is_deterministic_and_sorted():
-    c = _corpus(threads=[_tm("c"), _tm("a"), _tm("b")],
-                edges=[_edge("b", "z"), _edge("a", "y")])
+    c = _corpus(threads=[_tm("c"), _tm("a"), _tm("b")], edges=[_edge("b", "z"), _edge("a", "y")])
     s1 = export.serialize_graph(c)
     s2 = export.serialize_graph(c)
-    assert s1 == s2                                          # byte-stable across runs
+    assert s1 == s2  # byte-stable across runs
     doc = json.loads(s1)
     assert [n["id"] for n in doc["nodes"]] == ["a", "b", "c"]
-    assert [(e["parent_thread_id"], e["child_thread_id"]) for e in doc["edges"]] == \
-        [("a", "y"), ("b", "z")]
+    assert [(e["parent_thread_id"], e["child_thread_id"]) for e in doc["edges"]] == [
+        ("a", "y"),
+        ("b", "z"),
+    ]
 
 
 def test_empty_corpus_roundtrips():
@@ -104,11 +125,14 @@ def test_dangling_edge_endpoint_roundtrips():
     reparsed = export.parse_graph(export.serialize_graph(c))
     assert diff.diff_corpus(c, reparsed).is_empty()
     assert "ghost" not in reparsed.threads
-    assert (reparsed.edges[0].parent_thread_id,
-            reparsed.edges[0].child_thread_id) == ("parent", "ghost")
+    assert (reparsed.edges[0].parent_thread_id, reparsed.edges[0].child_thread_id) == (
+        "parent",
+        "ghost",
+    )
 
 
 # ------------------------------------------------------------ graph fidelity gate
+
 
 def test_graph_fidelity_gate_passes_for_faithful_roundtrip():
     c = _corpus(threads=[_tm("a"), _tm("b")], edges=[_edge("a", "b")])
@@ -134,14 +158,16 @@ def test_graph_fidelity_gate_detects_a_dropped_node(monkeypatch):
 
 # ------------------------------------------------------------- export: happy path
 
+
 def test_export_writes_when_both_gates_pass(tmp_path):
-    c = _corpus(threads=[_tm("root", title="Root", tokens_used=5),
-                         _tm("child", title="Child")],
-                edges=[_edge("root", "child")])
+    c = _corpus(
+        threads=[_tm("root", title="Root", tokens_used=5), _tm("child", title="Child")],
+        edges=[_edge("root", "child")],
+    )
     conv_a = _conv("conv-a", "hello world")
     conv_b = _conv("conv-b", "second conversation body")
     convs = [(conv_b, _rendered(conv_b)), (conv_a, _rendered(conv_a))]  # unsorted input
-    dest = tmp_path / "sub" / "graph.json"                             # nested -> mkdir
+    dest = tmp_path / "sub" / "graph.json"  # nested -> mkdir
     report = export.export_with_gate(c, dest, conversations=convs, root=tmp_path)
 
     assert report["ok"] is True and report["written"] is True
@@ -162,8 +188,7 @@ def test_export_writes_when_both_gates_pass(tmp_path):
     reparsed = export.parse_graph(doc["graph"])
     assert sorted(reparsed.threads) == ["child", "root"]
     assert reparsed.threads["root"].title == "Root"
-    assert [(e.parent_thread_id, e.child_thread_id) for e in reparsed.edges] == \
-        [("root", "child")]
+    assert [(e.parent_thread_id, e.child_thread_id) for e in reparsed.edges] == [("root", "child")]
 
 
 def test_export_writes_graph_only_when_no_conversations(tmp_path):
@@ -180,23 +205,26 @@ def test_export_defaults_root_to_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     c = _corpus(threads=[_tm("x")])
     dest = tmp_path / "out.json"
-    report = export.export_with_gate(c, dest)          # root defaults to cwd
+    report = export.export_with_gate(c, dest)  # root defaults to cwd
     assert report["written"] is True
     assert (tmp_path / "out.json").exists()
 
 
 # ------------------------------------------------------------- export: path safety
 
+
 def test_export_rejects_unc_destination(tmp_path):
     with pytest.raises(export.ExportPathError):
-        export.export_with_gate(_corpus(threads=[_tm("x")]),
-                                r"\\evil\share\out.json", root=tmp_path)
+        export.export_with_gate(
+            _corpus(threads=[_tm("x")]), r"\\evil\share\out.json", root=tmp_path
+        )
 
 
 def test_export_rejects_unc_root(tmp_path):
     with pytest.raises(export.ExportPathError):
-        export.export_with_gate(_corpus(threads=[_tm("x")]),
-                                tmp_path / "out.json", root=r"\\evil\share")
+        export.export_with_gate(
+            _corpus(threads=[_tm("x")]), tmp_path / "out.json", root=r"\\evil\share"
+        )
 
 
 def test_export_unc_guard_rejects_a_unc_dest_confined_to_a_unc_root():
@@ -213,29 +241,30 @@ def test_export_unc_guard_rejects_a_unc_dest_confined_to_a_unc_root():
     stubbing the guard to `if False:` makes this test go RED. Guards the Windows SMB/NTLM
     hash-leak class (a crafted `\\\\host\\share` coerces an outbound authentication)."""
     with pytest.raises(export.ExportPathError, match="UNC"):
-        export.export_with_gate(_corpus(threads=[_tm("x")]),
-                                r"\\server\share\out.json", root=r"\\server\share")
+        export.export_with_gate(
+            _corpus(threads=[_tm("x")]), r"\\server\share\out.json", root=r"\\server\share"
+        )
 
 
 def test_export_rejects_parent_traversal(tmp_path):
-    dest = str(tmp_path) + "/../escape.json"           # normalizes to a `..` component
+    dest = str(tmp_path) + "/../escape.json"  # normalizes to a `..` component
     with pytest.raises(export.ExportPathError):
         export.export_with_gate(_corpus(threads=[_tm("x")]), dest, root=tmp_path)
 
 
 def test_export_rejects_destination_outside_root(tmp_path):
-    outside = tmp_path.parent / "outside.json"         # a sibling of the root
+    outside = tmp_path.parent / "outside.json"  # a sibling of the root
     with pytest.raises(export.ExportPathError):
         export.export_with_gate(_corpus(threads=[_tm("x")]), outside, root=tmp_path)
 
 
 # --------------------------------------------------- export: gate BLOCKS (no write)
 
+
 def test_export_gate_blocks_a_dropped_node(tmp_path, monkeypatch):
     """BROKEN STATE (graph): a dropped isolated node -> no write + a report that
     names the removed node."""
-    c = _corpus(threads=[_tm("root"), _tm("child"), _tm("orphan")],
-                edges=[_edge("root", "child")])
+    c = _corpus(threads=[_tm("root"), _tm("child"), _tm("orphan")], edges=[_edge("root", "child")])
     dest = tmp_path / "graph.json"
     real = export.serialize_graph
 
@@ -249,7 +278,7 @@ def test_export_gate_blocks_a_dropped_node(tmp_path, monkeypatch):
     assert report["ok"] is False and report["written"] is False
     assert report["path"] is None
     assert report["removed"]["nodes"] == ["orphan"]
-    assert not dest.exists()                           # NOTHING written on failure
+    assert not dest.exists()  # NOTHING written on failure
 
 
 def test_export_gate_blocks_a_dropped_edge(tmp_path, monkeypatch):
@@ -276,24 +305,26 @@ def test_export_gate_blocks_a_garbled_conversation_token(tmp_path):
     the token-multiset gate fires, so no write, even though the graph is faithful."""
     c = _corpus(threads=[_tm("root")])
     conv = _conv("conv-1", "alpha beta gamma")
-    garbled = _rendered(conv).replace("beta", "")       # drop a prose word
+    garbled = _rendered(conv).replace("beta", "")  # drop a prose word
     dest = tmp_path / "graph.json"
-    report = export.export_with_gate(c, dest, conversations=[(conv, garbled)],
-                                     root=tmp_path)
+    report = export.export_with_gate(c, dest, conversations=[(conv, garbled)], root=tmp_path)
     assert report["ok"] is False and report["written"] is False
     assert report["missing_tokens"]["conv-1"] == ["beta"]
-    assert report["removed"] == {"nodes": [], "edges": []}   # graph was faithful
+    assert report["removed"] == {"nodes": [], "edges": []}  # graph was faithful
     assert not dest.exists()
 
 
 # ------------------------------------------------------- export: sanitize + purity
 
+
 def test_export_sanitizes_free_text_fields_in_the_artifact(tmp_path):
     """A zero-width space smuggled into any free-text field is stripped from the
     written artifact (and the gate still passes, since both sides are sanitized)."""
     zwsp = "\u200b"
-    c = _corpus(threads=[_tm("a", title="hel" + zwsp + "lo", cwd="c" + zwsp + "wd")],
-                edges=[_edge("a", "b", status="ok" + zwsp)])
+    c = _corpus(
+        threads=[_tm("a", title="hel" + zwsp + "lo", cwd="c" + zwsp + "wd")],
+        edges=[_edge("a", "b", status="ok" + zwsp)],
+    )
     dest = tmp_path / "g.json"
     report = export.export_with_gate(c, dest, root=tmp_path)
     assert report["written"] is True
@@ -313,4 +344,4 @@ def test_export_does_not_mutate_the_input_corpus(tmp_path):
     before_edges = list(c.edges)
     export.export_with_gate(c, tmp_path / "g.json", root=tmp_path)
     assert c.threads == before_threads and c.edges == before_edges
-    assert c.threads["a"].title == "orig"                # sanitize built a NEW corpus
+    assert c.threads["a"].title == "orig"  # sanitize built a NEW corpus

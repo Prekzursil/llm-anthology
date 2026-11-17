@@ -21,7 +21,7 @@
  *
  * WHY PROGRESSIVE DISCLOSURE RATHER THAN `VirtualList`. The obvious reuse does not fit, for a
  * reason visible in its own source: `virtualList.ts` is FIXED-row-height — it positions every
- * row at `top = i * itemHeight` (`virtualList.ts:144`) and forces `height = itemHeight`
+ * row at `top = i * itemHeight` (`virtualList.ts:147`) and forces `height = itemHeight`
  * (`:147`). Transcript turns are the opposite of uniform; the measured corpus puts a one-line
  * "ok" next to a single 475,569-character tool result. Forcing those onto a uniform grid
  * either clips the long one or leaves an enormous gap after the short one, and a

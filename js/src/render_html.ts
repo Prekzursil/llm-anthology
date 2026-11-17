@@ -70,10 +70,11 @@ export function hardenLinks(frag: string): string {
   return frag.replace(A_ANY, (_m, attrs: string) => {
     const href = /href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
     if (!href) return "<a>";
-    const url = href[2] ?? href[3] ?? href[4] ?? "";
+    // exactly one of the three alternatives (double-, single- or un-quoted) matched
+    const url = href[2] ?? href[3] ?? href[4];
     // preserve the link title (sanitised) — dropping it would lose real content
     const tm = /title\s*=\s*("([^"]*)"|'([^']*)')/i.exec(attrs);
-    const title = tm ? (tm[2] ?? tm[3] ?? "") : "";
+    const title = tm ? (tm[2] ?? tm[3]) : "";
     const titleAttr = title ? ` title="${ncrInvisibles(escapeHtml(title, true))}"` : "";
     if (isSafeUrl(url.replace(/&amp;/g, "&"))) {
       return (
@@ -148,8 +149,8 @@ function mdToHtml(text: unknown): string {
   return badgeTextNodes(hardenLinks(defangImages(frag)));
 }
 
-function pre(text: unknown): string {
-  return `<pre>${badgeInvisibles(escapeHtml(typeof text === "string" ? text : "", false))}</pre>`;
+function pre(text: string): string {
+  return `<pre>${badgeInvisibles(escapeHtml(text, false))}</pre>`;
 }
 
 function citationsHtml(cites: Citation[]): string {

@@ -30,6 +30,7 @@ ranking just as degenerate.
 
 PRIVACY: synthetic fixtures only.
 """
+
 import sqlite3
 
 import pytest
@@ -55,9 +56,14 @@ def _open():
 
 def _conv(cid, title, text):
     return ir.Conversation(
-        id=cid, title=title, provider="codex", account="acct",
+        id=cid,
+        title=title,
+        provider="codex",
+        account="acct",
         turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=text)])],
-        created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z")
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
 
 
 def _seed(conn, rows):
@@ -70,18 +76,22 @@ def _seed(conn, rows):
 
 
 def _match(conn, expr):
-    return sorted(r[0] for r in conn.execute(
-        "SELECT c.conversation_id FROM conversations_fts "
-        "JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH ?", (expr,)))
+    return sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT c.conversation_id FROM conversations_fts "
+            "JOIN conversations c ON c.rowid = conversations_fts.rowid "
+            "WHERE conversations_fts MATCH ?",
+            (expr,),
+        )
+    )
 
 
 def _detail_none_twin(conn, rows):
     """The BOTH-STATES CONTROL: the same rows in a `detail=none` contentless table, which is
     what this index was until G-4. A capability test that passes on the shipped schema is
     only evidence if it FAILS here."""
-    conn.execute("CREATE VIRTUAL TABLE twin USING fts5("
-                 "title, body, content='', detail=none)")
+    conn.execute("CREATE VIRTUAL TABLE twin USING fts5(title, body, content='', detail=none)")
     for i, (_cid, title, body) in enumerate(rows, start=1):
         conn.execute("INSERT INTO twin(rowid, title, body) VALUES (?,?,?)", (i, title, body))
     return conn
@@ -95,13 +105,13 @@ def _twin_raises(conn, expr):
 
 # --------------------------------------------------------------- the shipped shape
 
+
 def test_the_fts_table_is_created_at_detail_full():
     """Read off the STORED DDL, not off the schema template. The template is a string with
     an SQL comment in it that mentions the old value, so a containment check against the
     template is not a measurement of what was created."""
     conn = _open()
-    ddl = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+    ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
     assert "detail=full" in ddl
     assert "detail=none" not in ddl
     assert "content=''" in ddl, "still contentless — the bodies live in conversation_bodies"
@@ -113,20 +123,21 @@ def test_contentless_delete_is_still_set_and_the_minimum_is_not_widened():
     floor either: on an older build the option is omitted and the legacy re-insert path in
     `add_conversation` still has to work."""
     conn = _open()
-    ddl = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
+    ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='conversations_fts'").fetchone()[0]
     if sqlite3.sqlite_version_info >= (3, 43):
         assert "contentless_delete=1" in ddl
         assert corpus._fts_can_delete(conn) is True
-    else:                                                      # pragma: no cover
+    else:  # pragma: no cover
         assert "contentless_delete" not in ddl
         assert corpus._fts_can_delete(conn) is False
 
 
 # ------------------------------------------------------- phrase queries
 
-_PHRASE_ROWS = [("c-adjacent", "t", "the quick brown fox"),
-                ("c-scrambled", "t", "brown is quick and so is the fox")]
+_PHRASE_ROWS = [
+    ("c-adjacent", "t", "the quick brown fox"),
+    ("c-scrambled", "t", "brown is quick and so is the fox"),
+]
 
 
 def test_an_exact_PHRASE_matches_only_the_adjacent_pair():
@@ -146,8 +157,10 @@ def test_a_phrase_query_RAISES_on_the_old_detail_none_shape():
 
 # ------------------------------------------------------------------ NEAR
 
-_NEAR_ROWS = [("c-near", "t", "deploy the release today"),
-              ("c-far", "t", "deploy " + " padding" * 20 + " release")]
+_NEAR_ROWS = [
+    ("c-near", "t", "deploy the release today"),
+    ("c-far", "t", "deploy " + " padding" * 20 + " release"),
+]
 
 
 def test_NEAR_matches_only_within_the_stated_distance():
@@ -163,8 +176,10 @@ def test_NEAR_RAISES_on_the_old_detail_none_shape():
 
 # --------------------------------------------------------- column filters
 
-_COL_ROWS = [("c-in-title", "sentinel in the title", "unrelated body text"),
-             ("c-in-body", "unrelated title text", "sentinel in the body")]
+_COL_ROWS = [
+    ("c-in-title", "sentinel in the title", "unrelated body text"),
+    ("c-in-body", "unrelated title text", "sentinel in the body"),
+]
 
 
 def test_a_match_can_be_confined_to_ONE_column():
@@ -187,19 +202,19 @@ def test_a_column_filter_RAISES_on_the_old_detail_none_shape():
 #: false "detail=full is degenerate too". The corpus shape is part of the experiment.
 _FILLER = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor"
 
-_BM25_ROWS = (
-    [("c-fill%d" % i, "t", _FILLER) for i in range(12)]
-    + [("c-once", "t", _FILLER + " zebra"),
-       ("c-eight", "t", _FILLER + " zebra" * 8),
-       ("c-once-but-long", "t", _FILLER + " zebra " + _FILLER * 8)]
-)
+_BM25_ROWS = [("c-fill%d" % i, "t", _FILLER) for i in range(12)] + [
+    ("c-once", "t", _FILLER + " zebra"),
+    ("c-eight", "t", _FILLER + " zebra" * 8),
+    ("c-once-but-long", "t", _FILLER + " zebra " + _FILLER * 8),
+]
 
 
 def _bm25(conn):
     return conn.execute(
         "SELECT c.conversation_id AS cid, bm25(conversations_fts) AS score "
         "FROM conversations_fts JOIN conversations c ON c.rowid = conversations_fts.rowid "
-        "WHERE conversations_fts MATCH 'zebra' ORDER BY bm25(conversations_fts)").fetchall()
+        "WHERE conversations_fts MATCH 'zebra' ORDER BY bm25(conversations_fts)"
+    ).fetchall()
 
 
 def test_bm25_ranks_by_TERM_FREQUENCY_and_document_length():
@@ -217,27 +232,28 @@ def test_bm25_is_DEGENERATE_on_the_old_detail_none_shape():
     `detail=none` every matching row scores identically, so `ORDER BY rank` imposed no order
     at all and LIMIT/OFFSET paging over it partitioned the result set only by scan order."""
     conn = _detail_none_twin(_open(), _BM25_ROWS)
-    scores = [r[0] for r in conn.execute(
-        "SELECT bm25(twin) FROM twin WHERE twin MATCH 'zebra'")]
+    scores = [r[0] for r in conn.execute("SELECT bm25(twin) FROM twin WHERE twin MATCH 'zebra'")]
     assert len(scores) == 3, "the same three docs match"
     assert len(set(scores)) == 1, (
         "detail=none is supposed to tie every row; it returned %r, so this control is no "
-        "longer measuring what it claims" % (scores,))
+        "longer measuring what it claims" % (scores,)
+    )
 
 
 # ---------------------------------------------- the builder's own ranked query
+
 
 def test_index_ranked_search_now_separates_relevance():
     """`index.ranked_search` exposes the bm25 score per row and its docstring used to
     disclose that the score could not separate anything. It can now."""
     conn = _seed(_open(), _BM25_ROWS)
     rows = index.ranked_search(conn, "zebra")
-    assert [r["conversation_id"] for r in rows] == [
-        "c-eight", "c-once", "c-once-but-long"]
+    assert [r["conversation_id"] for r in rows] == ["c-eight", "c-once", "c-once-but-long"]
     assert len({r["bm25_score"] for r in rows}) == 3
 
 
 # ------------------------------------------- re-indexing still retracts old terms
+
 
 def test_a_reindexed_conversation_stops_matching_its_OLD_text():
     """The property `contentless_delete=1` exists for, re-asserted against the new shape:

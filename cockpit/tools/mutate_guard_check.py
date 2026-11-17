@@ -8,6 +8,7 @@ Restores from an in-memory BYTE snapshot and verifies byte-identity afterwards. 
 use `git checkout --`: doing that during an earlier mutation run destroyed an uncommitted fix
 and silently contaminated the result of the very experiment it was part of.
 """
+
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,9 @@ MUTANT = b"""    let path = std::path::Path::new(index_path);
 def run_test():
     p = subprocess.run(
         ["cargo", "test", "--lib", TEST],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     return p.returncode, (p.stdout + p.stderr)
 

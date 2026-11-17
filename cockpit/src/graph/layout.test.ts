@@ -15,8 +15,7 @@ import {
 } from "./layout";
 
 function tn(id: string, provider: string, title = id): ThreadNode {
-  return { id, title, provider, model_provider: "", created_at_ms: 1, child_count: 0,
-           depth: 0 };
+  return { id, title, provider, model_provider: "", created_at_ms: 1, child_count: 0, depth: 0 };
 }
 
 const INPUT: LayoutInput = {
@@ -46,9 +45,7 @@ describe("buildElkGraph", () => {
     expect(graph.layoutOptions?.["elk.algorithm"]).toBe("layered");
     expect(graph.layoutOptions?.["elk.layered.nodePlacement.strategy"]).toBe("BRANDES_KOEPF");
     // Guard against the banned strategy sneaking back in.
-    expect(graph.layoutOptions?.["elk.layered.nodePlacement.strategy"]).not.toBe(
-      "NETWORK_SIMPLEX",
-    );
+    expect(graph.layoutOptions?.["elk.layered.nodePlacement.strategy"]).not.toBe("NETWORK_SIMPLEX");
   });
 
   it("materializes every node (including the dangling parent) as a child", () => {
@@ -234,8 +231,12 @@ describe("extractLayout on a degenerate ELK result", () => {
     expect(missing.edges[0].points).toEqual([]);
     // …and the rest of the edge is still mapped: an unrouted cross-provider spawn keeps its
     // cross flag and status, so it is drawn (as a straight line) rather than dropped.
-    expect(missing.edges[0]).toMatchObject({ parent: "A", child: "B", cross: true,
-                                             status: "completed" });
+    expect(missing.edges[0]).toMatchObject({
+      parent: "A",
+      child: "B",
+      cross: true,
+      status: "completed",
+    });
 
     const empty = extractLayout(
       { id: "root", edges: [{ id: "e1", sources: ["A"], targets: ["B"], sections: [] }] },
@@ -266,9 +267,7 @@ describe("extractLayout on a degenerate ELK result", () => {
             id: "e1",
             sources: ["A"],
             targets: ["B"],
-            sections: [
-              { id: "s", startPoint: { x: 5, y: 5 }, endPoint: { x: 900, y: 700 } },
-            ],
+            sections: [{ id: "s", startPoint: { x: 5, y: 5 }, endPoint: { x: 900, y: 700 } }],
           },
         ],
       },

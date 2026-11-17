@@ -96,7 +96,10 @@ const preview = (over: Partial<MaintenancePreview> = {}): MaintenancePreview => 
   warnings: [
     warn("DANGEROUS", "Dangerous maintenance target: C:\\store\\a.jsonl"),
     warn("DANGEROUS", "Dangerous maintenance target: C:\\store\\b.jsonl"),
-    warn("INFO", "delete preview: 2 allowed, 0 blocked; a checkpoint and a typed confirmation are required"),
+    warn(
+      "INFO",
+      "delete preview: 2 allowed, 0 blocked; a checkpoint and a typed confirmation are required",
+    ),
   ],
   plan: [
     { session_id: "a", source: "C:\\store\\a.jsonl", destination: "C:\\cp\\deleted\\a.jsonl" },
@@ -151,8 +154,7 @@ const sources = (rows: MoveRow[]): string[] => rows.map((r) => r.source);
  * project targets earlier, so `.at` type-checks nowhere here. vitest transforms without
  * type-checking, so it ran green and only `tsc --noEmit` caught it.
  */
-const last = (views: MaintenanceView[]): MaintenanceView | undefined =>
-  views[views.length - 1];
+const last = (views: MaintenanceView[]): MaintenanceView | undefined => views[views.length - 1];
 
 // ------------------------------------------------------------ derivePlanView
 
@@ -164,8 +166,16 @@ describe("derivePlanView", () => {
     const view = derivePlanView(
       preview({
         plan: [
-          { session_id: "z", source: "C:\\store\\z.jsonl", destination: "C:\\cp\\deleted\\z.jsonl" },
-          { session_id: "a", source: "C:\\store\\a.jsonl", destination: "C:\\cp\\deleted\\a.jsonl" },
+          {
+            session_id: "z",
+            source: "C:\\store\\z.jsonl",
+            destination: "C:\\cp\\deleted\\z.jsonl",
+          },
+          {
+            session_id: "a",
+            source: "C:\\store\\a.jsonl",
+            destination: "C:\\cp\\deleted\\a.jsonl",
+          },
         ],
       }),
     );
@@ -222,7 +232,11 @@ describe("derivePlanView", () => {
 
   it("explains a non-delete action without claiming nothing is erased", () => {
     const view = derivePlanView(
-      preview({ action: "archive", destination_root: "C:\\arch", required_typed_confirmation: "ARCHIVE 2 FILES" }),
+      preview({
+        action: "archive",
+        destination_root: "C:\\arch",
+        required_typed_confirmation: "ARCHIVE 2 FILES",
+      }),
     );
     expect(view.destinationExplanation).toContain("C:\\arch");
     expect(view.destinationExplanation).not.toContain("Nothing is erased");
@@ -311,7 +325,10 @@ describe("classifyFailure", () => {
 
   it("keeps the engine's own words in every branch", () => {
     // A future engine refusal nobody anticipated must still reach the operator intact.
-    const f = classifyFailure(rpcError(-32003, "refusing to write into a protected store path"), "execute");
+    const f = classifyFailure(
+      rpcError(-32003, "refusing to write into a protected store path"),
+      "execute",
+    );
     expect(f.message).toContain("protected store path");
   });
 
@@ -331,10 +348,7 @@ describe("classifyFailure", () => {
   it("names an unreadable manifest ON RESTORE, where -32603 means a missing file", () => {
     // `read_checkpoint` opens the path directly, so a bad one raises FileNotFoundError and
     // escapes the refusal mapping entirely — it lands as INTERNAL_ERROR, not REFUSED.
-    const f = classifyFailure(
-      rpcError(-32603, "Internal error"),
-      "restore",
-    );
+    const f = classifyFailure(rpcError(-32603, "Internal error"), "restore");
     expect(f.kind).toBe("manifest-unreadable");
     expect(f.remedy).toBe("fix-input");
   });
@@ -384,10 +398,7 @@ describe("deriveOutcome", () => {
   });
 
   it("surfaces what a restore could not account for", () => {
-    const out = deriveOutcome(
-      result({ unaccounted: ["C:\\store\\gone.jsonl"] }),
-      null,
-    );
+    const out = deriveOutcome(result({ unaccounted: ["C:\\store\\gone.jsonl"] }), null);
     expect(out.unaccounted).toEqual(["C:\\store\\gone.jsonl"]);
     expect(out.headline).toContain("Restore complete");
   });
@@ -472,7 +483,10 @@ describe("renderMaintenanceView", () => {
     for (const view of views) {
       const lines = renderMaintenanceView(view);
       expect(lines.length, `${view.kind} rendered nothing`).toBeGreaterThan(0);
-      expect(lines.every((l) => l !== ""), `${view.kind} rendered a blank line`).toBe(true);
+      expect(
+        lines.every((l) => l !== ""),
+        `${view.kind} rendered a blank line`,
+      ).toBe(true);
     }
   });
 

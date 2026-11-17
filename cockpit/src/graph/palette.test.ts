@@ -32,8 +32,9 @@ import { knownProviders, providerTint, UNKNOWN_TINT } from "./palette";
 const NOT_A_NODE_PROVIDER = new Set(["anthology"]);
 
 function engineProviders(): string[] {
-  const found = [...DISCOVER_PY.matchAll(/provider\s*=\s*["']([a-z0-9._-]+)["']/g)]
-    .map((m) => m[1]);
+  const found = [...DISCOVER_PY.matchAll(/provider\s*=\s*["']([a-z0-9._-]+)["']/g)].map(
+    (m) => m[1],
+  );
   return [...new Set(found)].filter((p) => !NOT_A_NODE_PROVIDER.has(p)).sort();
 }
 
@@ -72,8 +73,7 @@ describe("provider palette", () => {
     // would paint by vendor and silently merge Codex and ChatGPT into one category. This
     // pins the right fix: vendors are NOT palette keys — tint by `provider`.
     for (const vendor of ["openai", "anthropic", "google", "xai"]) {
-      expect(knownProviders(), `${vendor} is a model vendor, not an adapter`)
-        .not.toContain(vendor);
+      expect(knownProviders(), `${vendor} is a model vendor, not an adapter`).not.toContain(vendor);
       expect(providerTint(vendor)).toBe(UNKNOWN_TINT);
     }
   });
@@ -95,8 +95,10 @@ describe("provider palette", () => {
     // normal text is 4.5:1; these are short bold-ish labels but AA is the honest bar.
     for (const provider of [...knownProviders(), "unknown"]) {
       const tint = provider === "unknown" ? UNKNOWN_TINT : providerTint(provider);
-      expect(contrastRatio(tint.fill, tint.text), `${provider} label on its fill`)
-        .toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(tint.fill, tint.text),
+        `${provider} label on its fill`,
+      ).toBeGreaterThanOrEqual(4.5);
     }
   });
 });

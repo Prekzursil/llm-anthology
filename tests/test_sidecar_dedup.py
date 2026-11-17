@@ -16,6 +16,7 @@ Three properties here are safety, not convenience, and each is pinned:
 
 Synthetic rollouts written into tmp_path only; no test reads a real Codex store.
 """
+
 import json
 import os
 import sqlite3
@@ -44,20 +45,39 @@ def _close_connections():
 
 def _rollout_lines(session_id, user_text="hello", n_extra=0):
     """A minimal but realistic rollout: a session_meta header plus messages."""
-    lines = [{"type": "session_meta",
-              "timestamp": "2026-03-23T10:00:00Z",
-              "payload": {"session_id": session_id, "cwd": "C:/work",
-                          "model_provider": "openai", "git": {"branch": "main"}}},
-             {"type": "response_item",
-              "timestamp": "2026-03-23T10:00:01Z",
-              "payload": {"type": "message", "role": "user",
-                          "content": [{"type": "input_text", "text": user_text}]}}]
+    lines = [
+        {
+            "type": "session_meta",
+            "timestamp": "2026-03-23T10:00:00Z",
+            "payload": {
+                "session_id": session_id,
+                "cwd": "C:/work",
+                "model_provider": "openai",
+                "git": {"branch": "main"},
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-03-23T10:00:01Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_text}],
+            },
+        },
+    ]
     for i in range(n_extra):
-        lines.append({"type": "response_item",
-                      "timestamp": "2026-03-23T10:00:02Z",
-                      "payload": {"type": "message", "role": "assistant",
-                                  "content": [{"type": "output_text",
-                                               "text": "reply %d padded out" % i}]}})
+        lines.append(
+            {
+                "type": "response_item",
+                "timestamp": "2026-03-23T10:00:02Z",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "reply %d padded out" % i}],
+                },
+            }
+        )
     return [json.dumps(line) for line in lines]
 
 
@@ -79,6 +99,7 @@ def _server():
 
 # -------------------------------------------------------------- codex_home guarding
 
+
 def test_dedup_scan_requires_an_explicit_codex_home():
     """Never defaulted — a scan of private data must be asked for by name."""
     srv = _server()
@@ -89,14 +110,14 @@ def test_dedup_scan_requires_an_explicit_codex_home():
 
 def test_dedup_scan_refuses_a_unc_or_relative_codex_home():
     srv = _server()
-    for bad in (r"\\evil.example\share\codex", "//evil.example/share/codex",
-                "relative/codex", ""):
+    for bad in (r"\\evil.example\share\codex", "//evil.example/share/codex", "relative/codex", ""):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch("dedup.scan", {"codex_home": bad})
         assert ei.value.code == -32602, bad
 
 
 # ------------------------------------------------------------------------- scanning
+
 
 def test_dedup_scan_of_a_missing_home_is_empty_not_an_error(tmp_path):
     """A missing store root is an empty result, not a failure."""
@@ -139,10 +160,12 @@ def test_dedup_scan_flags_a_truncated_live_copy_on_the_wire(tmp_path):
     demotion must be REPORTED or the view silently shows the shorter conversation."""
     home = tmp_path / "codex"
     # live copy: minimal. backup copy: same session id, padded much larger.
-    _write_rollout(str(home / "sessions"), "rollout-a-%s.jsonl" % UUID_A,
-                   _rollout_lines(UUID_A))
-    _write_rollout(str(home / "sessions_backup"), "rollout-a-%s.jsonl" % UUID_A,
-                   _rollout_lines(UUID_A, n_extra=12))
+    _write_rollout(str(home / "sessions"), "rollout-a-%s.jsonl" % UUID_A, _rollout_lines(UUID_A))
+    _write_rollout(
+        str(home / "sessions_backup"),
+        "rollout-a-%s.jsonl" % UUID_A,
+        _rollout_lines(UUID_A, n_extra=12),
+    )
 
     srv = _server()
     out = srv.dispatch("dedup.scan", {"codex_home": str(home)})
@@ -151,15 +174,14 @@ def test_dedup_scan_flags_a_truncated_live_copy_on_the_wire(tmp_path):
 
     row = srv.dispatch("dedup.sessions", {})[0]
     assert row["has_larger_copy"] is True
-    assert row["store_kind"] == dedup.STORE_LIVE       # canonical rule NOT reversed
-    assert len(row["duplicate_paths"]) == 1            # the fuller copy is still offered
+    assert row["store_kind"] == dedup.STORE_LIVE  # canonical rule NOT reversed
+    assert len(row["duplicate_paths"]) == 1  # the fuller copy is still offered
 
 
 def test_dedup_scan_is_idempotent_and_never_drops_a_known_copy(tmp_path):
     """A re-scan updates in place; it must not delete a copy it did not see this time."""
     home = tmp_path / "codex"
-    _write_rollout(str(home / "sessions"), "rollout-a-%s.jsonl" % UUID_A,
-                   _rollout_lines(UUID_A))
+    _write_rollout(str(home / "sessions"), "rollout-a-%s.jsonl" % UUID_A, _rollout_lines(UUID_A))
     srv = _server()
     first = srv.dispatch("dedup.scan", {"codex_home": str(home)})
     second = srv.dispatch("dedup.scan", {"codex_home": str(home)})
@@ -173,10 +195,10 @@ def test_dedup_sessions_is_empty_before_any_scan():
 
 # ------------------------------------------------------------------------ no corpus
 
+
 def test_dedup_methods_require_a_corpus():
     srv = sidecar.Sidecar(None)
-    for method, params in (("dedup.scan", {"codex_home": "C:/x"}),
-                           ("dedup.sessions", {})):
+    for method, params in (("dedup.scan", {"codex_home": "C:/x"}), ("dedup.sessions", {})):
         with pytest.raises(sidecar.RpcError) as ei:
             srv.dispatch(method, params)
         assert ei.value.code == sidecar.CORPUS_NOT_INDEXED, method

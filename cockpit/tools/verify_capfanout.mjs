@@ -85,7 +85,9 @@ const RUN = async ({ cap, budgetMs }) => {
   if (!globalThis.__capEngine) {
     globalThis.__capEngine = new elkMod.ElkLayoutEngine(budgetMs);
     const warm = layoutMod.buildElkGraph({
-      nodes: [{ id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 }],
+      nodes: [
+        { id: "w", title: "warm", provider: "codex", created_at_ms: 1, child_count: 0, depth: 0 },
+      ],
       edges: [],
     });
     try {
@@ -143,8 +145,10 @@ const main = async () => {
   // about the capped one means anything.
   const control = await page.evaluate(RUN, { cap: false, budgetMs: BUDGET_MS });
   const controlFailed = Boolean(control.error);
-  console.log(`  control (no cap): ${control.visible} nodes, widest layer ${control.widest} `
-    + `-> ${control.error ?? `${control.ms}ms, ${control.placed} placed`}`);
+  console.log(
+    `  control (no cap): ${control.visible} nodes, widest layer ${control.widest} ` +
+      `-> ${control.error ?? `${control.ms}ms, ${control.placed} placed`}`,
+  );
   if (!controlFailed) {
     console.log("\n  The UNCAPPED corpus laid out fine, so this harness cannot detect the");
     console.log("  problem the cap exists to solve. Its verdict on the capped case is void.");
@@ -155,7 +159,8 @@ const main = async () => {
   console.log("  -> control fails as expected, so a pass below is meaningful\n");
 
   const samples = [];
-  for (let i = 0; i < REPEATS; i++) samples.push(await page.evaluate(RUN, { cap: true, budgetMs: BUDGET_MS }));
+  for (let i = 0; i < REPEATS; i++)
+    samples.push(await page.evaluate(RUN, { cap: true, budgetMs: BUDGET_MS }));
   await browser.close();
 
   const times = samples.map((s) => s.ms).sort((a, b) => a - b);
@@ -167,7 +172,9 @@ const main = async () => {
   console.log(`    visible nodes  ${last.visible}   edges ${last.edges}`);
   console.log(`    widest layer   ${last.widest}  (must be <= ${last.threshold})`);
   console.log(`    transform cost ${last.capMs}ms`);
-  console.log(`    layout         median ${median}ms  spread ${times[0]}-${times[times.length - 1]}ms`);
+  console.log(
+    `    layout         median ${median}ms  spread ${times[0]}-${times[times.length - 1]}ms`,
+  );
   console.log(`    placed         ${last.placed}`);
   console.log(`    hidden         ${12791 - last.visible} nodes behind "+N more"\n`);
 
@@ -184,10 +191,14 @@ const main = async () => {
   }
   if (problems.length) {
     for (const p of problems) console.log(`  PROBLEM: ${p}`);
-    console.log("FAILED:verify-capfanout the shipped transform does not bring the corpus in budget");
+    console.log(
+      "FAILED:verify-capfanout the shipped transform does not bring the corpus in budget",
+    );
     process.exit(1);
   }
-  console.log("SUCCESS:verify-capfanout shipped capFanOut renders the real corpus inside the guard");
+  console.log(
+    "SUCCESS:verify-capfanout shipped capFanOut renders the real corpus inside the guard",
+  );
 };
 
 main().catch((e) => {

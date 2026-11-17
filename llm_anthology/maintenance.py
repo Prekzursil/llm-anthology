@@ -87,6 +87,7 @@ PRIVACY: local-only, no network, no telemetry. The checkpoint manifest records f
 PATHS (restore needs them) and never conversation content. Tests use synthetic
 fixtures exclusively and never read $CODEX_HOME, ~/.codex, or AppData.
 """
+
 import enum
 import json
 import os
@@ -125,6 +126,7 @@ __all__ = [
 
 # --------------------------------------------------------------------- errors
 
+
 class MaintenanceRefused(Exception):
     """A gate refused: bad/blank confirmation, a stale or forged plan, an unsafe root,
     or a recovery that would destroy data. Every refusal is an exception rather than a
@@ -138,9 +140,11 @@ class MaintenancePathError(MaintenanceRefused, ValueError):
 
 # ----------------------------------------------------------------- enumerations
 
+
 class MaintenanceAction(str, enum.Enum):
     """Ported from Core/Maintenance/MaintenanceAction.cs (Delete/Archive/Move/
     Reconcile). Values are lowercase strings so a manifest is human-readable."""
+
     DELETE = "delete"
     ARCHIVE = "archive"
     MOVE = "move"
@@ -150,6 +154,7 @@ class MaintenanceAction(str, enum.Enum):
 class MaintenanceWarningSeverity(enum.IntEnum):
     """Ported from MaintenanceWarningSeverity.cs. IntEnum keeps the C# ordering
     (Info < Review < Dangerous) so a UI can sort or threshold on it."""
+
     INFO = 0
     REVIEW = 1
     DANGEROUS = 2
@@ -158,6 +163,7 @@ class MaintenanceWarningSeverity(enum.IntEnum):
 class SessionStoreKind(str, enum.Enum):
     """Ported from Core/Sessions/SessionStoreKind.cs. LIVE is special: the live store
     is never a maintenance target."""
+
     UNKNOWN = "unknown"
     LIVE = "live"
     BACKUP = "backup"
@@ -167,9 +173,11 @@ class SessionStoreKind(str, enum.Enum):
 
 # ----------------------------------------------------------------- value models
 
+
 @dataclass(frozen=True)
 class MaintenanceWarning:
     """Ported from MaintenanceWarning.cs."""
+
     severity: MaintenanceWarningSeverity
     message: str
 
@@ -200,6 +208,7 @@ class SessionCopy:
       present them as measured. `is_hot` in particular gates a REVIEW warning that therefore
       cannot fire on a request that arrived over the wire.
     """
+
     session_id: str
     file_path: str
     store_kind: SessionStoreKind = SessionStoreKind.UNKNOWN
@@ -215,6 +224,7 @@ class BlockedTarget:
     human `detail`.
     The C# BlockedTargets carried only the copy; carrying the reason is a deliberate
     addition so the UI and the RPC layer can explain a refusal without re-deriving it."""
+
     target: SessionCopy
     reason: str
     detail: str = ""
@@ -224,6 +234,7 @@ class BlockedTarget:
 class PlannedMove:
     """One materialised relocation. Both ends are absolute and already collision-free;
     the executor performs exactly these and computes nothing itself."""
+
     session_id: str
     source: str
     destination: str
@@ -239,6 +250,7 @@ class MaintenanceRequest:
     `typed_confirmation` is the phrase the caller OFFERS. It never becomes the required
     phrase (see plan_maintenance); a stale offer only earns a Review warning.
     """
+
     action: MaintenanceAction
     targets: Tuple[SessionCopy, ...]
     store_root: str
@@ -252,6 +264,7 @@ class MaintenancePreview:
     """Ported from MaintenancePreview.cs, plus `plan` (the materialised moves) and the
     resolved roots. `destination_root` is the EFFECTIVE root after the per-action
     rewrite, i.e. what files will actually land in."""
+
     action: MaintenanceAction
     allowed: Tuple[SessionCopy, ...] = ()
     blocked: Tuple[BlockedTarget, ...] = ()
@@ -279,6 +292,7 @@ class MaintenanceResult:
     end of the recorded move exists on disk). It is empty unless the caller passed
     `skip_unaccounted=True`, because otherwise restore refuses the batch outright.
     """
+
     executed: bool
     moves: Tuple[PlannedMove, ...] = ()
     manifest_path: str = ""
@@ -314,7 +328,7 @@ def _norm_local(raw, label):
         raise MaintenancePathError("refusing empty %s" % label)
     if "\x00" in text:
         raise MaintenancePathError("refusing NUL byte in %s: %r" % (label, text))
-    if text.replace("/", "\\").startswith("\\\\"):     # \\host\share, //host/share
+    if text.replace("/", "\\").startswith("\\\\"):  # \\host\share, //host/share
         raise MaintenancePathError("refusing UNC / non-local %s: %r" % (label, text))
     return PureWindowsPath(text)
 
@@ -326,8 +340,7 @@ def _require_root(raw, label):
     escape."""
     pure = _norm_local(raw, label)
     if ".." in pure.parts:
-        raise MaintenancePathError("refusing parent-traversal in %s: %r"
-                                  % (label, os.fspath(raw)))
+        raise MaintenancePathError("refusing parent-traversal in %s: %r" % (label, os.fspath(raw)))
     return os.fspath(raw)
 
 
@@ -358,17 +371,20 @@ def _classify(file_path, store_root):
     if ".." in candidate.parts:
         return ("traversal", "refusing parent-traversal in target: %r" % file_path)
     if ":" in candidate.name:
-        return ("unsafe-path",
-                "refusing NTFS alternate-data-stream basename: %r" % candidate.name)
+        return ("unsafe-path", "refusing NTFS alternate-data-stream basename: %r" % candidate.name)
     if not candidate.is_relative_to(PureWindowsPath(store_root)):
-        return ("outside-store-root",
-                "target %r is not within the store root %r" % (file_path, store_root))
+        return (
+            "outside-store-root",
+            "target %r is not within the store root %r" % (file_path, store_root),
+        )
     real_target = os.path.realpath(file_path)
     real_root = os.path.realpath(store_root)
     if not _within(real_target, real_root):
-        return ("outside-store-root",
-                "target %r resolved to %r, outside the store root %r"
-                % (file_path, real_target, real_root))
+        return (
+            "outside-store-root",
+            "target %r resolved to %r, outside the store root %r"
+            % (file_path, real_target, real_root),
+        )
     return None
 
 
@@ -377,8 +393,7 @@ def _require_confined(path, root, label):
     restore both use this: neither trusts the object it was handed."""
     verdict = _classify(path, root)
     if verdict is not None:
-        raise MaintenanceRefused("refusing %s (%s): %s" % (label, verdict[0],
-                                                           verdict[1]))
+        raise MaintenanceRefused("refusing %s (%s): %s" % (label, verdict[0], verdict[1]))
 
 
 def _spells_protected(path):
@@ -449,6 +464,7 @@ def _measured_size(file_path):
 
 # ------------------------------------------------------------------- the planner
 
+
 def _effective_destination_root(action, destination_root, checkpoint_root):
     """Ported from MaintenanceExecutor.GetEffectiveDestinationRoot. DELETE ignores the
     requested destination entirely and quarantines under the checkpoint root, which is
@@ -457,7 +473,7 @@ def _effective_destination_root(action, destination_root, checkpoint_root):
         return os.path.join(checkpoint_root, "deleted")
     if action is MaintenanceAction.RECONCILE:
         return os.path.join(destination_root, "reconciled")
-    return destination_root                              # ARCHIVE / MOVE, as in C#
+    return destination_root  # ARCHIVE / MOVE, as in C#
 
 
 def _confirmation_phrase(action, count):
@@ -465,8 +481,7 @@ def _confirmation_phrase(action, count):
     Derived from the ALLOWED count, never from the caller's offer: the phrase has to be
     a function of what will ACTUALLY happen, so a plan that changed since the operator
     last looked changes the phrase too."""
-    return "%s %d %s" % (action.value.upper(), count,
-                         "FILE" if count == 1 else "FILES")
+    return "%s %d %s" % (action.value.upper(), count, "FILE" if count == 1 else "FILES")
 
 
 def _unique_name(directory, name, claimed):
@@ -478,8 +493,9 @@ def _unique_name(directory, name, claimed):
     stem, ext = os.path.splitext(name)
     candidate = name
     attempt = 0
-    while (os.path.normcase(candidate) in claimed
-           or os.path.lexists(os.path.join(directory, candidate))):
+    while os.path.normcase(candidate) in claimed or os.path.lexists(
+        os.path.join(directory, candidate)
+    ):
         attempt += 1
         candidate = "%s-%d%s" % (stem, attempt, ext)
     claimed.add(os.path.normcase(candidate))
@@ -498,14 +514,14 @@ def plan_maintenance(request):
     store_root = _require_root(request.store_root, "store root")
     checkpoint_root = _require_root(request.checkpoint_root, "checkpoint root")
     if request.action is MaintenanceAction.DELETE:
-        destination_root = ""                            # ignored by DELETE, as in C#
+        destination_root = ""  # ignored by DELETE, as in C#
     else:
         if not request.destination_root.strip():
             raise MaintenanceRefused(
-                "destination_root is required for the %s action" % request.action.value)
+                "destination_root is required for the %s action" % request.action.value
+            )
         destination_root = _require_root(request.destination_root, "destination root")
-    effective_root = _effective_destination_root(request.action, destination_root,
-                                                 checkpoint_root)
+    effective_root = _effective_destination_root(request.action, destination_root, checkpoint_root)
     # The marker rule guarded TARGETS only, which left the other direction open: nothing
     # stopped a run writing INTO the live store, and an ARCHIVE whose destination_root is
     # `<x>\.codex\sessions` put session files there. That is corruption rather than loss —
@@ -514,7 +530,8 @@ def plan_maintenance(request):
     # whichever of the two roots produced the effective root.
     if _spells_protected(effective_root):
         raise MaintenanceRefused(
-            "refusing to write into a protected store path: %r" % effective_root)
+            "refusing to write into a protected store path: %r" % effective_root
+        )
 
     allowed = []
     blocked = []
@@ -535,48 +552,71 @@ def plan_maintenance(request):
             # files, and the second move would fail after the first had already run.
             # Checked last, so a duplicate that is ALSO protected is reported as
             # protected — the more dangerous reason is the one worth recording.
-            verdict = ("duplicate-target",
-                       "target %r is already planned by an earlier entry; one physical "
-                       "file is moved once" % target.file_path)
+            verdict = (
+                "duplicate-target",
+                "target %r is already planned by an earlier entry; one physical "
+                "file is moved once" % target.file_path,
+            )
         if verdict is not None:
-            blocked.append(BlockedTarget(target=target, reason=verdict[0],
-                                         detail=verdict[1]))
+            blocked.append(BlockedTarget(target=target, reason=verdict[0], detail=verdict[1]))
             if verdict[0] == "duplicate-target":
-                warnings.append(MaintenanceWarning(
-                    MaintenanceWarningSeverity.REVIEW,
-                    "Duplicate target ignored: %s" % target.file_path))
+                warnings.append(
+                    MaintenanceWarning(
+                        MaintenanceWarningSeverity.REVIEW,
+                        "Duplicate target ignored: %s" % target.file_path,
+                    )
+                )
             else:
-                warnings.append(MaintenanceWarning(
-                    MaintenanceWarningSeverity.DANGEROUS,
-                    "Protected path blocked: %s (%s)" % (target.file_path, verdict[0])))
+                warnings.append(
+                    MaintenanceWarning(
+                        MaintenanceWarningSeverity.DANGEROUS,
+                        "Protected path blocked: %s (%s)" % (target.file_path, verdict[0]),
+                    )
+                )
             continue
         planned_sources.add(os.path.normcase(target.file_path))
         # The size is MEASURED here, not taken from the request — see `_measured_size` for
         # why that one field mattered. Everything else on the copy is the caller's own
         # identifying data and is carried through untouched.
         allowed.append(replace(target, size_bytes=_measured_size(target.file_path)))
-        warnings.append(MaintenanceWarning(
-            MaintenanceWarningSeverity.DANGEROUS,
-            "Dangerous maintenance target: %s" % target.file_path))
+        warnings.append(
+            MaintenanceWarning(
+                MaintenanceWarningSeverity.DANGEROUS,
+                "Dangerous maintenance target: %s" % target.file_path,
+            )
+        )
         if target.is_hot:
-            warnings.append(MaintenanceWarning(
-                MaintenanceWarningSeverity.REVIEW,
-                "Target is hot (being written): %s" % target.file_path))
+            warnings.append(
+                MaintenanceWarning(
+                    MaintenanceWarningSeverity.REVIEW,
+                    "Target is hot (being written): %s" % target.file_path,
+                )
+            )
         name = _unique_name(effective_root, os.path.basename(target.file_path), claimed)
-        plan.append(PlannedMove(session_id=target.session_id,
-                                source=target.file_path,
-                                destination=os.path.join(effective_root, name)))
+        plan.append(
+            PlannedMove(
+                session_id=target.session_id,
+                source=target.file_path,
+                destination=os.path.join(effective_root, name),
+            )
+        )
 
     required = _confirmation_phrase(request.action, len(allowed))
     offered = request.typed_confirmation.strip()
     if offered and offered != required:
-        warnings.append(MaintenanceWarning(
-            MaintenanceWarningSeverity.REVIEW,
-            "The offered confirmation %r is stale; %r is required" % (offered, required)))
-    warnings.append(MaintenanceWarning(
-        MaintenanceWarningSeverity.INFO,
-        "%s preview: %d allowed, %d blocked; a checkpoint and a typed confirmation are "
-        "required" % (request.action.value, len(allowed), len(blocked))))
+        warnings.append(
+            MaintenanceWarning(
+                MaintenanceWarningSeverity.REVIEW,
+                "The offered confirmation %r is stale; %r is required" % (offered, required),
+            )
+        )
+    warnings.append(
+        MaintenanceWarning(
+            MaintenanceWarningSeverity.INFO,
+            "%s preview: %d allowed, %d blocked; a checkpoint and a typed confirmation are "
+            "required" % (request.action.value, len(allowed), len(blocked)),
+        )
+    )
 
     return MaintenancePreview(
         action=request.action,
@@ -584,8 +624,8 @@ def plan_maintenance(request):
         blocked=tuple(blocked),
         warnings=tuple(warnings),
         plan=tuple(plan),
-        requires_checkpoint=True,                        # always, as in C#
-        requires_typed_confirmation=True,                # always, as in C#
+        requires_checkpoint=True,  # always, as in C#
+        requires_typed_confirmation=True,  # always, as in C#
         required_typed_confirmation=required,
         store_root=store_root,
         destination_root=effective_root,
@@ -594,6 +634,7 @@ def plan_maintenance(request):
 
 
 # ------------------------------------------------------------------ checkpoints
+
 
 def _manifest_doc(preview, recorded_at_ms, moves, status):
     return {
@@ -605,10 +646,11 @@ def _manifest_doc(preview, recorded_at_ms, moves, status):
         "destination_root": preview.destination_root,
         "checkpoint_root": preview.checkpoint_root,
         "required_typed_confirmation": preview.required_typed_confirmation,
-        "moves": [{"session_id": m.session_id, "source": m.source,
-                   "destination": m.destination} for m in moves],
-        "blocked": [{"file_path": b.target.file_path, "reason": b.reason}
-                    for b in preview.blocked],
+        "moves": [
+            {"session_id": m.session_id, "source": m.source, "destination": m.destination}
+            for m in moves
+        ],
+        "blocked": [{"file_path": b.target.file_path, "reason": b.reason} for b in preview.blocked],
     }
 
 
@@ -632,11 +674,13 @@ def read_checkpoint(manifest_path):
     if found != MAINTENANCE_CHECKPOINT_VERSION:
         raise MaintenanceRefused(
             "unsupported checkpoint version %r (expected %d) in %r"
-            % (found, MAINTENANCE_CHECKPOINT_VERSION, manifest_path))
+            % (found, MAINTENANCE_CHECKPOINT_VERSION, manifest_path)
+        )
     return doc
 
 
 # ------------------------------------------------------------------- the executor
+
 
 def _require_confirmation(preview, confirmation):
     """Ported from MaintenanceExecutor.ExecuteAsync's two guards. Note the first: a
@@ -683,49 +727,54 @@ def execute_maintenance(preview, confirmation, *, apply=False, now_ms=None):
         destination_key = os.path.normcase(move.destination)
         if source_key not in allowed_paths:
             raise MaintenanceRefused(
-                "plan source %r is not an allowed target in this preview" % move.source)
+                "plan source %r is not an allowed target in this preview" % move.source
+            )
         if source_key in seen_sources:
-            raise MaintenanceRefused("plan source %r appears twice; one file cannot be "
-                                     "moved twice" % move.source)
+            raise MaintenanceRefused(
+                "plan source %r appears twice; one file cannot be moved twice" % move.source
+            )
         if destination_key in seen_destinations:
-            raise MaintenanceRefused("plan destination %r appears twice; the second move "
-                                     "would overwrite the first" % move.destination)
+            raise MaintenanceRefused(
+                "plan destination %r appears twice; the second move "
+                "would overwrite the first" % move.destination
+            )
         seen_sources.add(source_key)
         seen_destinations.add(destination_key)
         _require_confined(move.source, preview.store_root, "plan source")
         if not os.path.isfile(move.source):
-            raise MaintenanceRefused("plan source %r is not a regular file (the plan is "
-                                     "stale or the target is a directory)" % move.source)
+            raise MaintenanceRefused(
+                "plan source %r is not a regular file (the plan is "
+                "stale or the target is a directory)" % move.source
+            )
 
     os.makedirs(checkpoint_root, exist_ok=True)
     os.makedirs(destination_root, exist_ok=True)
     for move in preview.plan:
         _require_confined(move.destination, destination_root, "plan destination")
         if os.path.lexists(move.destination):
-            raise MaintenanceRefused("plan destination %r already exists; refusing to "
-                                     "overwrite" % move.destination)
+            raise MaintenanceRefused(
+                "plan destination %r already exists; refusing to overwrite" % move.destination
+            )
 
     recorded_at_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    manifest_path = os.path.join(checkpoint_root, _unique_name(
+    manifest_path = os.path.join(
         checkpoint_root,
-        "%d-%s.json" % (recorded_at_ms, preview.action.value), set()))
+        _unique_name(checkpoint_root, "%d-%s.json" % (recorded_at_ms, preview.action.value), set()),
+    )
     # THE CHECKPOINT, BEFORE THE FIRST MOVE. Status "pending" means "these moves were
     # intended"; restore_checkpoint can undo whichever of them actually landed.
-    _write_json(manifest_path, _manifest_doc(preview, recorded_at_ms, preview.plan,
-                                            "pending"))
+    _write_json(manifest_path, _manifest_doc(preview, recorded_at_ms, preview.plan, "pending"))
     for move in preview.plan:
         os.makedirs(os.path.dirname(move.destination), exist_ok=True)
         shutil.move(move.source, move.destination)
-    _write_json(manifest_path, _manifest_doc(preview, recorded_at_ms, preview.plan,
-                                            "executed"))
-    return MaintenanceResult(executed=True, moves=preview.plan,
-                             manifest_path=manifest_path)
+    _write_json(manifest_path, _manifest_doc(preview, recorded_at_ms, preview.plan, "executed"))
+    return MaintenanceResult(executed=True, moves=preview.plan, manifest_path=manifest_path)
 
 
 # -------------------------------------------------------------------- recovery
 
-def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
-                       skip_unaccounted=False):
+
+def restore_checkpoint(manifest_path, *, apply=False, now_ms=None, skip_unaccounted=False):
     """Undo a checkpointed run: move every relocated file back to its original path.
 
     Works on a "pending" manifest too, which is what makes a crash mid-batch
@@ -751,8 +800,9 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
     if status == "restored":
         raise MaintenanceRefused("checkpoint %r was already restored" % manifest_path)
     if status not in ("pending", "executed"):
-        raise MaintenanceRefused("refusing checkpoint %r with unknown status %r"
-                                 % (manifest_path, status))
+        raise MaintenanceRefused(
+            "refusing checkpoint %r with unknown status %r" % (manifest_path, status)
+        )
 
     store_root = doc["store_root"]
     destination_root = doc["destination_root"]
@@ -774,34 +824,43 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
         original_key = os.path.normcase(original)
         relocated_key = os.path.normcase(relocated)
         if original_key in seen_originals:
-            raise MaintenanceRefused("recorded original %r appears twice; the second "
-                                     "restore would overwrite the first" % original)
+            raise MaintenanceRefused(
+                "recorded original %r appears twice; the second "
+                "restore would overwrite the first" % original
+            )
         if relocated_key in seen_relocated:
-            raise MaintenanceRefused("recorded checkpoint copy %r appears twice; one "
-                                     "file cannot be restored twice" % relocated)
+            raise MaintenanceRefused(
+                "recorded checkpoint copy %r appears twice; one "
+                "file cannot be restored twice" % relocated
+            )
         seen_originals.add(original_key)
         seen_relocated.add(relocated_key)
         if not os.path.lexists(relocated):
             if os.path.lexists(original):
-                continue                        # never moved (or already restored)
-            unaccounted.append(original)        # collected, so one refusal names them all
+                continue  # never moved (or already restored)
+            unaccounted.append(original)  # collected, so one refusal names them all
             continue
         if os.path.lexists(original):
-            raise MaintenanceRefused("original path %r is occupied; refusing to "
-                                     "overwrite it during restore" % original)
-        pending.append(PlannedMove(session_id=entry["session_id"],
-                                   source=relocated, destination=original))
+            raise MaintenanceRefused(
+                "original path %r is occupied; refusing to overwrite it during restore" % original
+            )
+        pending.append(
+            PlannedMove(session_id=entry["session_id"], source=relocated, destination=original)
+        )
     if unaccounted and not skip_unaccounted:
         raise MaintenanceRefused(
             "unaccounted move(s): neither the original nor the checkpoint copy exists "
             "for %s; refusing to guess (skip_unaccounted=True restores the accounted "
-            "moves and leaves these alone)"
-            % ", ".join(repr(path) for path in unaccounted))
+            "moves and leaves these alone)" % ", ".join(repr(path) for path in unaccounted)
+        )
 
     if not apply:
-        return MaintenanceResult(executed=False, moves=tuple(pending),
-                                 manifest_path=manifest_path,
-                                 unaccounted=tuple(unaccounted))
+        return MaintenanceResult(
+            executed=False,
+            moves=tuple(pending),
+            manifest_path=manifest_path,
+            unaccounted=tuple(unaccounted),
+        )
     for move in pending:
         os.makedirs(os.path.dirname(move.destination), exist_ok=True)
         shutil.move(move.source, move.destination)
@@ -810,9 +869,12 @@ def restore_checkpoint(manifest_path, *, apply=False, now_ms=None,
     if unaccounted:
         doc["unaccounted"] = list(unaccounted)  # a partial restore is never silent
     _write_json(manifest_path, doc)
-    return MaintenanceResult(executed=True, moves=tuple(pending),
-                            manifest_path=manifest_path,
-                            unaccounted=tuple(unaccounted))
+    return MaintenanceResult(
+        executed=True,
+        moves=tuple(pending),
+        manifest_path=manifest_path,
+        unaccounted=tuple(unaccounted),
+    )
 
 
 # ------------------------------------------------------------- the audit ledger
@@ -835,8 +897,15 @@ CREATE INDEX IF NOT EXISTS idx_maintenance_runs_at
     ON maintenance_runs(recorded_at_ms DESC);
 """
 
-_RUN_COLS = ("manifest_path", "action", "status", "recorded_at_ms", "moved_count",
-             "blocked_count", "store_root")
+_RUN_COLS = (
+    "manifest_path",
+    "action",
+    "status",
+    "recorded_at_ms",
+    "moved_count",
+    "blocked_count",
+    "store_root",
+)
 
 
 def ensure_schema(conn):
@@ -850,10 +919,20 @@ def record_run(conn, manifest_path):
     """Record (or update) one maintenance run from its manifest — an auditable ledger
     of every destructive act, including whether it was later restored."""
     doc = read_checkpoint(manifest_path)
-    row = (manifest_path, doc["action"], doc["status"], doc["recorded_at_ms"],
-           len(doc["moves"]), len(doc["blocked"]), doc["store_root"])
-    conn.execute("INSERT OR REPLACE INTO maintenance_runs (%s) VALUES (%s)"
-                 % (", ".join(_RUN_COLS), ", ".join("?" * len(_RUN_COLS))), row)
+    row = (
+        manifest_path,
+        doc["action"],
+        doc["status"],
+        doc["recorded_at_ms"],
+        len(doc["moves"]),
+        len(doc["blocked"]),
+        doc["store_root"],
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO maintenance_runs (%s) VALUES (%s)"
+        % (", ".join(_RUN_COLS), ", ".join("?" * len(_RUN_COLS))),
+        row,
+    )
     conn.commit()
     return row
 
@@ -868,5 +947,7 @@ def list_runs(conn, limit=50):
     """
     rows = conn.execute(
         "SELECT %s FROM maintenance_runs ORDER BY recorded_at_ms DESC, manifest_path "
-        "LIMIT ?" % ", ".join(_RUN_COLS), (limit,)).fetchall()
+        "LIMIT ?" % ", ".join(_RUN_COLS),
+        (limit,),
+    ).fetchall()
     return [dict(zip(_RUN_COLS, row)) for row in rows]

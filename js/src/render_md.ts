@@ -104,7 +104,10 @@ function blockMd(b: Block): string {
   if (b.type === "thinking") {
     const body = clean(b.text);
     const quoted = body
-      ? body.split("\n").map((ln) => "> " + ln).join("\n")
+      ? body
+          .split("\n")
+          .map((ln) => "> " + ln)
+          .join("\n")
       : "> ";
     return `> 🧠 **Thinking**\n>\n${quoted}`;
   }
@@ -132,9 +135,9 @@ function blockMd(b: Block): string {
   }
 
   if (b.type === "attachment") {
-    let line = `📎 **${mdLine(str("file_name") || "attachment")}** (${
-      mdLine(str("file_type") || "?")
-    }, ${d["file_size"] ?? "?"} bytes)`;
+    let line = `📎 **${mdLine(str("file_name") || "attachment")}** (${mdLine(
+      str("file_type") || "?",
+    )}, ${d["file_size"] ?? "?"} bytes)`;
     const ex = d["extracted_content"];
     if (ex) {
       line += `\n\n<details><summary>extracted content</summary>\n\n${clean(ex)}\n\n</details>`;

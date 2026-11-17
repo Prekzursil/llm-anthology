@@ -254,12 +254,13 @@ const BINDINGS: Record<string, Binding> = {
   },
   maintenancePlan: {
     rpc: "maintenance.plan",
-    call: () => realIpc.maintenancePlan({
-      store_root: "C:\\codex",
-      checkpoint_root: "C:\\cp",
-      action: "archive",
-      targets: [TARGET],
-    }),
+    call: () =>
+      realIpc.maintenancePlan({
+        store_root: "C:\\codex",
+        checkpoint_root: "C:\\cp",
+        action: "archive",
+        targets: [TARGET],
+      }),
     args: {
       params: {
         store_root: "C:\\codex",
@@ -508,9 +509,17 @@ describe("the optional-parameter omissions", () => {
   // That is worth an assertion precisely BECAUSE it is a non-change: "it already works" is a
   // claim, and the CF-17 defect was an adapter everyone assumed forwarded something it did not.
   it("forwards the D-3 since/until/histogram facets on search.query", async () => {
-    await realIpc.searchQuery({ q: "rust", since: "2026-03", until: "2026-03", histogram: "month" });
+    await realIpc.searchQuery({
+      q: "rust",
+      since: "2026-03",
+      until: "2026-03",
+      histogram: "month",
+    });
     expect(paramsOf()).toEqual({
-      q: "rust", since: "2026-03", until: "2026-03", histogram: "month",
+      q: "rust",
+      since: "2026-03",
+      until: "2026-03",
+      histogram: "month",
     });
   });
 

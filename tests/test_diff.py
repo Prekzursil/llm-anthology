@@ -18,18 +18,19 @@ What is pinned:
   * purity + cycle-safety — the diff mutates neither input and never traverses the
     graph, so cyclic/corrupt spawn data cannot make it recurse.
 """
+
 from llm_anthology import corpus, diff
 
 
 # --------------------------------------------------------------------- fixtures
+
 
 def _tm(tid="t1", **kw):
     return corpus.ThreadMeta(id=tid, **kw)
 
 
 def _edge(parent, child, status="completed"):
-    return corpus.SpawnEdge(parent_thread_id=parent, child_thread_id=child,
-                            status=status)
+    return corpus.SpawnEdge(parent_thread_id=parent, child_thread_id=child, status=status)
 
 
 def _corpus(threads=(), edges=()):
@@ -45,6 +46,7 @@ def _corpus(threads=(), edges=()):
 
 # ------------------------------------------------------- CorpusDiff surface
 
+
 def test_corpusdiff_defaults_are_all_empty():
     d = diff.CorpusDiff()
     assert d.added_nodes == [] and d.removed_nodes == []
@@ -59,14 +61,17 @@ def test_corpusdiff_is_empty_is_false_when_any_field_is_populated():
 
 # ------------------------------------------------------------------ identical
 
+
 def test_identical_corpora_produce_an_empty_diff():
     """Same threads (identical metadata) and same edges on both sides -> no delta.
     Exercises the common-thread loop taking the 'no field differs' path so an
     unchanged corpus never manufactures a false change."""
-    left = _corpus(threads=[_tm("a", title="root"), _tm("b", title="leaf")],
-                   edges=[_edge("a", "b")])
-    right = _corpus(threads=[_tm("a", title="root"), _tm("b", title="leaf")],
-                    edges=[_edge("a", "b")])
+    left = _corpus(
+        threads=[_tm("a", title="root"), _tm("b", title="leaf")], edges=[_edge("a", "b")]
+    )
+    right = _corpus(
+        threads=[_tm("a", title="root"), _tm("b", title="leaf")], edges=[_edge("a", "b")]
+    )
     d = diff.diff_corpus(left, right)
     assert d.is_empty() is True
     assert d.changed_nodes == {}
@@ -78,6 +83,7 @@ def test_two_empty_corpora_produce_an_empty_diff():
 
 
 # ------------------------------------------------------ added / removed nodes
+
 
 def test_a_thread_only_in_new_is_an_added_node():
     d = diff.diff_corpus(corpus.Corpus(), _corpus(threads=[_tm("b")]))
@@ -96,6 +102,7 @@ def test_added_nodes_are_sorted():
 
 # ----------------------------------------------------- edge-only (dangling) nodes
 
+
 def test_an_edge_only_endpoint_counts_as_a_node():
     """A node with no ThreadMeta, present only as an edge endpoint, is still a graph
     node (Corpus._nodes semantics), so it appears in the node-set delta."""
@@ -113,6 +120,7 @@ def test_a_removed_edge_only_node_is_a_removed_node():
 
 
 # ------------------------------------------------------ added / removed edges
+
 
 def test_a_new_edge_between_existing_nodes_is_an_added_edge():
     old = _corpus(threads=[_tm("a"), _tm("b")])
@@ -154,6 +162,7 @@ def test_duplicate_in_memory_edges_dedupe_in_the_diff():
 
 # --------------------------------------------------------------- changed nodes
 
+
 def test_a_thread_with_a_changed_field_is_a_changed_node():
     old = _corpus(threads=[_tm("a", title="v1")])
     new = _corpus(threads=[_tm("a", title="v2")])
@@ -168,8 +177,7 @@ def test_changed_node_reports_only_the_fields_that_differ_in_declaration_order()
     old = _corpus(threads=[_tm("a", title="same", tokens_used=10, git_branch="main")])
     new = _corpus(threads=[_tm("a", title="same", tokens_used=20, git_branch="dev")])
     d = diff.diff_corpus(old, new)
-    assert d.changed_nodes["a"] == {"tokens_used": (10, 20),
-                                    "git_branch": ("main", "dev")}
+    assert d.changed_nodes["a"] == {"tokens_used": (10, 20), "git_branch": ("main", "dev")}
     assert list(d.changed_nodes["a"]) == ["tokens_used", "git_branch"]
     assert "title" not in d.changed_nodes["a"]
 
@@ -211,6 +219,7 @@ def test_metadata_appearing_only_on_one_side_is_not_a_field_level_change():
 
 # --------------------------------------------------------------- cycle safety
 
+
 def test_diff_is_cycle_safe_on_looped_spawn_data():
     """Cyclic spawn data (a<->b) must diff by set arithmetic without traversing, so
     it terminates and still reports the genuine delta (a new child c)."""
@@ -223,6 +232,7 @@ def test_diff_is_cycle_safe_on_looped_spawn_data():
 
 
 # ------------------------------------------------------- purity / determinism
+
 
 def test_diff_does_not_mutate_its_inputs():
     old = _corpus(threads=[_tm("a", title="v1")], edges=[_edge("a", "b")])
@@ -237,24 +247,30 @@ def test_diff_does_not_mutate_its_inputs():
 
 
 def test_diff_is_deterministic_across_repeated_runs():
-    old = _corpus(threads=[_tm("a", title="v1"), _tm("keep")],
-                  edges=[_edge("a", "b"), _edge("a", "gone")])
-    new = _corpus(threads=[_tm("a", title="v2"), _tm("keep"), _tm("added")],
-                  edges=[_edge("a", "b"), _edge("a", "fresh")])
+    old = _corpus(
+        threads=[_tm("a", title="v1"), _tm("keep")], edges=[_edge("a", "b"), _edge("a", "gone")]
+    )
+    new = _corpus(
+        threads=[_tm("a", title="v2"), _tm("keep"), _tm("added")],
+        edges=[_edge("a", "b"), _edge("a", "fresh")],
+    )
     assert diff.diff_corpus(old, new) == diff.diff_corpus(old, new)
 
 
 # ------------------------------------------------------------------ combined
+
 
 def test_a_mixed_diff_reports_adds_removes_and_changes_together():
     """One pair exercising every axis at once: a node added, a node removed, an edge
     added, an edge removed, and a field-level change on a surviving node."""
     old = _corpus(
         threads=[_tm("root", title="r"), _tm("stays", title="v1"), _tm("gone")],
-        edges=[_edge("root", "stays"), _edge("root", "gone")])
+        edges=[_edge("root", "stays"), _edge("root", "gone")],
+    )
     new = _corpus(
         threads=[_tm("root", title="r"), _tm("stays", title="v2"), _tm("added")],
-        edges=[_edge("root", "stays"), _edge("root", "added")])
+        edges=[_edge("root", "stays"), _edge("root", "added")],
+    )
     d = diff.diff_corpus(old, new)
     assert d.added_nodes == ["added"] and d.removed_nodes == ["gone"]
     assert d.added_edges == [("root", "added")]

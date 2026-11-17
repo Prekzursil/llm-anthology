@@ -54,10 +54,15 @@ const main = async () => {
   const button = page.locator("#btn-diagnostics");
   check("no uncaught page errors during boot", errors.length === 0, errors.slice(0, 2).join(" | "));
   check("the button EXISTS at all", (await button.count()) === 1, "(0 = never mounted)");
-  check("it is inside the topbar, not orphaned", (await page.locator("#topbar #btn-diagnostics").count()) === 1);
+  check(
+    "it is inside the topbar, not orphaned",
+    (await page.locator("#topbar #btn-diagnostics").count()) === 1,
+  );
   check("it is visible to a user", await button.isVisible());
-  check("its status line is a polite live region",
-    (await page.locator("#diagnostics-status").getAttribute("role")) === "status");
+  check(
+    "its status line is a polite live region",
+    (await page.locator("#diagnostics-status").getAttribute("role")) === "status",
+  );
 
   await button.click();
   await page.waitForFunction(
@@ -69,24 +74,41 @@ const main = async () => {
   check("clicking it reports success rather than a failure", /copied/i.test(status), status);
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  check("the clipboard holds a bundle, not an empty string", copied.length > 0, `${copied.length} chars`);
-  check("the bundle carries the app version from the client", /app version: (?!\(unknown\))/.test(copied),
-    (copied.match(/app version: .*/) ?? ["(absent)"])[0]);
+  check(
+    "the clipboard holds a bundle, not an empty string",
+    copied.length > 0,
+    `${copied.length} chars`,
+  );
+  check(
+    "the bundle carries the app version from the client",
+    /app version: (?!\(unknown\))/.test(copied),
+    (copied.match(/app version: .*/) ?? ["(absent)"])[0],
+  );
   // THESE TWO ARE THE app.ts CHANGE, and they are asserted against the NULL rendering rather
   // than against a bare `engine: ` / `index: ` prefix, which both states print. Before CF-19
   // `loadHealth`/`loadStats` reduced each answer straight to topbar text and kept nothing, so
   // a bundle could only ever have said "(not reached)" and "(no stats". A weaker assertion
   // here would pass against exactly the defect being fixed.
-  check("the bundle carries LIVE health, not the not-reached fallback",
+  check(
+    "the bundle carries LIVE health, not the not-reached fallback",
     /engine: .+\(IR .+\), .*corpus/.test(copied) && !copied.includes("(not reached"),
-    (copied.match(/engine: .*/) ?? ["(absent)"])[0]);
-  check("the bundle carries LIVE stats, not the no-stats fallback",
+    (copied.match(/engine: .*/) ?? ["(absent)"])[0],
+  );
+  check(
+    "the bundle carries LIVE stats, not the no-stats fallback",
     /index: \d+ conversations/.test(copied) && !copied.includes("(no stats"),
-    (copied.match(/index: .*/) ?? ["(absent)"])[0]);
-  check("the bundle carries the privacy note", /paste/i.test(copied) || copied.includes("diagnostics"));
+    (copied.match(/index: .*/) ?? ["(absent)"])[0],
+  );
+  check(
+    "the bundle carries the privacy note",
+    /paste/i.test(copied) || copied.includes("diagnostics"),
+  );
   // The one field that could carry a username. `indexLabel` must have reduced it already.
-  check("the bundle names an index by BASENAME only", !/[\\/]Users[\\/]/.test(copied),
-    "(a full home path here would be a leak)");
+  check(
+    "the bundle names an index by BASENAME only",
+    !/[\\/]Users[\\/]/.test(copied),
+    "(a full home path here would be a leak)",
+  );
 
   await browser.close();
   const failed = checks.filter((c) => !c.ok);

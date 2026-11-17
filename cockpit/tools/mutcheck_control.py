@@ -5,19 +5,24 @@ every run (a decode crash, a bad cwd, a wrong command), an unprotected mutation 
 reported as killed too. This runs the IDENTICAL subprocess call against the UNMUTATED
 source and requires exit 0.
 """
+
 import pathlib
+import shutil
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# npx is `npx.cmd` on Windows, which CreateProcess only finds through a shell. Resolving
+# it up front lets the argv run without one.
+NPX = shutil.which("npx") or "npx"
+
 proc = subprocess.run(
-    ["npx", "vitest", "run", "--reporter=dot", "--testTimeout=5000"],
+    [NPX, "vitest", "run", "--reporter=dot", "--testTimeout=5000"],
     cwd=str(ROOT),
     capture_output=True,
     text=True,
     encoding="utf-8",
     errors="replace",
-    shell=True,
     timeout=300,
 )
 tail = (proc.stdout or "").strip().splitlines()[-6:]

@@ -17,6 +17,7 @@ Branches: messages form a tree via parent_message_uuid (91 real branch points on
 disk). We render the ACTIVE (latest) path — at each node choose the child with the
 max created_at — and annotate a turn with {index,total} when its parent had siblings.
 """
+
 from llm_anthology import ir
 
 _HIDDEN_CONTENT_TYPES = {"token_budget"}
@@ -38,22 +39,31 @@ def is_design_chat(data):
     """A Claude 'design chat' (design_chats/*.json) rather than a conversations.json
     entry: messages[] with `role` + a content DICT, instead of chat_messages[] with
     `sender` + a content LIST."""
-    return (isinstance(data, dict) and isinstance(data.get("messages"), list)
-            and "chat_messages" not in data)
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("messages"), list)
+        and "chat_messages" not in data
+    )
 
 
 def parse_design_chat(data):
     """design_chats/*.json -> IR. A distinct shape, so parse_conversation cannot read
     it: feeding one through the normal path yields a silently EMPTY conversation."""
     turns = []
-    for m in (data.get("messages") or []):
+    for m in data.get("messages") or []:
         if not isinstance(m, dict):
             continue
         role = "human" if _s(m.get("role")).lower() in ("user", "human") else "assistant"
         blocks = _design_blocks(m.get("content"))
         if blocks:
-            turns.append(ir.Turn(role=role, blocks=blocks, uuid=_s(m.get("uuid")),
-                                 timestamp=_s(m.get("created_at"))))
+            turns.append(
+                ir.Turn(
+                    role=role,
+                    blocks=blocks,
+                    uuid=_s(m.get("uuid")),
+                    timestamp=_s(m.get("created_at")),
+                )
+            )
     return ir.Conversation(
         id=_s(data.get("uuid")),
         title=_s(data.get("title")) or "(untitled design chat)",
@@ -73,7 +83,7 @@ def _design_blocks(content):
     if not isinstance(content, dict):
         return []
     blocks = []
-    for b in (content.get("contentBlocks") or []):
+    for b in content.get("contentBlocks") or []:
         if not isinstance(b, dict):
             continue
         btype = _s(b.get("type"))
@@ -81,7 +91,7 @@ def _design_blocks(content):
             blocks.append(ir.Block("text", text=_s(b.get("text"))))
         elif btype == "tool_call" and isinstance(b.get("toolCall"), dict):
             blocks.extend(_tool_call_blocks(b["toolCall"]))
-        else:                                   # never silently drop an unknown block
+        else:  # never silently drop an unknown block
             blocks.append(ir.Block("unknown", data={"orig_type": btype, "x_raw": b}))
     if blocks:
         return blocks
@@ -93,14 +103,26 @@ def _tool_call_blocks(tc):
     """A design-chat tool_call {id,name,input,output} -> tool_use (+ tool_result when it
     carries an output), so it renders like the regular chat_messages tool path rather
     than as a raw payload. 140 such blocks sit in the live corpus (2 design chats)."""
-    out = [ir.Block("tool_use", text="",
-                    data={"name": _s(tc.get("name")), "input": tc.get("input"),
-                          "id": _s(tc.get("id"))})]
+    out = [
+        ir.Block(
+            "tool_use",
+            text="",
+            data={"name": _s(tc.get("name")), "input": tc.get("input"), "id": _s(tc.get("id"))},
+        )
+    ]
     output = tc.get("output")
     if _s(output).strip():
-        out.append(ir.Block("tool_result", text="",
-                            data={"name": _s(tc.get("name")), "content": output,
-                                  "tool_use_id": _s(tc.get("id"))}))
+        out.append(
+            ir.Block(
+                "tool_result",
+                text="",
+                data={
+                    "name": _s(tc.get("name")),
+                    "content": output,
+                    "tool_use_id": _s(tc.get("id")),
+                },
+            )
+        )
     return out
 
 
@@ -109,13 +131,15 @@ def parse_conversation(conv):
     turns = []
     for msg, branch in _active_path(messages):
         role = "human" if msg.get("sender") == "human" else "assistant"
-        turns.append(ir.Turn(
-            role=role,
-            blocks=_blocks_from_message(msg),
-            uuid=msg.get("uuid") or "",
-            timestamp=msg.get("created_at") or "",
-            branch=branch,
-        ))
+        turns.append(
+            ir.Turn(
+                role=role,
+                blocks=_blocks_from_message(msg),
+                uuid=msg.get("uuid") or "",
+                timestamp=msg.get("created_at") or "",
+                branch=branch,
+            )
+        )
     return ir.Conversation(
         id=conv.get("uuid") or "",
         title=conv.get("name") or "(untitled)",
@@ -179,8 +203,11 @@ def _active_path(messages):
     for m in messages:
         children.setdefault(m.get("parent_message_uuid"), []).append(m)
 
-    roots = [m for m in messages
-             if m.get("parent_message_uuid") is None or m.get("parent_message_uuid") not in by_id]
+    roots = [
+        m
+        for m in messages
+        if m.get("parent_message_uuid") is None or m.get("parent_message_uuid") not in by_id
+    ]
     submax = _subtree_max_ts(messages, children)
     path, seen = [], set()
     # Walk EVERY root, chronologically. An orphaned parent link starts a second
@@ -199,7 +226,11 @@ def _active_path(messages):
             kids = children.get(cur.get("uuid"), [])
             # descend toward the subtree holding the globally newest message,
             # NOT merely the newest immediate child (that abandons live threads)
-            cur = max(kids, key=lambda k: (submax.get(k.get("uuid"), _ts(k)), _ts(k))) if kids else None
+            cur = (
+                max(kids, key=lambda k: (submax.get(k.get("uuid"), _ts(k)), _ts(k)))
+                if kids
+                else None
+            )
 
     # Sweep ONLY nodes reachable from no root at all (e.g. an orphaned cycle).
     # Branch siblings are also "unvisited" but are intentionally off the active
@@ -208,14 +239,13 @@ def _active_path(messages):
     while stack:
         m = stack.pop()
         u = m.get("uuid")
-        if u in reachable:            # pragma: no cover - defensive: each message has a
-            continue                  # single parent, so BFS cannot revisit a node
+        if u in reachable:  # pragma: no cover - defensive: each message has a
+            continue  # single parent, so BFS cannot revisit a node
         reachable.add(u)
         stack.extend(children.get(u, []))
-    orphans = [m for m in messages
-               if m.get("uuid") not in reachable and m.get("uuid") not in seen]
+    orphans = [m for m in messages if m.get("uuid") not in reachable and m.get("uuid") not in seen]
     for m in sorted(orphans, key=_ts):
-        if m.get("uuid") in seen:     # pragma: no cover - orphans are pre-filtered `not in seen`
+        if m.get("uuid") in seen:  # pragma: no cover - orphans are pre-filtered `not in seen`
             continue
         seen.add(m.get("uuid"))
         path.append((m, None))
@@ -225,39 +255,76 @@ def _active_path(messages):
 def _blocks_from_message(m):
     blocks = []
     # uploaded files/attachments render above the message text in claude.ai
-    for a in (m.get("attachments") or []):
-        blocks.append(ir.Block(
-            "attachment", text=a.get("file_name") or "attachment",
-            data={"file_name": a.get("file_name"), "file_type": a.get("file_type"),
-                  "file_size": a.get("file_size"), "extracted_content": a.get("extracted_content")}))
-    for f in (m.get("files") or []):
-        blocks.append(ir.Block(
-            "file", text=f.get("file_name") or "file",
-            data={"file_name": f.get("file_name"), "file_uuid": f.get("file_uuid")}))
+    for a in m.get("attachments") or []:
+        blocks.append(
+            ir.Block(
+                "attachment",
+                text=a.get("file_name") or "attachment",
+                data={
+                    "file_name": a.get("file_name"),
+                    "file_type": a.get("file_type"),
+                    "file_size": a.get("file_size"),
+                    "extracted_content": a.get("extracted_content"),
+                },
+            )
+        )
+    for f in m.get("files") or []:
+        blocks.append(
+            ir.Block(
+                "file",
+                text=f.get("file_name") or "file",
+                data={"file_name": f.get("file_name"), "file_uuid": f.get("file_uuid")},
+            )
+        )
 
-    for item in (m.get("content") or []):
+    for item in m.get("content") or []:
         t = item.get("type")
         if t in _HIDDEN_CONTENT_TYPES:
             continue
         if t == "text":
-            blocks.append(ir.Block("text", text=_s(item.get("text")),
-                                   citations=item.get("citations") or []))
+            blocks.append(
+                ir.Block("text", text=_s(item.get("text")), citations=item.get("citations") or [])
+            )
         elif t == "thinking":
-            blocks.append(ir.Block("thinking", text=_s(item.get("thinking")),
-                                   data={"hidden": bool(item.get("thinking_hidden") or item.get("hidden")),
-                                         "summaries": item.get("summaries") or []}))
+            blocks.append(
+                ir.Block(
+                    "thinking",
+                    text=_s(item.get("thinking")),
+                    data={
+                        "hidden": bool(item.get("thinking_hidden") or item.get("hidden")),
+                        "summaries": item.get("summaries") or [],
+                    },
+                )
+            )
         elif t == "tool_use":
-            blocks.append(ir.Block("tool_use", text=_s(item.get("display_content")),
-                                   data={"name": item.get("name") or "", "input": item.get("input"),
-                                         "integration_name": item.get("integration_name"),
-                                         "icon_name": item.get("icon_name"), "id": item.get("id")}))
+            blocks.append(
+                ir.Block(
+                    "tool_use",
+                    text=_s(item.get("display_content")),
+                    data={
+                        "name": item.get("name") or "",
+                        "input": item.get("input"),
+                        "integration_name": item.get("integration_name"),
+                        "icon_name": item.get("icon_name"),
+                        "id": item.get("id"),
+                    },
+                )
+            )
         elif t == "tool_result":
-            blocks.append(ir.Block("tool_result", text=_s(item.get("display_content")),
-                                   data={"name": item.get("name") or "", "content": item.get("content"),
-                                         "is_error": bool(item.get("is_error")),
-                                         "integration_name": item.get("integration_name"),
-                                         "icon_name": item.get("icon_name"),
-                                         "tool_use_id": item.get("tool_use_id")}))
+            blocks.append(
+                ir.Block(
+                    "tool_result",
+                    text=_s(item.get("display_content")),
+                    data={
+                        "name": item.get("name") or "",
+                        "content": item.get("content"),
+                        "is_error": bool(item.get("is_error")),
+                        "integration_name": item.get("integration_name"),
+                        "icon_name": item.get("icon_name"),
+                        "tool_use_id": item.get("tool_use_id"),
+                    },
+                )
+            )
         else:
             # never silently drop an unknown block — pass it through for later handling
             blocks.append(ir.Block("unknown", text="", data={"orig_type": t, "x_raw": item}))

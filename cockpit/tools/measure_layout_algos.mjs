@@ -83,7 +83,8 @@ const RUN = async ({ nodes, hub, opts, budgetMs }) => {
     for (let lvl = 0; lvl < MAX_DEPTH && cur < rest.length; lvl++) {
       const here = rest.slice(cur, cur + perLevel);
       cur += here.length;
-      for (let k = 0; k < here.length; k++) es.push({ parent: `n${prev[k % prev.length]}`, child: `n${here[k]}` });
+      for (let k = 0; k < here.length; k++)
+        es.push({ parent: `n${prev[k % prev.length]}`, child: `n${here[k]}` });
       prev = here;
     }
   }
@@ -99,7 +100,9 @@ const RUN = async ({ nodes, hub, opts, budgetMs }) => {
     const res = await engine.layout(graph);
     placed = (res.children || []).length;
   } catch (e) {
-    error = `${e && e.name}`.includes("Timeout") ? `>${budgetMs}ms` : String(e && e.message).slice(0, 60);
+    error = `${e && e.name}`.includes("Timeout")
+      ? `>${budgetMs}ms`
+      : String(e && e.message).slice(0, 60);
   }
   try {
     engine.terminate();
@@ -151,7 +154,9 @@ const main = async () => {
   if (succeeded === 0 && timedOut === 0) {
     console.log("  every case failed WITHOUT running a layout — this is a harness failure.");
     console.log(`  first error: ${results[0] && results[0].error}`);
-    console.log("FAILED:layout-algos the harness is broken; no conclusion about layout is available");
+    console.log(
+      "FAILED:layout-algos the harness is broken; no conclusion about layout is available",
+    );
     process.exit(2);
   }
 

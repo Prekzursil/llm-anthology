@@ -13,7 +13,7 @@
  * "Use “Open corpus…”" — advice to attach the corpus they already attached. Confirmed against
  * the engine rather than assumed: the export ingest path calls
  * `corpus.add_conversation(conn, conv, thread_id="", …)` and never `add_thread`/`_add_edge`
- * (`llm_anthology/loaders.py:1147`, inside `_admit_export_conversation`), so such a corpus
+ * (`llm_anthology/loaders.py:1205`, inside `_admit_export_conversation`), so such a corpus
  * genuinely holds conversations with no threads and no edges.
  */
 import { describe, expect, it } from "vitest";
@@ -100,7 +100,9 @@ describe("graphStripState — the four empty states", () => {
   });
 
   it("keeps DECLINED ahead of the no-corpus reason when stats are missing too", () => {
-    const state = graphStripState(graphInput({ nodeCount: 0, complete: false, conversations: null }));
+    const state = graphStripState(
+      graphInput({ nodeCount: 0, complete: false, conversations: null }),
+    );
     expect(state.reason).toBe("declined");
   });
 });
@@ -118,7 +120,9 @@ describe("graphStripState — auto-discovery suppression", () => {
    */
   it("drops the strip TEXT while the discovery panel is showing", () => {
     for (const conversations of [null, 0, 1_284]) {
-      const state = graphStripState(graphInput({ nodeCount: 0, conversations, discoveryShowing: true }));
+      const state = graphStripState(
+        graphInput({ nodeCount: 0, conversations, discoveryShowing: true }),
+      );
       expect(state.mode).toBe("strip");
       expect(state.text).toBe("");
     }
@@ -126,10 +130,12 @@ describe("graphStripState — auto-discovery suppression", () => {
 
   it("keeps reporting the real reason while suppressed", () => {
     expect(
-      graphStripState(graphInput({ nodeCount: 0, conversations: 1_284, discoveryShowing: true })).reason,
+      graphStripState(graphInput({ nodeCount: 0, conversations: 1_284, discoveryShowing: true }))
+        .reason,
     ).toBe("no-lineage");
     expect(
-      graphStripState(graphInput({ nodeCount: 0, conversations: null, discoveryShowing: true })).reason,
+      graphStripState(graphInput({ nodeCount: 0, conversations: null, discoveryShowing: true }))
+        .reason,
     ).toBe("no-corpus");
     expect(
       graphStripState(graphInput({ nodeCount: 0, complete: false, discoveryShowing: true })).reason,

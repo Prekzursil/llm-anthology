@@ -70,6 +70,7 @@ corpus is known to carry that payload class, and an alias or tag is re-displayed
 re-fed to models, so it is exactly the "copy / agent-feed surface" that function exists
 for.
 """
+
 from dataclasses import dataclass
 
 from llm_anthology import corpus
@@ -137,10 +138,12 @@ CREATE TABLE IF NOT EXISTS conversation_metadata (
 
 # ------------------------------------------------------------------- dataclass
 
+
 @dataclass(frozen=True)
 class Metadata:
     """One conversation's annotations. Frozen, and `tags` is a TUPLE, so a value handed
     to a caller (or held by a UI) cannot be mutated behind the store's back."""
+
     conversation_id: str
     alias: str = ""
     tags: tuple = ()
@@ -154,6 +157,7 @@ class Metadata:
 
 
 # ---------------------------------------------------------------------- schema
+
 
 def ensure_schema(conn):
     """Create MY table if it is absent; return the connection. Idempotent and additive —
@@ -173,6 +177,7 @@ def open_metadata(path):
 
 
 # ---------------------------------------------------------------- normalisation
+
 
 def _check_id(conversation_id):
     """Reject a `conversation_id` that cannot be a usable key. csm's dropped guard —
@@ -271,6 +276,7 @@ def _tag_needle(tag):
 
 # ------------------------------------------------------------------------ read
 
+
 def _to_metadata(conversation_id, row):
     """(alias, tags, notes) -> Metadata; a MISSING row -> an EMPTY Metadata.
 
@@ -282,8 +288,12 @@ def _to_metadata(conversation_id, row):
     """
     if row is None:
         return Metadata(conversation_id=conversation_id)
-    return Metadata(conversation_id=conversation_id, alias=row[0],
-                    tags=tuple(t for t in row[1].split(_SEP) if t), notes=row[2])
+    return Metadata(
+        conversation_id=conversation_id,
+        alias=row[0],
+        tags=tuple(t for t in row[1].split(_SEP) if t),
+        notes=row[2],
+    )
 
 
 def get_metadata(conn, conversation_id):
@@ -293,7 +303,8 @@ def get_metadata(conn, conversation_id):
     _check_id(conversation_id)
     row = conn.execute(
         "SELECT alias, tags, notes FROM conversation_metadata WHERE conversation_id=?",
-        (conversation_id,)).fetchone()
+        (conversation_id,),
+    ).fetchone()
     return _to_metadata(conversation_id, row)
 
 
@@ -314,6 +325,7 @@ def get_notes(conn, conversation_id):
 
 # ----------------------------------------------------------------------- write
 
+
 def _write(conn, conversation_id, alias, tags, notes):
     """Upsert one already-normalised annotation, or DELETE it when it holds nothing, then
     COMMIT. Returns the stored Metadata so a caller never has to re-read to see the
@@ -329,14 +341,22 @@ def _write(conn, conversation_id, alias, tags, notes):
     _check_id(conversation_id)
     meta = Metadata(conversation_id=conversation_id, alias=alias, tags=tags, notes=notes)
     if meta.is_empty:
-        conn.execute("DELETE FROM conversation_metadata WHERE conversation_id=?",
-                     (conversation_id,))
+        conn.execute(
+            "DELETE FROM conversation_metadata WHERE conversation_id=?", (conversation_id,)
+        )
     else:
         conn.execute(
             "INSERT OR REPLACE INTO conversation_metadata(%s) VALUES (?,?,?,?,?,?)"
             % ",".join(_COLS),
-            (conversation_id, alias, _SEP.join(tags), notes,
-             _tags_key(tags), _search_key(alias, tags, notes)))
+            (
+                conversation_id,
+                alias,
+                _SEP.join(tags),
+                notes,
+                _tags_key(tags),
+                _search_key(alias, tags, notes),
+            ),
+        )
     conn.commit()
     return meta
 
@@ -351,10 +371,13 @@ def set_metadata(conn, conversation_id, alias=None, tags=None, notes=None):
     included, which is how the UI clears a field.
     """
     cur = get_metadata(conn, conversation_id)
-    return _write(conn, conversation_id,
-                  cur.alias if alias is None else clean_text(alias),
-                  cur.tags if tags is None else clean_tags(tags),
-                  cur.notes if notes is None else clean_text(notes))
+    return _write(
+        conn,
+        conversation_id,
+        cur.alias if alias is None else clean_text(alias),
+        cur.tags if tags is None else clean_tags(tags),
+        cur.notes if notes is None else clean_text(notes),
+    )
 
 
 def set_alias(conn, conversation_id, alias):
@@ -376,17 +399,20 @@ def add_tags(conn, conversation_id, tags):
     """UNION the given tags into the stored set — adding one twice is a no-op and the
     result stays deterministically ordered. Stored tags are listed first, so the
     first-seen-casing rule in clean_tags preserves the casing already on disk."""
-    return set_metadata(conn, conversation_id,
-                        tags=list(get_tags(conn, conversation_id)) + list(clean_tags(tags)))
+    return set_metadata(
+        conn, conversation_id, tags=list(get_tags(conn, conversation_id)) + list(clean_tags(tags))
+    )
 
 
 def remove_tags(conn, conversation_id, tags):
     """DIFFERENCE the given tags out of the stored set. Case-insensitive, matching the
     case-insensitive dedup; removing a tag that is not applied is a no-op."""
     drop = {t.casefold() for t in clean_tags(tags)}
-    return set_metadata(conn, conversation_id,
-                        tags=[t for t in get_tags(conn, conversation_id)
-                              if t.casefold() not in drop])
+    return set_metadata(
+        conn,
+        conversation_id,
+        tags=[t for t in get_tags(conn, conversation_id) if t.casefold() not in drop],
+    )
 
 
 def clear_alias(conn, conversation_id):
@@ -433,20 +459,26 @@ def merge_metadata(conn, conversation_id, alias="", tags=(), notes=""):
     not blank a field it has nothing to say about.
     """
     cur = get_metadata(conn, conversation_id)
-    return _write(conn, conversation_id,
-                  clean_text(alias) or cur.alias,
-                  clean_tags(tags) or cur.tags,
-                  clean_text(notes) or cur.notes)
+    return _write(
+        conn,
+        conversation_id,
+        clean_text(alias) or cur.alias,
+        clean_tags(tags) or cur.tags,
+        clean_text(notes) or cur.notes,
+    )
 
 
 # --------------------------------------------------------------- search / filter
+
 
 def _select(conn, where, params):
     """Annotation rows matching `where` -> a Metadata list, ordered by conversation_id so
     a UI listing is deterministic."""
     rows = conn.execute(
         "SELECT conversation_id, alias, tags, notes FROM conversation_metadata "
-        "WHERE %s ORDER BY conversation_id" % where, params).fetchall()
+        "WHERE %s ORDER BY conversation_id" % where,
+        params,
+    ).fetchall()
     return [_to_metadata(r[0], (r[1], r[2], r[3])) for r in rows]
 
 
@@ -505,7 +537,9 @@ def search_conversations(conn, text="", tag=""):
         "c.updated_at, c.turn_count, c.thread_id, m.alias, m.tags, m.notes "
         "FROM conversation_metadata m "
         "JOIN conversations c ON c.conversation_id = m.conversation_id "
-        "WHERE %s ORDER BY c.conversation_id" % " AND ".join(clauses), params).fetchall()
+        "WHERE %s ORDER BY c.conversation_id" % " AND ".join(clauses),
+        params,
+    ).fetchall()
 
 
 def find_by_thread(conn, thread_id):
@@ -523,7 +557,8 @@ def find_by_thread(conn, thread_id):
     return _select(
         conn,
         "conversation_id IN (SELECT conversation_id FROM conversations WHERE thread_id=?)",
-        (thread_id,))
+        (thread_id,),
+    )
 
 
 def tag_counts(conn):
@@ -535,8 +570,7 @@ def tag_counts(conn):
     by the casefolded tag.
     """
     counts, display = {}, {}
-    for (tags,) in conn.execute("SELECT tags FROM conversation_metadata "
-                                "ORDER BY conversation_id"):
+    for (tags,) in conn.execute("SELECT tags FROM conversation_metadata ORDER BY conversation_id"):
         for tag in (t for t in tags.split(_SEP) if t):
             key = tag.casefold()
             counts[key] = counts.get(key, 0) + 1

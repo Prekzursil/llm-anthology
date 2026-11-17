@@ -1,0 +1,57 @@
+# osv-scanner configuration for the lean gate's dependency gate (gate 6).
+# Seeded by quality-zero-platform's fleet baseline (docs/FLEET-BASELINE.md).
+#
+# Zero tolerance: a known advisory of ANY severity fails the gate. Fix it by
+# upgrading the dependency (Dependabot groups the security updates into one
+# pull request per ecosystem). An ignore is only for an advisory that provably
+# cannot affect this repository, and it must carry a written reason and an
+# expiry date so it is reviewed again:
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2027-01-31
+# reason = "Why this advisory cannot affect this repository, with evidence."
+
+# glib VariantStrIter unsoundness (GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429), patched in
+# glib 0.20.0. NO FIXED RELEASE EXISTS in this repository's dependency chain:
+# cockpit/src-tauri pins tauri 2.12.5 (latest stable; req gtk ^0.18), tauri
+# 3.0.0-alpha.6 also pins gtk ^0.18, and the gtk crate itself maxes at 0.19.0
+# - every path resolves glib ^0.18.x (verified via crates.io dependency APIs
+# on 2026-11-17). Re-checked at expiry; remove once a tauri release accepts
+# gtk 0.20+ / glib 0.20+.
+[[IgnoredVulns]]
+id = "GHSA-wrw7-89jp-8q8g"
+ignoreUntil = 2027-01-31
+reason = "glib 0.20.0 is unreachable: tauri 2.12.5 (and 3.0.0-alpha.6) pin gtk ^0.18 and gtk max is 0.19.0, so the lockfile cannot resolve glib >= 0.20. Upstream must move first."
+
+# chrono is unmaintained (RUSTSEC-2026-0543): "all versions affected", no fixed
+# version can exist; 0.4.45 IS the registry maximum (verified 2026-11-17).
+# Informational notice, no vulnerability; the migration path (jiff/time) is a
+# tauri-ecosystem decision - cockpit uses chrono only through tauri deps.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-01-31
+reason = "Unmaintained notice, no fixed version exists (all chrono versions affected, 0.4.45 is max); migration to jiff/time requires upstream tauri ecosystem movement."
+
+# The four advisories below are informational UNMAINTAINED notices: they describe no
+# vulnerability, there is no fixed version to move to, and each crate arrives only through
+# the Tauri 2 stack, which cannot drop it. Each expires so it is re-checked.
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+ignoreUntil = 2027-01-31
+reason = "proc-macro-error 1.0.4 is unmaintained (informational notice, no vulnerability, no fixed version). It is a build-time proc-macro only, pulled by glib-macros/gtk3-macros 0.18 of the Linux GTK3 stack every Tauri 2 release depends on; none of its code ships in the app. Re-check when Tauri leaves gtk-rs 0.18."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-01-31
+reason = "zvariant 5.13.1 is unmaintained (informational notice, no vulnerability, no fixed version). Pulled only by zbus 5 through tauri-plugin-opener 2.7.2 on Linux; zbus 6 no longer uses it, but every tauri-plugin-opener 2.x requires zbus ^5.9. Re-check when the plugin moves to zbus 6."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-01-31
+reason = "zbus_names 4.3.4 is unmaintained (informational notice, no vulnerability, no fixed version). Same single path as zvariant: zbus 5 via tauri-plugin-opener 2.7.2 on Linux. Re-check when the plugin moves to zbus 6."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-01-31
+reason = "zvariant_derive 5.13.1 is unmaintained (informational notice, no vulnerability, no fixed version). Build-time derive macro on the same zbus 5 / tauri-plugin-opener 2.7.2 Linux path. Re-check when the plugin moves to zbus 6."

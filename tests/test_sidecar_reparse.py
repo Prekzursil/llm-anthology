@@ -16,6 +16,7 @@ There is no `_reparse` for the EXPORT-based providers (chatgpt/claude/gemini): o
 file holds many conversations, so a path alone does not identify one. Those must say so
 rather than be handed to whichever parser happens to be wired.
 """
+
 import os
 
 import pytest
@@ -26,6 +27,7 @@ from llm_anthology.adapters import claude_code, codex_rollout
 
 # ------------------------------------------------------------------ fixtures on disk
 
+
 def _codex_rollout_file(tmp_path):
     """A minimal but REAL Codex rollout, parsed by the real adapter in the assertions."""
     path = tmp_path / "rollout-2026-08-07T10-00-00-abc.jsonl"
@@ -35,7 +37,8 @@ def _codex_rollout_file(tmp_path):
         '{"timestamp":"2026-08-07T10:00:01.000Z","type":"response_item",'
         '"payload":{"type":"message","role":"user",'
         '"content":[{"type":"input_text","text":"codex side of the story"}]}}\n',
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     return str(path)
 
 
@@ -49,7 +52,8 @@ def _claude_code_transcript(tmp_path):
         '{"type":"user","uuid":"u1","sessionId":"sess-cc","cwd":"/w/proj",'
         '"timestamp":"2026-08-07T10:00:00.000Z",'
         '"message":{"role":"user","content":"claude code side of the story"}}\n',
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     return str(path)
 
 
@@ -58,13 +62,15 @@ def _grok_session_dir(tmp_path):
     session = tmp_path / "grok" / "sessions" / "sess-grok"
     session.mkdir(parents=True)
     (session / "summary.json").write_text(
-        '{"info":{"id":"sess-grok","title":"grok side of the story"}}', encoding="utf-8")
+        '{"info":{"id":"sess-grok","title":"grok side of the story"}}', encoding="utf-8"
+    )
     (session / "updates.jsonl").write_text(
         '{"method":"session/update","timestamp":"2026-08-07T10:00:00.000Z",'
         '"params":{"sessionId":"sess-grok","_meta":{},"update":'
         '{"sessionUpdate":"user_message_chunk","_meta":{},'
         '"content":{"type":"text","text":"grok side of the story"}}}}\n',
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     return str(session)
 
 
@@ -84,18 +90,24 @@ def _server(tmp_path, rows):
     which is what lets a test tell "parsed the file" from "read the index".
     """
     conn = corpus.open_index(":memory:")
-    records = [ir.Conversation(id=cid, title=cid, provider=provider,
-                               turns=[ir.Turn(role="human",
-                                              blocks=[ir.Block(type="text", text=cid)])])
-               for cid, provider, _ in rows]
-    index.build_index(conn, [index.IndexSource(
-        file="f.jsonl", content_hash=index.hash_content("v1"), records=records)])
+    records = [
+        ir.Conversation(
+            id=cid,
+            title=cid,
+            provider=provider,
+            turns=[ir.Turn(role="human", blocks=[ir.Block(type="text", text=cid)])],
+        )
+        for cid, provider, _ in rows
+    ]
+    index.build_index(
+        conn,
+        [index.IndexSource(file="f.jsonl", content_hash=index.hash_content("v1"), records=records)],
+    )
     # `rollout_path` is set by the loader in production; set it directly here so the test
     # exercises the reader rather than re-testing ingest.
     for cid, _provider, path in rows:
-        conn.execute("UPDATE conversations SET rollout_path=? WHERE conversation_id=?",
-                     (path, cid))
-    conn.execute("DELETE FROM conversation_bodies")      # see the docstring
+        conn.execute("UPDATE conversations SET rollout_path=? WHERE conversation_id=?", (path, cid))
+    conn.execute("DELETE FROM conversation_bodies")  # see the docstring
     return sidecar.Sidecar(conn), conn
 
 
@@ -104,6 +116,7 @@ def _text_of(conv):
 
 
 # ------------------------------------------------------------------ per-provider reads
+
 
 def test_a_codex_conversation_reads_through_the_codex_parser(tmp_path):
     path = _codex_rollout_file(tmp_path)
@@ -152,10 +165,12 @@ def test_the_codex_parser_really_does_misread_a_claude_code_transcript(tmp_path)
     assert "claude code side of the story" in _text_of(right.conversation)
     assert _text_of(wrong.conversation) != _text_of(right.conversation), (
         "the Codex parser reproduced the Claude Code transcript exactly, so this test "
-        "cannot detect the misread it exists to prove")
+        "cannot detect the misread it exists to prove"
+    )
 
 
 # ------------------------------------------------------------------ honest failures
+
 
 def test_an_export_only_provider_says_it_has_no_reader(tmp_path):
     """chatgpt/claude/gemini arrive as ONE export holding many conversations, so a path
@@ -236,6 +251,7 @@ def test_an_unreadable_rollout_degrades_to_a_reason(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ through the RPCs
 
+
 def test_conversation_get_returns_the_grok_transcript_not_a_stub(tmp_path):
     """End to end through the RPC the reader pane actually calls."""
     path = _grok_session_dir(tmp_path)
@@ -259,10 +275,13 @@ def test_the_local_research_tier_reads_every_provider_not_just_codex(tmp_path):
             seen["prompt"] = prompt
             return "ok"
 
-    srv, conn = _server(tmp_path, [
-        ("c1", "codex", _codex_rollout_file(tmp_path)),
-        ("c2", "grok", _grok_session_dir(tmp_path)),
-    ])
+    srv, conn = _server(
+        tmp_path,
+        [
+            ("c1", "codex", _codex_rollout_file(tmp_path)),
+            ("c2", "grok", _grok_session_dir(tmp_path)),
+        ],
+    )
     srv.local_backend = Backend()
     try:
         out = srv.dispatch("research.synthesize", {"tier": "local"})
@@ -322,19 +341,22 @@ def test_the_exists_spy_really_does_fire_for_an_ordinary_path(tmp_path, monkeypa
     try:
         conv, reason = srv._reparse_rollout(local, "codex")
         assert asked == [local], "the spy never fired, so `asked == []` proves nothing"
-        assert conv is None and reason == "rollout unavailable"    # the spy answered "no"
+        assert conv is None and reason == "rollout unavailable"  # the spy answered "no"
     finally:
         conn.close()
 
 
-@pytest.mark.parametrize("hostile", [
-    r"\\attacker\share\rollout.jsonl",          # the classic UNC / SMB-coercion target
-    "//attacker/share/rollout.jsonl",           # same target, forward slashes
-    r"\\attacker@SSL\DavWWWRoot\x.jsonl",       # the WebDAV spelling of the same coercion
-    r"\\?\UNC\attacker\share\rollout.jsonl",    # a UNC wearing a device prefix
-    r"\\?\C:\Windows\x.jsonl",                  # Win32 device namespace
-    r"\\.\pipe\evil",                           # device namespace, named pipe
-])
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        r"\\attacker\share\rollout.jsonl",  # the classic UNC / SMB-coercion target
+        "//attacker/share/rollout.jsonl",  # same target, forward slashes
+        r"\\attacker@SSL\DavWWWRoot\x.jsonl",  # the WebDAV spelling of the same coercion
+        r"\\?\UNC\attacker\share\rollout.jsonl",  # a UNC wearing a device prefix
+        r"\\?\C:\Windows\x.jsonl",  # Win32 device namespace
+        r"\\.\pipe\evil",  # device namespace, named pipe
+    ],
+)
 def test_a_nonlocal_rollout_path_never_reaches_the_filesystem(tmp_path, monkeypatch, hostile):
     """The security property stated as behaviour: for a UNC or device path the existence check
     is NEVER called. Asserting only on the returned reason would be strictly weaker — an
@@ -345,7 +367,8 @@ def test_a_nonlocal_rollout_path_never_reaches_the_filesystem(tmp_path, monkeypa
     try:
         conv, reason = srv._reparse_rollout(hostile, "codex")
         assert asked == [], (
-            "%r reached the filesystem; on Windows that IS the SMB/NTLM coercion" % hostile)
+            "%r reached the filesystem; on Windows that IS the SMB/NTLM coercion" % hostile
+        )
         assert conv is None
         assert "local path" in reason, reason
     finally:
@@ -388,13 +411,14 @@ def test_a_relative_rollout_path_still_OPENS_it_is_resolved_not_rejected(tmp_pat
     """
     real = _codex_rollout_file(tmp_path)
     relative = os.path.relpath(real, tmp_path)
-    monkeypatch.chdir(tmp_path)          # a relative path is only meaningful against a cwd
+    monkeypatch.chdir(tmp_path)  # a relative path is only meaningful against a cwd
     srv, conn = _server(tmp_path, [("c1", "codex", relative)])
     try:
         conv, errors = srv._reparse_rollout(relative, "codex")
         assert conv is not None, "a relative rollout path must still open, got %r" % (errors,)
         assert "codex side of the story" in " ".join(
-            b.text for t in conv.turns for b in t.blocks if b.type == "text")
+            b.text for t in conv.turns for b in t.blocks if b.type == "text"
+        )
     finally:
         conn.close()
 
@@ -404,7 +428,7 @@ def test_a_relative_path_that_resolves_to_UNC_is_still_rejected(tmp_path, monkey
     recognisably UNC, so a stored value that resolves onto a network share is still refused
     before anything touches the filesystem."""
     asked = _spy_exists(monkeypatch)
-    unc = "//attacker.invalid/share/x.jsonl"      # forward-slash UNC; abspath normalises it
+    unc = "//attacker.invalid/share/x.jsonl"  # forward-slash UNC; abspath normalises it
     srv, conn = _server(tmp_path, [("c1", "codex", unc)])
     try:
         conv, reason = srv._reparse_rollout(unc, "codex")
@@ -490,10 +514,13 @@ def test_one_hostile_row_does_not_abort_the_whole_local_research_tier(tmp_path, 
 
     monkeypatch.setitem(sidecar._REPARSERS, "codex", (module, funcname, wrapped))
     good = _codex_rollout_file(tmp_path)
-    srv, conn = _server(tmp_path, [
-        ("c1", "codex", r"\\attacker\share\x.jsonl"),
-        ("c2", "codex", good),
-    ])
+    srv, conn = _server(
+        tmp_path,
+        [
+            ("c1", "codex", r"\\attacker\share\x.jsonl"),
+            ("c2", "codex", good),
+        ],
+    )
     srv.local_backend = Backend()
     try:
         out = srv.dispatch("research.synthesize", {"tier": "local"})
@@ -522,16 +549,17 @@ def test_every_provider_the_engine_ingests_is_either_readable_or_explicitly_not(
             assert conv is None
             # Either "there is no file there" or "there is no reader for this" — never a
             # silent success from someone else's parser.
-            assert reason in ("rollout unavailable",) or "reader" in reason, (
-                "%s -> %r" % (provider, reason))
+            assert reason in ("rollout unavailable",) or "reader" in reason, "%s -> %r" % (
+                provider,
+                reason,
+            )
     finally:
         conn.close()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="drive-relative is a Windows-only path shape")
-def test_a_drive_relative_path_resolves_against_the_current_drive_on_windows(
-        tmp_path, monkeypatch):
-    """"/x" on Windows is DRIVE-relative: Python 3.13 stopped calling it absolute, so it is
+def test_a_drive_relative_path_resolves_against_the_current_drive_on_windows(tmp_path, monkeypatch):
+    """ "/x" on Windows is DRIVE-relative: Python 3.13 stopped calling it absolute, so it is
     the shape that made two fixtures report a different reason per CI leg.
 
     It is now RESOLVED rather than rejected, for the same reason as the relative case above —
@@ -544,6 +572,7 @@ def test_a_drive_relative_path_resolves_against_the_current_drive_on_windows(
         conv, reason = srv._reparse_rollout("/definitely/not/here.jsonl", "codex")
         assert conv is None and reason == "rollout unavailable", reason
         assert asked and os.path.isabs(asked[0]), (
-            "the guard should have handed the filesystem an ABSOLUTE path, got %r" % (asked,))
+            "the guard should have handed the filesystem an ABSOLUTE path, got %r" % (asked,)
+        )
     finally:
         conn.close()

@@ -49,7 +49,11 @@ export class ElkLayoutEngine {
    * edges carry routed sections) — feed it to {@link extractLayout}.
    */
   async layout(graph: ElkNode): Promise<ElkNode> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    // The guard's executor runs SYNCHRONOUSLY inside `new Promise`, so `timer` is always
+    // assigned before `finally` can observe it — the definite-assignment assertion replaces
+    // a `!== undefined` guard whose false arm no execution could reach (and which the
+    // 100%-branch gate therefore refused to carry).
+    let timer!: ReturnType<typeof setTimeout>;
     const guard = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         this.terminate();
@@ -60,7 +64,7 @@ export class ElkLayoutEngine {
       const result = await Promise.race([this.elk.layout(graph), guard]);
       return result as ElkNode;
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 

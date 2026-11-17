@@ -5,6 +5,7 @@ one tested implementation behind a console entry point. The invariants that matt
 a single bad conversation must never truncate the corpus, and the index must not be
 an injection vector (titles are attacker-influenced content).
 """
+
 import json
 import os
 
@@ -12,8 +13,13 @@ from llm_anthology import build, ir, render_html
 
 
 def _conv(title="T", n=1, text="hello", account="a@b"):
-    return ir.Conversation(id="c%d" % n, title=title, provider="claude", account=account,
-                           turns=[ir.Turn("human", [ir.Block("text", text=text)])])
+    return ir.Conversation(
+        id="c%d" % n,
+        title=title,
+        provider="claude",
+        account=account,
+        turns=[ir.Turn("human", [ir.Block("text", text=text)])],
+    )
 
 
 def test_safe_name_indexes_and_strips_illegal_path_chars():
@@ -58,10 +64,11 @@ def test_render_corpus_isolates_a_failing_conversation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(render_html, "render_conversation_html", boom)
     out = str(tmp_path)
-    rep = build.render_corpus([_conv("ok1", 1), _conv("BAD", 2), _conv("ok2", 3)], out,
-                              provider="claude")
+    rep = build.render_corpus(
+        [_conv("ok1", 1), _conv("BAD", 2), _conv("ok2", 3)], out, provider="claude"
+    )
 
-    assert rep["rendered"] == 2                      # the two good ones survived
+    assert rep["rendered"] == 2  # the two good ones survived
     assert len(rep["errors"]) == 1
     assert rep["errors"][0]["stage"] == "render"
     with open(os.path.join(out, "_fidelity-report.json"), encoding="utf-8") as fh:
@@ -71,7 +78,7 @@ def test_render_corpus_isolates_a_failing_conversation(tmp_path, monkeypatch):
 
 def test_index_escapes_title_and_cannot_inject_markup(tmp_path):
     out = str(tmp_path)
-    build.render_corpus([_conv('</a><script>alert(1)</script>', 1)], out, provider="claude")
+    build.render_corpus([_conv("</a><script>alert(1)</script>", 1)], out, provider="claude")
     with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
         doc = fh.read()
     assert "<script>alert(1)</script>" not in doc
@@ -79,8 +86,7 @@ def test_index_escapes_title_and_cannot_inject_markup(tmp_path):
 
 def test_index_carries_the_per_provider_meta_column(tmp_path):
     out = str(tmp_path)
-    build.render_corpus([_conv("t", 1)], out, provider="chatgpt",
-                        meta_of=lambda c: "proj-XYZ")
+    build.render_corpus([_conv("t", 1)], out, provider="chatgpt", meta_of=lambda c: "proj-XYZ")
     with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
         doc = fh.read()
     assert "proj-XYZ" in doc
@@ -88,8 +94,12 @@ def test_index_carries_the_per_provider_meta_column(tmp_path):
 
 def test_load_errors_are_carried_into_the_report(tmp_path):
     out = str(tmp_path)
-    rep = build.render_corpus([_conv("t", 1)], out, provider="claude",
-                              load_errors=[{"file": "x.json", "stage": "parse", "error": "boom"}])
+    rep = build.render_corpus(
+        [_conv("t", 1)],
+        out,
+        provider="claude",
+        load_errors=[{"file": "x.json", "stage": "parse", "error": "boom"}],
+    )
     assert any(e["stage"] == "parse" for e in rep["errors"])
 
 

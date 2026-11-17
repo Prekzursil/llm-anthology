@@ -138,8 +138,16 @@ function fieldsUnder(treatment: FieldTreatment): string[] {
     .sort();
 }
 
-/** `a`, `a and b`, `a, b and c` — an empty list would be a bug, so it says so. */
-function listed(fields: string[]): string {
+/**
+ * `a`, `a and b`, `a, b and c` — an empty list would be a bug, so it says so.
+ *
+ * EXPORTED for the test that pins its 0/1/N arms: every `SHAREABLE_TREATMENT` category
+ * holds two or more fields TODAY (the engine-parity test locks that), so `modeLabel` — its
+ * only caller — can never produce a 0- or 1-item list, and the arms that guard the day a
+ * category shrinks would otherwise be unmeasurable. Same extract-for-test pattern as
+ * `searchPresent.searchParams`.
+ */
+export function listed(fields: string[]): string {
   if (fields.length === 0) return "(none)";
   if (fields.length === 1) return fields[0];
   return `${fields.slice(0, -1).join(", ")} and ${fields[fields.length - 1]}`;
@@ -232,7 +240,9 @@ export function deriveScan(scan: CredentialScan): CredentialScanView {
         ? "No credential shapes found — scrub was ON, so nothing needed replacing."
         : "No credential shapes found — read the coverage limit below before sharing."
       : `${findings.length} credential shape${findings.length === 1 ? "" : "s"} found` +
-        (scan.scrubbed ? " and REPLACED in the written bytes." : " — warning only, bytes untouched.");
+        (scan.scrubbed
+          ? " and REPLACED in the written bytes."
+          : " — warning only, bytes untouched.");
   return { findings, coverageLimit: scan.coverage_limit, scrubbed: scan.scrubbed, headline };
 }
 
@@ -561,7 +571,9 @@ function renderVerdict(verdict: ExportVerdict): string[] {
     lines.push(`~${verdict.changedNodes.length} changed: ${ids}`);
   }
   if (verdict.missingTokens.length > 0) {
-    lines.push(`missing ${verdict.missingTokens.length} tokens: ${verdict.missingTokens.join(", ")}`);
+    lines.push(
+      `missing ${verdict.missingTokens.length} tokens: ${verdict.missingTokens.join(", ")}`,
+    );
   }
   if (verdict.totalChanges === 0) {
     lines.push("no structural or token differences reported");

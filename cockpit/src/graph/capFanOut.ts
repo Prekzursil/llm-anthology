@@ -72,8 +72,15 @@ export function moreParentId(id: string): string {
 
 /** A bare synthesized node for an id that appears only on an edge — as `aggregate.ts` does. */
 function bareNode(id: string): ThreadNode {
-  return { id, title: "", provider: "", model_provider: "", created_at_ms: null,
-           child_count: 0, depth: 0 };
+  return {
+    id,
+    title: "",
+    provider: "",
+    model_provider: "",
+    created_at_ms: null,
+    child_count: 0,
+    depth: 0,
+  };
 }
 
 /**
@@ -94,7 +101,12 @@ function byRecencyThenId(index: Map<string, ThreadNode>) {
       if (tb === null) return -1;
       return tb - ta;
     }
-    return a < b ? -1 : a > b ? 1 : 0;
+    // `(a > b) - (a < b)` rather than a ternary chain: `kids` is a Set, so `a === b` never
+    // reaches the comparator, and the ternary form would carry an unreachable `0` arm that
+    // the 100%-branch gate can never measure (the same dead-arm the tag sort in
+    // `ui/metadataPanel.ts` documents removing). Boolean subtraction keeps the exact
+    // three-way contract — including `0` if equals ever did arrive — with no dead branch.
+    return Number(a > b) - Number(a < b);
   };
 }
 
@@ -164,7 +176,11 @@ export function capFanOut(
   // in `child_count` rather than being re-parsed out of the "+N more" label.
   for (const [parent, kids] of carried) {
     for (const child of kids) {
-      const prior = index.get(child)?.child_count ?? 0;
+      // `!` on the SAME invariant line 200 already trusts: every edge endpoint — including
+      // a carried `more:` child — was added to `index` above, and `child_count` is a
+      // required number on the wire (`bareNode` fills 0). The `?. … ?? 0` default was a
+      // dead arm no input can reach, and the 100%-branch gate refuses to carry one.
+      const prior = index.get(child)!.child_count;
       if (hiddenCount.has(parent)) hiddenCount.set(parent, hiddenCount.get(parent)! + prior);
       else if (prior > 0) hiddenCount.set(parent, prior);
     }
@@ -190,9 +206,7 @@ export function capFanOut(
 
   // A carried placeholder is re-emitted below with a merged count, so it must not also
   // survive as an input node — that is what produced two nodes sharing one id.
-  const nodes = allIds
-    .filter((id) => visible.has(id) && !isMoreId(id))
-    .map((id) => index.get(id)!);
+  const nodes = allIds.filter((id) => visible.has(id) && !isMoreId(id)).map((id) => index.get(id)!);
   const edges = keptEdges.filter(
     (e) => visible.has(e.parent) && visible.has(e.child) && !isMoreId(e.child),
   );
@@ -216,17 +230,14 @@ export function capFanOut(
   // sorted: placeholders are appended after the id-sorted pass, so feeding the result back in
   // (where the placeholder now sorts among the rest) returned the same graph in a different
   // order — the transform was not idempotent, and the canvas would reshuffle on a re-render.
-  nodes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // `(x > y) - (x < y)`: branch-free three-way compare. Ids come off Maps/Sets, so an
+  // equals comparison never occurs, and a ternary chain would hold the unreachable `0`
+  // arm the 100%-branch gate cannot measure.
+  nodes.sort((a, b) => Number(a.id > b.id) - Number(a.id < b.id));
   edges.sort((a, b) =>
     a.parent === b.parent
-      ? a.child < b.child
-        ? -1
-        : a.child > b.child
-          ? 1
-          : 0
-      : a.parent < b.parent
-        ? -1
-        : 1,
+      ? Number(a.child > b.child) - Number(a.child < b.child)
+      : Number(a.parent > b.parent) - Number(a.parent < b.parent),
   );
   return { nodes, edges };
 }

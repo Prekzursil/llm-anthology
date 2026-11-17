@@ -27,6 +27,7 @@ PRIVACY: this module moves opaque bytes between compression formats and reads
 only sizes/offsets — it never inspects or emits record content. Tests use
 synthetic fixtures only.
 """
+
 from __future__ import annotations
 
 import io
@@ -49,12 +50,12 @@ __all__ = [
 # the last of these plus an inner Seekable_Magic_Number in the table footer.
 _SKIPPABLE_MAGIC = 0x184D2A5E
 _SEEKABLE_MAGIC = 0x8F92EAB1
-_CHECKSUM_FLAG = 0x80                      # seek-table descriptor bit 7
+_CHECKSUM_FLAG = 0x80  # seek-table descriptor bit 7
 
-_SKIPPABLE_HEADER = struct.Struct("<II")   # skippable_magic, frame_content_size
-_FOOTER = struct.Struct("<IBI")            # num_frames, descriptor, seekable_magic
-_ENTRY = struct.Struct("<II")              # compressed_size, decompressed_size
-_CHECKSUM = struct.Struct("<I")            # optional per-entry checksum
+_SKIPPABLE_HEADER = struct.Struct("<II")  # skippable_magic, frame_content_size
+_FOOTER = struct.Struct("<IBI")  # num_frames, descriptor, seekable_magic
+_ENTRY = struct.Struct("<II")  # compressed_size, decompressed_size
+_CHECKSUM = struct.Struct("<I")  # optional per-entry checksum
 
 _DEFAULT_LEVEL = 3
 
@@ -63,11 +64,13 @@ _DEFAULT_LEVEL = 3
 class SeekTableEntry:
     """One seek-table row: the on-disk byte length of a frame and the length of
     the record it decompresses to."""
+
     compressed_size: int
     decompressed_size: int
 
 
 # ------------------------------------------------------------------ splitting
+
 
 def split_records(raw: bytes, separator: bytes = b"\n") -> List[bytes]:
     """Split `raw` on `separator`, KEEPING the separator on each record, so that
@@ -80,18 +83,19 @@ def split_records(raw: bytes, separator: bytes = b"\n") -> List[bytes]:
     step = len(separator)
     while True:
         index = raw.find(separator, start)
-        if index < 0:                       # no further separator: final record
+        if index < 0:  # no further separator: final record
             records.append(raw[start:])
             break
         end = index + step
         records.append(raw[start:end])
         start = end
-        if start >= len(raw):               # source ended exactly on a separator
+        if start >= len(raw):  # source ended exactly on a separator
             break
     return records
 
 
 # ------------------------------------------------------------------ encoding
+
 
 def _new_compressor(level: int) -> "zstandard.ZstdCompressor":
     """A one-shot compressor that embeds each frame's content size (so a reader
@@ -108,8 +112,7 @@ def _encode_seek_table(entries: Sequence[SeekTableEntry]) -> bytes:
     return _SKIPPABLE_HEADER.pack(_SKIPPABLE_MAGIC, len(content)) + bytes(content)
 
 
-def encode_records(records: Iterable[Union[bytes, str]], *,
-                   level: int = _DEFAULT_LEVEL) -> bytes:
+def encode_records(records: Iterable[Union[bytes, str]], *, level: int = _DEFAULT_LEVEL) -> bytes:
     """Compress each record into its own frame and append the seek table.
 
     str records are UTF-8 encoded; bytes records pass through unchanged.
@@ -133,8 +136,7 @@ def _decompress_all(blob: bytes) -> bytes:
     return dctx.stream_reader(io.BytesIO(blob), read_across_frames=True).read()
 
 
-def reencode(source, destination, *, level: int = _DEFAULT_LEVEL,
-             separator: bytes = b"\n") -> int:
+def reencode(source, destination, *, level: int = _DEFAULT_LEVEL, separator: bytes = b"\n") -> int:
     """Re-encode the plain `.zst` at `source` into a seekable archive at
     `destination`, one frame per `separator`-delimited record. Returns the number
     of records written."""
@@ -145,6 +147,7 @@ def reencode(source, destination, *, level: int = _DEFAULT_LEVEL,
 
 
 # ------------------------------------------------------------------ reading
+
 
 def _parse_seek_table(data: bytes) -> Tuple[List[SeekTableEntry], int]:
     """Parse the trailing seek table. Returns (entries, skippable_frame_start).
@@ -219,7 +222,7 @@ class SeekableReader:
             raise IndexError("frame index out of range: %d" % index)
         entry = self._entries[index]
         start = self._frame_offsets[index]
-        blob = self._data[start:start + entry.compressed_size]
+        blob = self._data[start : start + entry.compressed_size]
         return self._dctx.decompress(blob, max_output_size=entry.decompressed_size)
 
     def __iter__(self) -> Iterator[bytes]:
@@ -237,9 +240,9 @@ class SeekableReader:
         for index, entry in enumerate(self._entries):
             frame_start = self._decompressed_offsets[index]
             frame_end = frame_start + entry.decompressed_size
-            if frame_end <= offset:            # frame ends before the range: skip
+            if frame_end <= offset:  # frame ends before the range: skip
                 continue
-            if frame_start >= end:             # frame starts after the range: done
+            if frame_start >= end:  # frame starts after the range: done
                 break
             chunk = self.frame(index)
             lo = max(offset, frame_start) - frame_start

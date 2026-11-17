@@ -15,6 +15,7 @@ transcript tree, and the Codex state graph — into one Corpus and one index. Ad
 provider there is one entry in its `todo` table plus one optional root argument; the
 merge, edge de-duplication, id-collision and error-attribution policies are shared.
 """
+
 import glob
 import json
 import os
@@ -22,8 +23,16 @@ import re
 from datetime import datetime, timedelta
 
 from llm_anthology import corpus, index
-from llm_anthology.adapters import (chatgpt, claude, claude_code, codex, codex_rollout,
-                                    codex_state, gemini, grok)
+from llm_anthology.adapters import (
+    chatgpt,
+    claude,
+    claude_code,
+    codex,
+    codex_rollout,
+    codex_state,
+    gemini,
+    grok,
+)
 
 GAP = timedelta(minutes=30)
 _WS = re.compile(r"\s+")
@@ -39,6 +48,7 @@ def _as_list(data):
 
 
 # --------------------------------------------------------------------------- claude
+
 
 def load_claude(src, out_dir=None):
     """A single export file, or a directory tree of Claude account exports.
@@ -56,8 +66,9 @@ def load_claude(src, out_dir=None):
     else:
         files = sorted(glob.glob(os.path.join(src, "**", "conversations.json"), recursive=True))
         # design_chats/*.json are real conversations in a different shape — include them
-        files += sorted(glob.glob(os.path.join(src, "**", "design_chats", "*.json"),
-                                  recursive=True))
+        files += sorted(
+            glob.glob(os.path.join(src, "**", "design_chats", "*.json"), recursive=True)
+        )
         if not files:
             files = sorted(glob.glob(os.path.join(src, "**", "*.json"), recursive=True))
     if out_dir:
@@ -81,6 +92,7 @@ def load_claude(src, out_dir=None):
 
 
 # ---------------------------------------------------------------------------- codex
+
 
 def load_codex(src, out_dir=None):
     """A Codex task export (codex.json), or a directory holding one.
@@ -112,6 +124,7 @@ def load_codex(src, out_dir=None):
 
 
 # -------------------------------------------------------------------------- chatgpt
+
 
 def _cid(c):
     return c.get("conversation_id") or c.get("id") or ""
@@ -170,6 +183,7 @@ def load_chatgpt(main_path, projects_path=None):
 
 # --------------------------------------------------------------------------- gemini
 
+
 def _norm(s):
     return _WS.sub(" ", (s or "").replace(" ", " ")).strip().lower()
 
@@ -217,7 +231,7 @@ def gemini_groups_from_harvest(records, harvest):
     groups, claimed = [], set()
     for conv in harvest:
         idxs = []
-        for t in (conv.get("turns") or []):
+        for t in conv.get("turns") or []:
             if (t.get("role") or "").lower() not in ("user", "human"):
                 continue
             for i in by_prompt.get(_norm(t.get("text")), []):
@@ -226,13 +240,18 @@ def gemini_groups_from_harvest(records, harvest):
                     idxs.append(i)
                     break
         if idxs:
-            groups.append({"id": conv.get("id") or "",
-                           "title": conv.get("title") or "(untitled)",
-                           "turn_idxs": sorted(idxs)})
+            groups.append(
+                {
+                    "id": conv.get("id") or "",
+                    "title": conv.get("title") or "(untitled)",
+                    "turn_idxs": sorted(idxs),
+                }
+            )
     leftovers = [i for i in range(len(records)) if i not in claimed]
     if leftovers:
-        groups.append({"id": "unmatched", "title": "(unmatched Takeout activity)",
-                       "turn_idxs": leftovers})
+        groups.append(
+            {"id": "unmatched", "title": "(unmatched Takeout activity)", "turn_idxs": leftovers}
+        )
     return groups, len(claimed)
 
 
@@ -248,16 +267,21 @@ def gemini_groups_from_gaps(records):
         prev_ts, prev_gem = ts or prev_ts, gem
     if cur:
         groups.append(cur)
-    return [{"id": "grp%03d" % n, "title": "(provisional group %d)" % n, "turn_idxs": g}
-            for n, g in enumerate(groups, 1)]
+    return [
+        {"id": "grp%03d" % n, "title": "(provisional group %d)" % n, "turn_idxs": g}
+        for n, g in enumerate(groups, 1)
+    ]
 
 
 def load_gemini(transcript_path, harvest_path=None):
     try:
         records = _load_json(transcript_path)
     except Exception as e:
-        return [], [{"file": os.path.basename(transcript_path), "stage": "parse",
-                     "error": repr(e)}], {}
+        return (
+            [],
+            [{"file": os.path.basename(transcript_path), "stage": "parse", "error": repr(e)}],
+            {},
+        )
     mode, matched = "gap-heuristic (PROVISIONAL)", 0
     load_errors = []
     if harvest_path and os.path.isfile(harvest_path):
@@ -265,8 +289,11 @@ def load_gemini(transcript_path, harvest_path=None):
             groups, matched = gemini_groups_from_harvest(records, _load_json(harvest_path))
             mode = "harvest (TRUE grouping)"
         except Exception as e:
-            return [], [{"file": os.path.basename(harvest_path), "stage": "parse",
-                         "error": repr(e)}], {}
+            return (
+                [],
+                [{"file": os.path.basename(harvest_path), "stage": "parse", "error": repr(e)}],
+                {},
+            )
     else:
         if harvest_path:
             # NAMED but absent. This used to fall through to the gap heuristic in silence,
@@ -279,19 +306,28 @@ def load_gemini(transcript_path, harvest_path=None):
             # Reported rather than raised: the transcript parsed and the corpus renders
             # fine, so failing the run would be a worse answer than a grouping the user
             # can see was provisional. The gap heuristic still runs below.
-            load_errors.append({"file": os.path.basename(harvest_path), "stage": "harvest",
-                                "error": "harvest file not found: %s — grouping fell back "
-                                         "to the PROVISIONAL time-gap heuristic"
-                                         % harvest_path})
+            load_errors.append(
+                {
+                    "file": os.path.basename(harvest_path),
+                    "stage": "harvest",
+                    "error": "harvest file not found: %s — grouping fell back "
+                    "to the PROVISIONAL time-gap heuristic" % harvest_path,
+                }
+            )
         groups = gemini_groups_from_gaps(records)
-    return gemini.parse_all(records, groups), load_errors, {
-        "grouping_mode": mode,
-        "harvest_matched_records": matched,
-        "source_records": len(records),
-    }
+    return (
+        gemini.parse_all(records, groups),
+        load_errors,
+        {
+            "grouping_mode": mode,
+            "harvest_matched_records": matched,
+            "source_records": len(records),
+        },
+    )
 
 
 # --------------------------------------------------------------- cockpit corpus
+
 
 def _fingerprint(conv):
     """A lightweight, stable content fingerprint for an ingested conversation.
@@ -333,8 +369,9 @@ GROK_SOURCE = "grok"
 CLAUDE_CODE_SOURCE = "claude-code"
 
 
-def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
-                grok_root=None, claude_root=None):
+def load_corpus(
+    sessions_root, index_path, codex_home=None, progress=None, grok_root=None, claude_root=None
+):
     """Build the cockpit Corpus and its FTS5 index in one pass, over one or more providers.
 
     Ingests the Codex rollout logs under `sessions_root` (the DATE-NESTED
@@ -431,8 +468,9 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
         docs, source_errors = _ingest_docs(adapter, root, label)
         errors.extend(source_errors)
         for doc in docs:
-            errors.extend(_admit(result, doc, label, path_attr, claimed_by, seen_edges,
-                                 sources, admitted))
+            errors.extend(
+                _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admitted)
+            )
 
     # The Codex state graph is merged ONLY when a home was named. Two reasons, and the
     # second is the important one:
@@ -444,7 +482,7 @@ def load_corpus(sessions_root, index_path, codex_home=None, progress=None,
     if codex_home:
         state = codex_state.load_corpus(codex_home)
         for meta in state.threads.values():
-            if meta.id not in result.threads:           # earlier sources take priority
+            if meta.id not in result.threads:  # earlier sources take priority
                 result.add_thread(meta)
         for edge in state.edges:
             _add_edge(result, edge, seen_edges)
@@ -477,9 +515,8 @@ def _ingest_docs(adapter, root, label):
     """
     try:
         docs, errors = adapter.ingest_sessions(root)
-    except Exception as exc:                # noqa: BLE001 — deliberate, see the docstring
-        return [], [{"source": label, "file": root, "stage": "ingest",
-                     "error": repr(exc)}]
+    except Exception as exc:  # noqa: BLE001 — deliberate, see the docstring
+        return [], [{"source": label, "file": root, "stage": "ingest", "error": repr(exc)}]
     return docs, [dict(err, source=label) for err in errors]
 
 
@@ -495,7 +532,7 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     THE CLAIM THIS DOCSTRING USED TO MAKE was that a same-source repeat needed nothing
     doing, because "the thread upserts and the conversation dedupes by id, exactly as
     before this function existed". The second half died when `corpus.add_conversation`
-    was changed to re-index rather than early-return (corpus.py:347-360): dedupes-by-id
+    was changed to re-index rather than early-return (corpus.py:377-390): dedupes-by-id
     became OVERWRITES-by-id. Two rollouts of one resumed session then meant two records
     with one `conversations.conversation_id`, and the later simply replaced the earlier —
     2 files in, 1 row out, the older leg's turns unsearchable, 0 errors, exit 0.
@@ -514,7 +551,7 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     # silent cross-source data loss, reported as "thread id '' is already held by
     # codex-rollout", which reads as an id conflict when neither session had an id at all.
     # `codex_rollout` really does derive `thread_id == ""` for a rollout with no
-    # `session_meta` and no UUID in its filename (`codex_rollout.py:296` ->
+    # `session_meta` and no UUID in its filename (`codex_rollout.py:323` ->
     # `_id_from_path`), so the blank is a real input, not a defensive hypothetical.
     #
     # `dedup.py:38-44` settled the same question for its own map and states the rule this
@@ -531,10 +568,15 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     if thread_id:
         holder = claimed_by.get(thread_id)
         if holder is not None and holder != label:
-            return [{"source": label, "file": getattr(doc, path_attr),
-                     "stage": "thread-id-collision",
-                     "error": "thread id %r is already held by %s; this %s session was NOT "
-                              "ingested" % (thread_id, holder, label)}]
+            return [
+                {
+                    "source": label,
+                    "file": getattr(doc, path_attr),
+                    "stage": "thread-id-collision",
+                    "error": "thread id %r is already held by %s; this %s session was NOT "
+                    "ingested" % (thread_id, holder, label),
+                }
+            ]
         if holder is not None:
             # SAME source, same id: a resumed session's next leg. Merge, never append.
             _merge_resumed_leg(result, admitted[thread_id], doc, path_attr, sources)
@@ -542,7 +584,7 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
         claimed_by[thread_id] = label
 
     conv = doc.conversation
-    conv.meta["thread_id"] = thread_id                  # link the FTS row to its thread
+    conv.meta["thread_id"] = thread_id  # link the FTS row to its thread
     conv.meta["rollout_paths"] = [getattr(doc, path_attr)]
     if not conv.id:
         # An id-less session still needs a UNIQUE index key. `_assemble` sets
@@ -567,25 +609,27 @@ def _admit(result, doc, label, path_attr, claimed_by, seen_edges, sources, admit
     result.add_thread(doc.thread)
     for edge in doc.edges:
         _add_edge(result, edge, seen_edges)
-    sources.append(index.IndexSource(file=getattr(doc, path_attr),
-                                     content_hash=_fingerprint(conv), records=[conv]))
+    sources.append(
+        index.IndexSource(
+            file=getattr(doc, path_attr), content_hash=_fingerprint(conv), records=[conv]
+        )
+    )
     return []
 
 
 def _turn_key(turn):
     """The identity of a turn for merge purposes.
 
-    The provider's opaque item id when there is one — `codex_rollout.py:274,283` reads
+    The provider's opaque item id when there is one — `codex_rollout.py:302,310` reads
     `payload["id"]` into `Turn.uuid`. Roughly a third of real rollout items carry no such
-    id, and `grok.py:311` never sets one at all, so a uuid-only key would treat every
+    id, and `grok.py:316` never sets one at all, so a uuid-only key would treat every
     id-less turn as unique and re-append the whole replayed prefix. An id that identifies
     nothing maps onto nothing (the rule `dedup.py:38-44` and `_admit` already follow),
     so those fall back to their own content: role, stamp and block text.
     """
     if turn.uuid:
         return ("id", (turn.uuid,))
-    return ("body", (turn.role, turn.timestamp,
-                     tuple((b.type, b.text) for b in turn.blocks)))
+    return ("body", (turn.role, turn.timestamp, tuple((b.type, b.text) for b in turn.blocks)))
 
 
 def _turn_weight(turn):
@@ -636,7 +680,7 @@ def fold_leg_turns(prior_turns, incoming_turns):
             seen[key] = len(prior_turns)
             prior_turns.append(turn)
         elif key[0] == "id" and _turn_weight(turn) > _turn_weight(prior_turns[pos]):
-            prior_turns[pos] = turn                 # same item, fuller rendering
+            prior_turns[pos] = turn  # same item, fuller rendering
             divergent += 1
     return divergent
 
@@ -651,7 +695,7 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     them; only a LATER leg re-stating something already held is dropped.
 
     ONE PROVIDER ID, TWO RENDERINGS. `Turn.uuid` marks where a turn STARTS, not how far
-    it extends: `codex_rollout.py:283` opens an assistant turn with the id of the first
+    it extends: `codex_rollout.py:310` opens an assistant turn with the id of the first
     item in a run and then accumulates the rest of the run into it. A resumed leg can cut
     that run differently, so the same id can arrive carrying a different body. MEASURED:
     3 such turns across the 236 real merges, all in one 66-leg thread, and all DIVERGENT
@@ -704,11 +748,11 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     prior.updated_at = max(prior.updated_at, later.updated_at)
     prior.meta["rollout_paths"] = prior.meta.get("rollout_paths", []) + [path]
     prior.meta["rollout_path"] = path
-    prior.meta["tokens_used"] = max(prior.meta.get("tokens_used", 0) or 0,
-                                    later.meta.get("tokens_used", 0) or 0)
+    prior.meta["tokens_used"] = max(
+        prior.meta.get("tokens_used", 0) or 0, later.meta.get("tokens_used", 0) or 0
+    )
     if divergent:
-        prior.meta["merge_divergent_turns"] = (
-            prior.meta.get("merge_divergent_turns", 0) + divergent)
+        prior.meta["merge_divergent_turns"] = prior.meta.get("merge_divergent_turns", 0) + divergent
 
     # The thread node is upserted by id, so a bare `add_thread` would let the resumed
     # leg's title/preview replace the original's. Carry only the fields that genuinely
@@ -717,7 +761,7 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     # Subscripted, not `.get()` with a None fallback: reaching here means `claimed_by`
     # already holds this id for this source, and the admit that set it also ran
     # `result.add_thread(doc.thread)` — `RolloutDoc.thread_id` is an alias of
-    # `thread.id` (codex_rollout.py:96,103), so the node is present by construction. A
+    # `thread.id` (codex_rollout.py:96,104), so the node is present by construction. A
     # `if node is None: add_thread(...)` fallback was written here first and proved
     # unreachable (coverage found it, nothing could exercise it). Restoring it would
     # convert a broken invariant into a silent divergence — the resumed leg's title
@@ -730,8 +774,7 @@ def _merge_resumed_leg(result, prior, doc, path_attr, sources):
     # One IndexSource per FILE regardless, so every leg is checkpointed and a resumed
     # ingest stays resumable. Each carries the SAME merged conversation object, so
     # whichever sources the checkpoint replays, the row written is the complete one.
-    sources.append(index.IndexSource(file=path, content_hash=_fingerprint(prior),
-                                     records=[prior]))
+    sources.append(index.IndexSource(file=path, content_hash=_fingerprint(prior), records=[prior]))
 
 
 def _add_edge(result, edge, seen_edges):
@@ -781,6 +824,7 @@ def _persist_graph(conn, result):
     conversation, so an absent key is a broken invariant that should say so immediately
     rather than quietly persist an empty leg list over a good one.
     """
+
     def do(op):
         return index._retry(op)
 
@@ -789,8 +833,7 @@ def _persist_graph(conn, result):
     for edge in result.edges:
         do(lambda e=edge: corpus.upsert_edge(conn, e))
     for conv in result.conversations:
-        do(lambda c=conv: corpus.set_conversation_rollouts(
-            conn, c.id, c.meta["rollout_paths"]))
+        do(lambda c=conv: corpus.set_conversation_rollouts(conn, c.id, c.meta["rollout_paths"]))
     do(conn.commit)
 
 
@@ -890,7 +933,7 @@ EXPORT_PATH_COLLIDES_WITH_A_READER = frozenset({"codex"})
 #: exact failure `load_gemini`'s harvest guard above exists for.
 _EXPORT_SECOND_PATH = {
     "chatgpt": "a second export file whose conversations join the same dedup pool "
-               "(the render path's --projects)",
+    "(the render path's --projects)",
     "gemini": "the web-app harvest that upgrades grouping from the provisional heuristic",
 }
 
@@ -910,8 +953,7 @@ def _export_spec(spec):
 def _export_error(provider, path, stage, message):
     """One ingest error, shaped like every other entry in this module's error lists and
     tagged with its `source` the way `_ingest_docs` tags a session store's."""
-    return {"source": provider, "file": os.path.basename(path), "stage": stage,
-            "error": message}
+    return {"source": provider, "file": os.path.basename(path), "stage": stage, "error": message}
 
 
 def file_hash(path, block=_HASH_BLOCK):
@@ -973,12 +1015,11 @@ def _resolve_export_files(provider, path):
     if provider == "chatgpt":
         return _chatgpt_files(path)
     if provider == "claude":
-        files = sorted(glob.glob(os.path.join(path, "**", "conversations.json"),
-                                 recursive=True))
-        files += sorted(glob.glob(os.path.join(path, "**", "design_chats", "*.json"),
-                                  recursive=True))
-        return files or sorted(glob.glob(os.path.join(path, "**", "*.json"),
-                                         recursive=True))
+        files = sorted(glob.glob(os.path.join(path, "**", "conversations.json"), recursive=True))
+        files += sorted(
+            glob.glob(os.path.join(path, "**", "design_chats", "*.json"), recursive=True)
+        )
+        return files or sorted(glob.glob(os.path.join(path, "**", "*.json"), recursive=True))
     if provider == "codex":
         return sorted(glob.glob(os.path.join(path, "**", "*.json"), recursive=True))
     return []
@@ -1047,18 +1088,21 @@ def _claude_record(raw):
 #: provider -> the adapter call for ONE record. Held as wrappers rather than as bound
 #: functions so the call stays LATE-bound, the same reason `load_corpus`'s `todo` table
 #: holds adapter MODULES.
-_EXPORT_ADAPTERS = {"chatgpt": _chatgpt_record, "claude": _claude_record,
-                    "codex": _codex_record}
+_EXPORT_ADAPTERS = {"chatgpt": _chatgpt_record, "claude": _claude_record, "codex": _codex_record}
 
 
 def _spec_error(provider, second_path):
     """The message refusing a malformed spec, or None when it is usable."""
     if provider not in EXPORT_PROVIDERS:
-        return ("unknown export provider %r; expected one of %s"
-                % (provider, ", ".join(EXPORT_PROVIDERS)))
+        return "unknown export provider %r; expected one of %s" % (
+            provider,
+            ", ".join(EXPORT_PROVIDERS),
+        )
     if second_path and provider not in _EXPORT_SECOND_PATH:
-        return ("the %s export takes no second path, so %r would be silently ignored"
-                % (provider, second_path))
+        return "the %s export takes no second path, so %r would be silently ignored" % (
+            provider,
+            second_path,
+        )
     return None
 
 
@@ -1076,7 +1120,7 @@ def _streamed_conversations(provider, path):
             continue
         try:
             conv = adapt(raw)
-        except Exception as exc:            # noqa: BLE001 - collected, never raised
+        except Exception as exc:  # noqa: BLE001 - collected, never raised
             yield None, _export_error(provider, path, "adapt", repr(exc))
             continue
         yield conv, None
@@ -1093,9 +1137,11 @@ def _gemini_conversations(path, second_path):
     through so a provisional corpus can never look like ground truth.
     """
     convs, errors, extra = load_gemini(path, second_path or None)
-    return ([(conv, None) for conv in convs],
-            [dict(err, source="gemini") for err in errors],
-            extra.get("grouping_mode", ""))
+    return (
+        [(conv, None) for conv in convs],
+        [dict(err, source="gemini") for err in errors],
+        extra.get("grouping_mode", ""),
+    )
 
 
 def _admit_export_conversation(conn, conv, provider, path, seen, report):
@@ -1125,18 +1171,30 @@ def _admit_export_conversation(conn, conv, provider, path, seen, report):
     schema migration.
     """
     if not conv.id:
-        return [_export_error(provider, path, "identity",
-                              "a record carries no conversation id, so it cannot be "
-                              "indexed: conversations.conversation_id is UNIQUE and two "
-                              "id-less records would overwrite each other")]
+        return [
+            _export_error(
+                provider,
+                path,
+                "identity",
+                "a record carries no conversation id, so it cannot be "
+                "indexed: conversations.conversation_id is UNIQUE and two "
+                "id-less records would overwrite each other",
+            )
+        ]
     if conv.id in seen:
         report["duplicates"] += 1
         return []
     held = corpus.indexed_provider(conn, conv.id)
     if held is not None and held != provider:
-        return [_export_error(provider, path, "conversation-id-collision",
-                              "conversation id %r is already held by %s; this %s record "
-                              "was NOT indexed" % (conv.id, held, provider))]
+        return [
+            _export_error(
+                provider,
+                path,
+                "conversation-id-collision",
+                "conversation id %r is already held by %s; this %s record "
+                "was NOT indexed" % (conv.id, held, provider),
+            )
+        ]
     seen.add(conv.id)
     # `thread_id` is EMPTY because an export declares no thread — see the graph note at
     # the top of this section. `rollout_path` is empty only where a session-store reader
@@ -1144,8 +1202,7 @@ def _admit_export_conversation(conn, conv, provider, path, seen, report):
     # way, which is provenance the reader never dispatches on (a one-entry leg list falls
     # through to the column).
     stored = "" if provider in EXPORT_PATH_COLLIDES_WITH_A_READER else path
-    index._retry(lambda: corpus.add_conversation(conn, conv, thread_id="",
-                                                 rollout_path=stored))
+    index._retry(lambda: corpus.add_conversation(conn, conv, thread_id="", rollout_path=stored))
     index._retry(lambda: corpus.set_conversation_rollouts(conn, conv.id, [path]))
     report["conversations"] += 1
     return []
@@ -1174,8 +1231,12 @@ def _ingest_export_file(conn, provider, path, second_path, seen, chunk_size, pro
     callback and re-file it as a `parse` error against the export, which is both a lie
     about the file and a cancel the caller cannot perform.
     """
-    report = {"provider": provider, "file": os.path.basename(path),
-              "conversations": 0, "duplicates": 0}
+    report = {
+        "provider": provider,
+        "file": os.path.basename(path),
+        "conversations": 0,
+        "duplicates": 0,
+    }
     errors = []
     if provider == "gemini":
         pairs, errors, mode = _gemini_conversations(path, second_path)
@@ -1191,8 +1252,7 @@ def _ingest_export_file(conn, provider, path, second_path, seen, chunk_size, pro
 
     def commit():
         if not errors:
-            index._retry(lambda: corpus.set_checkpoint(conn, path, consumed,
-                                                       content_hash))
+            index._retry(lambda: corpus.set_checkpoint(conn, path, consumed, content_hash))
         index._retry(conn.commit)
         if progress is not None:
             progress(path, consumed)
@@ -1202,18 +1262,17 @@ def _ingest_export_file(conn, provider, path, second_path, seen, chunk_size, pro
             conv, err = next(stream)
         except StopIteration:
             break
-        except Exception as exc:            # noqa: BLE001 - collected, never raised
+        except Exception as exc:  # noqa: BLE001 - collected, never raised
             errors.append(_export_error(provider, path, "parse", repr(exc)))
             break
         consumed += 1
-        if consumed <= start:               # already committed by an earlier run
+        if consumed <= start:  # already committed by an earlier run
             continue
         pending += 1
         if err is not None:
             errors.append(err)
         elif conv is not None:
-            errors.extend(_admit_export_conversation(conn, conv, provider, path, seen,
-                                                     report))
+            errors.extend(_admit_export_conversation(conn, conv, provider, path, seen, report))
         if pending >= chunk_size:
             commit()
             pending = 0
@@ -1262,18 +1321,23 @@ def ingest_exports(index_path, specs, progress=None, chunk_size=None):
                 continue
             resolved = export_files(provider, path, second_path)
             if not resolved:
-                errors.append(_export_error(
-                    provider, path, "resolve",
-                    "no %s export file found at %s — a named source that resolves to "
-                    "nothing is an error, not an empty success" % (provider, path)))
+                errors.append(
+                    _export_error(
+                        provider,
+                        path,
+                        "resolve",
+                        "no %s export file found at %s — a named source that resolves to "
+                        "nothing is an error, not an empty success" % (provider, path),
+                    )
+                )
                 continue
             # ONE dedup pool per source, so a conversation repeated across shards (or
             # between the main export and its projects file) is indexed once.
             seen = set()
             for resolved_path in resolved:
                 report, file_errors = _ingest_export_file(
-                    conn, provider, resolved_path, second_path, seen, chunk_size,
-                    progress)
+                    conn, provider, resolved_path, second_path, seen, chunk_size, progress
+                )
                 files.append(report)
                 errors.extend(file_errors)
     finally:

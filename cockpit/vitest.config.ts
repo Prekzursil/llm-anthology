@@ -75,5 +75,20 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // QZP lean gate, gate 3 (`npm run test:coverage`). Interim bar 85,
+    // declared here and in .github/workflows/quality.yml
+    // (jsts-coverage-min): cockpit currently measures 85.64% lines /
+    // 90.53% branches (see the table this run prints). Ratchet BOTH
+    // numbers toward the charter's 100 as coverage work lands; a lowered
+    // number must stay visible in this file, never silently relaxed.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      // declaration files carry no runtime code to measure
+      exclude: ["src/**/*.d.ts"],
+      thresholds: { lines: 85, functions: 85, statements: 85, branches: 85 },
+      // the text table is not truncated, so every uncovered line is named in the log
+      reporter: ["text-summary", ["text", { maxCols: 1000 }], "json-summary"],
+    },
   },
 });

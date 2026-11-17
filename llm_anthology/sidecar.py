@@ -207,6 +207,7 @@ feeds a LOCAL, no-egress backend. Backends are injected at construction (``resea
 / ``local_backend``); both default to a no-network ``research.MockBackend`` placeholder, so
 an unconfigured host synthesizes nothing rather than reaching the network.
 """
+
 import argparse
 import json
 import os
@@ -269,21 +270,27 @@ _REPARSERS = {
 #: a source looks like. Providers and second paths are `loaders.EXPORT_PROVIDERS` and
 #: `loaders._EXPORT_SECOND_PATH`; `test_the_export_params_match_the_loader_vocabulary`
 #: checks this table against them so a fifth provider cannot be added on one side only.
-_EXPORT_PARAMS = (("chatgpt", "chatgpt_projects"), ("claude", ""), ("codex", ""),
-                  ("gemini", "gemini_harvest"))
+_EXPORT_PARAMS = (
+    ("chatgpt", "chatgpt_projects"),
+    ("claude", ""),
+    ("codex", ""),
+    ("gemini", "gemini_harvest"),
+)
 
 #: Every export param, primary and second, in refusal order. Read unconditionally so a
 #: wrong TYPE is a caller bug rather than a silently skipped source.
 _EXPORT_KEYS = tuple(
-    key for provider, second in _EXPORT_PARAMS
-    for key in ((provider + "_export",) + ((second,) if second else ())))
+    key
+    for provider, second in _EXPORT_PARAMS
+    for key in ((provider + "_export",) + ((second,) if second else ()))
+)
 
 #: The one export param that is NOT existence-checked, and why it must stay that way.
 #:
 #: `--gemini-harvest` is a grouping HINT, not a corpus: `load_gemini` reports a
 #: named-but-absent harvest as an ERROR and still falls back to the labelled provisional
 #: grouping. Hard-failing it at this boundary would make that documented, tested path
-#: unreachable from the app — exactly the exemption `cli.py:175-177` already carves out by
+#: unreachable from the app — exactly the exemption `cli.py:222-224` already carves out by
 #: checking only `src`, `chatgpt_projects` and each spec's PRIMARY path. It is still
 #: PATH-GUARDED: a UNC harvest is an outbound SMB/NTLM vector whether or not it exists.
 _EXPORT_EXISTENCE_EXEMPT = frozenset({"gemini_harvest"})
@@ -338,6 +345,7 @@ class RpcError(Exception):
 
 
 # ------------------------------------------------------------------- pure helpers
+
 
 def _dumps(obj):
     """One compact NDJSON line (no spaces, UTF-8 preserved, no trailing newline)."""
@@ -494,7 +502,7 @@ def fts_match_expression(raw):
             # `_tokenize`, so no character that could BE syntax survives into it.
             terms = _tokenize(text)
             if not terms:
-                continue                       # `""` — an empty phrase is a syntax error
+                continue  # `""` — an empty phrase is a syntax error
             parts.append('"%s"%s' % (" ".join(terms), "*" if quoted_prefix else ""))
             continue
         for token in text.split():
@@ -532,10 +540,10 @@ def _split_quoted(raw):
             out.append((raw[i:opened], False, False))
         closed = raw.find('"', opened + 1)
         if closed < 0:
-            out.append((raw[opened + 1:], True, False))
+            out.append((raw[opened + 1 :], True, False))
             break
         prefix = closed + 1 < n and raw[closed + 1] == "*"
-        out.append((raw[opened + 1:closed], True, prefix))
+        out.append((raw[opened + 1 : closed], True, prefix))
         i = closed + 2 if prefix else closed + 1
     return out
 
@@ -652,7 +660,7 @@ def _build_error(err):
     rollout is attacker-influenced text and must not relay a hidden-unicode payload.
 
     ``file`` is indexed directly rather than guarded: every producer sets it — the rollout
-    parser (codex_rollout.py:343, :347, :435) and ALSO loaders' own ``_ingest_docs`` /
+    parser (codex_rollout.py:392, :397, :488) and ALSO loaders' own ``_ingest_docs`` /
     ``_admit`` and the Grok and Claude Code adapters, which this list used to omit — so a
     guard here would be unreachable, and a new producer should fail LOUD, not leak a path."""
     projected = dict(err)
@@ -669,13 +677,15 @@ def _raw_transcript(conv):
 
 # -------------------------------------------------------------------- the engine
 
+
 class Sidecar:
     """Holds the opened index (may be None) + the in-memory thread graph, and answers
     JSON-RPC requests. ``conn`` None means no corpus is attached: ``health.ping`` still
     works (reporting ``corpus_ready`` False) while every data method returns -32000."""
 
-    def __init__(self, conn, research_backend=None, local_backend=None,
-                 build_runner=None, corpus_error=""):
+    def __init__(
+        self, conn, research_backend=None, local_backend=None, build_runner=None, corpus_error=""
+    ):
         # WHY A REASON AND NOT JUST `conn is None`. Both mean "no corpus attached", but they
         # are different situations for a USER: nothing was named, versus a real index that
         # this build cannot open. Collapsing them is what made a version-1 index report
@@ -698,9 +708,9 @@ class Sidecar:
         # Both default to a no-network placeholder, so an unconfigured host reaches the
         # network for neither; a real cockpit host injects the concrete backends.
         self.research_backend = (
-            research.MockBackend() if research_backend is None else research_backend)
-        self.local_backend = (
-            research.MockBackend() if local_backend is None else local_backend)
+            research.MockBackend() if research_backend is None else research_backend
+        )
+        self.local_backend = research.MockBackend() if local_backend is None else local_backend
         # The corpus.build job slot. AT MOST ONE ingest exists at a time, so a single slot
         # (rather than a registry) is the whole model — see _corpus_build. `_build_lock`
         # guards every field of `_build_job` because the worker THREAD writes it while the
@@ -710,8 +720,7 @@ class Sidecar:
         self._next_build_id = 1
         # How the ingest is run. Injected so a test can execute it inline or capture it and
         # control the interleaving; production spawns a daemon thread.
-        self._build_runner = (
-            _default_build_runner if build_runner is None else build_runner)
+        self._build_runner = _default_build_runner if build_runner is None else build_runner
         self._handlers = {
             "health.ping": self._health_ping,
             "corpus.stats": self._corpus_stats,
@@ -774,8 +783,9 @@ class Sidecar:
         if not isinstance(request, dict):
             return _error_response(None, -32600, "Invalid Request")
         response = self._compute_response(
-            request.get("id"), request.get("method"), request.get("params", {}))
-        if "id" not in request:          # a notification is never answered
+            request.get("id"), request.get("method"), request.get("params", {})
+        )
+        if "id" not in request:  # a notification is never answered
             return None
         return response
 
@@ -786,7 +796,7 @@ class Sidecar:
             return {"jsonrpc": "2.0", "id": rid, "result": self.dispatch(method, params)}
         except RpcError as e:
             return _error_response(rid, e.code, e.message, e.data)
-        except Exception as e:           # never let one bad request kill the loop
+        except Exception as e:  # never let one bad request kill the loop
             return _error_response(rid, -32603, "Internal error", {"detail": str(e)})
 
     def dispatch(self, method, params):
@@ -823,25 +833,40 @@ class Sidecar:
         # `corpus_error` rides on the FIRST call the cockpit makes, so a UI can say WHY the
         # corpus is unavailable without provoking an error to find out. Always present, ""
         # when healthy — an absent-when-fine key makes every reader write the same guard.
-        return {"ok": True, "engine_version": __version__,
-                "ir_version": ir.IR_VERSION, "corpus_ready": self.conn is not None,
-                "corpus_error": _clean(self.corpus_error)}
+        return {
+            "ok": True,
+            "engine_version": __version__,
+            "ir_version": ir.IR_VERSION,
+            "corpus_ready": self.conn is not None,
+            "corpus_error": _clean(self.corpus_error),
+        }
 
     def _corpus_stats(self, params):
         self._require_corpus()
         conn = self.conn
         conversations = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        records = conn.execute(
-            "SELECT COALESCE(SUM(turn_count), 0) FROM conversations").fetchone()[0]
+        records = conn.execute("SELECT COALESCE(SUM(turn_count), 0) FROM conversations").fetchone()[
+            0
+        ]
         total_bytes = conn.execute(
-            "SELECT COALESCE(SUM(char_count), 0) FROM conversations").fetchone()[0]
+            "SELECT COALESCE(SUM(char_count), 0) FROM conversations"
+        ).fetchone()[0]
         threads = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-        edges = conn.execute(
-            "SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
-        providers = {row[0]: row[1] for row in conn.execute(
-            "SELECT provider, COUNT(*) FROM conversations GROUP BY provider")}
-        return {"conversations": conversations, "records": records, "threads": threads,
-                "edges": edges, "bytes": total_bytes, "providers": providers}
+        edges = conn.execute("SELECT COUNT(*) FROM thread_spawn_edges").fetchone()[0]
+        providers = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT provider, COUNT(*) FROM conversations GROUP BY provider"
+            )
+        }
+        return {
+            "conversations": conversations,
+            "records": records,
+            "threads": threads,
+            "edges": edges,
+            "bytes": total_bytes,
+            "providers": providers,
+        }
 
     # -- corpus.build (the ONLY ingest surface, and the only one that leaves this thread)
     #
@@ -853,27 +878,27 @@ class Sidecar:
     # `build` starts the work and returns a handle, and `build_status` reports on it.
     #
     # WHY THE WORKER NEVER TOUCHES self.conn. corpus.open_index builds its connection with
-    # sqlite3's DEFAULT check_same_thread=True (corpus.py:303), so any use of self.conn off
+    # sqlite3's DEFAULT check_same_thread=True (corpus.py:328), so any use of self.conn off
     # the request thread raises ProgrammingError — measured, not assumed. The worker is
-    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:452) and
-    # closes (loaders.py:463) its OWN connection inside the worker thread, so the two
+    # handed the index PATH instead and loaders.load_corpus opens (loaders.py:490) and
+    # closes (loaders.py:501) its OWN connection inside the worker thread, so the two
     # connections are thread-confined by construction. They do share the file, which is
-    # exactly what WAL (corpus.py:292) is for: the request thread keeps reading committed
+    # exactly what WAL (corpus.py:317) is for: the request thread keeps reading committed
     # rows while the worker writes, and a transient collision is already typed as -32002.
     #
     # NO CANCEL. The only cooperative abort point is index.build_index's per-chunk
-    # `progress` callback (index.py:171-172). This used to add that loaders.load_corpus
+    # `progress` callback (index.py:189-190). This used to add that loaders.load_corpus
     # "does not forward one, so there is no hook to honour a cancel through". THAT PREMISE
-    # IS DEAD: load_corpus takes `progress` (loaders.py:336) and forwards it
-    # (loaders.py:461), and `ingest_exports` accepts one too. True now, and narrower:
-    # NEITHER worker call passes one (sidecar.py:1105, :1108), a call-site gap and not an
+    # IS DEAD: load_corpus takes `progress` (loaders.py:372) and forwards it
+    # (loaders.py:499), and `ingest_exports` accepts one too. True now, and narrower:
+    # NEITHER worker call passes one (sidecar.py:1159, :1162), a call-site gap and not an
     # architectural one — TWO of them since the export half was wired, so a cancel means
     # threading it through both; doing only the first would leave the export ingest
     # uncancellable while the UI claimed otherwise. What still holds: the phase BEFORE it,
     # codex_rollout.ingest_sessions, has no hook at all, so a cancel firing only after the
     # longest phase would be a lie, and killing the thread is unsafe in CPython. What
     # stands in for it: build_index commits and advances its checkpoint every chunk
-    # (index.py:168-170), so an abandoned build leaves a VALID, partially-populated index
+    # (index.py:186-188), so an abandoned build leaves a VALID, partially-populated index
     # and the next RESUMES from the last committed batch. Recovery is "run it again".
 
     def _corpus_create(self, params):
@@ -902,12 +927,16 @@ class Sidecar:
         index_path = _req_str(params, "index_path")
         _reject_nonlocal_path(index_path, "index_path")
         if os.path.exists(index_path):
-            raise RpcError(CORPUS_EXISTS,
-                           "a file already exists at %s; open it instead of creating it"
-                           % _clean(index_path))
+            raise RpcError(
+                CORPUS_EXISTS,
+                "a file already exists at %s; open it instead of creating it" % _clean(index_path),
+            )
         if not os.path.isdir(os.path.dirname(index_path)):
-            raise RpcError(-32602, "index_path parent directory does not exist: %s"
-                           % _clean(os.path.dirname(index_path)))
+            raise RpcError(
+                -32602,
+                "index_path parent directory does not exist: %s"
+                % _clean(os.path.dirname(index_path)),
+            )
         corpus.open_index(index_path).close()
         return {"index_path": _clean(index_path), "created": True}
 
@@ -957,15 +986,15 @@ class Sidecar:
         this call reports that the job was ACCEPTED, not that it finished; ``build_status``
         is the single source of truth for the outcome.
 
-        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1035) — but is
+        ``codex_home`` is OPTIONAL — `_opt_str`, like the roots (sidecar.py:1071) — but is
         never DEFAULTED, exactly as ``dedup.scan`` refuses to default it and for the same
         measured reason: ``loaders.load_corpus`` with ``codex_home`` None falls back to the
-        LIVE Codex store (codex_state.py:127-130), and an automated probe really did read
+        LIVE Codex store (codex_state.py:131-134), and an automated probe really did read
         the owner's real sessions that way. Omitting it means "no state graph", never "go
         find one". Both paths are refused if UNC (an outbound SMB/NTLM vector) or relative.
 
         EVERY source root must be an existing DIRECTORY. ingest_sessions globs
-        (codex_rollout.py:425), so a typo'd root yields zero docs and zero errors and
+        (codex_rollout.py:478), so a typo'd root yields zero docs and zero errors and
         would otherwise report a perfectly "successful" build of nothing.
 
         THREE source roots now, each OPTIONAL and each opt-in: ``sessions_root`` (Codex
@@ -991,28 +1020,36 @@ class Sidecar:
         # Read EVERY export key, named or not, so a wrong TYPE is a caller bug rather than
         # a silently skipped source: `_opt_str` collapses absent and empty to "".
         export = {key: _opt_str(params, key) for key in _EXPORT_KEYS}
-        specs = [(provider, export[provider + "_export"],
-                  export[second_key] if second_key else "")
-                 for provider, second_key in _EXPORT_PARAMS if export[provider + "_export"]]
+        specs = [
+            (provider, export[provider + "_export"], export[second_key] if second_key else "")
+            for provider, second_key in _EXPORT_PARAMS
+            if export[provider + "_export"]
+        ]
         if not sessions_root and not grok_root and not claude_root and not specs:
-            raise RpcError(-32602,
-                           "name at least one source: sessions_root (Codex), "
-                           "grok_root (Grok Build), claude_root (Claude Code) and/or a "
-                           "downloaded export (chatgpt_export, claude_export, "
-                           "codex_export, gemini_export)")
+            raise RpcError(
+                -32602,
+                "name at least one source: sessions_root (Codex), "
+                "grok_root (Grok Build), claude_root (Claude Code) and/or a "
+                "downloaded export (chatgpt_export, claude_export, "
+                "codex_export, gemini_export)",
+            )
         # EVERY root must EXIST when named. Each adapter walks or globs, so a typo'd root
         # yields zero docs and zero errors — a silent, perfectly "successful" build of
         # nothing, which is the failure mode this whole ingest path has been bitten by
         # before. `claude_code.ingest_sessions` documents a missing root as ([], []), an
         # honest empty result for the ADAPTER and a false success for a user who mistyped.
-        for value, name in ((sessions_root, "sessions_root"), (grok_root, "grok_root"),
-                            (claude_root, "claude_root")):
+        for value, name in (
+            (sessions_root, "sessions_root"),
+            (grok_root, "grok_root"),
+            (claude_root, "claude_root"),
+        ):
             if not value:
                 continue
             _reject_nonlocal_path(value, name)
             if not os.path.isdir(value):
-                raise RpcError(-32602,
-                               "%s must be an existing directory: %s" % (name, _clean(value)))
+                raise RpcError(
+                    -32602, "%s must be an existing directory: %s" % (name, _clean(value))
+                )
         # An export is a FILE **or** a directory (a sharded export is a directory; a Gemini
         # Takeout transcript is a file), so this is `exists`, not `isdir` — the roots'
         # `isdir` would refuse the single-file case the owner actually has. UNC is refused
@@ -1026,15 +1063,14 @@ class Sidecar:
             if name in _EXPORT_EXISTENCE_EXEMPT:
                 continue
             if not os.path.exists(value):
-                raise RpcError(-32602,
-                               "%s must be an existing path: %s" % (name, _clean(value)))
+                raise RpcError(-32602, "%s must be an existing path: %s" % (name, _clean(value)))
         # OPTIONAL, like the roots. It is only the Codex state graph, which a Grok-only
         # ingest has none of. Leaving it unnamed skips that merge outright — `load_corpus`
         # no longer falls through to the live store, which is the behaviour that let an
         # automated probe read the owner's real sessions.
         codex_home = _opt_str(params, "codex_home")
         # Existence is NOT required here: codex_state.load_corpus skips a missing/busy
-        # state DB by design (codex_state.py:96-98), so an absent one is a valid, silent
+        # state DB by design (codex_state.py:101-103), so an absent one is a valid, silent
         # "no state graph to merge" rather than a failure.
         # Guarded only when NAMED. An empty string is not an absolute path, so running the
         # guard unconditionally rejected the very case this parameter was just made optional
@@ -1043,40 +1079,58 @@ class Sidecar:
             _reject_nonlocal_path(codex_home, "codex_home")
         index_path = self._index_path()
         if not index_path:
-            raise RpcError(BUILD_UNAVAILABLE,
-                           "this engine holds an in-memory index; corpus.build needs an "
-                           "on-disk index the worker can reopen")
+            raise RpcError(
+                BUILD_UNAVAILABLE,
+                "this engine holds an in-memory index; corpus.build needs an "
+                "on-disk index the worker can reopen",
+            )
 
         with self._build_lock:
-            running = self._build_job is not None and self._build_job["state"] == "running"
-            if running:
-                raise RpcError(BUILD_IN_PROGRESS,
-                               "build %s is still running; poll corpus.build_status"
-                               % self._build_job["job_id"])
-            job = {"job_id": "build-%d" % self._next_build_id, "state": "running",
-                   "sessions_root": sessions_root, "grok_root": grok_root,
-                   "claude_root": claude_root, "started_ms": _now_ms(),
-                   "finished_ms": None, "errors": [], "error": None,
-                   "needs_reload": False}
+            current = self._build_job
+            if current is not None and current["state"] == "running":
+                raise RpcError(
+                    BUILD_IN_PROGRESS,
+                    "build %s is still running; poll corpus.build_status" % current["job_id"],
+                )
+            job = {
+                "job_id": "build-%d" % self._next_build_id,
+                "state": "running",
+                "sessions_root": sessions_root,
+                "grok_root": grok_root,
+                "claude_root": claude_root,
+                "started_ms": _now_ms(),
+                "finished_ms": None,
+                "errors": [],
+                "error": None,
+                "needs_reload": False,
+            }
             job.update(export)
             self._next_build_id += 1
             self._build_job = job
         # OUTSIDE the lock: a synchronous runner executes the worker inline, and the worker
         # takes this same non-reentrant lock — starting it while held would deadlock.
         self._build_runner(
-            lambda: self._run_build(job, sessions_root, index_path, codex_home, grok_root,
-                                    claude_root, specs))
-        reply = {"job_id": job["job_id"], "state": "running",
-                 "sessions_root": _clean(sessions_root), "grok_root": _clean(grok_root),
-                 "claude_root": _clean(claude_root), "started_ms": job["started_ms"]}
+            lambda: self._run_build(
+                job, sessions_root, index_path, codex_home, grok_root, claude_root, specs
+            )
+        )
+        reply = {
+            "job_id": job["job_id"],
+            "state": "running",
+            "sessions_root": _clean(sessions_root),
+            "grok_root": _clean(grok_root),
+            "claude_root": _clean(claude_root),
+            "started_ms": job["started_ms"],
+        }
         # Echo the export sources too, for the roots' reason: a parameter that was accepted
         # and then ignored is otherwise invisible to the caller, which is precisely how this
         # whole surface came to be missing one.
         reply.update((key, _clean(value)) for key, value in export.items())
         return reply
 
-    def _run_build(self, job, sessions_root, index_path, codex_home, grok_root="",
-                   claude_root="", specs=()):
+    def _run_build(
+        self, job, sessions_root, index_path, codex_home, grok_root="", claude_root="", specs=()
+    ):
         """THE WORKER. Runs off the request thread; touches ONLY the job record (under the
         lock) and thread-local objects. Values are stored RAW and projected at the wire in
         ``_corpus_build_status``, like every other text-bearing surface here.
@@ -1090,7 +1144,7 @@ class Sidecar:
         returns is deliberately DISCARDED — see ``_adopt_completed_build`` for why the
         request thread re-reads the index instead of receiving that object. ``needs_reload``
         is set on BOTH outcomes because ``_persist_graph`` commits the graph BEFORE the long
-        conversation ingest (loaders.py:454-454), so a FAILED build can still have changed
+        conversation ingest (loaders.py:492-492), so a FAILED build can still have changed
         the index and the live view must follow it.
 
         BOTH HALVES, ONE ERROR LIST. The session ingest and the DOWNLOADED-export ingest
@@ -1103,11 +1157,11 @@ class Sidecar:
         parameter that was accepted and ignored."""
         try:
             _built, errors = loaders.load_corpus(
-                sessions_root, index_path, codex_home, grok_root=grok_root,
-                claude_root=claude_root)
+                sessions_root, index_path, codex_home, grok_root=grok_root, claude_root=claude_root
+            )
             _files, export_errors = loaders.ingest_exports(index_path, specs)
             errors = errors + export_errors
-        except Exception as exc:                      # noqa: BLE001 — see the docstring
+        except Exception as exc:  # noqa: BLE001 — see the docstring
             with self._build_lock:
                 job["error"] = "%s: %s" % (type(exc).__name__, exc)
                 job["needs_reload"] = True
@@ -1126,8 +1180,8 @@ class Sidecar:
 
         WHY RE-READ RATHER THAN ADOPT THE WORKER'S OBJECT. ``loaders.load_corpus`` returns a
         Corpus assembled from THAT RUN ALONE (it starts from a fresh ``corpus.Corpus()``,
-        loaders.py:394), while ``_persist_graph`` UPSERTS that run into the tables a previous
-        build already populated (loaders.py:788-788, INSERT OR REPLACE). The in-app flow is "open an existing
+        loaders.py:431), while ``_persist_graph`` UPSERTS that run into the tables a previous
+        build already populated (loaders.py:832-832, INSERT OR REPLACE). The in-app flow is "open an existing
         corpus, then ingest more sessions into it", so taking the returned object would drop
         every previously-ingested thread from the live view while the index on disk still
         held it — measured: a second build showed ['B1'] where the index had ['A1','B1'].
@@ -1142,9 +1196,8 @@ class Sidecar:
         """
         with self._build_lock:
             job = self._build_job
-            pending = job is not None and job["needs_reload"]
-        if not pending:
-            return
+            if job is None or not job["needs_reload"]:
+                return
         self.corpus = corpus.load_corpus(self.conn)
         with self._build_lock:
             job["needs_reload"] = False
@@ -1156,7 +1209,7 @@ class Sidecar:
 
         ``indexed_conversations`` is REAL progress, not an estimate: it is counted from the
         index on this thread, and because the worker commits after every chunk
-        (index.py:168-170) under WAL, the count climbs as those batches land.
+        (index.py:186-188) under WAL, the count climbs as those batches land.
 
         The optional ``job_id`` lets a client prove it is reading the job it started; a poll
         that raced a newer build gets -32602 rather than another job's progress."""
@@ -1164,23 +1217,25 @@ class Sidecar:
         requested = params.get("job_id")
         if requested is not None and not isinstance(requested, str):
             raise RpcError(-32602, "job_id must be a string")
-        indexed = self.conn.execute(
-            "SELECT COUNT(*) FROM conversations").fetchone()[0]
+        indexed = self.conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         with self._build_lock:
             snapshot = None if self._build_job is None else dict(self._build_job)
         if snapshot is None:
             if requested is not None:
-                raise RpcError(-32602,
-                               "unknown job_id %r: no build has been started" % requested)
+                raise RpcError(-32602, "unknown job_id %r: no build has been started" % requested)
             return {"state": "idle", "indexed_conversations": indexed, "errors": []}
         if requested is not None and requested != snapshot["job_id"]:
-            raise RpcError(-32602, "unknown job_id %r; the current job is %r"
-                           % (requested, snapshot["job_id"]))
-        result = {"job_id": snapshot["job_id"], "state": snapshot["state"],
-                  "sessions_root": _clean(snapshot["sessions_root"]),
-                  "started_ms": snapshot["started_ms"],
-                  "indexed_conversations": indexed,
-                  "errors": [_build_error(e) for e in snapshot["errors"]]}
+            raise RpcError(
+                -32602, "unknown job_id %r; the current job is %r" % (requested, snapshot["job_id"])
+            )
+        result = {
+            "job_id": snapshot["job_id"],
+            "state": snapshot["state"],
+            "sessions_root": _clean(snapshot["sessions_root"]),
+            "started_ms": snapshot["started_ms"],
+            "indexed_conversations": indexed,
+            "errors": [_build_error(e) for e in snapshot["errors"]],
+        }
         # The other two roots the job records. They were stored and read by NOTHING, which
         # is worse than either alternative — they cost a field on the job and a reader on
         # the wire while answering no question. A client that polls rather than holding the
@@ -1206,7 +1261,7 @@ class Sidecar:
         offset = _opt_int(params, "offset", 0)
         nodes = [self._thread_node(tid) for tid in self.corpus.roots()]
         nodes = self._order_nodes(nodes, params.get("order"))
-        return nodes[offset:offset + limit]
+        return nodes[offset : offset + limit]
 
     def _graph_children(self, params):
         self._require_corpus()
@@ -1217,14 +1272,18 @@ class Sidecar:
         self._require_corpus()
         tid = _req_str(params, "thread_id")
         depth = params.get("depth")
-        if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool)
-                                  or depth < 0):
+        if depth is not None and (
+            not isinstance(depth, int) or isinstance(depth, bool) or depth < 0
+        ):
             raise RpcError(-32602, "depth must be a non-negative integer")
         node_ids = self._collect_subtree(tid, depth)
         idset = set(node_ids)
         nodes = [self._thread_node(i) for i in node_ids]
-        edges = [_spawn_edge(e) for e in self.corpus.edges
-                 if e.parent_thread_id in idset and e.child_thread_id in idset]
+        edges = [
+            _spawn_edge(e)
+            for e in self.corpus.edges
+            if e.parent_thread_id in idset and e.child_thread_id in idset
+        ]
         return {"nodes": nodes, "edges": edges}
 
     def _graph_ancestors(self, params):
@@ -1250,8 +1309,7 @@ class Sidecar:
         value is the flat RollupMetrics dataclass (all non-negative ints: self/subtree
         tokens+counts, max_depth, child_count), so no sanitization is needed."""
         self._require_corpus()
-        return {tid: asdict(metrics)
-                for tid, metrics in rollup.rollup(self.corpus).items()}
+        return {tid: asdict(metrics) for tid, metrics in rollup.rollup(self.corpus).items()}
 
     def _graph_timeline(self, params):
         """The node-creation event axis for a time scrubber: ``{events, min_ms, max_ms,
@@ -1286,8 +1344,7 @@ class Sidecar:
             return export.MODE_FULL
         mode = params["mode"]
         if mode not in export.EXPORT_MODES:
-            raise RpcError(-32602, "mode must be one of: %s"
-                                   % ", ".join(export.EXPORT_MODES))
+            raise RpcError(-32602, "mode must be one of: %s" % ", ".join(export.EXPORT_MODES))
         return mode
 
     def _export_scrub(self, params):
@@ -1331,13 +1388,14 @@ class Sidecar:
         self._require_corpus()
         mode = self._export_mode(params)
         graph = export.export_graph(self.corpus, mode=mode)
-        return {"node_count": len(self.corpus._nodes()),
-                "edge_count": len(self.corpus.edges),
-                "conversation_count": 0,
-                "est_bytes": len(export.serialize_graph(graph).encode("utf-8")),
-                "mode": mode,
-                "credential_scan": _sanitize_tree(
-                    export.scan_for_export(self.corpus, mode=mode))}
+        return {
+            "node_count": len(self.corpus._nodes()),
+            "edge_count": len(self.corpus.edges),
+            "conversation_count": 0,
+            "est_bytes": len(export.serialize_graph(graph).encode("utf-8")),
+            "mode": mode,
+            "credential_scan": _sanitize_tree(export.scan_for_export(self.corpus, mode=mode)),
+        }
 
     def _export_run(self, params):
         """Write the spawn-graph export to ``dest_path`` and return the fidelity verdict.
@@ -1367,8 +1425,8 @@ class Sidecar:
         _reject_nonlocal_dest(dest_path)
         try:
             report = export.export_with_gate(
-                self.corpus, dest_path, root=os.path.dirname(dest_path),
-                mode=mode, scrub=scrub)
+                self.corpus, dest_path, root=os.path.dirname(dest_path), mode=mode, scrub=scrub
+            )
         except export.ExportPathError as e:
             raise RpcError(-32602, "unsafe dest_path: %s" % e)
         return self._project_export_run(report)
@@ -1378,15 +1436,17 @@ class Sidecar:
         query = _req_str(params, "q")
         limit = _opt_int(params, "limit", 50)
         offset = _opt_int(params, "offset", 0)
-        filt, bucket = _search_filters(params), _opt_bucket(params)   # D-3, both validated
+        filt, bucket = _search_filters(params), _opt_bucket(params)  # D-3, both validated
         start = time.perf_counter()
         total, rows = self._run_search(query, limit, offset, filt)
         hits = []
         for i, row in enumerate(rows):
-            hit = {"conversation_id": row["conversation_id"],
-                   "snippet": _clean(row["title"]),
-                   "score": 1.0 / (offset + i + 1),
-                   "provider": row["provider"]}
+            hit = {
+                "conversation_id": row["conversation_id"],
+                "snippet": _clean(row["title"]),
+                "score": 1.0 / (offset + i + 1),
+                "provider": row["provider"],
+            }
             if row["thread_id"]:
                 hit["thread_id"] = row["thread_id"]
             ts = _to_ms(row["created_at"])
@@ -1412,10 +1472,12 @@ class Sidecar:
         row = self.conn.execute(
             "SELECT conversation_id, provider, title, thread_id, rollout_path, "
             "created_at, updated_at, account FROM conversations "
-            "WHERE conversation_id=?", (cid,)).fetchone()
+            "WHERE conversation_id=?",
+            (cid,),
+        ).fetchone()
         if row is None:
             raise RpcError(THREAD_NOT_FOUND, "conversation not found: %s" % cid)
-        conv, info = self._read_conversation(row)   # archive first, reparse only as fallback
+        conv, info = self._read_conversation(row)  # archive first, reparse only as fallback
         if conv is None:
             return self._conversation_stub(row, info)
         return self._serialize_conversation(conv, info)
@@ -1510,8 +1572,7 @@ class Sidecar:
         pulls the whole row (incl. ``rowid`` and the local ``rollout_path``) to PROVE the
         projection drops everything off-allowlist, and the FTS body is not a column here,
         so no raw text can ride along. Sorted by id so the cloud prompt is byte-stable."""
-        rows = self.conn.execute(
-            "SELECT * FROM conversations ORDER BY conversation_id").fetchall()
+        rows = self.conn.execute("SELECT * FROM conversations ORDER BY conversation_id").fetchall()
         return [redact.to_metadata_view(row) for row in rows]
 
     def _research_synthesize(self, params):
@@ -1529,8 +1590,7 @@ class Sidecar:
             raise RpcError(-32602, "tier must be 'cloud' or 'local'")
         views = self._metadata_views()
         summary = research.synthesize_over_metadata(views, self.research_backend)
-        return {"tier": "cloud", "summary": _clean(summary),
-                "conversation_count": len(views)}
+        return {"tier": "cloud", "summary": _clean(summary), "conversation_count": len(views)}
 
     def _research_extract_entities(self, params):
         """Metadata-only entity extraction: redact -> MetadataView -> the corpus-blind
@@ -1539,8 +1599,7 @@ class Sidecar:
         self._require_corpus()
         views = self._metadata_views()
         entities = research.extract_entities(views, self.research_backend)
-        return {"entities": [_clean(e) for e in entities],
-                "conversation_count": len(views)}
+        return {"entities": [_clean(e) for e in entities], "conversation_count": len(views)}
 
     def _research_local(self):
         """The LOCAL tier: re-parse every conversation from ALL its rollout legs — the same
@@ -1549,15 +1608,15 @@ class Sidecar:
         ``local_backend``. Nothing here reaches ``research`` or the network."""
         transcripts = []
         for row in self.conn.execute(
-                "SELECT conversation_id, provider, rollout_path FROM conversations "
-                "ORDER BY conversation_id").fetchall():
+            "SELECT conversation_id, provider, rollout_path FROM conversations "
+            "ORDER BY conversation_id"
+        ).fetchall():
             conv, _info = self._reparse_conversation(row)
             if conv is not None:
                 transcripts.append(_raw_transcript(conv))
         prompt = "\n\n".join([_LOCAL_INSTRUCTION, *transcripts])
         summary = self.local_backend.synthesize(prompt)
-        return {"tier": "local", "summary": _clean(summary),
-                "conversation_count": len(transcripts)}
+        return {"tier": "local", "summary": _clean(summary), "conversation_count": len(transcripts)}
 
     # -- metadata (the absorbed csm annotation layer) ------------------------------
     #
@@ -1602,8 +1661,7 @@ class Sidecar:
         # metadata._check_id raises ValueError for a key that cannot be stored; surface it
         # as an RPC param error rather than letting it escape as an internal fault.
         try:
-            meta = metadata_store.set_metadata(
-                self.conn, cid, alias=alias, tags=tags, notes=notes)
+            meta = metadata_store.set_metadata(self.conn, cid, alias=alias, tags=tags, notes=notes)
         except ValueError as exc:
             raise RpcError(-32602, str(exc)) from exc
         return self._annotation(meta)
@@ -1639,8 +1697,7 @@ class Sidecar:
                 "updated_at": r[5],
                 "turn_count": r[6],
                 "thread_id": r[7],
-                "annotation": self._annotation(
-                    metadata_store.get_metadata(self.conn, r[0])),
+                "annotation": self._annotation(metadata_store.get_metadata(self.conn, r[0])),
             }
             for r in rows
         ]
@@ -1649,8 +1706,10 @@ class Sidecar:
         """The tag facet: tag -> conversation count, case-collapsed and deterministically
         ordered by the store."""
         self._require_corpus()
-        return [{"tag": _clean(tag), "count": count}
-                for tag, count in metadata_store.tag_counts(self.conn).items()]
+        return [
+            {"tag": _clean(tag), "count": count}
+            for tag, count in metadata_store.tag_counts(self.conn).items()
+        ]
 
     # -- dedup (Codex physical copies -> one logical session) ----------------------
     #
@@ -1725,9 +1784,14 @@ class Sidecar:
 
     @staticmethod
     def _copy_dto(copy):
-        return {"session_id": copy.session_id, "file_path": copy.file_path,
-                "store_kind": copy.store_kind.value, "last_write_ms": copy.last_write_ms,
-                "size_bytes": copy.size_bytes, "is_hot": copy.is_hot}
+        return {
+            "session_id": copy.session_id,
+            "file_path": copy.file_path,
+            "store_kind": copy.store_kind.value,
+            "last_write_ms": copy.last_write_ms,
+            "size_bytes": copy.size_bytes,
+            "is_hot": copy.is_hot,
+        }
 
     def _preview_dto(self, plan_id, preview):
         return {
@@ -1737,12 +1801,22 @@ class Sidecar:
             "destination_root": preview.destination_root,
             "checkpoint_root": preview.checkpoint_root,
             "allowed": [self._copy_dto(t) for t in preview.allowed],
-            "blocked": [{"target": self._copy_dto(b.target), "reason": b.reason,
-                         "detail": _clean(b.detail)} for b in preview.blocked],
-            "warnings": [{"severity": int(w.severity), "severity_name": w.severity.name,
-                          "message": _clean(w.message)} for w in preview.warnings],
-            "plan": [{"session_id": m.session_id, "source": m.source,
-                      "destination": m.destination} for m in preview.plan],
+            "blocked": [
+                {"target": self._copy_dto(b.target), "reason": b.reason, "detail": _clean(b.detail)}
+                for b in preview.blocked
+            ],
+            "warnings": [
+                {
+                    "severity": int(w.severity),
+                    "severity_name": w.severity.name,
+                    "message": _clean(w.message),
+                }
+                for w in preview.warnings
+            ],
+            "plan": [
+                {"session_id": m.session_id, "source": m.source, "destination": m.destination}
+                for m in preview.plan
+            ],
             "requires_checkpoint": preview.requires_checkpoint,
             "requires_typed_confirmation": preview.requires_typed_confirmation,
             "required_typed_confirmation": preview.required_typed_confirmation,
@@ -1753,8 +1827,10 @@ class Sidecar:
         return {
             "executed": result.executed,
             "manifest_path": result.manifest_path,
-            "moves": [{"session_id": m.session_id, "source": m.source,
-                       "destination": m.destination} for m in result.moves],
+            "moves": [
+                {"session_id": m.session_id, "source": m.source, "destination": m.destination}
+                for m in result.moves
+            ],
             "unaccounted": list(result.unaccounted),
         }
 
@@ -1782,8 +1858,7 @@ class Sidecar:
         destination_root = params.get("destination_root", "")
         if not isinstance(destination_root, str):
             raise RpcError(-32602, "destination_root must be a string")
-        for label, value in (("store_root", store_root),
-                             ("checkpoint_root", checkpoint_root)):
+        for label, value in (("store_root", store_root), ("checkpoint_root", checkpoint_root)):
             _reject_nonlocal_path(value, label)
         if destination_root:
             _reject_nonlocal_path(destination_root, "destination_root")
@@ -1792,8 +1867,11 @@ class Sidecar:
         try:
             action = maintenance.MaintenanceAction(raw_action)
         except ValueError as exc:
-            raise RpcError(-32602, "action must be one of %s" % ", ".join(
-                a.value for a in maintenance.MaintenanceAction)) from exc
+            raise RpcError(
+                -32602,
+                "action must be one of %s"
+                % ", ".join(a.value for a in maintenance.MaintenanceAction),
+            ) from exc
 
         raw_targets = params.get("targets")
         if not isinstance(raw_targets, list) or not raw_targets:
@@ -1805,15 +1883,22 @@ class Sidecar:
             file_path = item.get("file_path")
             if not isinstance(file_path, str) or not file_path:
                 raise RpcError(-32602, "each target needs a non-empty file_path")
-            targets.append(maintenance.SessionCopy(
-                session_id=str(item.get("session_id", "")),
-                file_path=file_path,
-                store_kind=maintenance.SessionStoreKind.UNKNOWN,
-                size_bytes=item.get("size_bytes", 0) or 0))
+            targets.append(
+                maintenance.SessionCopy(
+                    session_id=str(item.get("session_id", "")),
+                    file_path=file_path,
+                    store_kind=maintenance.SessionStoreKind.UNKNOWN,
+                    size_bytes=item.get("size_bytes", 0) or 0,
+                )
+            )
 
         request = maintenance.MaintenanceRequest(
-            action=action, targets=tuple(targets), store_root=store_root,
-            checkpoint_root=checkpoint_root, destination_root=destination_root)
+            action=action,
+            targets=tuple(targets),
+            store_root=store_root,
+            checkpoint_root=checkpoint_root,
+            destination_root=destination_root,
+        )
         preview = self._maintenance_call(maintenance.plan_maintenance, request)
 
         plan_id = "plan-%d" % self._next_plan_id
@@ -1834,16 +1919,18 @@ class Sidecar:
         if not isinstance(apply_it, bool):
             raise RpcError(-32602, "apply must be a boolean")
         if plan_id not in self._plans:
-            raise RpcError(MAINTENANCE_REFUSED,
-                           "unknown or already-used plan_id %r; re-plan" % plan_id)
+            raise RpcError(
+                MAINTENANCE_REFUSED, "unknown or already-used plan_id %r; re-plan" % plan_id
+            )
         preview = self._plans[plan_id]
         result = self._maintenance_call(
-            maintenance.execute_maintenance, preview, confirmation, apply=apply_it)
+            maintenance.execute_maintenance, preview, confirmation, apply=apply_it
+        )
         # Consumed only once the engine ACCEPTED it: a refused confirmation must be
         # correctable without forcing a re-plan, while a completed run cannot be replayed.
         del self._plans[plan_id]
         if result.executed and result.manifest_path:
-            maintenance.record_run(self.conn, result.manifest_path)   # commits internally
+            maintenance.record_run(self.conn, result.manifest_path)  # commits internally
         return self._result_dto(result)
 
     def _maintenance_restore(self, params):
@@ -1859,8 +1946,8 @@ class Sidecar:
         if not isinstance(skip, bool):
             raise RpcError(-32602, "skip_unaccounted must be a boolean")
         result = self._maintenance_call(
-            maintenance.restore_checkpoint, manifest_path, apply=apply_it,
-            skip_unaccounted=skip)
+            maintenance.restore_checkpoint, manifest_path, apply=apply_it, skip_unaccounted=skip
+        )
         return self._result_dto(result)
 
     def _maintenance_runs(self, params):
@@ -1885,11 +1972,15 @@ class Sidecar:
         # so one wire name meant two different things depending on the surface, and the
         # UI's provider palette (keyed on adapter names) matched nothing for real Codex
         # threads, which record 'openai'. Both facts now travel, each under its own name.
-        node = {"id": meta.id, "title": _clean(meta.title),
-                "provider": meta.adapter, "model_provider": meta.model_provider,
-                "created_at_ms": meta.created_at_ms,
-                "child_count": cx.fan_out(tid),
-                "depth": cx.depth(tid)}
+        node = {
+            "id": meta.id,
+            "title": _clean(meta.title),
+            "provider": meta.adapter,
+            "model_provider": meta.model_provider,
+            "created_at_ms": meta.created_at_ms,
+            "child_count": cx.fan_out(tid),
+            "depth": cx.depth(tid),
+        }
         if meta.tokens_used:
             node["tokens"] = meta.tokens_used
         if meta.updated_at_ms is not None:
@@ -1909,22 +2000,33 @@ class Sidecar:
     def _thread_meta(self, m):
         """The full ThreadMeta projection for thread.get. ``rollout_path`` (a local FS
         path) is withheld and surfaced only as ``has_rollout``."""
-        return {"id": m.id, "title": _clean(m.title), "provider": m.adapter,
-                "model_provider": m.model_provider,
-                "tokens": m.tokens_used, "created_at_ms": m.created_at_ms,
-                "updated_at_ms": m.updated_at_ms, "git_branch": m.git_branch,
-                "cwd": _clean(m.cwd), "agent_role": m.agent_role,
-                "agent_nickname": _clean(m.agent_nickname), "preview": _clean(m.preview),
-                "child_count": self.corpus.fan_out(m.id),
-                "depth": self.corpus.depth(m.id), "has_rollout": bool(m.rollout_path)}
+        return {
+            "id": m.id,
+            "title": _clean(m.title),
+            "provider": m.adapter,
+            "model_provider": m.model_provider,
+            "tokens": m.tokens_used,
+            "created_at_ms": m.created_at_ms,
+            "updated_at_ms": m.updated_at_ms,
+            "git_branch": m.git_branch,
+            "cwd": _clean(m.cwd),
+            "agent_role": m.agent_role,
+            "agent_nickname": _clean(m.agent_nickname),
+            "preview": _clean(m.preview),
+            "child_count": self.corpus.fan_out(m.id),
+            "depth": self.corpus.depth(m.id),
+            "has_rollout": bool(m.rollout_path),
+        }
 
     def _order_nodes(self, nodes, order):
         if order is None or order == "created":
-            return sorted(nodes, key=lambda n: (
-                n["created_at_ms"] is None, n["created_at_ms"] or 0, n["id"]))
+            return sorted(
+                nodes, key=lambda n: (n["created_at_ms"] is None, n["created_at_ms"] or 0, n["id"])
+            )
         if order == "recent":
-            return sorted(nodes, reverse=True, key=lambda n: (
-                n.get("updated_at_ms") or n["created_at_ms"] or 0))
+            return sorted(
+                nodes, reverse=True, key=lambda n: n.get("updated_at_ms") or n["created_at_ms"] or 0
+            )
         if order == "title":
             return sorted(nodes, key=lambda n: n["title"].lower())
         raise RpcError(-32602, "unknown order: %s" % order)
@@ -1953,8 +2055,7 @@ class Sidecar:
         return order
 
     def _parents_of(self, tid):
-        return [e.parent_thread_id for e in self.corpus.edges
-                if e.child_thread_id == tid]
+        return [e.parent_thread_id for e in self.corpus.edges if e.child_thread_id == tid]
 
     def _diff_operand(self, params, path_key, time_key):
         """Resolve one side of graph.diff — three mutually-exclusive forms:
@@ -1981,8 +2082,7 @@ class Sidecar:
         has_path = path_key in params
         has_time = time_key in params
         if has_path and has_time:
-            raise RpcError(-32602, "%s and %s are mutually exclusive"
-                           % (path_key, time_key))
+            raise RpcError(-32602, "%s and %s are mutually exclusive" % (path_key, time_key))
         if has_time:
             return timetravel.corpus_as_of(self.corpus, _req_int(params, time_key))
         if not has_path:
@@ -2003,11 +2103,13 @@ class Sidecar:
         keys (as everywhere else on this surface); edges become ``{parent,child}`` objects
         exactly like graph.subtree; changed fields are privacy-projected. Every list is
         already sorted by ``diff_corpus``, so the DTO is byte-stable across runs."""
-        return {"added_nodes": d.added_nodes,
-                "removed_nodes": d.removed_nodes,
-                "added_edges": [{"parent": p, "child": c} for p, c in d.added_edges],
-                "removed_edges": [{"parent": p, "child": c} for p, c in d.removed_edges],
-                "changed_nodes": self._project_changed(d.changed_nodes)}
+        return {
+            "added_nodes": d.added_nodes,
+            "removed_nodes": d.removed_nodes,
+            "added_edges": [{"parent": p, "child": c} for p, c in d.added_edges],
+            "removed_edges": [{"parent": p, "child": c} for p, c in d.removed_edges],
+            "changed_nodes": self._project_changed(d.changed_nodes),
+        }
 
     def _project_changed(self, changed):
         """``{id: {field: (old, new)}}`` -> the wire form ``{id: {field: [old, new]}}``, in
@@ -2031,8 +2133,10 @@ class Sidecar:
         order, each a lean ThreadNode projected over the snapshot; edges are the
         snapshot's already-(parent,child)-sorted spawn edges, status preserved. Both are
         byte-stable, and each node's free text is sanitized by ``_thread_node``."""
-        return {"nodes": [self._thread_node(tid, cx) for tid in sorted(cx._nodes())],
-                "edges": [_spawn_edge(e) for e in cx.edges]}
+        return {
+            "nodes": [self._thread_node(tid, cx) for tid in sorted(cx._nodes())],
+            "edges": [_spawn_edge(e) for e in cx.edges],
+        }
 
     def _project_export_run(self, report):
         """export_with_gate's report -> the ExportResult DTO ``{ok, graph_gate,
@@ -2049,13 +2153,20 @@ class Sidecar:
         Every string in it goes through ``_sanitize_tree`` — defence in depth, since the
         export sanitizes before it scans, so the wire projection does not depend on that.
         """
-        graph_gate = not (report["added"]["nodes"] or report["added"]["edges"]
-                          or report["removed"]["nodes"] or report["removed"]["edges"]
-                          or report["changed"])
-        result = {"ok": report["ok"], "graph_gate": graph_gate,
-                  "transcript_gate": not report["missing_tokens"],
-                  "mode": report["mode"],
-                  "credential_scan": _sanitize_tree(report["credential_scan"])}
+        graph_gate = not (
+            report["added"]["nodes"]
+            or report["added"]["edges"]
+            or report["removed"]["nodes"]
+            or report["removed"]["edges"]
+            or report["changed"]
+        )
+        result = {
+            "ok": report["ok"],
+            "graph_gate": graph_gate,
+            "transcript_gate": not report["missing_tokens"],
+            "mode": report["mode"],
+            "credential_scan": _sanitize_tree(report["credential_scan"]),
+        }
         if report["ok"]:
             result["written_path"] = _clean(report["path"])
         return result
@@ -2073,8 +2184,10 @@ class Sidecar:
             # passed on. Zero results is the honest answer to a query with no terms.
             return 0, []
         clause, bound = corpus.search_filter_sql(*filt)
-        frm = ("FROM conversations_fts JOIN conversations c ON c.rowid = "
-               "conversations_fts.rowid WHERE conversations_fts MATCH ?" + clause)
+        frm = (
+            "FROM conversations_fts JOIN conversations c ON c.rowid = "
+            "conversations_fts.rowid WHERE conversations_fts MATCH ?" + clause
+        )
         args = [match] + bound
         total = self.conn.execute("SELECT COUNT(*) " + frm, args).fetchone()[0]
         # MOST RELEVANT FIRST, `conversation_id` breaking ties — a TOTAL order, which is what
@@ -2105,8 +2218,10 @@ class Sidecar:
         # naming the function twice is what keeps this a single statement SQLite can plan.
         rows = self.conn.execute(
             "SELECT c.conversation_id, c.thread_id, c.provider, c.title, c.created_at "
-            + frm + " ORDER BY bm25(conversations_fts), c.conversation_id LIMIT ? OFFSET ?",
-            args + [limit, offset]).fetchall()
+            + frm
+            + " ORDER BY bm25(conversations_fts), c.conversation_id LIMIT ? OFFSET ?",
+            args + [limit, offset],
+        ).fetchall()
         return total, rows
 
     def _reparse_conversation(self, row):
@@ -2188,31 +2303,51 @@ class Sidecar:
     def _conversation_stub(self, row, reason):
         """A documented, honest partial for a conversation whose transcript body is not
         retrievable in this bite (no rollout, missing/unreadable file, or non-Codex)."""
-        return {"id": row["conversation_id"], "title": _clean(row["title"]),
-                "provider": row["provider"], "created_at": row["created_at"],
-                "updated_at": row["updated_at"], "account": row["account"],
-                "turns": [], "available": False, "reason": reason}
+        return {
+            "id": row["conversation_id"],
+            "title": _clean(row["title"]),
+            "provider": row["provider"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "account": row["account"],
+            "turns": [],
+            "available": False,
+            "reason": reason,
+        }
 
     def _serialize_conversation(self, conv, errors):
-        return {"id": conv.id, "title": _clean(conv.title), "provider": conv.provider,
-                "created_at": conv.created_at, "updated_at": conv.updated_at,
-                "account": conv.account, "ir_version": conv.ir_version,
-                "available": True,
-                "turns": [self._serialize_turn(t) for t in conv.turns],
-                "meta": _sanitize_tree(_redact_paths(conv.meta)),
-                "parse_errors": len(errors)}
+        return {
+            "id": conv.id,
+            "title": _clean(conv.title),
+            "provider": conv.provider,
+            "created_at": conv.created_at,
+            "updated_at": conv.updated_at,
+            "account": conv.account,
+            "ir_version": conv.ir_version,
+            "available": True,
+            "turns": [self._serialize_turn(t) for t in conv.turns],
+            "meta": _sanitize_tree(_redact_paths(conv.meta)),
+            "parse_errors": len(errors),
+        }
 
     def _serialize_turn(self, turn):
-        dto = {"role": turn.role, "uuid": turn.uuid, "timestamp": turn.timestamp,
-               "blocks": [self._serialize_block(b) for b in turn.blocks]}
+        dto = {
+            "role": turn.role,
+            "uuid": turn.uuid,
+            "timestamp": turn.timestamp,
+            "blocks": [self._serialize_block(b) for b in turn.blocks],
+        }
         if turn.branch is not None:
             dto["branch"] = turn.branch
         return dto
 
     def _serialize_block(self, block):
-        return {"type": block.type, "text": _clean(block.text),
-                "data": _sanitize_tree(block.data),
-                "citations": _sanitize_tree(block.citations)}
+        return {
+            "type": block.type,
+            "text": _clean(block.text),
+            "data": _sanitize_tree(block.data),
+            "citations": _sanitize_tree(block.citations),
+        }
 
     # -- the archive reader (G-4) -------------------------------------------------
     #
@@ -2277,7 +2412,7 @@ class Sidecar:
 
         THE LEG PATH LIST IS TRANSLATED, NOT RELAYED — a privacy defect this method would
         otherwise have introduced. `loaders._bind` puts `meta["rollout_paths"]` on every
-        ingested conversation (`loaders.py:546`, and `_merge_resumed_leg` appends to it): a
+        ingested conversation (`loaders.py:588`, and `_merge_resumed_leg` appends to it): a
         LIST of absolute local paths, one per
         resumed leg. Before G-4 it could not reach the UI, because the wire only ever saw a
         freshly RE-PARSED conversation and no adapter produces that key — and `_redact_paths`
@@ -2294,16 +2429,23 @@ class Sidecar:
         meta = dict(meta)
         legs = meta.pop("rollout_paths", None) or []
         if legs:
-            meta.setdefault("rollout_path", legs[-1])   # basenamed by _redact_paths
+            meta.setdefault("rollout_path", legs[-1])  # basenamed by _redact_paths
         if len(legs) > 1:
             meta["rollout_legs"] = len(legs)
         return ir.Conversation(
-            id=row["conversation_id"], title=row["title"], provider=row["provider"],
-            turns=turns, created_at=row["created_at"], updated_at=row["updated_at"],
-            account=row["account"], meta=meta)
+            id=row["conversation_id"],
+            title=row["title"],
+            provider=row["provider"],
+            turns=turns,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            account=row["account"],
+            meta=meta,
+        )
 
 
 # -------------------------------------------------------------------- entrypoint
+
 
 def _parse_args(args):
     """Parse the sidecar CLI: an optional ``--index <path>`` that falls back to
@@ -2311,11 +2453,14 @@ def _parse_args(args):
     fully covered by its four in-process tests."""
     parser = argparse.ArgumentParser(
         prog="llm_anthology.sidecar",
-        description="stdio NDJSON JSON-RPC 2.0 engine over an llm_anthology corpus index")
+        description="stdio NDJSON JSON-RPC 2.0 engine over an llm_anthology corpus index",
+    )
     parser.add_argument(
-        "--index", default=None,
+        "--index",
+        default=None,
         help="path to the corpus index (SQLite); falls back to $LLM_ANTHOLOGY_INDEX, then "
-             "serves with no corpus attached (health.ping still answers)")
+        "serves with no corpus attached (health.ping still answers)",
+    )
     return parser.parse_args(args)
 
 
@@ -2387,9 +2532,10 @@ def main(argv=None, stdin=None, stdout=None):
     try:
         Sidecar(conn, corpus_error=corpus_error).serve(
             stdin if stdin is not None else _as_utf8(sys.stdin),
-            stdout if stdout is not None else _as_utf8(sys.stdout))
+            stdout if stdout is not None else _as_utf8(sys.stdout),
+        )
     finally:
-        if conn is not None:             # release the index on EOF/shutdown
+        if conn is not None:  # release the index on EOF/shutdown
             conn.close()
     return 0
 
@@ -2458,8 +2604,7 @@ def _opt_bucket(params):
     value = params["histogram"]
     if isinstance(value, str) and value in corpus.SEARCH_BUCKETS:
         return value
-    raise RpcError(-32602, "histogram must be one of %s"
-                   % ", ".join(sorted(corpus.SEARCH_BUCKETS)))
+    raise RpcError(-32602, "histogram must be one of %s" % ", ".join(sorted(corpus.SEARCH_BUCKETS)))
 
 
 def _hits_over_time(conn, query, filt, bucket):
@@ -2491,11 +2636,15 @@ def _hits_over_time(conn, query, filt, bucket):
     if bucket is None:
         return {}
     match = fts_match_expression(query)
-    if not match:                   # the same short-circuit `_run_search` makes, same reason
+    if not match:  # the same short-circuit `_run_search` makes, same reason
         return {"histogram": []}
-    return {"histogram": [{"bucket": _clean(key), "count": count} for key, count
-                          in corpus.search_histogram(conn, match, bucket, *filt)]}
+    return {
+        "histogram": [
+            {"bucket": _clean(key), "count": count}
+            for key, count in corpus.search_histogram(conn, match, bucket, *filt)
+        ]
+    }
 
 
-if __name__ == "__main__":       # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())

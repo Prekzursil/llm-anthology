@@ -5,15 +5,26 @@ Real schema: each record is one EXCHANGE with keys idx, timestamp, timestamp_iso
 verb, gem, prompt, response_md, attachments, media, title, detail, zero_width.
 Verbs on disk: Prompted 967, Used 60, Created Gemini Canvas 26, Gave feedback 6, Selected 1.
 """
+
 from llm_anthology.adapters import gemini
 from llm_anthology import ir
 
 
 def _rec(idx, prompt="q", response="a", verb="Prompted", **extra):
-    r = {"idx": idx, "timestamp": "Jan 1, 2025, 1:00:00 PM EEST",
-         "timestamp_iso": "2025-01-01T13:00:00", "verb": verb, "gem": None,
-         "prompt": prompt, "response_md": response, "attachments": [], "media": [],
-         "title": "", "detail": "", "zero_width": []}
+    r = {
+        "idx": idx,
+        "timestamp": "Jan 1, 2025, 1:00:00 PM EEST",
+        "timestamp_iso": "2025-01-01T13:00:00",
+        "verb": verb,
+        "gem": None,
+        "prompt": prompt,
+        "response_md": response,
+        "attachments": [],
+        "media": [],
+        "title": "",
+        "detail": "",
+        "zero_width": [],
+    }
     r.update(extra)
     return r
 
@@ -42,10 +53,17 @@ def test_feature_event_verb_becomes_a_single_event_turn():
 
 
 def test_attachments_and_media_become_blocks():
-    c = gemini.parse_conversation([_rec(
-        0, "see this",
-        attachments=[{"name": "doc.pdf", "on_disk": "media/doc.pdf", "resolved": True}],
-        media=["shot.png"])], [0])
+    c = gemini.parse_conversation(
+        [
+            _rec(
+                0,
+                "see this",
+                attachments=[{"name": "doc.pdf", "on_disk": "media/doc.pdf", "resolved": True}],
+                media=["shot.png"],
+            )
+        ],
+        [0],
+    )
     kinds = [b.type for t in c.turns for b in t.blocks]
     assert "attachment" in kinds and "media" in kinds
 
@@ -72,8 +90,10 @@ def test_parse_all_without_grouping_returns_single_conversation():
 
 
 def test_parse_all_with_groups_splits():
-    groups = [{"id": "c1", "title": "One", "turn_idxs": [0]},
-              {"id": "c2", "title": "Two", "turn_idxs": [1]}]
+    groups = [
+        {"id": "c1", "title": "One", "turn_idxs": [0]},
+        {"id": "c2", "title": "Two", "turn_idxs": [1]},
+    ]
     convs = gemini.parse_all([_rec(0, "a"), _rec(1, "b")], groups)
     assert [c.title for c in convs] == ["One", "Two"]
     assert all(len(c.turns) == 2 for c in convs)
