@@ -310,8 +310,9 @@ def test_the_phantom_ref_actions_are_pinned_to_an_exact_installable_version():
     # read it. A floating ref (branch, "stable", a minor glob) fails.
     exact = re.compile(r"^\d+\.\d+\.\d+$")
     sha = re.compile(r"^[0-9a-f]{40}$")
-    floating = {where: ref for where, ref in found.items()
-                if not (exact.match(ref) or sha.match(ref))}
+    floating = {
+        where: ref for where, ref in found.items() if not (exact.match(ref) or sha.match(ref))
+    }
     assert not floating, (
         "the rust toolchain must be pinned at an exact X.Y.Z or its commit "
         "SHA so a phantom ref cannot ride in: {}".format(floating)
