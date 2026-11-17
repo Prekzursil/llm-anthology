@@ -1,0 +1,319 @@
+# Instincts generated from https://github.com/Prekzursil/ai-sessions-render
+# Generated: 2026-07-21T11:39:35.649Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: ai-sessions-render-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: test
+
+## Evidence
+
+- 1 commits analyzed
+- Detected conventional commit pattern
+- Examples: test(js): cover the 8 statements Vitest 4 AST remapping exposed
+
+---
+id: ai-sessions-render-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Commit Length
+
+## Action
+
+Write moderate-length commit messages (~63 characters)
+
+## Evidence
+
+- Average commit message length: 63 chars
+- Based on 1 commits
+
+---
+id: ai-sessions-render-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: ai-sessions-render-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: ai-sessions-render-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: ai-sessions-render-instinct-file-naming
+trigger: "When creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct File Naming
+
+## Action
+
+Name the file using camelCase format
+
+## Evidence
+
+- Pattern in namingConventions.files: camelCase
+
+---
+id: ai-sessions-render-instinct-function-naming
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Function Naming
+
+## Action
+
+Name the function using camelCase format
+
+## Evidence
+
+- Pattern in namingConventions.functions: camelCase
+
+---
+id: ai-sessions-render-instinct-class-naming
+trigger: "When defining a new class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Class Naming
+
+## Action
+
+Name the class using PascalCase format
+
+## Evidence
+
+- Pattern in namingConventions.classes: PascalCase
+
+---
+id: ai-sessions-render-instinct-constant-naming
+trigger: "When declaring a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Constant Naming
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE format
+
+## Evidence
+
+- Pattern in namingConventions.constants: SCREAMING_SNAKE_CASE
+
+---
+id: ai-sessions-render-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle: relative
+
+---
+id: ai-sessions-render-instinct-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle: named
+
+---
+id: ai-sessions-render-instinct-error-handling
+trigger: "When handling errors in code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Error Handling
+
+## Action
+
+Use try-catch blocks for error handling
+
+## Evidence
+
+- Pattern in errorHandling.style: try-catch
+
+---
+id: ai-sessions-render-instinct-test-commit-prefix
+trigger: "When committing test-related changes"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Test Commit Prefix
+
+## Action
+
+Prefix the commit message with 'test' (e.g., 'test(js): ...')
+
+## Evidence
+
+- Seen in commit: test(js): cover the 8 statements Vitest 4 AST remapping exposed
+- Pattern in commits.prefixes: test
+
+---
+id: ai-sessions-render-instinct-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Commit Format
+
+## Action
+
+Follow the conventional commit format: <type>(<scope>): <description>
+
+## Evidence
+
+- Pattern in commits.type: conventional
+- Seen in commit: test(js): cover the 8 statements Vitest 4 AST remapping exposed
+
+---
+id: ai-sessions-render-instinct-test-location
+trigger: "When adding or updating tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Test Location
+
+## Action
+
+Place test files in mixed locations, including inside the 'js' folder
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation: mixed
+- Pattern in architecture.folderStructure.commonFolders: js
+
+---
+id: ai-sessions-render-instinct-typescript
+trigger: "When writing new code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Prekzursil/ai-sessions-render
+---
+
+# Ai Sessions Render Instinct Typescript
+
+## Action
+
+Use TypeScript as the implementation language
+
+## Evidence
+
+- Pattern in codeStyle.language: TypeScript
+

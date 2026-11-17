@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ai Sessions Render"
+  short_description: "Repo-specific patterns and workflows for ai-sessions-render"
+  default_prompt: "Use the ai-sessions-render repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
