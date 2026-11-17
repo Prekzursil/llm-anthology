@@ -28,3 +28,8 @@ jobs:
     uses: Prekzursil/quality-zero-platform/.github/workflows/reusable-quality.yml@f84b146aca9432cd852092251d31fec3ab3169d7
     with:
       deps-severity-floor: any
+      # Interim bar, declared visibly per the reusable workflow's contract:
+      # cockpit currently measures 85.64% lines / 90.53% branches (39 files,
+      # 1213 tests, vitest v8). Ratchet this number toward the charter's 100
+      # as coverage work lands; it can never restore a silent pass.
+      jsts-coverage-min: 85
