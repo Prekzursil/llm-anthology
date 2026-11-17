@@ -24,6 +24,15 @@ id = "GHSA-wrw7-89jp-8q8g"
 ignoreUntil = 2027-01-31
 reason = "glib 0.20.0 is unreachable: tauri 2.12.5 (and 3.0.0-alpha.6) pin gtk ^0.18 and gtk max is 0.19.0, so the lockfile cannot resolve glib >= 0.20. Upstream must move first."
 
+# chrono is unmaintained (RUSTSEC-2026-0543): "all versions affected", no fixed
+# version can exist; 0.4.45 IS the registry maximum (verified 2026-11-17).
+# Informational notice, no vulnerability; the migration path (jiff/time) is a
+# tauri-ecosystem decision - cockpit uses chrono only through tauri deps.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-01-31
+reason = "Unmaintained notice, no fixed version exists (all chrono versions affected, 0.4.45 is max); migration to jiff/time requires upstream tauri ecosystem movement."
+
 # The four advisories below are informational UNMAINTAINED notices: they describe no
 # vulnerability, there is no fixed version to move to, and each crate arrives only through
 # the Tauri 2 stack, which cannot drop it. Each expires so it is re-checked.
