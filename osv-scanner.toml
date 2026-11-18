@@ -55,3 +55,21 @@ reason = "zbus_names 4.3.4 is unmaintained (informational notice, no vulnerabili
 id = "RUSTSEC-2026-0372"
 ignoreUntil = 2027-01-31
 reason = "zvariant_derive 5.13.1 is unmaintained (informational notice, no vulnerability, no fixed version). Build-time derive macro on the same zbus 5 / tauri-plugin-opener 2.7.2 Linux path. Re-check when the plugin moves to zbus 6."
+
+# ---------------------------------------------------------------------------
+# 2026-11-18 RESIDUAL RISK (reasoned ignore) — GHSA-fc5q-39xc-vjpf, picomatch
+# ReDoS (CVSS v3 7.5 / v4 8.7, availability-only). Vulnerable range <= 4.0.7
+# and 4.0.7 IS the newest published release (measured 2026-11-18 via
+# `npm view picomatch versions`), so no fixed release exists to upgrade to.
+# Scope: dev toolchain (vite/vitest family) lockfiles only; never shipped.
+# RE-CHECK: retire the day a patched picomatch (> 4.0.7) publishes.
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2027-02-18
+reason = """
+picomatch ReDoS; every published release is vulnerable (<= 4.0.7 = latest
+published, measured 2026-11-18), so no upgrade exists. Dev toolchain
+(vite/vitest) lockfiles only, never shipped; availability-only impact.
+Retire as soon as a patched picomatch publishes.
+"""
+
