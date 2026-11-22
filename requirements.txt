@@ -9,11 +9,11 @@
 #     the Python dependencies at all.
 # Every transitive dependency is pinned too, so the scanner never settles on an old release.
 # Dependabot's pip rail keeps these current.
-markdown-it-py==4.2.0
+markdown-it-py==4.3.0
 mdurl==0.1.2
 zstandard==0.25.0
 ijson==3.6.0
-pytest==9.1.1
+pytest==9.2.0
 pytest-cov==7.1.0
 coverage==7.17.0
 iniconfig==2.3.1
