@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   quality:
-    uses: Prekzursil/quality-zero-platform/.github/workflows/reusable-quality.yml@f84b146aca9432cd852092251d31fec3ab3169d7
+    uses: Prekzursil/quality-zero-platform/.github/workflows/reusable-quality.yml@e7d78c3a645259d2963d9133fdc75792a888edb7
     with:
       deps-severity-floor: any
       # Interim bar, declared visibly per the reusable workflow's contract:
